@@ -26,7 +26,7 @@
 ///     var hiddenDeck: [Card] = []
 ///     
 ///     @Internal
-///     var lastProcessedTimestamp: Date = Date()
+///     var lastProcessedTimestamp: Int64 = 0 // milliseconds
 ///     
 ///     var totalPlayers: Int {
 ///         players.count

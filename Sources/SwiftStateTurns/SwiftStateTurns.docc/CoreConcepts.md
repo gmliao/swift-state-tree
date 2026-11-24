@@ -274,10 +274,11 @@ A machine's *behavior* is what it does, as distinct from what it holds: function
 
 - **Fixed at the start.** A machine declares its type as `Behavior` (default `Void`, none). The adopter passes the value once, to `TurnCore(machine:behavior:…)`. A machine with a behavior can't be made without one.
 - **Read in every step.** `turn.behavior` reads it in `handle`, `handleAbandoned`, `handleLateResult` and `answer`, and so do follow-up and timer steps, which go through `handle`. In `handleMail`, `MailTurn` has the same `behavior`.
-- **Never written.** A behavior is fixed for the machine's lifetime; every change goes to the model (there is no `become`). Assigning to `turn.behavior` doesn't compile.
+- **Never written.** A behavior is fixed for the machine's lifetime; every change goes to the model (there is no `become`). Assigning to `turn.behavior` doesn't compile, though a reference it holds can still change (Limit, below).
 - **What its functions may do.** They run inside a step, so they are synchronous, touch nothing outside the model, and are deterministic: no clock read of their own, no random numbers without a seed, no I/O. Anything that waits or does I/O goes out as an effect, and its result comes back as an input.
+- **Not recorded.** A replay builds the same behavior from the same definition and config; a different behavior replays a different machine, and nothing in the record shows it.
 
-Limit: the compiler checks only that the functions are synchronous. The other two rules are the adopter's.
+Limit: the compiler checks only that the functions are synchronous. The other two rules are the adopter's. Nor does it stop a behavior from holding a reference with mutable state (a `Sendable` class, such as one that owns a `Mutex`, or a closure that captures one): `turn.behavior.limit = 3` is refused, but `turn.behavior.box.bump()` compiles. So a behavior holds values and functions over them only; anything a step changes goes to the model.
 
 API: ``TurnMachine/Behavior``, ``Turn/behavior``, ``MailTurn/behavior``, ``TurnCore/init(machine:behavior:queueLimit:maxReleasesPerBatch:clock:mailboxCapacity:)``.
 

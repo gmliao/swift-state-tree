@@ -59,7 +59,7 @@ struct GameState: StateNodeProtocol {
     var players: [PlayerID: PlayerState] = [:] // ✅ 正確
     
     @Internal
-    var lastProcessedTimestamp: Date = Date() // ✅ 正確
+    var lastProcessedTimestamp: Int64 = 0 // 毫秒；✅ 正確
     
     // var tempData: String = "" // ❌ 錯誤：未標記
 }

@@ -32,7 +32,7 @@ An effect's result, a deadline or a timer comes back as a new input. Each entry 
 
 ### What counts as plain data
 
-`PlainData` (`Sources/SwiftStateTurns/PlainData.swift`) marks a value that can't call through to anything or change behind its holder: no class, closure, actor, existential, lock or token, at any depth.
+`PlainData` (`Sources/SwiftStateTurns/PlainData.swift`) marks a value that can't call through to anything or change behind its holder: no class, closure, actor, existential, lock or token, at any depth. A field of a `@PlainData` type may be `any P`, where the protocol `P` refines `PlainData` (also as the element of an optional, an array or a dictionary's value): everything that conforms to `P` is checked plain data, and the macro checks each such field. `any P` itself doesn't conform, so `Internal<any P>`, `PlainPair<any P, Int>` and a `where T: PlainData` generic refuse it.
 
 - **Built-ins that conform:** `Bool`, the integer types, `Double`, `Float`, `String`, `Character`, `Duration`, Foundation's `Data` (one made with `Data(bytesNoCopy:count:deallocator:)` and a custom deallocator holds a closure, so it isn't plain in spirit; the type check can't see that, so don't store one), and the turn core's own values (`InputID`, `RequestID`, `Generation`, `TurnInstant`, `Abandonment`, `TurnError`).
 - **Containers conform when their contents do:** `Optional`, `Array`, `ContiguousArray`, `Set`, `Dictionary` (key and value), and `Result` (success and failure).
@@ -42,7 +42,9 @@ An effect's result, a deadline or a timer comes back as a new input. Each entry 
 |---|---|
 | `[PlayerID: Seat]`, where both are `@PlainData` | yes |
 | `Set<Int>`, `String?`, `Result<Int, TurnError>` | yes |
+| `any Payload`, `[any Payload]`, `(any Payload)?`, where `protocol Payload: PlainData` | yes, as a field of a `@PlainData` type |
 | `[String: Any]`, `Result<Int, any Error>` | no: an existential |
+| `Date`, `UUID`, `URL`, `Decimal` | no: store an `Int64` of milliseconds (or read the turn's `now`), a `String` or a project ID type, a `String`, and an integer in the smallest unit or a `String` |
 | `[() -> Void]` | no: a function type |
 | `[PlayerID: Connection]`, where `Connection` is a class | no: a class |
 
@@ -50,13 +52,17 @@ The refusals are compile errors, pinned by the must-not-compile cases in `script
 
 ### Your own types
 
-Mark a struct or an enum with `@PlainData` where it is defined. The macro writes the conformance and adds one check per stored property or associated value, which fails to compile unless that type is plain data.
+Mark a struct or an enum with `@PlainData` where it is defined. The macro writes the conformance and adds one check per stored property or associated value, which reads the stored value and fails to compile unless its type is plain data. Reading the value, not the spelled type, means a field's type resolves as it does in the declaration, a sibling nested in the same outer type included.
 - Every stored property needs a type annotation, so that the macro can check it.
 - A generic type needs `where T: PlainData`.
-- `@PlainData` on a class or an actor is refused, and so is a field whose type is a class, an actor, a closure or an existential.
-- A hand-written `: PlainData` outside `SwiftStateTurns`, `@retroactive` included, is refused by `scripts/lint-turns.sh`: it would conform without checking anything.
+- `@PlainData` on a class or an actor is refused, and so is a field whose type is a class, an actor, a closure or an existential of a protocol that doesn't refine `PlainData`.
+- An `any P` field is checked on its own, or as the element of `Optional`, `Array`, `ContiguousArray` or a `Dictionary`'s value. Inside any other generic type (`Set<any P>`, `Result<Int, any P>`) the macro can't see what the type does with it, so it is refused.
+- A protocol may refine `PlainData`. A type that conforms to it still needs `@PlainData`: `PlainData` requires the checks the macro writes, so a class or a struct without the macro doesn't compile, unless it writes `_plainDataCheck` by hand, which the lint refuses.
+- A hand-written `: PlainData` or `_plainDataCheck` outside `SwiftStateTurns`, `@retroactive` included, is refused by the plain-data lint (`Tests/SwiftStateTurnsMacrosTests/PlainDataLintTests.swift`, run with `swift test`): it would conform without checking anything. So is any use of `PlainDataCheck` in code (an alias or extension of it could add an overload), and a declaration named `SwiftStateTurns`, `Swift`, `Optional`, `Array`, `ContiguousArray` or `Dictionary`, which could change what the macro's checks resolve to.
 - A type from the standard library or Foundation can't take the macro. Store the turn core's value type in its place, for example `TurnInstant` instead of `ContinuousClock.Instant`.
 - A type from another module of this repository takes `@PlainData` at its definition, in its own module, never through an extension elsewhere. The IDs and values a land's state and its transport keep are marked this way: `SessionID`, `PlayerID`, `ClientID`, `EventTarget`, `StateSnapshot`, `SnapshotValue` and `MessagePackValue`. A machine can store them as they are.
+- **Limit.** The macro and the lint catch mistakes; they aren't a security boundary. Swift has no sealed protocols, so code written on purpose to get around them (a hand-written witness, an alias or extension trick, a symlinked source directory the lint reads as core) can make a type conform that isn't plain data, at the cost of replay fidelity. Such a bypass is a known limitation, not a hole the checks promise to close. Two honest shapes are refused rather than checked: a field whose type uses a generic parameter of an enclosing type (`struct Outer<T> { @PlainData struct Inner { var value: T } }`, #782), and enum cases that share a base name (`case item(count: Int)` beside `case item(label: String)`; give each its own name).
+- Spell `any P` inside `Optional`, `Array`, `ContiguousArray` or a `Dictionary`'s value where the field is declared, not through an alias: the macro finds an existential by the `any` it reads, so `typealias PayloadValue = any Payload` works for a field of type `PayloadValue` but not for `PayloadValue?` or `[PayloadValue]`, which fail to compile.
 
 In the example below, marking the first `Room` with `@PlainData` is refused: the macro names its fields that aren't plain data. The second one compiles.
 
@@ -97,10 +103,11 @@ A machine's *behavior* is what it does, as distinct from what it holds: function
 
 - **Fixed at the start.** A machine declares its type as `Behavior` (default `Void`, none). The adopter passes the value once, to `TurnCore(machine:behavior:…)`. A machine with a behavior can't be made without one.
 - **Read in every step.** `turn.behavior` reads it in `handle`, `handleAbandoned`, `handleLateResult` and `answer`, and so do follow-up and timer steps, which go through `handle`. In `handleMail`, `MailTurn` has the same `behavior`.
-- **Never written.** A behavior is fixed for the machine's lifetime; every change goes to the model (there is no `become`). Assigning to `turn.behavior` doesn't compile.
+- **Never written.** A behavior is fixed for the machine's lifetime; every change goes to the model (there is no `become`). Assigning to `turn.behavior` doesn't compile, though a reference it holds can still change (Limit, below).
 - **What its functions may do.** They run inside a step, so they are synchronous, touch nothing outside the model, and are deterministic: no clock read of their own, no random numbers without a seed, no I/O. Anything that waits or does I/O goes out as an effect, and its result comes back as an input.
+- **Not recorded.** A replay builds the same behavior from the same definition and config; a different behavior replays a different machine, and nothing in the record shows it.
 
-Limit: the compiler checks only that the functions are synchronous. The other two rules are the adopter's.
+Limit: the compiler checks only that the functions are synchronous. The other two rules are the adopter's. Nor does it stop a behavior from holding a reference with mutable state (a `Sendable` class, such as one that owns a `Mutex`, or a closure that captures one): `turn.behavior.limit = 3` is refused, but `turn.behavior.box.bump()` compiles. So a behavior holds values and functions over them only; anything a step changes goes to the model.
 
 API: `TurnMachine.Behavior`, `Turn.behavior`, `MailTurn.behavior`, `TurnCore.init(machine:behavior:queueLimit:maxReleasesPerBatch:clock:mailboxCapacity:)`.
 

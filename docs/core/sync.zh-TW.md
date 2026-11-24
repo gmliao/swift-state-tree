@@ -88,7 +88,7 @@ struct GameState: StateNodeProtocol {
 - **註冊時。** `LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會拋出 `LandRegistrationError`，其 `sync` 含有 `.valueSemantics` 問題，也就是列出每個欄位與 class 的 `SyncValueSemanticsError`，例如 `GameState.inventory: Inventory is a class; synced state must be value types`。檢查會走訪每個同步欄位的型別（包含 `.serverOnly` 欄位），穿過 optional、array、set、dictionary 的 key 與 value，以及巢狀 state node，並透過預設實例檢查一般 struct、tuple、enum payload 與 existential 欄位（`any P`）的內容。
 - **轉換狀態時。** 檢查看不到的 class（之後才存入 existential 欄位的、位於預設實例沒有採用的 enum case 裡的、或加進註冊時還是空的集合裡的）會讓轉換拋出 `SyncError.unsupportedValue`。Dictionary 的 key 是例外：key 是透過它的 description 轉換的，因此放在 value type key 內部的 class（例如含有 class 屬性的 `CustomStringConvertible` struct）只有在註冊時、且預設實例的第一個 key 含有 class 時才會被拒絕（檢查只取 dictionary 的第一個項目）。每次同步都會轉換，因此該 Land 的同步會失敗（`.serverOnly` 欄位只在錄製或計算狀態雜湊時才會轉換，因此失敗的是這些步驟）；若 class 位於事件 payload 中，sync-output verifier 無法將該事件正規化，會把 events 範圍回報為無法驗證。
 
-請把型別改成 struct 或 enum。Land 需要但不同步的參照（例如快取或 service handle）放在 `@Internal` 欄位，這類欄位不受檢查。`SnapshotValueConvertible` 型別由它自己的 `toSnapshotValue()` 轉換，但其儲存內容仍會被檢查：遵循此 protocol 的 class 會被拒絕，預設實例含有 class 的遵循 struct 也會被拒絕。
+請把型別改成 struct 或 enum。Land 需要但不同步的參照（例如快取或 service handle）放在 land 的 services。`@Internal` 欄位不同步，但它的值必須是 `PlainData`：編譯器會拒絕 class、closure、existential 或 `Any`。它也拒絕 `Decimal`、`Date`、`UUID` 和 `URL`，因為它們不是 `PlainData`。`SwiftStateTree` 沒有 re-export `SwiftStateTurns`，所以放進 `@Internal` 欄位的自訂 struct 或 enum 需要 `import SwiftStateTurns` 並加上 `@PlainData`。DeterministicMath 的型別（`IVec2`、`Position2` 等）目前還不是 `PlainData`，在它們成為 `PlainData` 之前，這類型別的 `@Internal` 欄位無法編譯。`SnapshotValueConvertible` 型別由它自己的 `toSnapshotValue()` 轉換，但其儲存內容仍會被檢查：遵循此 protocol 的 class 會被拒絕，預設實例含有 class 的遵循 struct 也會被拒絕。
 
 **破壞性變更（2026-11-10）。** #464 之前，同步狀態中的 class 會依其 stored property 編碼，只有參照回自己的物件圖會被拒絕。現在狀態含有 class 的 Land 會註冊失敗。
 
@@ -102,7 +102,7 @@ struct GameState: StateNodeProtocol {
 | `.policyNesting(SyncPolicyNestingError)` | broadcast 欄位下有依玩家而變的欄位（見上文） |
 | `.unsupportedKey(path:keyType:)` | 同步無法轉成字串的 dictionary key 型別：不是 `String`、`PlayerID` 或 `CustomStringConvertible` |
 | `.existentialField(path:typeName:)` | 能容納任何型別值的同步型別：`Any`、`AnyObject`、`AnyHashable` 或 `AnyCodable`，出現在集合的元素、key 或 value，或 optional 包住的型別 |
-| `.decimalField(path:)` | 同步的 `Decimal`，不論單獨出現，或位於 optional、集合或巢狀型別中（#597）；`.serverOnly` 或 `@Internal` 欄位可以放；見下文 |
+| `.decimalField(path:)` | 同步的 `Decimal`，不論單獨出現，或位於 optional、集合或巢狀型別中（#597）；`.serverOnly` 欄位可以放；見下文 |
 | `.typeNameCollision(SchemaTypeNameCollision)` | state 中兩個不同的型別同名，例如 `A.Item` 與 `B.Item`（#602）；只在上面各列都通過時才檢查；見下文 |
 
 class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會送出的欄位；`@SnapshotConvertible` 型別透過其宣告的 stored property 檢查（由 macro 列出，因此有標註型別的 property 即使位於空集合中也會檢查；沒有標註型別的 property 只能透過預設實例的值檢查），其他一般 struct 則同樣透過預設實例檢查其內容。手寫 `toSnapshotValue()` 的型別自行轉換其儲存內容，不會被檢查；只遵循 `FullSnapshotValueConvertible` 不算，因為同步會忽略它。結果依 state 型別快取，因此 **state 型別的預設 `init()` 必須是確定性的**：每次呼叫都產生相同的值，不讀時鐘、亂數來源或全域狀態。
@@ -115,9 +115,9 @@ class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會
 - **註冊時，** typealias 讓語法看不到、但欄位清單看得到時。同步欄位回報為 `.decimalField`。event、action、其 response 或 server input 的欄位在 `LandRegistrationError.decimalFields` 中回報，每個欄位一條路徑，例如 `server event PriceEvent.amount`。
 - **第一次送出時，** 前兩者都看不到的：未註冊就送出的 event、執行時放進 `Decimal` 的 `AnyCodable`，以及一般 `Codable` 型別（不列出欄位）裡的 `Decimal`。JSON 編碼與 MessagePack encoder 都拒絕它，land 結束（`.eventEncode` 或 `.responseEncode`）。限制：在 JSON 編碼中，這個拒絕是編碼前另外走的一遍，所以手寫的 `encode(to:)` 若攔下這個錯誤、改寫成別的形式，就會通過檢查，之後實際編碼寫出的是那個替代形式。
 
-`.serverOnly` 或 `@Internal` 欄位可以放 `Decimal`。resolver output 也可以，它不會上 wire；replay 時以錄製檔自己的 codec 讀回（[Replay 中的 resolver output](reevaluation.zh-TW.md#replay-中的-resolver-output)）。
+`.serverOnly` 欄位可以放 `Decimal`（`@Internal` 欄位不行：它的值是 `PlainData`）。resolver output 也可以，它不會上 wire；replay 時以錄製檔自己的 codec 讀回（[Replay 中的 resolver output](reevaluation.zh-TW.md#replay-中的-resolver-output)）。
 
-**編譯期。** `@StateNodeBuilder`（針對 `@Sync` 欄位）與 `@SnapshotConvertible`（針對每個 stored property）會拒絕宣告型別中寫出 `any P`、`Any`、`AnyObject` 或 protocol 組合（`P & Q`）的欄位，不論位於哪一層（`[String: Any]`、`(any P)?`、`Box<any P>`），`AnyHashable` 與 `AnyCodable` 則依名稱拒絕。這類欄位的內容無法檢查，同步也可能無法轉換。`@Internal` 欄位不同步，可以放任何東西。
+**編譯期。** `@StateNodeBuilder`（針對 `@Sync` 欄位）與 `@SnapshotConvertible`（針對每個 stored property）會拒絕宣告型別中寫出 `any P`、`Any`、`AnyObject` 或 protocol 組合（`P & Q`）的欄位，不論位於哪一層（`[String: Any]`、`(any P)?`、`Box<any P>`），`AnyHashable` 與 `AnyCodable` 則依名稱拒絕。這類欄位的內容無法檢查，同步也可能無法轉換。`@Internal` 欄位不同步；macro 不檢查它們，由編譯器要求它們是 `PlainData`。
 
 **抓不到的情況。** 未加 `any` 的 protocol 名稱（`var p: P`）、指向 existential 的 typealias，以及手寫 conformance 的型別，macro 都看不到。一般 struct（沒有 `@SnapshotConvertible`）在註冊時只能透過預設實例的值檢查，因此其宣告為 `Any` 或 `any P` 的 property，會被當成當時所存值的型別檢查（`var x: Any = 0` 會以 `Int` 通過）；Swift 的 reflection 拿不到宣告的型別。手寫 `toSnapshotValue()` 的儲存內容不會被檢查。這些情況由同步作為最後防線：第一個無法轉換的值會結束 land（[失敗處理](failure-handling.zh-TW.md)）。不經 host 或 registry 直接建立的 keeper 會在初始化時執行同一個檢查：未通過的 state 型別會讓初始化失敗，與 OnInitialize resolver 逾時相同。
 

@@ -42,9 +42,6 @@ struct DecimalSyncedRoot: StateNodeProtocol {
 
     @Sync(.serverOnly)
     var hidden: Decimal = 0
-
-    @Internal
-    var scratch: Decimal = 0
 }
 
 @StateNodeBuilder
@@ -54,9 +51,6 @@ struct DecimalHiddenRoot: StateNodeProtocol {
 
     @Sync(.serverOnly)
     var hidden: Decimal = 0
-
-    @Internal
-    var scratch: Decimal = 0
 }
 
 @Payload
@@ -131,7 +125,7 @@ private func registrationError<State: StateNodeProtocol>(_ definition: LandDefin
 
 @Suite("Decimal has no wire form: registration refuses it where it would reach the wire (#597)")
 struct DecimalRegistrationTests {
-    @Test("A synced Decimal behind a typealias is refused at each shape; a server-only or @Internal one is not")
+    @Test("A synced Decimal behind a typealias is refused at each shape; a server-only one is not (an @Internal one doesn't compile: Decimal isn't PlainData)")
     func syncedDecimalFields() {
         #expect(SyncRegistration.problems(DecimalSyncedRoot.self) == [
             .decimalField(path: "DecimalSyncedRoot.price"),

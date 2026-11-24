@@ -16,4 +16,6 @@ struct Mach: TurnMachine {
 }
 
 // A machine with a behavior can't be made without one.
-let core = TurnCore(Mach(), queueLimit: 8, maxReleasesPerBatch: 8, clock: SnippetClock())
+func make() {
+    _ = TurnCore(Mach(), queueLimit: 8, maxReleasesPerBatch: 8, clock: SnippetClock())
+}

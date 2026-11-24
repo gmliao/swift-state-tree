@@ -32,7 +32,7 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 
 ### 什麼算純資料
 
-`PlainData`（`Sources/SwiftStateTurns/PlainData.swift`）標示的值，不會呼叫到別的東西，也不會在持有者背後改變：任何深度都沒有 class、closure、actor、existential、lock 或 token。
+`PlainData`（`Sources/SwiftStateTurns/PlainData.swift`）標示的值，不會呼叫到別的東西，也不會在持有者背後改變：任何深度都沒有 class、closure、actor、existential、lock 或 token。`@PlainData` 型別的欄位可以是 `any P`，其中 protocol `P` refine `PlainData`（也可以是 optional、array 的元素或 dictionary 的 value）：所有遵循 `P` 的型別都是經過檢查的純資料，macro 會逐一檢查這類欄位。`any P` 本身不符合 `PlainData`，所以 `Internal<any P>`、`PlainPair<any P, Int>` 和 `where T: PlainData` 的泛型都會拒絕它。
 
 - **已符合的內建型別：** `Bool`、各種整數型別、`Double`、`Float`、`String`、`Character`、`Duration`、Foundation 的 `Data`（用 `Data(bytesNoCopy:count:deallocator:)` 搭配自訂 deallocator 建立的 `Data` 帶著 closure，實質上不是純資料；型別檢查看不出來，所以不要儲存這種值），以及 turn core 自己的值（`InputID`、`RequestID`、`Generation`、`TurnInstant`、`Abandonment`、`TurnError`）。
 - **容器在內容符合時符合：** `Optional`、`Array`、`ContiguousArray`、`Set`、`Dictionary`（key 與 value），以及 `Result`（成功與失敗）。
@@ -42,7 +42,9 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 |---|---|
 | `[PlayerID: Seat]`，兩者都是 `@PlainData` | 是 |
 | `Set<Int>`、`String?`、`Result<Int, TurnError>` | 是 |
+| `any Payload`、`[any Payload]`、`(any Payload)?`，其中 `protocol Payload: PlainData` | 是（作為 `@PlainData` 型別的欄位） |
 | `[String: Any]`、`Result<Int, any Error>` | 否：existential |
+| `Date`、`UUID`、`URL`、`Decimal` | 否：分別改存毫秒的 `Int64`（或讀 turn 的 `now`）、`String` 或專案自己的 ID 型別、`String`，以及最小單位的整數或 `String` |
 | `[() -> Void]` | 否：函式型別 |
 | `[PlayerID: Connection]`，`Connection` 是 class | 否：class |
 
@@ -50,13 +52,17 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 
 ### 自己的型別
 
-在 struct 或 enum 定義處加上 `@PlainData`。macro 會寫出 conformance，並為每個儲存屬性或 associated value 加一項檢查；該型別不是純資料就無法編譯。
+在 struct 或 enum 定義處加上 `@PlainData`。macro 會寫出 conformance，並為每個儲存屬性或 associated value 加一項檢查：檢查讀取儲存的值，值的型別不是純資料就無法編譯。因為讀的是值而不是寫出來的型別名稱，欄位型別的解析與宣告處相同，包括同一個外層型別裡巢狀的兄弟型別。
 - 每個儲存屬性都要有型別標註，macro 才能檢查。
 - 泛型型別需要 `where T: PlainData`。
-- `@PlainData` 加在 class 或 actor 上會被拒絕；型別是 class、actor、closure 或 existential 的欄位也會被拒絕。
-- 在 `SwiftStateTurns` 之外手寫 `: PlainData`（包括 `@retroactive`）會被 `scripts/lint-turns.sh` 拒絕：那樣會不經任何檢查就符合。
+- `@PlainData` 加在 class 或 actor 上會被拒絕；型別是 class、actor、closure，或未 refine `PlainData` 的 protocol 的 existential 的欄位，也會被拒絕。
+- `any P` 欄位單獨出現時會被檢查，作為 `Optional`、`Array`、`ContiguousArray` 的元素或 `Dictionary` 的 value 時也會。放在其他泛型型別裡（`Set<any P>`、`Result<Int, any P>`）時，macro 看不出該型別怎麼使用它，所以會拒絕。
+- protocol 可以 refine `PlainData`。遵循它的型別仍需加上 `@PlainData`：`PlainData` 要求 macro 寫出的檢查，所以沒有 macro 的 class 或 struct 無法編譯，除非手寫 `_plainDataCheck`，而 lint 會拒絕這種寫法。
+- 在 `SwiftStateTurns` 之外手寫 `: PlainData` 或 `_plainDataCheck`（包括 `@retroactive`）會被 plain-data lint（`Tests/SwiftStateTurnsMacrosTests/PlainDataLintTests.swift`，隨 `swift test` 執行）拒絕：那樣會不經任何檢查就符合。程式碼中任何對 `PlainDataCheck` 的使用（它的 alias 或 extension 可以加入 overload），以及名為 `SwiftStateTurns`、`Swift`、`Optional`、`Array`、`ContiguousArray` 或 `Dictionary` 的宣告也會被拒絕，因為它們可能改變 macro 的檢查解析到的對象。
 - 標準函式庫或 Foundation 的型別無法加上 macro。請改存 turn core 的值型別，例如用 `TurnInstant` 取代 `ContinuousClock.Instant`。
 - 本 repository 其他模組的型別，在它自己的模組、它的定義處加上 `@PlainData`，絕不在別處用 extension 加。land 的狀態與 transport 保存的 ID 和值都已這樣標註：`SessionID`、`PlayerID`、`ClientID`、`EventTarget`、`StateSnapshot`、`SnapshotValue` 和 `MessagePackValue`。machine 可以直接儲存它們。
+- **限制。** macro 與 lint 是用來抓錯誤的，不是安全邊界。Swift 沒有 sealed protocol，所以刻意寫來繞過它們的程式碼（手寫 witness、alias 或 extension 的技巧、被 lint 當成核心讀取的 symlink 原始碼目錄）可以讓非純資料的型別符合 `PlainData`，代價是 replay 的保真度。這類繞過是已知限制，不是檢查承諾要堵住的漏洞。有兩種正當的寫法會被拒絕而不是被檢查：欄位型別用到外層型別的泛型參數（`struct Outer<T> { @PlainData struct Inner { var value: T } }`，#782），以及基本名稱相同的 enum case（`case item(count: Int)` 與 `case item(label: String)` 並存；請給每個 case 不同的名稱）。
+- 在 `Optional`、`Array`、`ContiguousArray` 或 `Dictionary` 的 value 裡，請在欄位宣告處直接寫出 `any P`，不要經過 alias：macro 是靠讀到的 `any` 找出 existential，所以 `typealias PayloadValue = any Payload` 用在型別為 `PayloadValue` 的欄位可以，用在 `PayloadValue?` 或 `[PayloadValue]` 則無法編譯。
 
 下面的例子中，替第一個 `Room` 加上 `@PlainData` 會被拒絕：macro 會指出其中不是純資料的欄位。第二個可以編譯。
 
@@ -97,10 +103,11 @@ struct Room {
 
 - **一開始就固定。** 狀態機把它的型別宣告為 `Behavior`（預設是 `Void`，也就是沒有）。adopter 把值傳給 `TurnCore(machine:behavior:…)`，只傳一次。有 behavior 的狀態機，不給 behavior 就建不出來。
 - **每個 step 都讀得到。** `turn.behavior` 在 `handle`、`handleAbandoned`、`handleLateResult` 和 `answer` 裡都讀得到；follow-up 和 timer 的 step 經由 `handle`，也一樣。在 `handleMail` 裡，`MailTurn` 有同樣的 `behavior`。
-- **從不寫入。** behavior 在狀態機的整個生命期內固定不變；所有改變都進 model（沒有 `become`）。對 `turn.behavior` 賦值無法編譯。
+- **從不寫入。** behavior 在狀態機的整個生命期內固定不變；所有改變都進 model（沒有 `become`）。對 `turn.behavior` 賦值無法編譯，但它持有的參照仍可能改變（見下方的限制）。
 - **它的函式能做什麼。** 它們在 step 裡執行，所以是同步的、不碰 model 以外的任何東西，而且是確定性的：不自己讀時鐘、不用沒有種子的亂數、不做 I/O。需要等待或做 I/O 的事以 effect 送出，結果再以 input 回來。
+- **不會被記錄。** replay 用同一份定義和設定建出同一個 behavior；換了 behavior，replay 的就是另一個狀態機，而紀錄裡看不出來。
 
-限制：編譯器只檢查函式是同步的。另外兩條規則由 adopter 負責。
+限制：編譯器只檢查函式是同步的。另外兩條規則由 adopter 負責。編譯器也不會阻止 behavior 持有帶可變狀態的參照（`Sendable` class，例如持有 `Mutex` 的 class，或捕獲這類參照的 closure）：`turn.behavior.limit = 3` 會被拒絕，但 `turn.behavior.box.bump()` 可以編譯。所以 behavior 只放值和作用在這些值上的函式；step 會改變的東西都放進 model。
 
 API：`TurnMachine.Behavior`、`Turn.behavior`、`MailTurn.behavior`、`TurnCore.init(machine:behavior:queueLimit:maxReleasesPerBatch:clock:mailboxCapacity:)`。
 

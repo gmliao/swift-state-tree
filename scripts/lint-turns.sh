@@ -3,11 +3,11 @@
 # Per Swift file under Sources/, Tests/ and Examples/ (comments and string literals ignored; a
 # declaration whose header spans several lines is read as one):
 #
-#   plain-data   no hand-written `PlainData` conformance outside Sources/SwiftStateTurns: a type,
-#                extension or protocol that lists PlainData among its conformances or refines it,
-#                or a typealias that names it (a class could conform through either).
-#                `@PlainData` writes the conformance and checks every field; a hand-written one
-#                checks nothing. A constraint (`where T: PlainData`, `<T: PlainData>`) isn't one.
+#   plain-data   moved to a test on SwiftSyntax's tokens: Tests/SwiftStateTurnsMacrosTests/
+#                PlainDataLintTests.swift (no hand-written `_plainDataCheck` or PlainData
+#                conformance outside Sources/SwiftStateTurns, no PlainDataCheck in code, no
+#                declaration named SwiftStateTurns, Swift or a standard wrapper). Its `lint-allow`
+#                markers are still validated and counted here, one per line.
 #   let-core     a type that conforms to TurnActor (in its declaration or in an extension, in any
 #                file) declares `let core` as a member of its declaration, and no `var core`
 #                member anywhere (the protocol can't require a stored `let`).
@@ -55,7 +55,7 @@ Sources/SwiftStateTreeTransport/TransportAdapter.swift 3 the adapter submits syn
 
 # Test files that carry allow markers, with their counts.
 ALLOW_MARKERS='
-Tests/SwiftStateTurnsTests/Support/DemoActor.swift 5 the runtime stops (reentry, a replaced core, a class machine)
+Tests/SwiftStateTurnsTests/Support/DemoActor.swift 6 the runtime stops (reentry, a replaced core, a class machine and its checks)
 '
 
 RULES='plain-data|let-core|machine-file|isolated'
@@ -75,6 +75,9 @@ strip() {  # path
         rule = marker; sub(/:.*/, "", rule)
         reason = marker; if (index(reason, ":") > 0) { sub(/^[^:]*:[ \t]*/, "", reason) } else { reason = "" }
         if (rule ~ ("^(" rules ")$") && length(reason) >= 10) { allow = rule } else { allow = "!bad" }
+        # One marker per line: a second would be honored by PlainDataLintTests unseen by the count.
+        tail = substr(line, RSTART + 14)
+        if (index(tail, "// lint-allow:") > 0) allow = "!two"
       }
       if (inblock) {
         if (index(line, "\"\"\"") > 0) { inblock = 0 }
@@ -94,7 +97,8 @@ strip() {  # path
         if (substr(line, i, 2) == "/*") {
           j = index(substr(line, i + 2), "*/")
           if (j == 0) break
-          i = i + 2 + j + 1; continue
+          # A space, so a comment between two tokens can not glue them into one.
+          out = out " "; i = i + 2 + j + 1; continue
         }
         out = out c; i++
       }
@@ -113,8 +117,10 @@ headers() {
       if (pending) print hpath "\t" hline "\t" hallow "\t" hkind "\t" hname "\t" htext
       pending = 0
     }
+    # The code is everything after the third tab: a source line may hold tabs of its own.
+    function rest(n,   t, i) { t = $0; for (i = 1; i < n; i++) sub(/^[^\t]*\t/, "", t); return t }
     {
-      path = $1; code = $4
+      path = $1; code = rest(4)
       if (pending && path != hpath) flush()
       if (pending) {
         if (hkind == "typealias") {
@@ -161,6 +167,8 @@ lint() {  # root
   # shellcheck disable=SC2016 # awk program, not shell
   LINT_ISOLATED="$ISOLATED_BOUNDARIES" LINT_MARKERS="$ALLOW_MARKERS" awk -F'\t' '
     function core(p) { return p ~ /^Sources\/SwiftStateTurns(Macros)?\// }
+    # The code (or header text) is everything after its field: a source line may hold tabs.
+    function rest(n,   t, i) { t = $0; for (i = 1; i < n; i++) sub(/^[^\t]*\t/, "", t); return t }
     function allowed(list, rule) { return index("," list ",", "," rule ",") > 0 }
     function last(n) { sub(/.*\./, "", n); return n }
     function word(text, w) { return text ~ ("(^|[^A-Za-z0-9_])" w "([^A-Za-z0-9_]|$)") }
@@ -186,29 +194,10 @@ lint() {  # root
     FNR == 1 { pass++ }
     # Pass 1: the headers.
     pass == 1 {
-      path = $1; n = $2; allow = $3; kind = $4; name = $5; text = $6
+      path = $1; n = $2; allow = $3; kind = $4; name = $5; text = rest(6)
       if (core(path)) next
-      if (kind == "typealias") {
-        rhs = text; sub(/^[^=]*=/, "", rhs)
-        if (word(rhs, "PlainData") && !allowed(allow, "plain-data"))
-          print path ":" n ": [plain-data] a typealias for PlainData lets a type conform without @PlainData"
-        next
-      }
+      if (kind == "typealias") next
       list = conformances(text)
-      # On a protocol, `where Self: PlainData` refines PlainData just as `: PlainData` does.
-      if (kind == "protocol") {
-        wh = text; sub(/\{.*/, "", wh)
-        if (match(wh, /[ \t]where[ \t]/)) {
-          wh = substr(wh, RSTART + RLENGTH)
-          if (wh ~ /(^|[^A-Za-z0-9_])Self[ \t]*:[^,]*(^|[^A-Za-z0-9_])PlainData([^A-Za-z0-9_]|$)/) list = list ", PlainData"
-        }
-      }
-      if (word(list, "PlainData") && !allowed(allow, "plain-data")) {
-        if (kind == "protocol")
-          print path ":" n ": [plain-data] a protocol refining PlainData lets a type conform without @PlainData"
-        else
-          print path ":" n ": [plain-data] a hand-written PlainData conformance; use @PlainData"
-      }
       if (word(list, "TurnActor")) {
         actors[last(name)] = 1
         # A qualified extension names its type; a primary declaration names it bare.
@@ -221,10 +210,12 @@ lint() {  # root
     }
     # Pass 2: the corpus, line by line, with brace depth per file.
     pass == 2 {
-      path = $1; n = $2; allow = $3; code = $4
+      path = $1; n = $2; allow = $3; code = rest(4)
       if (path != lastPath) { depth = 0; body = 0; pendingName = ""; lastPath = path }
       if (allow == "!bad") {
         print path ":" n ": [allow] a lint-allow marker names a rule (" RULES ") and a reason of at least ten characters"
+      } else if (allow == "!two") {
+        print path ":" n ": [allow] one lint-allow marker per line"
       } else if (allow != "") {
         if (path !~ /^Tests\//) print path ":" n ": [allow] lint-allow markers are accepted only under Tests/"
         else markers[path]++
@@ -303,7 +294,8 @@ lint() {  # root
   # shellcheck disable=SC2016 # awk program, not shell
   awk -F'\t' '
     $3 != "" && index("," $3 ",", ",isolated,") > 0 { next }
-    $4 ~ /(^|[^A-Za-z0-9_])assumeIsolated([^A-Za-z0-9_]|$)/ { count[$1]++ }
+    { code = $0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t/, "", code) }
+    code ~ /(^|[^A-Za-z0-9_])assumeIsolated([^A-Za-z0-9_]|$)/ { count[$1]++ }
     END { for (p in count) print p " " count[p] }' "$corpus" > "$findings.counts"
   # shellcheck disable=SC2016 # awk program, not shell
   LINT_COUNTS="$(cat "$findings.counts")" LINT_LISTED="$ISOLATED_BOUNDARIES" awk '
@@ -428,6 +420,13 @@ struct Box<T: PlainData>: Sendable where T: PlainData {}
 func use<T>(_ value: T) where T: PlainData {}
 protocol Constrained where Self: Sendable {}
 typealias Pair = PlainPair<Int, Int>
+// A protocol may refine PlainData: its conformers still need the requirement.
+protocol Bridge: Sendable, PlainData {}
+protocol WhereBridge where Self: PlainData {}
+protocol WhereSplit
+    where Self: Sendable & PlainData
+{
+}
 actor Owner:
     TurnActor
 {
@@ -474,8 +473,9 @@ EOF
     echo '    let unused = 0'
     echo '}'
     echo 'final class ClassMachine: TurnMachine, PlainData {} // lint-allow: turns-plain-data: the class-machine stop'
+    echo 'extension ClassMachine { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: its requirement'
     local extra
-    extra=$(( ${markers##* } - 3 ))
+    extra=$(( ${markers##* } - 4 ))
     for _ in $(seq "$extra"); do echo 'let a = 0 // lint-allow: turns-isolated: fills the listed marker count'; done
   } > "$dir/${markers%% *}"
   cat > "$dir/Sources/SwiftStateTurns/Core.swift" <<'EOF'
@@ -489,20 +489,20 @@ EOF
   fi
   # Failing fixture: one hit per case.
   cat > "$dir/Sources/App/Bad.swift" <<'EOF'
-struct Plain: PlainData { var n: Int }
-extension Other: Hashable, PlainData {}
+// (plain-data: PlainDataLintTests)
+// (plain-data: PlainDataLintTests)
 actor VarOwner: TurnActor {
     var core = makeCore()
 }
-protocol Bridge: Sendable, PlainData {}
-typealias Alias = PlainData
-struct Wrapped:
-    Hashable,
-    PlainData
-{
-}
-typealias Joined = Sendable &
-    PlainData
+// (the refining protocols are in the passing fixture)
+// (plain-data: PlainDataLintTests)
+// (plain-data: PlainDataLintTests)
+// (plain-data: PlainDataLintTests)
+// (plain-data: PlainDataLintTests)
+// (plain-data: PlainDataLintTests)
+// (plain-data: PlainDataLintTests)
+// (plain-data: PlainDataLintTests)
+// (plain-data: PlainDataLintTests)
 actor LocalOnly: TurnActor {
     func f() { let core = makeCore(); _ = core }
 }
@@ -510,11 +510,11 @@ actor Elsewhere {
     var core = makeCore()
 }
 let x = 0 // lint-allow: turns-isolated: a marker outside Tests
-protocol WhereBridge where Self: PlainData {}
-protocol WhereSplit
-    where Self: Sendable & PlainData
-{
-}
+//
+//
+//
+//
+//
 enum A {
     actor Owner: TurnActor {
         let core = makeCore()
@@ -545,6 +545,9 @@ actor MailboxValue: TurnActor {
 extension MailboxValue {
     nonisolated var mailbox2: Int { 0 }
 }
+actor TabOwner: TurnActor {
+	var core = makeCore()
+}
 EOF
   cat > "$dir/Sources/App/BadConformance.swift" <<'EOF'
 extension Elsewhere: TurnActor {}
@@ -566,6 +569,7 @@ EOF
   cat > "$dir/Tests/Marked.swift" <<'EOF'
 let y = 0 // lint-allow: turns-isolated:
 let z = 0 // lint-allow: turns-isolated: unlisted file, but a reason
+let w = 0 // lint-allow: turns-isolated: the first reason // lint-allow: turns-plain-data: a hidden second
 EOF
   echo 'y.assumeIsolated { _ in }' > "$dir/Sources/App/Calls.swift"
   cp "$dir/Sources/SwiftStateTurns/TurnCore.swift" "$dir/GoodTurnCore.swift"
@@ -610,26 +614,20 @@ public final class TurnCore<M: TurnMachine> {
 EOF
   out="$(lint "$dir" 2>&1)" && { echo "self-test: the failing fixture passed"; return 1; }
   local want wants
-  wants='Bad.swift:1: [plain-data] a hand-written
-Bad.swift:2: [plain-data] a hand-written
-Bad.swift:3: [let-core] a TurnActor declares
+  wants='Bad.swift:3: [let-core] a TurnActor declares
 Bad.swift:4: [let-core] a TurnActor'"'"'s core is a stored let
-Bad.swift:6: [plain-data] a protocol refining
-Bad.swift:7: [plain-data] a typealias
-Bad.swift:8: [plain-data] a hand-written
-Bad.swift:13: [plain-data] a typealias
 Bad.swift:15: [let-core] a TurnActor declares
 Bad.swift:18: [let-core] a TurnActor declares
 Bad.swift:19: [let-core] a TurnActor'"'"'s core is a stored let
 Bad.swift:21: [allow] lint-allow markers are accepted only under Tests/
-Bad.swift:22: [plain-data] a protocol refining
-Bad.swift:23: [plain-data] a protocol refining
 Bad.swift:33: [let-core] a TurnActor declares
 Bad.swift:37: [let-core] a TurnActor'"'"'s core is a stored let
 Bad.swift:41: [let-mailbox] a TurnActor'"'"'s mailbox is a stored nonisolated let, not a var
 Bad.swift:45: [let-mailbox] a TurnActor'"'"'s mailbox is a nonisolated let
 Bad.swift:47: [let-mailbox] a TurnActor'"'"'s mailbox is assigned from core.mailbox only
 Bad.swift:52: [let-mailbox] a TurnActor'"'"'s mailbox is a nonisolated let
+Bad.swift:57: [let-core] a TurnActor declares
+Bad.swift:58: [let-core] a TurnActor'"'"'s core is a stored let
 BadMachine.swift:2: [machine-file]
 BadMachine.swift:4: [machine-file]
 BadMachine.swift:5: [machine-file]
@@ -638,6 +636,7 @@ BadMachine.swift:7: [machine-file]
 BadMachine.swift:9: [machine-file]
 BadMachine.swift:12: [machine-file]
 Marked.swift:1: [allow] a lint-allow marker names a rule
+Marked.swift:3: [allow] one lint-allow marker per line
 Tests/Marked.swift: [allow] 1 marker(s), 0 listed
 Calls.swift: [isolated]
 TurnCore.swift:2: [unchecked-state] a stored var

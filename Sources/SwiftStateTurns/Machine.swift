@@ -30,7 +30,11 @@ public protocol TurnMachine: Sendable {
     /// model (there is no `become`). Its functions run inside a step, so they are synchronous,
     /// touch nothing outside the model, and are deterministic: anything that waits or does I/O
     /// goes out as an effect, and its result comes back as an input. Only the first rule is
-    /// checked by the compiler. Default: none (`Void`).
+    /// checked by the compiler, and it doesn't stop a behavior from holding a reference with
+    /// mutable state (a `Sendable` class, such as one that owns a `Mutex`): keep it to values and
+    /// functions over them. It isn't recorded: a replay builds the same behavior from the same
+    /// definition and config, and a different behavior replays a different machine; nothing in
+    /// the record shows it. Default: none (`Void`).
     associatedtype Behavior: Sendable = Void
 
     /// How `input` is admitted. Default: normal, with no hold and no scope.

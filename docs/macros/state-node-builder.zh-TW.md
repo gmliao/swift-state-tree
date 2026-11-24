@@ -34,7 +34,7 @@ struct GameState: StateNodeProtocol {
     var hiddenDeck: [Card] = []
     
     @Internal
-    var lastProcessedTimestamp: Date = Date()
+    var lastProcessedTimestamp: Int64 = 0 // 毫秒
 }
 ```
 

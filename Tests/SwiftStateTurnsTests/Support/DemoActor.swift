@@ -311,6 +311,8 @@ final class ClassMachine: TurnMachine, PlainData { // lint-allow: turns-plain-da
     typealias Key = Int
     typealias Reply = Int
 
+    static func _plainDataCheck() {} // lint-allow: turns-plain-data: the requirement only @PlainData writes, here by hand
+
     init() {}
 
     func handle(_ input: Int, _ turn: inout Turn<ClassMachine>) {}

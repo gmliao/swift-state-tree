@@ -8,8 +8,9 @@ import Foundation
 /// `@SnapshotConvertible`). Registration refuses what their metadata shows past the syntax (a
 /// typealias): a synced field is a `SyncRegistrationError.Problem.decimalField`, a payload field
 /// is in `LandRegistrationError.decimalFields`. What neither sees fails at the first send: the
-/// JSON encodings and the MessagePack encoders refuse a `Decimal`. A `.serverOnly` or
-/// `@Internal` state field, and a resolver output, which never reaches the wire, may hold one.
+/// JSON encodings and the MessagePack encoders refuse a `Decimal`. A `.serverOnly` state field and
+/// a resolver output, which never reach the wire, may hold one. An `@Internal` field can't: its
+/// value is `PlainData` (#767), and `Decimal` isn't.
 enum DecimalFields {
     /// What to use instead, in every refusal.
     static let advice = "Decimal has no wire form; store an integer of the smallest unit (cents) or a String"

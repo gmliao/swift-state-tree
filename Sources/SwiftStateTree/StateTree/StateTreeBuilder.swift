@@ -18,14 +18,15 @@
 ///     var hiddenDeck: [Card] = []
 ///     
 ///     @Internal
-///     var lastProcessedTimestamp: Date = Date()
+///     var lastProcessedTimestamp: Int64 = 0 // milliseconds
 /// }
 /// ```
 ///
 /// An `@Sync` property whose declared type can hold a value of any type is a compile error
 /// (#535): `any P`, `Any`, `AnyObject` or a composition `P & Q` at any depth (`[String: Any]`,
 /// `(any P)?`), and `AnyHashable` and `AnyCodable` by name. Use a concrete type, or an enum with
-/// a case for each kind of value. `@Internal` properties may hold anything. Not caught here: a
+/// a case for each kind of value. `@Internal` properties aren't synced; the macro doesn't inspect
+/// them, and the compiler holds them to `PlainData`. Not caught here: a
 /// protocol spelled bare, a typealias that names an existential, and a type that conforms to
 /// `StateNodeProtocol` by hand; registration checks what a default instance holds, and a value
 /// it can't see ends the land at its first conversion that throws. See
