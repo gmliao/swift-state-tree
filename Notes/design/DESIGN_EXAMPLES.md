@@ -227,7 +227,7 @@ struct GameStateTree: StateTreeProtocol {
     
     // 伺服器內部使用的暫存值
     @Internal
-    var lastProcessedTimestamp: Date = Date()
+    var lastProcessedTimestamp: Int64 = 0 // 毫秒
     
     // 計算屬性：自動跳過驗證
     var totalPlayers: Int {

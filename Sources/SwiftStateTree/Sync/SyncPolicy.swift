@@ -214,7 +214,8 @@ public struct Sync<Value: Sendable>: Sendable {
 /// - `@Internal`: The sync engine doesn't need to know about this field at all; purely for server internal use
 ///
 /// Its value is `PlainData` (#767): no class, closure, existential or `Any`, so a copy of the state
-/// copies the field too, and replay can't diverge through a shared reference. A reference the
+/// copies the value's plain contents, and replay can't diverge through a shared reference (one
+/// exception: a `Data(bytesNoCopy:…)` with a custom deallocator, which the turns guide names). A reference the
 /// land needs, such as a cache or a service handle, goes in the land's services.
 @propertyWrapper
 public struct Internal<Value: PlainData & Sendable>: Sendable {

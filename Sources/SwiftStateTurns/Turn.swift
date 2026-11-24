@@ -16,7 +16,9 @@ public struct Turn<M: TurnMachine>: ~Copyable {
 
     /// The machine's behavior (`TurnMachine.Behavior`): its handlers and fixed configuration,
     /// as given to `TurnCore.init(machine:behavior:…)`. Read-only: a behavior is fixed for the
-    /// machine's lifetime, and every change goes to the model (there is no `become`).
+    /// machine's lifetime, and every change goes to the model (there is no `become`). The
+    /// property is read-only; a reference the behavior holds (a `Sendable` class) can still
+    /// change, so keep it to values and functions over them.
     @inlinable public var behavior: M.Behavior { core.behavior }
 
     /// The core's clock, read at most once per batch: the first use reads it, later uses in

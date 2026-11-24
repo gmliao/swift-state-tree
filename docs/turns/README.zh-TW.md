@@ -32,7 +32,7 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 
 ### 什麼算純資料
 
-`PlainData`（`Sources/SwiftStateTurns/PlainData.swift`）標示的值，不會呼叫到別的東西，也不會在持有者背後改變：任何深度都沒有 class、closure、actor、existential、lock 或 token。唯一允許的 existential 是 `any P`，其中 protocol `P` refine `PlainData`：所有遵循 `P` 的型別都是經過檢查的純資料。
+`PlainData`（`Sources/SwiftStateTurns/PlainData.swift`）標示的值，不會呼叫到別的東西，也不會在持有者背後改變：任何深度都沒有 class、closure、actor、existential、lock 或 token。`@PlainData` 型別的欄位可以是 `any P`，其中 protocol `P` refine `PlainData`（也可以是 optional、array 的元素或 dictionary 的 value）：所有遵循 `P` 的型別都是經過檢查的純資料，macro 會逐一檢查這類欄位。`any P` 本身不符合 `PlainData`，所以 `Internal<any P>`、`PlainPair<any P, Int>` 和 `where T: PlainData` 的泛型都會拒絕它。
 
 - **已符合的內建型別：** `Bool`、各種整數型別、`Double`、`Float`、`String`、`Character`、`Duration`、Foundation 的 `Data`（用 `Data(bytesNoCopy:count:deallocator:)` 搭配自訂 deallocator 建立的 `Data` 帶著 closure，實質上不是純資料；型別檢查看不出來，所以不要儲存這種值），以及 turn core 自己的值（`InputID`、`RequestID`、`Generation`、`TurnInstant`、`Abandonment`、`TurnError`）。
 - **容器在內容符合時符合：** `Optional`、`Array`、`ContiguousArray`、`Set`、`Dictionary`（key 與 value），以及 `Result`（成功與失敗）。
@@ -101,11 +101,11 @@ struct Room {
 
 - **一開始就固定。** 狀態機把它的型別宣告為 `Behavior`（預設是 `Void`，也就是沒有）。adopter 把值傳給 `TurnCore(machine:behavior:…)`，只傳一次。有 behavior 的狀態機，不給 behavior 就建不出來。
 - **每個 step 都讀得到。** `turn.behavior` 在 `handle`、`handleAbandoned`、`handleLateResult` 和 `answer` 裡都讀得到；follow-up 和 timer 的 step 經由 `handle`，也一樣。在 `handleMail` 裡，`MailTurn` 有同樣的 `behavior`。
-- **從不寫入。** behavior 在狀態機的整個生命期內固定不變；所有改變都進 model（沒有 `become`）。對 `turn.behavior` 賦值無法編譯。
+- **從不寫入。** behavior 在狀態機的整個生命期內固定不變；所有改變都進 model（沒有 `become`）。對 `turn.behavior` 賦值無法編譯，但它持有的參照仍可能改變（見下方的限制）。
 - **它的函式能做什麼。** 它們在 step 裡執行，所以是同步的、不碰 model 以外的任何東西，而且是確定性的：不自己讀時鐘、不用沒有種子的亂數、不做 I/O。需要等待或做 I/O 的事以 effect 送出，結果再以 input 回來。
 - **不會被記錄。** replay 用同一份定義和設定建出同一個 behavior；換了 behavior，replay 的就是另一個狀態機，而紀錄裡看不出來。
 
-限制：編譯器只檢查函式是同步的。另外兩條規則由 adopter 負責。編譯器也不會阻止 behavior 持有帶可變狀態的參照（`Sendable` class、`Mutex`，或捕獲這類參照的 closure）：`turn.behavior.limit = 3` 會被拒絕，但 `turn.behavior.box.bump()` 可以編譯。所以 behavior 只放值和作用在這些值上的函式；step 會改變的東西都放進 model。
+限制：編譯器只檢查函式是同步的。另外兩條規則由 adopter 負責。編譯器也不會阻止 behavior 持有帶可變狀態的參照（`Sendable` class，例如持有 `Mutex` 的 class，或捕獲這類參照的 closure）：`turn.behavior.limit = 3` 會被拒絕，但 `turn.behavior.box.bump()` 可以編譯。所以 behavior 只放值和作用在這些值上的函式；step 會改變的東西都放進 model。
 
 API：`TurnMachine.Behavior`、`Turn.behavior`、`MailTurn.behavior`、`TurnCore.init(machine:behavior:queueLimit:maxReleasesPerBatch:clock:mailboxCapacity:)`。
 
