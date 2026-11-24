@@ -1,6 +1,6 @@
 # PlainData P3/4-0: one field walk for both macro targets
 
-**Status:** rev 1, plan only. Stacked on #772 (`feat/plaindata-p1-p2` @ 06ce5f99). After #772 merges, `main` is merged into this branch; the branch is never force-pushed. A slice of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§4), added so that P3 (payloads) and P4 (`State`) can run in parallel: it lands what both of them need, once.
+**Status:** rev 2, plan only. Rev 1 (2af72dd2) was NOT GO on one must-fix, §2.0, which waits for the maintainer; the rest of the review is folded in. The branch sits on #772's head and is merged forward: #772's fix round (3cd3a65c) is merged in now, and `main` will be merged in after #772 merges. The branch is never force-pushed. A slice of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§4), added so that P3 (payloads) and P4 (`State`) can run in parallel: it lands what both of them need, once.
 
 ## 1. Why a slice before P3 and P4
 
@@ -8,10 +8,18 @@ P3 makes `@Payload` emit `_plainDataCheck`, and P4 makes `@StateNodeBuilder` emi
 
 ## 2. Scope
 
+### 2.0 How an expansion in a `SwiftStateTree`-only file names `PlainData` (open: the maintainer decides)
+
+P3 and P4 put `_plainDataCheck` into `@Payload` and `@StateNodeBuilder`. A user file that imports only `SwiftStateTree` then holds an expansion that names `SwiftStateTurns.PlainData` and `SwiftStateTurns.PlainDataCheck`. `SwiftStateTree` doesn't re-export `SwiftStateTurns`, so that file fails with "cannot find type" (Review's probe). The same gap makes a user add `import SwiftStateTurns` for `@PlainData` on their own types today (docs/core/sync.md). There are two options:
+- **(a)** `@_exported import SwiftStateTurns` in `SwiftStateTree`. Every `SwiftStateTree` user sees the turn core's public names, and expansions keep naming `SwiftStateTurns.PlainDataCheck`, as #772's do.
+- **(b)** Narrow typealiases plus a `@PlainData` macro declaration in `SwiftStateTree`. The expansions in `SwiftStateTree`'s macros would name `SwiftStateTree.…` aliases instead. Two declarations of one macro would point at one implementation.
+
+Main recommends (a). This slice applies the decision. It is the only part of the slice that changes a public import, so it goes in its own commit, and its Public API entry is in §5.
+
 ### 2.1 One walk, used by both macro targets
 
 - A new regular target, `PlainDataMacroSupport` (`Sources/PlainDataMacroSupport`), depending on `SwiftSyntax`, `SwiftDiagnostics` and `SwiftSyntaxMacros`. Both `SwiftStateTurnsMacros` and `SwiftStateTreeMacros` depend on it. It isn't a product.
-- It takes from `PlainDataMacro.swift`, moved unchanged:
+- It takes from `PlainDataMacro.swift`, moved unchanged as #772 merges it, with #772's fixes kept, not redone: the identity check for wrappers spelled by name, the module-qualified names, the witness access from an enclosing extension, and the closure form of the existential check:
   - the member walk (`checkLines`, including `#if` clauses, `var a, b: T`, computed and observed properties);
   - the type walk (`checks`, `pair`: existentials inside `Optional`, `Array`, `ContiguousArray` and a `Dictionary` value);
   - `RefusedTypeVisitor`, `foundationReplacement` and the diagnostics.
@@ -37,13 +45,17 @@ Refusing `Date`, `UUID` and `URL` in payloads, server inputs, resolver outputs a
 
 A syntactic macro can't see whether a field's type has `@PlainData`. The compiler sees it when it checks the emitted `PlainDataCheck.field(T.self)`, and today says only "requires that 'T' conform to 'PlainData'". Two changes give the error a fix and a field name:
 - `PlainDataCheck` gains an unconstrained overload, `@available(*, unavailable, message: …)`. Overload resolution picks the constrained `field<T: PlainData>` whenever it applies, so the unavailable one is chosen only for a type that isn't `PlainData`, and its message is the error. Proposed message: "this field's type isn't PlainData: add @PlainData to your struct or enum; a class, closure or Any can't be stored".
-- Each emitted check passes the field's name: `PlainDataCheck.field((Position).self, "position")`. The error sits on that line of the expansion, so the field is named where the error points. An associated value passes `"case.index"`.
+- Each emitted check passes the field's name: `SwiftStateTurns.PlainDataCheck.field((Position).self, "position")`. The error sits on that line of the expansion, so the field is named where the error points. An associated value passes `"case.index"`.
 
 Probe (one file, `swiftc -typecheck -swift-version 6`): the constrained overload wins for `Int`, a `PlainData` struct and `[PlainData struct]`, which compile. The unavailable message is the error for a nested struct without the conformance, `[that struct]`, a class, and an unconstrained generic `T`. The results are the same on Swift 6.4.2 (macOS) and 6.2.4 (`swift:6.2.4-noble`). The probe doesn't cover the error's position inside a macro expansion. The must-not-compile snippets below pin that.
 
 `existential` keeps its current error ("to closure result type 'any PlainData'"). Its failure is a closure conversion, not overload resolution, so the same trick doesn't apply. That error is already specific to `any P`.
 
-The must-not-compile snippets whose `expect-error` matches the old field text move to the new message where the failing check is a `field` call. Those are `internal-not-plain`, `internal-decimal`, `turns/plaindata-withdraw-token`, `turns/plaindata-class-in-dictionary` and `turns/plaindata-clock-instant`, each confirmed when it runs, since `@Internal`'s constraint isn't a `field` call. Snippets that fail elsewhere keep theirs: a machine without `PlainData`, a class through a refining protocol, an `any NotPlain`.
+The must-not-compile snippets whose `expect-error` matches the old field text move to the new message where the failing check is a `field` call: `turns/plaindata-withdraw-token`, `turns/plaindata-class-in-dictionary`, `turns/plaindata-clock-instant` and #772's `turns/plaindata-namesake-check`, each confirmed when it runs. Snippets that fail elsewhere keep theirs:
+- `internal-not-plain` and `internal-decimal`: `Internal`'s generic constraint, not a `field` call;
+- a machine without `PlainData`, and a class through a refining protocol;
+- an `any NotPlain`;
+- the shadowed wrapper, which fails at the `same` check.
 
 ### 2.4 `@PlainData` on the DeterministicMath types
 
@@ -66,7 +78,7 @@ Several already carry `@SnapshotConvertible`, and the two extension macros sit s
 ## 3. Tests and mutants
 
 Holds and events, never timing. Nothing here is concurrent.
-- The `SwiftStateTurnsMacrosTests` expansions stay green with one change: the emitted lines gain the name argument. That is the only expected diff, and the test diff shows it.
+- The `SwiftStateTurnsMacrosTests` expansions stay green with one change: the `field` lines gain the name argument, on top of what #772's final round emits (module-qualified names, `same` lines, the existential closure form). That is the only expected diff, and the test diff shows it.
 - The `SwiftStateTreeMacros` tests stay green unchanged, apart from the `Decimal` message text.
 - New compile test: `PlainDataCheck.field(T.self)` for each DeterministicMath type from §2.4, in `SwiftStateTreeDeterministicMathTests`.
 - New must-not-compile snippets:
@@ -77,6 +89,13 @@ Holds and events, never timing. Nothing here is concurrent.
   - (b) the name argument dropped from the emitted line: the expansion tests fail;
   - (c) `@PlainData` removed from `IVec2`: the compile test fails;
   - (d) `AnyCodable` dropped from the classifier's names: the existing `refusedSyncFieldType` tests fail.
+
+## 3a. The lint and the new paths
+
+`scripts/lint-turns.sh` refuses any code use of `_plainDataCheck` outside `Sources/SwiftStateTurns/` and `Sources/SwiftStateTurnsMacros/` (#772). It strips comments and string literals first. For the paths this slice and P3/P4 add:
+- **`Sources/PlainDataMacroSupport/`.** The walk names `_plainDataCheck` only inside string literals, the generated code, so it needs no exemption. If a check of its own ever needs the word in code, the exemption is added then, with the path in the lint's core list.
+- **`Sources/SwiftStateTreeMacros/`.** The same: emission is in string literals.
+- **The macro declarations in `Sources/SwiftStateTree/`.** In P3 and P4, `@Payload` and `@StateNodeBuilder` gain `names: named(_plainDataCheck)` in their `@attached(…)` declarations. That is code, and the lint would refuse it. P3 (the first of the two to land) adds one narrow exemption: `named(_plainDataCheck)` inside an `@attached(` attribute, anywhere under `Sources/`. A role declaration names the member; it writes nothing. A self-test pins it: allowed in `@attached(extension, names: named(_plainDataCheck))`, refused in a `func`. Under option (b) of §2.0, the `@PlainData` declaration in `SwiftStateTree` needs the same exemption, so it lands with this slice instead.
 
 ## 4. Verification
 
@@ -90,7 +109,7 @@ A/B: none. The slice is compile time only: `_plainDataCheck` is never called, an
 
 ## 5. Public API
 
-All additive and source compatible:
+§2.0's decision adds an entry: under (a), `SwiftStateTree` re-exports `SwiftStateTurns` (additive, but every public name of the turn core becomes visible to `SwiftStateTree` users, and a user type that shares a name with one of them becomes ambiguous where both are visible); under (b), new typealiases and a second `@PlainData` declaration in `SwiftStateTree`. The rest is additive and source compatible:
 - `PlainData` conformances on the DeterministicMath types in §2.4;
 - `PlainDataCheck.field` gains a defaulted `StaticString` name parameter and an unavailable unconstrained overload. `PlainDataCheck` is public but documented "not for direct use".
 
