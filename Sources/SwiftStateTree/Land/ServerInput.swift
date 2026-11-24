@@ -51,9 +51,10 @@ public enum ServerInputRefusal: Sendable, Equatable {
     /// The land declares no `HandleServerInput` for this type (matched by the type itself, so a
     /// same-named type from another module or scope is refused).
     case unknownType
-    /// The payload has no record form: the canonical record encoding refuses it (a `Set`, a
-    /// `Date` outside the years 0001–9999, nesting too deep for `CanonicalMessagePack.maxDepth`
-    /// once inside its turn record).
+    /// The payload has no record form: the canonical record encoding refuses it (a `Set`, nesting
+    /// too deep for `CanonicalMessagePack.maxDepth` once inside its turn record), or its record
+    /// form doesn't decode back to its type (a hand-written `Codable` whose `init(from:)` needs
+    /// what its `encode(to:)` doesn't write).
     case unencodable
     /// The keeper isn't live: a replaying keeper takes its server inputs from the record only.
     case notLive
@@ -89,8 +90,11 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
     let typeIdentifier: String
     /// Where the handler was declared (`fileID:line`), for the duplicate check (#586).
     let site: String?
-    /// Throws only before it writes: from the payload decode or `validate` (#586).
-    private let handler: @Sendable (inout State, AnyCodable, LandContext) throws -> Void
+    /// Throws only before it writes: from `validate` (#586).
+    private let handler: @Sendable (inout State, any ServerInputPayload, LandContext) throws -> Void
+    /// Decodes a payload in its record form as this handler's type, with the record codec: at
+    /// submit live, and when replay builds the item, so live and replay apply the same value.
+    let decode: @Sendable (AnyCodable) throws -> any ServerInputPayload
 
     init<I: ServerInputPayload>(
         inputType: I.Type,
@@ -100,16 +104,19 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
         self.inputType = inputType
         self.typeIdentifier = String(describing: inputType)
         self.site = site
-        self.handler = { state, payload, ctx in
-            // Live and replay take the same path: the payload in its record form, decoded to `I`
-            // by the record codec.
-            let input = try ServerInputCodec.decode(I.self, from: payload)
+        self.decode = { payload in try ServerInputCodec.decode(I.self, from: payload) }
+        self.handler = { state, input, ctx in
+            // The item's value came from this handler's `decode` (at submit, after the type's
+            // identity check, or when replay built it), so it is an `I`.
+            guard let input = input as? I else {
+                preconditionFailure("server input \(type(of: input)) applied by the handler for \(I.self)")
+            }
             try invoke(&state, input, ctx)
         }
     }
 
-    func invoke(_ state: inout State, payload: AnyCodable, ctx: LandContext) throws {
-        try handler(&state, payload, ctx)
+    func invoke(_ state: inout State, input: any ServerInputPayload, ctx: LandContext) throws {
+        try handler(&state, input, ctx)
     }
 }
 
@@ -120,8 +127,10 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
 /// (`LandContext.systemPlayerID`). Server input types are not part of the client schema.
 ///
 /// The handler gets the input in its record form, live and in replay alike: encoded with the
-/// canonical record encoding and decoded back (`ServerInputCodec`). A `Date` arrives at whole
-/// seconds, as the record holds it: fractional seconds are truncated live, the same as in replay.
+/// canonical record encoding and decoded back (`ServerInputCodec`), once, when the input is
+/// submitted (in replay, when the record's input is read). A value whose decode differs from it
+/// (a `Codable` that normalizes what it reads) arrives as decoded, live as in replay; one whose
+/// record form doesn't decode back is refused at submit (`.unencodable`).
 ///
 /// The handler can't throw (#586). An input that can be refused declares `validate:` and
 /// `apply:` instead: `validate` reads the state and may throw, which fails that input alone with

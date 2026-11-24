@@ -135,7 +135,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package struct PendingServerInputItem: Sendable {
         package let sequence: Int64
         package let typeIdentifier: String
+        /// The record form: what the record writes, never a re-encode of `decoded`, which can
+        /// differ from it.
         package let payload: AnyCodable
+        /// `payload` decoded as the handler's type, once: at submit live (where a failure is
+        /// refused, so live holds a value), when the item is built in replay (where a failure is
+        /// kept, and thrown when the item is applied).
+        package let decoded: Result<any ServerInputPayload, RecordedPayloadDecodeFailure>
         package let resolvedAtTick: Int64
     }
 
@@ -3281,12 +3287,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             ])
             return .refused(.overCap)
         }
+        // Decoded once, here: the value live applies is the one replay decodes from the record.
+        // After the cap, so an input refused for the cap costs no decode; before the sequence, so
+        // a refused input leaves no gap in it.
+        let decoded: any ServerInputPayload
+        do {
+            decoded = try handler.decode(payload)
+        } catch {
+            logger.error("Server input refused: its record form doesn't decode back to its type", metadata: [
+                "landID": .string(actualLandID ?? definition.id),
+                "inputType": .string(typeIdentifier),
+                "error": .string("\(error)"),
+            ])
+            return .refused(.unencodable)
+        }
 
         let sequence = outputCollector.takeNextSequence()
         let item = PendingItem.serverInput(PendingServerInputItem(
             sequence: sequence,
             typeIdentifier: typeIdentifier,
             payload: payload,
+            decoded: .success(decoded),
             resolvedAtTick: lastCommittedTickId
         ))
         serverInputsInFlight += 1
@@ -3737,9 +3758,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             applied.recordedServerInputs.append(recorded)
             applied.appliedOrder.append(recorded.sequence)
-            // Throws only from the decode or `validate`, before anything is written (#586).
+            // Throws only from the payload's decode (a recorded one that failed when replay built
+            // the item) or `validate`, before anything is written (#586).
             try withMutableStateSync { state in
-                try handler.invoke(&state, payload: inputItem.payload, ctx: ctx)
+                let input: any ServerInputPayload
+                switch inputItem.decoded {
+                case .success(let value): input = value
+                case .failure(let failure): throw failure.error
+                }
+                try handler.invoke(&state, input: input, ctx: ctx)
             }
 
         case .landFailure:
@@ -4429,7 +4456,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // Recorded server inputs (#387): replay needs none of the outside work. One this
                 // land doesn't declare can't be reproduced: it fails the tick.
                 for recorded in recordedServerInputs {
-                    guard definition.serverInputHandlers[recorded.typeIdentifier] != nil else {
+                    guard let handler = definition.serverInputHandlers[recorded.typeIdentifier] else {
                         let reason = "recorded server input \(recorded.sequence) has type \(recorded.typeIdentifier), which the land doesn't declare"
                         recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
                         logger.error("Re-evaluation: a recorded server input can't be applied", metadata: [
@@ -4438,10 +4465,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         ])
                         continue
                     }
+                    // Decoded once, here. A payload that doesn't decode is still queued: it fails
+                    // alone when it is applied, with the error a decode there would throw.
+                    let decoded = Result { try handler.decode(recorded.payload) }
+                        .mapError { RecordedPayloadDecodeFailure($0) }
                     pendingItems.append(.serverInput(PendingServerInputItem(
                         sequence: recorded.sequence,
                         typeIdentifier: recorded.typeIdentifier,
                         payload: recorded.payload,
+                        decoded: decoded,
                         resolvedAtTick: recorded.resolvedAtTick
                     )))
                 }
