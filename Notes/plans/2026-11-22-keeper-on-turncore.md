@@ -1,11 +1,29 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 4, plan only. **GO from Review** (MF-a to MF-d and the shoulds closed). K2 is gated on the maintainer's Q1 and Q2 (filed as decision issues) and on #758. No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from the GO are in §3.2 and §3.10.
+**Status:** rev 5.2, plan only. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
 
 Code pointers are at main 8e622a20:
 - `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
 - `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`;
 - `LKT` is `Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift`.
+
+**Rev 5.2** (Review's GO on rev 5.1, two shoulds for K1a):
+- **The harness off the pinned toolchain** (§3.11, Harness). There canonical JSON bytes may differ, so the record's decoded view renders a recorded payload as its tree, not as base64. The rule is named `recordPayloadAsTree`. The classify script then sees no payload leaf change. Tests are named.
+- **A replay decode failure kept as text** (§3.11, Replay's decode failures). The item can't keep the error value, so `applyPendingItem` throws a wrapper whose description is the stored text, and `PayloadNesting.TooDeep` keeps its own form. The consumers were checked: none inspects an action's error type in replay, and the client-event path inspects only `TooDeep`. Both are pinned in `replayPayloadDecodeFailureIsReportedAsBefore`.
+
+**Rev 5.1** (Review on rev 5's delta):
+- **MF1, §3.11: JSON bytes weren't stable.** Rev 5 kept the bytes of the live round trip, `JSONEncoder().encode(payload)` (InboundPayloadDecoding.swift:15). That encoder doesn't sort keys, and `AnyCodable` encodes a `[String: Any]` in the dictionary's iteration order, which follows the per-process hash seed. So the same payload gave different bytes per run, as `Notes/solutions/2026-11-07-encoded-bytes-vary-with-per-process-hash-order.md` describes. Rev 5.1 records **canonical JSON bytes**, encoded once for the record with a fixed configuration. The live round trip is untouched, so the live decode can't change. A two-process test pins the bytes.
+- **Should, §3.11:** a 3.7 payload that fails to decode at replay is reported where today's apply-time decode failure is, with a test that pins today's report first.
+- **Should, §3.11:** the test for a JSON-sourced item under a `messagepack` header is named.
+- **Nit:** the status line names G2 beside Q1, as §5 does.
+
+**Rev 5** (Q2 decided; K1 carries the recorded raw bytes):
+- **Q2 = no world** (maintainer, 2026-11-22, with `2026-11-22-plaindata-all-the-way.md`). The core holds the model only, and the model holds every value the keeper's turns change: `State` (PlainData P4), the queued items, entry facts, the staged events. The land definition, its handler closures and `LandConfig` are the machine's `Behavior` (#768, merged 8a3f3e15), fixed at `TurnCore.init`. #758 is on hold and no longer blocks K2 (§7). §3.1 and §3.10 are rewritten for it; the other homes in §3.1's reference table are unchanged.
+- **K1 splits into K1a and K1b** (§5):
+  - **K1a, the record keeps raw bytes** (PlainData plan Q4 and its slice P5, §3.11). Each queued action and client event holds its payload as bytes plus the decoded typed value. The record writes the bytes, and the encoding goes once in the record header. Record format 3.7. The wire frames don't change; every golden's record bytes do;
+  - **K1b, the census and the split** (rev 4's K1, without the world): byte-identical.
+- **K1a's order:** after PlainData P3 and P4. K1b's after K1a. §3.11 lists what P3 must leave for K1a.
+- **New questions:** K1-Q1 to K1-Q3 (§9), for the maintainer through Main.
 
 **Rev 4** (Review's check of rev 3):
 - **MF-a, §3.2: the result slot's lifecycle**, written down from today's `actionSlots` (LK:2251–2257, LK:2312, LK:2446–2460, LK:2466–2495). One slot per sequence, created at admission before `.pending` returns. It holds one terminal outcome or one waiter, and is consumed once. An outcome that arrives before the wait is kept. A second wait gets `ActionResultUnavailable`, and so does a wait after `endAll`.
@@ -127,13 +145,9 @@ Code pointers are at main 8e622a20:
 
 ## 3. Design
 
-### 3.1 What the core holds (G1 #758, Q2)
+### 3.1 What the core holds (Q2 decided: no world)
 
-`TurnCore.init` requires `M: PlainData`. The core holds two values:
-- **the model**, which is the machine;
-- **the world**: non-plain values, lent only to steps and to `core.read`.
-
-Every reference gets a narrower home outside both.
+`TurnCore.init` requires `M: PlainData`. The core holds the model, which is the machine, and the machine's `Behavior` (#768), an immutable value fixed at init and read by every step. There is no world (rev 4's G1, #758, on hold). Every reference gets a narrower home outside the core.
 
 **The model (`KeeperModel`, `@PlainData`).**
 - **Counters:** `nextTickId`, `lastCommittedTickId`, the input sequence counter (today in `OutputCollector`), the pass ordinal, `BindingID`, `EntryID`, `FreezeID`, the job sequence.
@@ -142,8 +156,9 @@ Every reference gets a narrower home outside both.
 - **Membership:** the pending queue's order index, the membership ids with each entry's `EntryID`.
 - **Waiting callers:** action-job bookkeeping (sequence, `EntryID`, the result wait's `InputID` once it steps, the job's `RequestID`), and every other `InputID` a caller waits on (§6.2).
 - **Freeze, follow-ups, work:** the freeze generation and held counts, the follow-up binding marks, the in-flight work counts.
+- **What rev 4 put in the world** (rev 5): the land's `State`, the admitted queue and the entry facts. Each is `PlainData` after PlainData P3, P4 and K1a: `State` by P4; a queued item's payload as bytes and its decoded value, whose protocol refines `PlainData` (P3, §3.11); entry facts as `@PlainData` `PlayerSession` without `services`. Where each crosses out of a step is the same as rev 4's table below, and a copy is taken in the step, or a `borrowing` read in `core.read`.
 
-**The world (G1, #758): values, owned by the core.**
+**The world (rev 4; withdrawn in rev 5, kept as the record of what crosses out).**
 
 The world is lent mutably to steps and read-only to `core.read` between steps. It is not lent to `flush`, `perform` or effects, which get snapshots. It is not part of any core record (Code-1).
 
@@ -171,14 +186,11 @@ The world is lent mutably to steps and read-only to `core.read` between steps. I
 | Port (`LandKeeperTransport`) | **A Sendable binding token** (Code-1 (2)): the port reference plus its `BindingID`. **The token travels** in the inputs, queries and effects that need the port: a keeper entry attaches the current one, and a follow-up's gate effect carries it (#702 §5). **The step** checks the token's `BindingID` against the model's, then calls the port's synchronous in-turn methods directly. No port call reaches back into the keeper (§3.7), so nothing else is needed. **The actor keeps the current token** for attaching. It is written only by `flush`, from the `.bind` step's output | K2 |
 | `services` | **Land services:** a `LandConfig` `let`. **Per-player overrides** (LK:1951, LK:3328–3330): `LiveLandTurns` stores a table keyed by `(PlayerID, EntryID)`. `flush` writes it from the join step's output, and removes the entry from the leave step's output. The leave step reads the outgoing override before its output deletes it, and puts it in the OnLeave resolver's effect, so the resolver sees the same services as today. A step reads an override through the input that names the entry: the keeper's entry attaches the overrides it reads from the table, and the step checks the `EntryID`. **Lifecycle items** (OnJoin, OnLeave applied in a later tick) carry the `EntryID`, and their apply step gets the overrides through the tick's input: the driver's entry attaches the overrides for the entries whose items are ready. **Effects** get services explicitly in the effect value | K2 |
 
-**Q2 (maintainer):** the world above, or `@PlainData` on every land `State` (a public break)?
-- `@PlainData` would check `State` at compile time.
-- It wouldn't cover the payloads or entry facts, so the world is needed either way.
-- **Recommended: the world.** A probe of `State: PlainData` can be its own issue.
+**Q2 (decided: no world).** `PlainData` covers `State`, payloads and entry facts after all (`2026-11-22-plaindata-all-the-way.md`), so the world isn't needed. The land definition, handlers and `LandConfig` are `Behavior` (#768). The value rule above becomes a compile-time check instead of a documented one.
 
 **The shared RNG (#765).** `DeterministicRngService` is a reference in `services`, drawn by handlers in steps and reachable by resolvers off the actor. #765 decides its fix. #700's K1 census lists it, and K2 doesn't move it.
 
-**K1's census.** Every stored field of `LandKeeper` gets a home: the model, the world, `LandConfig`, a binding token, the per-player services table, an output, or the K2–K7 replacement list (Tasks and continuations, §3.4, §4). A field that fits nowhere is a finding for Review.
+**K1b's census** (draft in Appendix A). Every stored field of `LandKeeper` gets a home: the model, `Behavior` (the land definition and `LandConfig`), a binding token, the per-player services table, an output, or the K2–K7 replacement list (Tasks and continuations, §3.4, §4). There is no world home. A field that fits nowhere is a finding for Review. The census also checks the model's type: `KeeperModel` is `@PlainData`, so a field that isn't plain doesn't compile.
 
 ### 3.2 Keys, the result slot, and cancellation (MF4, MF-a, MF-b)
 
@@ -198,12 +210,12 @@ The world is lent mutably to steps and read-only to `core.read` between steps. I
 
 **OnLeave's resolvers run under `.land`.** The leave ends the entry's key in its own step, and OnLeave's work must outlive that.
 
-**The result slot (MF-a).** Today's `actionSlots` (LK:2251–2257) is kept as a table on the core: the outcome (an `AnyCodable` or an error) in the world, the waiter's `InputID` in the model. Its rules, each a K2 test:
+**The result slot (MF-a).** Today's `actionSlots` (LK:2251–2257) is kept as a table on the core: the outcome (today an `AnyCodable` or an error) and the waiter's `InputID`, both in the model (rev 5). The outcome's plain form is K1b's census call, per the PlainData plan §3.3: the encoded response bytes, or a response protocol that refines `PlainData`. Its rules, each a K2 test:
 
 | Rule | Today | On the core |
 |---|---|---|
 | One slot per sequence, created at admission, before `.pending` returns | LK:2312, in `startActionJob`, before `submitAction` returns | the admission step creates it, then answers `.pending(seq)` |
-| It holds one terminal outcome or one waiter | `ActionSlot { result, waiter }` | the outcome in the world, the waiter's `InputID` in the model |
+| It holds one terminal outcome or one waiter | `ActionSlot { result, waiter }` | the outcome and the waiter's `InputID` in the model |
 | An outcome that arrives before the wait is kept | `fillActionSlot` stores it when no waiter (LK:2446–2460) | the step that fills it stores it; the wait's step replies at once and removes the slot |
 | Consumed once | removed when the waiter is resumed or the stored result is read | removed by the step that replies |
 | A second wait, or a wait for a sequence with no job | `ActionResultUnavailable` (LK:2473–2476) | the wait's step replies `ActionResultUnavailable` |
@@ -244,7 +256,7 @@ A `query` is a synchronous step whose answer returns at once. It can't register 
 | Action **with resolvers**, either land kind | **two-phase**: `.pending(sequence:)` at intake (LK:3023), then the adapter releases its inbound chain (TA:5382–5404); the result from a separate `awaitActionResult` | admission: `query(.admitAction(…, token))`; result: `sendAndWait(.awaitResult(seq))` (§3.2) | admission: `.pending(sequence:)`. Result, tick land: from the `.actionResolved` step, at delivery, before the tick. Result, tickless: from the applying turn's record-wait completion |
 | Client event, tick land | returns after intake | `query(.admitClientEvent)` | the answer, or the thrown refusal |
 | Client event, tickless | waits for application; throws the handler's error (LK:3166–3178) | `sendAndWait(.clientEvent)` | from the applying turn's record-wait completion: success or the handler's error |
-| Server input (`submitServerInput` LK:3198; `ServerInputSubmitter.submit`, which is async "from any task", ServerInput.swift:61–79; a turn's requested work submits later, LK:3306–3312) | `.accepted`/`.refused` at intake. While frozen, accepted at once and held (LK:3246–3253). An initialization failure answers `.refused(.draining)` (LK:3203–3207) | `query(.admitServerInput)` from the caller's task. That includes the work a turn requested, which submits from its own task. It waits at the initialization barrier only, never at the freeze barrier (§3.3.1) | the answer. While frozen: `.accepted(sequence:)`, with the input held in the world's held list |
+| Server input (`submitServerInput` LK:3198; `ServerInputSubmitter.submit`, which is async "from any task", ServerInput.swift:61–79; a turn's requested work submits later, LK:3306–3312) | `.accepted`/`.refused` at intake. While frozen, accepted at once and held (LK:3246–3253). An initialization failure answers `.refused(.draining)` (LK:3203–3207) | `query(.admitServerInput)` from the caller's task. That includes the work a turn requested, which submits from its own task. It waits at the initialization barrier only, never at the freeze barrier (§3.3.1) | the answer. While frozen: `.accepted(sequence:)`, with the input held in the model's held list |
 | Join, tick land | waits for admission | `sendAndWait(.join)` | from the admission step (K2: the last of today's segments; K6: the one validate-and-apply step) |
 | Join, tickless | waits for admission, and for application when admission doesn't complete in-turn (LK:2037–2056) | `sendAndWait(.join)` | from the admission step when it completes in-turn; otherwise from the applying turn's record-wait completion |
 | Leave, tick land | returns once OnLeave is queued | `sendAndWait(.leave)` | from the step that queues OnLeave |
@@ -382,7 +394,7 @@ K2's audit greps the adapter for every `keeper.assumeIsolated` and lists each wi
 | `recordSyncStream` from a standalone initial sync (`.legacyCycle`, TA:3827–3829) | an entry, `send(.syncStreamDraft(...))`: steps at once when idle and keeps its order with the turns |
 | `recordSyncStreamClear(outsideTurn: true)` from a disconnect (TA:1336) | the same entry |
 | `syncTurnNow`, `syncTurnTicket` (TA:3128, 3181, 3197, 3201, 3489, 3494, 5099, 6374), `settleTurn` (TA:6223) | `query` (§3.3). K2 lists each site with the reason it can't run inside a keeper step |
-| Reads: `entrySession` (TA:1458), `currentStateLocated` (TA:5212), `isLive`, `isDraining`, `recordsSyncStream` (TA:3801) and the like | `core.read` on the model or world: a borrow, not a step |
+| Reads: `entrySession` (TA:1458), `currentStateLocated` (TA:5212), `isLive`, `isDraining`, `recordsSyncStream` (TA:3801) and the like | `core.read` on the model: a borrow, not a step |
 | `joinReportingAdmission`, `leave`, `handleClientEvent`, `submitAction`/`awaitActionResult`, `requestJoinSyncTurn`, `debugFreeze`, `debugResume`, `notePendingFailure` | the entries in §3.3 |
 
 **The debug check** covers only synchronous step entries: `query`, and the keeper's synchronous entries that step. Called from inside a keeper step, they trap with the entry's name. `send` from a step legally queues, so it is never asserted.
@@ -425,7 +437,7 @@ package enum KeeperOwner<State: StateNodeProtocol>: Sendable {
     case replay(ReplayLandOwner<State>)
 }
 package actor LiveLandTurns<State: StateNodeProtocol>: TurnActor {
-    let core: TurnCore<KeeperMachine<State>>                   // the model, plus the world (G1)
+    let core: TurnCore<KeeperMachine<State>>                   // the model; Behavior = definition + config (#768)
     nonisolated let mailbox: TurnMailbox<LandReport>?          // core.mailbox
     let config: LandConfig<State>
     nonisolated(unsafe) weak var facade: LandKeeper<State>?    // set once in LandKeeper.init; passed to runsSyncPhaseInTurn(of:)
@@ -433,9 +445,8 @@ package actor LiveLandTurns<State: StateNodeProtocol>: TurnActor {
     // services table, both written from flush (§3.1)
 }
 package final class ReplayLandOwner<State: StateNodeProtocol> {  // isolated to the replay executor; no core
-    var model: KeeperModel
-    var world: LandWorld<State>
-    let config: LandConfig<State>
+    var model: KeeperModel<State>
+    let behavior: KeeperBehavior<State>                         // the same value the live core gets
 }
 ```
 
@@ -449,7 +460,7 @@ package final class ReplayLandOwner<State: StateNodeProtocol> {  // isolated to 
   - The adapter holds the facade, as today (TA:103–108), and compares it.
   - So every public witness sees the same object as today, and §8's "no public change" holds.
 - **The lint.** `lint-turns.sh` approves the facade's forwarding boundary: a facade that holds a `TurnActor` and forwards through `assumeIsolated` to its entries. K2 adds that rule with a fixture.
-- **The turn bodies (K1)** are synchronous functions over `(inout KeeperModel, inout LandWorld<State>, LandConfig<State>, …)`.
+- **The turn bodies (K1b)** are synchronous functions over `(inout KeeperModel<State>, KeeperBehavior<State>, …)` (rev 5: no world).
   - The live path calls them inside steps.
   - The replay path calls them from `ReplayLandOwner`'s path, which awaits the source between them, as today: the CLAUDE.md exception "until #612".
 - **The invariant: replay never steps a core.** It is pinned by ownership: `ReplayLandOwner` has no core, and the replay path never reaches `LiveLandTurns`. Since `ReplayLandOwner` is package-only, the pin lives inside the package: a `@testable` test reflects a constructed `ReplayLandOwner` with `Mirror` and fails if any stored property's type is a `TurnCore` or a `TurnActor`. It is a runtime check, not a compile-time one: it catches a stored core, not a core reached through a reference.
@@ -466,6 +477,140 @@ package final class ReplayLandOwner<State: StateNodeProtocol> {  // isolated to 
   So #756's "before any adopter records mail" holds, and #745's limitation never meets a keeper path. Both stay with #612.
   - The keeper's decisions from `core.read` (the initialization barrier, the frozen flag, the adapter's reads) are a reader #756 §3.3 names: under #612's replay, such a reader runs #756's pump first, or #612 owns that ordering.
 - **Later, at #546 B** (Code-1): once the adapter has its own core on the shared executor, a keeper step that calls the adapter's in-turn methods nests two cores. That needs its own rule then; #700 doesn't create it.
+
+### 3.11 K1a: the record keeps raw bytes (PlainData Q4, slice P5)
+
+The maintainer's decision (PlainData plan Q4):
+- keep the raw bytes per action;
+- the encoding goes once in the record header (`ReevaluationRecordMetadata`), not per entry;
+- the bytes are base64 inside the JSON record.
+
+K1a does that, and it is what lets a queued item become `PlainData` without an `AnyCodable` (`base: Any`) in it.
+
+**Today** (main 5e8bc586):
+- `PendingActionItem` (LK:196) holds:
+  - `source: any PayloadDecodingSource` (an `AnyCodable` tree, or a `MessagePackValue`);
+  - `decoded: (any ActionPayload)?`, nil for an item from the public init;
+  - `actionType: any ActionPayload.Type`, a metatype.
+- Its public `action: AnyCodable` is built from the source on each read.
+- A client event item holds `AnyClientEvent`, with the same `source`.
+- The record writes `actionItem.action`, the tree, as `ReevaluationRecordedAction.payload: AnyCodable` (LK:3592). The log stores the tree as canonical MessagePack.
+- Replay builds the item from that tree with the public init (LK:4361), so it decodes at apply, through the JSON round trip. `RecordPayloadSource`, with its `integralFloats` allowance for the JSON view, decodes recorded events in the monitor's replay frames (ReevaluationReplayFrame.swift:202) and resolver outputs (LandContext.swift:315).
+
+**After K1a:**
+
+| Item | Holds | Record |
+|---|---|---|
+| Action | `decoded: any ActionPayload`, always set: intake decodes, and replay decodes when it builds the item. `bytes: Data`, the payload in the record's encoding | `payload` becomes the bytes (MessagePack `bin`; base64 in the JSON view). `typeIdentifier` is unchanged (`String(describing:)` of the type) |
+| Client event | the same pair | the same |
+| Server input | `any ServerInputPayload` (P3 types it) | P3 keeps today's tree. K1a writes the typed value encoded in the record's encoding: a server input has no wire bytes |
+| Resolver outputs | `[String: any ResolverOutput]` (P3: `PlainData`) | unchanged: Q4 covers payloads only |
+
+**`actionType`** stops being stored. It becomes a computed `type(of: decoded)`, so the public property stays. The handler lookup by it is unchanged in K1a; K2's brief turns it into a dictionary keyed by wire name (Main). The PlainData plan's "the metatype becomes a name" is met this way, without storing a name: nothing in the model is a metatype.
+
+**What the bytes are.** The record's encoding is one of two: `json` (the `json` and `opcodeJsonArray` transports, whose payloads are JSON text) or `messagepack`. The rule: the bytes the record keeps decode, with the decoder the live run used, to the value the live run decoded. Per source:
+- **JSON** (`AnyCodablePayloadSource`). The live decode encodes the tree with a default `JSONEncoder` and decodes that data (`InboundPayloadDecoding.decode`, InboundPayloadDecoding.swift:13–15). Those bytes can't be the record's (rev 5.1): the encoder doesn't sort keys, and an `AnyCodable` object's keys come out in hash-seed order, so the bytes vary per process. Instead, a recording land encodes the tree once more, for the record, with one fixed configuration: `outputFormatting = [.sortedKeys, .withoutEscapingSlashes]` and the default number strategies, in one place (`RecordPayloadEncoding.canonicalJSON`). This is **canonical JSON**:
+  - **Key order** is sorted.
+  - **Numbers and escapes** come from one encoder configuration, so the form is fixed within a toolchain and platform. The goldens are recorded in the pinned 6.2.4 image. Bytes across platforms aren't claimed: replay's correctness rests on decode equality, not on bytes.
+  - **Decode equality:** the tree is the one the live run decoded. Its JSON decodes with the same `JSONDecoder` to the same value, since key order doesn't change what `Decodable` reads from an object with distinct keys.
+  - **The live round trip is unchanged.** So the live decode can't change, and a land that doesn't record pays nothing. A recording JSON land pays one extra encode per input.
+  - **A 3.7 payload needs no `integralFloats` allowance:** the JSON view decodes the bytes, not a tree rendered from them.
+
+  Prior art: RFC 8785 (JCS) and RFC 8949 §4.2 (deterministic CBOR) define canonical forms across implementations. Neither is needed here: within one toolchain one encoder configuration is deterministic once keys are sorted. JCS's ECMAScript number form would mean a hand-written serializer. The record log's own MessagePack is already canonical (`CanonicalMessagePack`).
+- **MessagePack** (`MessagePackPayloadSource`). The frame decoder has unpacked the payload into a `MessagePackValue`; the client's byte range isn't kept. K1a writes the value packed canonically. Unpacking it gives the same value (a non-finite number is refused at intake by `validateRecordable`), so replay's `MessagePackValueDecoder` decodes the same result. Keeping the client's exact slice needs the frame decoder to keep offsets: **K1-Q2**.
+- **A source in the other encoding, or none:** a hand-built `AnyClientEvent`, an item from a test, or a server input. The bytes are the decoded typed value, encoded once in the record's encoding at intake. Nothing was received, so there is nothing to keep.
+
+**Cost.** Only a land that records pays for the bytes (`recordsInputs`, as the tree today, LK:3584). A land that doesn't record keeps `decoded` alone, and its item holds no bytes (`bytes: Data?`). So the hot path of a non-recording land changes by one stored optional. A recording MessagePack land packs once per input, where today it built an `AnyCodable` tree and the log packed that. K1a's A/B tier is small: the default cell and `rows-mp`, with recording on.
+
+**The header.** `ReevaluationRecordMetadata` gains `payloadEncoding: RecordPayloadEncoding` (`json` or `messagepack`), written once. `TransportEncoding` is in SwiftStateTreeTransport and the keeper can't name it. So SwiftStateTree gets the two-case enum, and the transport layer passes it when it creates the land's recorder (`LandManager`, from `NIOLandServerConfiguration.transportEncoding`). A keeper with no transport (tests, the reevaluation runner) uses `messagepack`, the record log's own codec.
+
+**Format version 3.7.**
+- A 3.7 record's payloads are bytes in the header's encoding.
+- Replay of a 3.6 record: **K1-Q1**.
+- A newer reader refuses nothing older than `minimumSupported` that it can read today. The JSON view renders a 3.6 tree as before and a 3.7 payload as base64.
+
+**Public API (K1a):**
+- `ReevaluationRecordedAction.payload` and `ReevaluationRecordedClientEvent.payload` become `Data` (were `AnyCodable`);
+- `ReevaluationRecordMetadata` gains `payloadEncoding`;
+- `PendingActionItem.action: AnyCodable` is removed. Nothing outside the keeper reads it. A view that needs a tree decodes the bytes;
+- `PendingActionItem`'s public init takes the typed action (`some ActionPayload`) instead of `AnyCodable` and a metatype;
+- `actionType` stays, computed;
+- `AnyClientEvent.payload` stays, built from `decoded` or the source as today. The keeper's item no longer holds the `AnyClientEvent`.
+
+Each change is listed in K1a's PR. There's no deprecation step: there are no external users (as #593).
+
+**What P3 must leave for K1a.** P3 makes the payload protocols, server inputs and resolver outputs `PlainData`. It must not change:
+- `PendingActionItem`'s stored shape, `PendingClientEventItem`'s, or `PayloadDecodingSource` (K1a replaces the source with bytes);
+- the record's entry types, `ReevaluationRecordMetadata`, `ReevaluationRecordVersion` or the log's payload form. P3's typed server input is recorded as today's tree (`AnyCodable` of the typed value), so P3 doesn't bump the format.
+
+It must keep:
+- `InboundPayloadDecoding`'s JSON round trip producing its `Data` in one place, so K1a can keep it;
+- `_payloadWireName` on every payload type.
+
+If P3 takes up #616 (a live input's payload checked once, by its frame's decode), it tells K1a which source types remain.
+
+**Replay's decode failures.** Replay now decodes when it builds the item, not at apply. Today a recorded payload that doesn't decode throws in `applyPendingItem` before its record (LK:3571, before LK:3584). `applyInputs` (LK:3941–3959) then gives its caller the failure, leaves it out of `rejected` (only recorded inputs are listed) and logs it. The live/replay comparison sees what follows from that.
+
+A replayed client event that doesn't decode isn't thrown: its handler drops it (LandDefinition.swift:414–423). A `PayloadNesting.TooDeep` is also logged and counted (`noteDroppedClientEvent`, #362); any other error is dropped silently.
+
+K1a keeps both reports. An item whose bytes don't decode at build time is still queued, with no `decoded` and a plain failure record (rev 5.2):
+
+```swift
+@PlainData enum RecordedPayloadDecodeFailure {
+    case tooDeep(limit: Int)          // rebuilt as PayloadNesting.TooDeep(limit:)
+    case undecodable(String)          // String(describing: error) of the decode's error
+}
+```
+
+- **The error value isn't kept;** the item stays plain. At apply, `.tooDeep` throws `PayloadNesting.TooDeep(limit:)` again, the same type and value. `.undecodable` throws `RecordedPayloadDecodeError`, whose `description` is the stored text. It is thrown at the same point as today, before the record.
+- **Who looks at the error** (checked at 2fdcabf9). Nothing inspects an action's error type in replay:
+  - `applyInputs` counts it, logs `String(describing:)` and puts it in `outcomes` (LK:3946–3959);
+  - `outcomes` reaches `inputTurnResults` (LK:5713–5717), whose waiters exist only for live callers;
+  - the tick replay path takes `.applied` only (LK:4697);
+  - in `Sources/`, `DecodingError` is matched only in `TypeToSchemaConverter.swift:540`, which is unrelated.
+
+  The client-event path matches `TooDeep` only, which `.tooDeep` keeps.
+- So outcomes, `rejected`, the log line's text, the drop counter and the comparison are unchanged.
+
+`replayPayloadDecodeFailureIsReportedAsBefore` pins today's report on main first, with three recorded inputs:
+- an action whose payload has a field of the wrong type: refused, not in `rejected`, and the log line's error text;
+- a client event of the same kind: dropped, not counted;
+- a client event nested past the limit: dropped and counted once.
+
+K1a keeps it green with 3.7 records whose bytes fail the same way. The test also asserts that the action's thrown error's `description` equals `String(describing:)` of the original `DecodingError`.
+
+**Tests (K1a):**
+- **Per encoding** (JSON, opcode JSON, MessagePack), an action and a client event: the recorded bytes decode, with the live decoder, to a value equal to the live `decoded`.
+- **`canonicalJSONIsStableAcrossProcesses`:** the same 16-key object, recorded in two child processes (Swift Testing exit tests, each writing its bytes to standard output) with default hashing, gives equal bytes. A one-process check under `SWIFT_DETERMINISTIC_HASHING` can't show it. With 16 keys, two seeds that happen to give the same unsorted order are negligible (1 in 16!).
+- **`jsonSourcedItemUnderMessagePackHeaderRecordsTheTypedValue`:** on a land whose header is `messagepack`, an action that arrives through `AnyCodablePayloadSource` is recorded as its typed value's canonical MessagePack. The test checks equality with `CanonicalMessagePack` of the typed value, and inequality with that payload's canonical JSON bytes.
+- **An integral float:** a JSON `1` into a `Double` field replays equal without `integralFloats`.
+- **A hand-built item and a server input:** recorded in the header's encoding.
+- **A non-recording land:** its items hold no bytes. A `Mirror` test fails if `bytes` is set when `recordsInputs` is false.
+- **The header:** written once, and read back.
+- **3.6 records:** per K1-Q1.
+
+**Mutants:**
+- `.sortedKeys` dropped from `canonicalJSON`. Caught by `canonicalJSONIsStableAcrossProcesses`;
+- the live round trip's bytes recorded instead of `canonicalJSON`'s (rev 5's design). Caught by the same test;
+- the MessagePack bytes are packed non-canonically. Caught by the decode-equality test on an `Int` that fits a smaller width;
+- the header is omitted. Caught by the read-back test;
+- the record view shows the base64 string (no `recordPayloadAsTree`). Caught by `jsonRecordPayloadComparesAsTreeOffThePinnedToolchain`;
+- `.tooDeep` stored as `.undecodable`. Caught by `replayPayloadDecodeFailureIsReportedAsBefore`'s drop counter.
+
+The E2E record/replay runs in three encodings and the game's reevaluation E2E end with 0 mismatches.
+
+**Harness.** The wire frames don't change. Every golden's record changes: the header's new field, the version, and each recorded payload's form.
+
+**Rule `recordPayloadAsTree` (rev 5.2).** The harness compares record bytes only when a golden was recorded with the running toolchain (`checkBytes`, DifferentialHarnessTests.swift:91). Elsewhere it compares the record's decoded view (`DiffRunner.decodedView`, DiffRunner.swift:656). Canonical JSON bytes are stable within a toolchain and platform only. If the view showed a 3.7 payload as its base64 string, a run off the pinned image would report a payload difference that is only a spelling (a number's form, an escape). So the view renders each recorded payload as its tree: the bytes decoded with the header's `payloadEncoding` (JSON parsed, MessagePack unpacked), in the form a 3.6 golden's tree has. The byte comparison on the pinned image still sees the bytes.
+
+`classify-golden-changes.py` compares decoded views, so with that rule a 3.6 → 3.7 golden shows no payload leaf change. Its `recordPayload` class then covers only `metadata.payloadEncoding` appearing and `metadata.version` 3.6 → 3.7, and a changed payload leaf stays `other`. K1a adds the rule and the class in a tool-only commit first. Then:
+- the goldens are re-recorded by the recorder script in the pinned image;
+- every change classifies as `recordPayload`, with no `other`;
+- each cell's difference goes in `ExpectedDifferences.swift` with that cause.
+
+Tests for the rule:
+- **`DiffSelfCheckTests.jsonRecordPayloadComparesAsTreeOffThePinnedToolchain`:** two captures whose record bytes differ only in one JSON payload's spelling (`"a\/b"` against `"a/b"`). Byte mode reports `<bytes>` only; decoded-only mode reports nothing. A changed payload value is reported at its field path in both modes.
+- **`scripts/classify-golden-changes.py --self-test`** (new, in the tool-only commit): a 3.6 → 3.7 pair of fixture goldens classifies only the two header leaves, as `recordPayload`. A pair whose payload value changed reports `other` and exits 1.
 
 ## 4. How each CLAUDE.md exception ends
 
@@ -510,8 +655,9 @@ A cell this plan needs that doesn't exist yet is added first, in a tool-only com
 
 | Slice | Content | Needs | Harness: allowed differences | Host A/B |
 |---|---|---|---|---|
-| **K1** | The storage split and its census (§3.1). Turn bodies become synchronous functions over model, world and config. Every multi-await flow's segments become named synchronous functions. No core; behavior unchanged. Replay calls the same bodies | — | none | **small**: the default production cell and `rows-mp` |
-| **K2** | The cut-over. The layout and identity (§3.10). Every live entry becomes a core entry with its contract (§3.3). The entry barriers, server input's freeze exemption, and no intake holds (§3.3.1). Each K1 segment becomes a step; each await between segments becomes a `turn.run` whose result is an input, with today's checks in the handler. Also: fresh keys, the result slot and the sealed cancellation token (§3.2); record drafts and waits (§3.4); the scoped emitter, the binding token and the per-player services table (§3.1); the admission's package path and the callback audit (§3.7); drivers (§3.9); the lint rule. Follow-ups and the failure box work as today | G1 #758, G2 #759; G3 #760 checked before the A/B is read | none | **full**, plus three cells: tick actions without resolvers, tick actions with resolvers, tickless client events |
+| **K1a** | The record keeps raw bytes (§3.11): queued actions and client events hold bytes plus the decoded value; the header's `payloadEncoding`; format 3.7; `actionType` computed; the public changes in §3.11. The action response's encode moves from the land definition to the transport's reply, and whether a response is recorded or compared at replay is decided here (Appendix A, F2: `ResponsePayload: PlainData` and `InputOutcome` are P3's). A tool-only commit first adds the `recordPayload` class to `classify-golden-changes.py` | PlainData P3 and P4 merged; K1-Q1 to K1-Q3 answered | the record part of every cell, all classified `recordPayload`; frames none | **small**, recording on: the default production cell and `rows-mp` |
+| **K1b** | The storage split and its census (§3.1), with no world: `KeeperModel<State>` is `@PlainData` and holds `State`, the queues and entry facts; `KeeperBehavior<State>` holds the definition and `LandConfig`. Turn bodies become synchronous functions over model and behavior. Every multi-await flow's segments become named synchronous functions. No core; behavior unchanged. Replay calls the same bodies | K1a | none | **small**: the default production cell and `rows-mp` |
+| **K2** | The cut-over. The layout and identity (§3.10). Every live entry becomes a core entry with its contract (§3.3). The entry barriers, server input's freeze exemption, and no intake holds (§3.3.1). Each K1 segment becomes a step; each await between segments becomes a `turn.run` whose result is an input, with today's checks in the handler. Also: fresh keys, the result slot and the sealed cancellation token (§3.2); record drafts and waits (§3.4); the scoped emitter, the binding token and the per-player services table (§3.1); the admission's package path and the callback audit (§3.7); drivers (§3.9); the lint rule. Follow-ups and the failure box work as today | `Behavior` (#768, merged), G2 #759; G3 #760 checked before the A/B is read | none | **full**, plus three cells: tick actions without resolvers, tick actions with resolvers, tickless client events |
 | **K3** | Sync follow-ups on the core (§3.5): the writer gate returns `nil`, and `waitForQuiescence` replaces the hand-rolled waits. The hand-rolled slots and the requested-sync-work waiters are deleted. The #695 acceptance tests are rewritten (§6.1) | K2 | only the arm-order change (§3.5), if a cell shows it | **small**: a host cell with join churn and kept-event follow-up churn |
 | **K4** | The failure mail (§3.6): capacity 1, the first applied failure terminal, checkpoints, staging before the port, the record-shape change. `LandFailureMailbox`, `submitLandFailure` and `.failureSubmit` are deleted | K2 | failure rows' record order, if a cell has a post before queued inputs | **small**: the default cell and `rows-mp`. This slice sets the mailbox budget left open by the post-lane plan |
 | **K5** | Resolvers as keyed requests. Action jobs go under their entry's key or `.land`: abandonment replaces `validateDelivery`'s checks, and the token is kept. OnInitialize goes under `.initialization` with its deadline, so initialization becomes a turn and its abandonment answers the barrier. `debugEndWork` becomes the model's count | K2 | none | **small**: the default cell and the tick-actions-with-resolvers cell |
@@ -520,7 +666,8 @@ A cell this plan needs that doesn't exist yet is added first, in a tool-only com
 | **K9** | Deletions: the keeper's `GenerationTable`/`EpochCounter`/`SingleFlight` uses; the replaced `HoldPoints` (§6.3); the dead `.live` arms (`flushOutputs` LK:674–691, `runSyncRequests` LK:718, recorder branches at LK:3871, 4523, 4540 and 1404–1413), each first proven unreachable. CLAUDE.md's reentrancy section is rewritten: the keeper exceptions left are #612 and #387 | K1–K7 | none | **Mac output check** |
 
 **Ordering.**
-- K1 can start before G1 and G2 land.
+- PlainData P3 and P4, then K1a, then K1b. K1b's census can be drafted (read-only) while K1a is in review.
+- K1 doesn't wait on G2.
 - K3, K4 and K5 are independent of one another.
 - K6 needs K5, and so does K7.
 - #762 (timers) follows K2 and doesn't block K9.
@@ -557,7 +704,8 @@ Tests force interleavings with holds (`HoldPoints`, `TestGate`, a gated `perform
 
 | Slice | Tests |
 |---|---|
-| K1 | **The census:** every stored property of `LandKeeper` has a home (§3.1), checked by `Mirror`, so a new field fails until placed. The RNG is listed (#765) |
+| K1a | §3.11's tests and mutants |
+| K1b | **The census:** every stored property of `LandKeeper` has a home (§3.1), checked by `Mirror`, so a new field fails until placed. The RNG is listed (#765). `KeeperModel` is `@PlainData`, so a non-plain field doesn't compile; a must-not-compile snippet pins one (a `KeeperModel`-shaped struct holding an `AnyCodable`) |
 | K2 | **Each contract in §3.3:**<br>- the tick ACK without resolvers returns before any tick;<br>- an action with resolvers returns `.pending` at intake on both land kinds, and the adapter's inbound chain moves on before the resolver delivers;<br>- the tick result arrives at delivery, before the tick;<br>- a tickless client event's handler error reaches its caller;<br>- a tickless join that doesn't complete in-turn and a tickless leave each wait for application;<br>- a server input submitted from a turn's requested work, while frozen, returns `.accepted` at once, holds its sequence and its cap, and at the resume is queued before the frozen client intake wakes;<br>- a server input during a failed initialization gets `.refused(.draining)`.<br>**Order:** query and `sendAndWait` intakes that wait at no barrier, interleaved with replies held, keep call order (§3.3.1).<br>**Barriers:** intake before initialization waits on the barrier; an initialization failure reaches every barrier waiter; the freeze barrier re-checks after its wake.<br>**Result slot (§3.2):** an outcome that arrives before the wait is returned by the wait; a second wait and a wait for an unknown sequence get `ActionResultUnavailable`; a wait after `endAll` is refused.<br>**Cancellation:** cancel a job while its resolver is held, then release: nothing delivers, and the caller gets `CancellationError`. Cancel between the request's completion and its delivery step: nothing delivers. A cancelled caller gets `CancellationError` at intake, and no job starts. Each runs with a mutant that drops the token check at delivery.<br>**Entry end and the seal:** a leave while a job's resolver is held cancels the worker (its task sees cancellation) and fills the slot with `senderSuperseded`; the drain does the same for every job. The sweep test also pins a job its caller already cancelled, worker still held: the sweep gives `senderSuperseded`, and releasing the worker changes nothing. A `cancel()` after delivery, after the entry ended and after the drain leaves the stored outcome unchanged; mutant: a token without the seal.<br>**Keys:** a job closed by its entry's end gets `senderSuperseded`; a stale `BindingID` or `EntryID` is refused in its step.<br>**Emitter:** each of the three output closures, called from a Task that outlives its step, is dropped and counted.<br>**Services:** the OnLeave resolver sees the leaving player's override.<br>**Admission:** the supersede clear goes through the package path, not the actor.<br>**Steps:** a query from inside a keeper step traps (debug), and `send` from a step queues.<br>**Waiters:** they resume after the record is taken, with the record request held; an abandoned record wait replies `landClosed`.<br>**Shutdown:** with a tickless action, a result wait, a join waiting for admission, a caller waiting on a record completion and a shutdown caller pending, the drain answers every one before `endAll`: the shutdown callers with success, the others `landClosed`. The core's deinit assertion holds.<br>**Replay:** the `@testable` reflection pin on `ReplayLandOwner`, and `notePendingFailure` on a replay keeper is a no-op |
 | K3 | §6.1 |
 | K4 | Two inputs queued, a post, then the turn (§3.6). Two posts around a take: the first is terminal. A failure at the last checkpoint publishes nothing to the port. The S1b mutant still fails |
@@ -579,7 +727,7 @@ Each PR lists the tests whose hold moved.
 
 | # | Gap | Tracked | Blocks |
 |---|---|---|---|
-| G1 | The world: values only, lent to steps and to `core.read`; not to `flush`, `perform` or effects; not part of any core record | **#758** (foundation; narrowed in comments) | K2 |
+| G1 | The world: values only, lent to steps and to `core.read` | **#758**, on hold: Q2 decided no world (rev 5) | nothing |
 | G2 | A production `TurnClock`, minimal: `now` and `sleep(until:)` over `safeTaskSleep` | **#759** (foundation; narrowed) | K2 |
 | G3 | Step-path specialization for a generic machine from another module: a verification gap until a check shows a compiler problem | **#760** | reading K2's A/B |
 | G4 | One sleeper for all deadlines | #753 (#621 item 2) | #762 |
@@ -598,6 +746,7 @@ For the maintainer, once rev 3 is GO.
 
 | Slice | Change | Kind |
 |---|---|---|
+| K1a | `ReevaluationRecordedAction.payload` and `ReevaluationRecordedClientEvent.payload` become `Data`; `ReevaluationRecordMetadata.payloadEncoding` added; `PendingActionItem.action` removed and its public init takes the typed action; `actionType` computed (§3.11) | break |
 | K2 | **none public.** Rev 2's `runSyncPhaseInTurn` break is withdrawn: the port already returns its drafts and takes the recording flag (§3.7). The admission clear takes a package path, and `admitJoiningSession` keeps its signature. The scoped emitter is a runtime scope, and `LandContext` keeps its shape (§3.1). The public witness `runsSyncPhaseInTurn(of:)` still receives the `LandKeeper` facade (§3.10, MF-d); this row holds only with that | — |
 | K2 | `package`: `syncTurnNow`, `settleTurn` and `syncTurnTicket` become queries; new `LiveLandTurns`, `ReplayLandOwner`, `KeeperOwner`, `JobCancellation`; `admitJoiningSessionInStep` on `LandKeeperSettlePort` | package |
 | K6 | `CanJoin` takes `ValidateContext` and returns a plan that `OnJoin` receives (#588, agreed with the maintainer 2026-11-18). K6's PR lists every changed signature. The maintainer confirms there that no deprecation step is needed | break |
@@ -611,17 +760,17 @@ For the maintainer, once rev 3 is GO.
 
 ## 9. Questions
 
-For the maintainer. Main files each as a decision issue. K1 doesn't depend on any of them; K2 depends on Q1 and Q2.
+For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depends on K1-Q1 to K1-Q3; K2 depends on Q1.
 
 **Q1. Where does a re-evaluation (replay) keeper keep its state until #612?** (§3.10)
 
 | Option | What it is | K1 | K2 |
 |---|---|---|---|
-| (a) One core, never stepped in replay | `LandKeeper` itself is the `TurnActor`. A replay keeper keeps a core but only borrows its model and world mutably, without stepping | the same split | needs a new core API to lend the state mutably outside a step: a core gap, and a second way to change state that the turn rule must allow |
+| (a) One core, never stepped in replay | `LandKeeper` itself is the `TurnActor`. A replay keeper keeps a core but only borrows its model mutably, without stepping | the same split | needs a new core API to lend the state mutably outside a step: a core gap, and a second way to change state that the turn rule must allow |
 | (b) Replay ticks become core inputs | replay steps the core like live | the same split | pulls #612's redesign (parked) into #700; K2 waits for it |
-| **(c) A facade over two owners (recommended)** | `LandKeeper` stays the public type and forwards to a live owner with a core, or to a replay owner with none | the turn bodies become functions over (model, world, config) that both owners call | adds `LiveLandTurns`, `ReplayLandOwner` and a lint rule for the forwarding; the public API is unchanged; #612 later deletes the replay owner |
+| **(c) A facade over two owners (recommended)** | `LandKeeper` stays the public type and forwards to a live owner with a core, or to a replay owner with none | the turn bodies become functions over (model, behavior) that both owners call | adds `LiveLandTurns`, `ReplayLandOwner` and a lint rule for the forwarding; the public API is unchanged; #612 later deletes the replay owner |
 
-**Q2. How does the core hold the land's non-plain state?** (§3.1)
+**Q2. How does the core hold the land's non-plain state?** (§3.1) **Decided (maintainer, 2026-11-22): no world.** Every value the turns change is `PlainData` (`2026-11-22-plaindata-all-the-way.md`); the definition and config are `Behavior` (#768). The options as rev 4 put them:
 
 | Option | What it is | K1 | K2 |
 |---|---|---|---|
@@ -629,7 +778,28 @@ For the maintainer. Main files each as a decision issue. K1 doesn't depend on an
 | (b) `@PlainData` on every land `State` | the compiler checks `State` | the same census | a public break for every land, and `@Internal` fields holding a class are refused. It doesn't cover payloads or entry facts, so #758 is still needed |
 | (c) Both | (a) now, and (b) probed in its own issue | as (a) | as (a); the probe reports what (b) would break |
 
-Recommended: (a), with (c)'s probe as a separate issue if the maintainer wants the compile-time check later.
+Rev 4 recommended (a). The decision went further than (b): `PlainData` on `State`, payloads, resolver outputs and entry facts, so no world is needed.
+
+**K1-Q1. Replay of a 3.6 record after K1a** (§3.11)
+
+| Option | What it is | Cost |
+|---|---|---|
+| **(a) Recommended** | `minimumReplayable` becomes 3.7: a 3.6 record is still read (the JSON view, the monitor's listing) but not replayed, as 3.6 did for records without a fingerprint | none; a recording made before K1a is re-recorded to replay |
+| (b) | a 3.6 reader keeps building items from the tree (today's public-init path, kept package-only) | a second item builder and its tests, until a later version drops it |
+
+**K1-Q2. MessagePack: the client's exact bytes, or the value packed canonically?** (§3.11)
+
+| Option | What it is | Cost |
+|---|---|---|
+| **(a) Recommended** | pack the unpacked `MessagePackValue` canonically. The bytes decode to the same value with the live decoder; a client that sent a wider integer than needed is recorded in the narrower form | one canonical pack per recorded input |
+| (b) | keep the payload's byte range from the frame | the frame decoder keeps offsets for every payload, recording or not; a copy of the range per recorded input |
+
+**K1-Q3. Client events too?** Q4 named actions. A queued client event holds the same `PayloadDecodingSource` and `AnyCodable`, so it can't be `PlainData` either without the same change.
+
+| Option | What it is |
+|---|---|
+| **(a) Recommended** | client events get the same pair and the same record form, in K1a |
+| (b) | actions only. The client event item then needs another plain form for K1b, such as a `MessagePackValue`-like value tree, and the record keeps two payload forms |
 
 **Q4. When is #698 fixed?** (A teardown can notify a transport other than the one it closed. Production attaches once, so it doesn't happen there today; `setTransport` is public.)
 
@@ -654,3 +824,115 @@ Decided:
 - **Cancellation tokens checked at the commit point** (.NET's `CancellationToken`, Go's `context`). §3.2's token is set synchronously by the canceller and read by the step that would deliver, so the decision sits where the effect lands, not in the hop that carries the news.
 - **Capabilities over ambient references.** §3.1's binding token names its binding, and the step checks it before use.
 - **The strangler fig.** K1 extracts the bodies so the live and replay paths share them, K2 routes the live path through the core, and #612 later removes the replay owner (Q1 (c)).
+
+## Appendix A. K1b's census (draft)
+
+**Status:** draft 2. Review read draft 1 (8e61043f): sound, no must-fix, four shoulds and a nit, folded in here (A.6 S1–S4, and `serverInputMaxInFlight` in A.2). It is checked again on K1b's base.
+
+It covers every stored property of `LandKeeper`, from `LK` at main d25ca82d: 123 declarations in the actor body (LK:113–6024), computed properties excluded. Each gets one home.
+
+**Homes:**
+- **Model:** `KeeperModel<State>`, `@PlainData`, the core's machine;
+- **Behavior:** `KeeperBehavior<State>`, immutable, fixed at init (#768): the definition and `LandConfig`. Sendable, not necessarily `PlainData`;
+- **Outside:** held by `LiveLandTurns` or the facade, written only from `flush` or at init (§3.1's reference table);
+- **Replay:** `ReplayLandOwner` (Q1 (c));
+- **Kn:** replaced in that slice, and kept as today until then.
+
+**PlainData status:**
+- *plain*: a `PlainData` type today, or after #772;
+- *@PD*: needs `@PlainData` on a named type, which K1b adds;
+- *P3*, *P4*, *K1a*: plain once that slice lands;
+- *finding*: not plain, and the census proposes a form.
+
+### A.1 Model
+
+| Fields (LK line) | Status | Note |
+|---|---|---|
+| `state` (357) | P4 | |
+| `players` (358) | @PD `InternalPlayerSession` minus `services` | `services` moves Outside (the per-player table, §3.1). `clientID`, `lastSessionID` and `Epoch` are plain once `ClientID`/`SessionID` (P3 or P4) and `Epoch` are |
+| `pendingItems` (372), `serverInputsHeldWhileFrozen` (3261) | P3 + P4 + K1a | `PendingItem`'s cases: action and client event (K1a), lifecycle (`resolverOutputs`: P3), server input (P3), shutdown (plain), land failure (@PD `LandFailure`) |
+| counters: `stateHashUnavailableTotal` (369), `serverInputsInFlight` (374), `serverInputCapRejections` (377), `syncStreamCounter` (452), `passOrdinal` (460), `foldedSyncs`, `overdueFoldedSyncs`, `lateFoldedSyncs` (751–759), `inTurnDeferredTurns` (766), `recorderSubmissionCount` (812), `inputsSkippedAfterDestroy` (851), `joinSyncTicks` (2122), `supersededSenderRejections` (2128), `actionJobsStarted` (2272), `pendingItemScans` (3531), `requestedSyncWork` (5304), `ticksInFlight` (5364), `nextTickId` (656), `lastCommittedTickId` (662) | plain | `serverInputCapRejections` is counted at intake; in K2 that is the admission query's step (§3.3) |
+| flags: `destructionFinished` (514), `transportRecordsFolds` (527), `didInitialize` (643), `inTurnSyncDue` (748), `inputDrainScheduled` (795), `joinSyncWaitsForCommit` (2125), `shutdownRequested` (2778), `hasHeldTransport` (5166), `destroyHandlersStarted` (5383), `shutdownTurnApplied` (5565) | plain | |
+| `passInProgress` (463), `appliedTickPhaseOffset`, `appliedSyncPhaseOffset` (3383, 3388) | plain | `Int64?`, `Duration?` |
+| `inTurnSyncTurnKind` (454) | @PD `ReevaluationRecordedSyncOutput.TurnKind` | a `String` enum |
+| `syncOutputIndexCursor` (457) | finding (tuple) | a `@PlainData` struct `{ observedTickId: Int64?, count: Int }` |
+| `entryGenerations` (360) | @PD `EpochCounter`, `Epoch` | K2 replaces it with `EntryID` (§3.2); K9 deletes it |
+| `syncBinding` (5170), `inTurnDrainRetryBinding` (779), `joinSyncTurnBinding` (5111) | @PD `Ticket`, `GenerationTable` (Generations.swift:8, :31) | K2's `BindingID` replaces them (§3.5); K9 deletes them |
+| `ticklessJobWork`, `ticklessJobTurns` (2275, 2278) | plain | `Set<Int64>` |
+| `filledActionSlotsForAssert`, `…OrderForAssert`, `…NextForAssert` (2282–2284) | plain | debug-only bookkeeping, kept in Model under `#if DEBUG` |
+| `initializationFailure` (642) | **finding F1** (`any Error`) | Model keeps the plain failure record; the value is in the failure table (A.6 S1) |
+| `outputCollector` (441), a class | finding: split | `nextSequence`, `checksOverflow`, `sequenceExhausted` and `syncRequestsByTick` (@PD `SyncRequests`) go to Model. `emittedEvents` is staged as `any ServerEventPayload` (P3) with @PD `EventTarget` (§3.6, K2). The class goes |
+| `actionJobs` (2256) | split (A.6 S4) | `item` (K1a), `input`, `completed` and `cancelledByKeeper` go to Model. `ticket` is @PD `Ticket` until K2's keys. `task`, `abandonment` and `callerCancelled` stay on the actor in a side table keyed by the same sequence, until K5 (`task`, `abandonment`) and K2 (`callerCancelled` → `JobCancellation`, §3.2) |
+| `actionSlots` (2256–2257) | split (F1, F2 agreed, P3) | `result` becomes `Result<InputOutcome, FailureID>` (A.6 S1, S2). `waiter`, a continuation, stays in the side table until K2's `InputID` (§3.2) |
+| `inputTurnResults` (5652) | F1, F2 | the same form as `actionSlots.result` |
+
+### A.2 Behavior
+
+| Fields | Status | Note |
+|---|---|---|
+| `definition` (355) | not plain (handler closures) | the reason Behavior exists (#768) |
+| `services` (361) | not plain (references) | §3.1: land services are config. The RNG inside is #765's |
+| `logger` (364) | not plain | immutable and Sendable |
+| `autoStartLoops`, `enableLoopPhaseOffset`, `enableLiveStateHashRecording` (365–368), `reevaluationOutputMode` (370), `mode` (378), `actualLandID` (473) | plain | `LandConfig`. `actualLandID` is set once at init (#751) |
+| `systemPlayerID`, `systemClientID`, `systemSessionID` (955–957) | plain | constants; could be static instead |
+| `serverInputMaxInFlight` (375) | plain | **Behavior** (`LandConfig`), decided in draft 2. It is set at init from the environment. Its only other writer is `setServerInputMaxInFlightForTesting` (LK:3297), used by two tests in ServerInputTests.swift (485, 502). K1b deletes the setter, and those tests pass the limit at init |
+
+### A.3 Outside (LiveLandTurns or the facade)
+
+| Fields | What it becomes |
+|---|---|
+| `transport` (363), `releasedTransport` (519), `boundSyncRequesterObject` (5173), `pendingSyncTurnAfterTurn` (5268, holds the port) | the binding token and its follow-up (§3.1, §3.5), K2 |
+| `reevaluationRecorder` (444), `recorderSubmissions` (809) | the recorder sink; drafts are outputs that `flush` hands on (§3.1), K2 |
+| `drainFlag` (544) | a class read `nonisolated` (`isDraining`, `failure`); `flush` publishes into it, K2 |
+| `pendingTransportFailure` (565) | `LandFailureMailbox`: K4 deletes it (the core's mailbox) |
+| `abandonmentCounter` (2260) | shared with resolver groups, read at intake: Outside, K5 |
+| `tickLoopClock` (3400), `tickLoopConfiguredAt` (3387), `nextTickDeadline` (783), `pendingFold` (763, holds an `Instant`) | the loop driver's time. `ContinuousClock.Instant` isn't `PlainData`. K2 writes the next tick deadline into Model on #759's clock (G2, §3.9). `pendingFold`'s flag part is Model already in K1b. Two readers and writers of these sit outside the turn bodies (A.6 S3) |
+
+### A.4 Replaced in a slice (K2–K9), with test hooks
+
+| Fields | Slice |
+|---|---|
+| `tickTask`, `syncTask` (539–540) | K2 drivers (§3.9), then K8 |
+| `destroyTask`, `drainTask` (541, 543), `forceShutdownFlight` (2774) | K7 |
+| `initializationTask` (639) | K5 (`.initialization` request) |
+| continuations: `inputTurnWaiters` (799), `actionJobRemovalWaiters` (2270), `initializationWaits` / `initializationWaitWatchers` (1112–1113), `tickIdleWaiters` (5365), `shutdownTurnWaiters` (5555) | K2: a waiter is an `InputID` in Model, its reply the core's |
+| the freeze: `debugFrozen`, `debugHeldInputs`, `debugInFlightWork`, `debugDrainWaiters`, `debugNextWaiterID`, `debugActiveGeneration`, `debugReleasedGeneration` (941–952) | K7 (#129). The counts and generations are plain and go to Model; the continuations go |
+| test-only waiters: `drainStartedWaitersForTesting` (595–596), `freezeWaitWatchersForTesting` (2557), `inputDrainIdleWaitersForTesting` (2569), `requestedSyncWorkWaitersForTesting` (5307–5308), `failureWaitersForTesting` (5456–5457) | K2: each becomes a wait on a core outcome or a `HoldPoints` replacement (§6.3); K9 deletes what's left |
+| test hooks: `holds` (633), `inTurnProbeForTesting` (822, a closure), `inTurnYieldForTesting` (826), `syncClockForTesting`, `tickClockForTesting` (910, 921) | Outside, on `LiveLandTurns`, test-only; `holds` per §6.3 |
+| test counters: `joinSyncRequestTurnsForTesting` (2090), `joinSyncTurnsForTesting` (5113), `requestedSyncTurnsForTesting` (5298) | Model (plain counters, with @PD `SyncTurnReason` as a dictionary key) |
+
+### A.5 Replay
+
+`replayPassObserver` (4116, a closure), `replayFailureEnd` (4122, a tuple), `replayRecordsPassOrdinals`, `replayRecordsRejected` (4125, 4134), `replayRejected` (4142), `recordedPassMismatches` (4194), `replayedInitializeBeforeTickZero`, `replayedInitializeRefusal` (646, 651) go to `ReplayLandOwner` (Q1 (c)). `reevaluationSource` and `reevaluationSink` (466, 469) go there too. None of these has to be plain: the replay owner has no core. `replayFailureEnd` becomes a struct anyway, if it is shared with the turn bodies.
+
+### A.6 Findings for Review
+
+- **F1: errors in the model.** `initializationFailure` (`LandInitializationError.underlying: any Error`), the failure side of `actionSlots.result` and of `inputTurnResults` (`Result<AnyCodable, any Error>`). `any Error` isn't `PlainData`. A handler's error must reach its caller as the same value, since the adapter maps error types to client error codes.
+
+  **S1 (Review on draft 1): the error travels with the reply, and a table holds it only while no one waits.**
+  - **The id.** Model holds a `FailureID`: a slot index with a generation, so a reused slot never matches an old id (slotmap's generational index). The id has a plain kind and description beside it, for the record and the logs.
+  - **A waiter exists** (the usual case: the caller is already in `awaitActionResult` or `awaitInputTurn`): the core's reply carries the `FailureID`, and the error value rides the step's output to the facade. The facade resumes the caller with the value. Nothing is stored. That is Erlang's and Akka's way: the failure is a message to the waiter (`Status.Failure`), not state.
+  - **No waiter yet:** an outcome reached before its wait (`actionSlots`' reader that arrives after the completion, LK:2251), or `initializationFailure`, which later callers read. Only these need a **failure table**: Outside, keyed by `FailureID`, written by `flush` from the step's output. The facade resolves the id after the reply and before it resumes the caller.
+  - **Cleanup.** `flush` removes an entry when Model drops the slot that names it: the reply is taken, the entry ends, the drain finishes, or `endAll` runs. `initializationFailure`'s entry lives as long as the land.
+  - **Tests:** `failureTableEmptyAfterEndAll` and `failureTableEmptyAfterDrain`. Each leaves an unread failed action and a failed one that was read, then checks the table holds only the initialization entry, if any. A stale id after slot reuse doesn't resolve.
+  - **Mutant:** `flush` skips the removal on `endAll`. Caught by `failureTableEmptyAfterEndAll`.
+
+  Rev 5.2's `RecordedPayloadDecodeFailure` is the same move for replay: a plain record in the item, with the error rebuilt at apply.
+- **F2: action responses (agreed, P3).** The success side of `actionSlots.result` and `inputTurnResults` is an `AnyCodable` built from the handler's `ResponsePayload`. The PlainData plan (§3.3) leaves the form to this census. Proposal: hold `any ResponsePayload`, with `ResponsePayload` refining `PlainData`. That is **an addition to P3's scope**: today P3 names action, event and server-input payloads and resolver outputs, not responses. The other option, encoded response bytes, would make the keeper encode, which today is the transport's job.
+
+  **Agreed, P3** (P3's owner, 2026-11-24). `ResponsePayload` refines `PlainData` in P3; 97 of 99 conformances already carry `@Payload`. The outcome enum below is P3's too. The condition is that two things stay K1a's:
+  - **the response's encode path.** Today the handler's response is wrapped in `AnyCodable` inside the land definition (LandDefinition.swift:305) and carried as one (LK:3611, 3943). K1a moves the encode to the transport's reply, out of the keeper;
+  - **the record and replay side.** Today the record holds no response and replay compares none. If a response is recorded or compared, that is K1a's call.
+
+  **S2 (Review on draft 1):**
+  - **P3 had to agree** (done, above). `ResponsePayload` is public, so its refining `PlainData` is a source break in P3's Public API list.
+  - **The non-action success.** Today an input that isn't an action succeeds with `AnyCodable(())` (LK:3938, 3944). The outcome becomes a plain enum: `InputOutcome { case none; case response(any ResponsePayload) }`, with `none` for everything but an action's response. A `Result<InputOutcome, FailureID>` is then plain.
+- **F3: three tuples** (`syncOutputIndexCursor`, `pendingFold`, `replayFailureEnd`) become small structs, since a tuple can't conform.
+- **F4: the loop's `ContinuousClock.Instant`s** stay Outside until G2. K1b's census test lists them as an expected exception, so the test passes until K2 moves them.
+
+  **S3 (Review on draft 1): two places cross that line today.**
+  - **`takePendingFold` (LK:4768)** reads the clock (`tickClockForTesting ?? ContinuousClock.now`) and the fold's deadline inside the tick turn, to compute the tick's lateness. In K1b the driver reads the start instant before it enters the turn, and passes the finished `InTurnSyncFold` (or the instant) as part of the turn's input. The turn body then reads no clock and no `Instant`.
+  - **The sync loop (LK:5806–5820)** decides a fold outside any turn. It reads `nextTickDeadline` and the clock, and writes Model: `foldedSyncs`, `overdueFoldedSyncs`, `pendingFold`, `inTurnSyncDue`. K1b lists it as a **non-turn writer of Model, until K2**, when the decision becomes the `.syncDue` step (§3.9). The census test names it as a known exception, as it does the Instants.
+- **S4 (Review on draft 1): split tables keyed by one sequence.** Two parts of an action job aren't plain: `task`, `abandonment` and `callerCancelled`, and the slot's waiter continuation. They stay on the actor in a side table keyed by the same sequence as Model's job and slot entries. That is an ECS-style split: one id, a component table per storage. A debug assertion at each step boundary checks that both tables have equal key sets, and the census test checks it after a job's whole life: admitted, resolved, abandoned and cancelled. Mutant: the side table's removal is skipped on abandonment; the assertion catches it.
+
+**K1b's census test** (§6.2) checks this table against the actor's stored properties with `Mirror`: each name must appear in exactly one home. A new field fails until it is placed. `KeeperModel`'s `@PlainData` gives the compile-time half. The test's known exceptions are F4's Instants and S3's sync-loop writer, each with the slice that ends it (K2).
