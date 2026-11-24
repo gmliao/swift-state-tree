@@ -103,7 +103,9 @@ struct ReevaluationRunnerExitTests {
 
     /// The built runner, or a failure that says to build it first.
     private static func builtRunner() throws -> URL {
-        let products = try #require(productsDirectory(), "can't find this test bundle's build products directory")
+        let products = try #require(
+            productsDirectory(), "can't find this test bundle's build products directory in \(CommandLine.arguments)"
+        )
         let runner = products.appendingPathComponent("ReevaluationRunner")
         try #require(
             FileManager.default.isExecutableFile(atPath: runner.path),
@@ -177,15 +179,25 @@ struct ReevaluationRunnerExitTests {
 
     /// The directory that holds this test bundle, which is where `swift build` put the package's
     /// executables for the same configuration and scratch path. The test process names the bundle
-    /// in its arguments: on Linux the `<name>.xctest` executable is `argv[0]`; on macOS the testing
-    /// helper is passed `<name>.xctest/Contents/MacOS/<name>`. Only the arguments: on Linux
-    /// `Bundle.allBundles` crashed the test process (a null dereference in CFBundleGetAllBundles),
-    /// and `dladdr` isn't visible from Swift's Glibc module.
+    /// in its arguments, in one of two layouts:
+    /// - SwiftPM's native build system: on Linux the `<name>.xctest` executable is `argv[0]`; on
+    ///   macOS the testing helper is passed `<name>.xctest/Contents/MacOS/<name>`. The directory is
+    ///   the parent of the `.xctest` component.
+    /// - The swift-build system (SwiftPM's default from Swift 6.4): each test target is an
+    ///   executable `<target>-test-runner` beside the products, with no `.xctest` component. The
+    ///   directory is the runner's own.
+    /// Only the arguments: on Linux `Bundle.allBundles` crashed the test process (a null
+    /// dereference in CFBundleGetAllBundles), and `dladdr` isn't visible from Swift's Glibc module.
     private static func productsDirectory() -> URL? {
         for argument in CommandLine.arguments {
-            let components = URL(fileURLWithPath: argument).standardizedFileURL.pathComponents
-            guard let bundle = components.firstIndex(where: { $0.hasSuffix(".xctest") }) else { continue }
-            return URL(fileURLWithPath: NSString.path(withComponents: Array(components[..<bundle])))
+            let url = URL(fileURLWithPath: argument).standardizedFileURL
+            let components = url.pathComponents
+            if let bundle = components.firstIndex(where: { $0.hasSuffix(".xctest") }) {
+                return URL(fileURLWithPath: NSString.path(withComponents: Array(components[..<bundle])))
+            }
+            if url.lastPathComponent.hasSuffix("-test-runner") {
+                return url.deletingLastPathComponent()
+            }
         }
         return nil
     }
