@@ -316,9 +316,19 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
                     // A tickless land applies each action as it arrives, and the reply goes out
                     // through the adapter's outbound writer: wait on the transport's counter
                     // (replies plus error frames since the window began) until every action
-                    // submitted so far is answered. No timer; an error frame ends the wait and
-                    // `requireComplete` fails the run.
+                    // submitted so far is answered. No timer. Each answer is queued before its
+                    // `onMessage` returned, so once the writer has handed the queue over, an
+                    // input that is still unanswered never will be: the settle marks the answers
+                    // final, the wait returns short and `requireComplete` fails the run.
+                    // The settle is joined after the span ends, so the measured window holds the
+                    // actions and their replies, not the drain's poll.
+                    var settle: Task<Void, Never>?
                     if awaitsReplies, let submitted = inputCounts?.submitted[roomIndex] {
+                        let ticket = await room.transport.beginAnswerWait()
+                        settle = Task { [adapter = room.adapter, transport = room.transport] in
+                            await MeasuredSync.drain([adapter])
+                            await transport.markAnswersFinal(ticket: ticket)
+                        }
                         await room.transport.waitForAnswers(atLeast: submitted)
                     }
                     if ticksPerSync > 0 {
@@ -331,6 +341,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
                         tickDuration += tickStart.duration(to: ContinuousClock.now)
                     }
                     perfWindow?.end(.nonsync)
+                    await settle?.value
                 } else if ticksPerSync > 0 {
                     let tickStart = ContinuousClock.now
                     perfWindow?.beginEither()

@@ -13,6 +13,9 @@
 #               SwiftStateTurnsTests makes after a build (CI: build › swift test)
 #   plan-index  scripts/check-plan-index.sh --self-test, then Notes/plans/README.md: one row per plan
 #               and no conflict marker, after a union merge (CI: the Plan index workflow)
+#   image-pin   scripts/check-ci-image-pin.sh --self-test, then the repository: one Swift image
+#               digest in the workflows and the Dockerfiles, named by every SwiftPM cache key
+#               (CI: the Image pin workflow)
 #   text-encoding  scripts/lint-text-encoding.py --self-test, then deep-research/ and scripts/:
 #               Python text I/O without encoding= (a non-UTF-8 locale, such as cp950 on Windows,
 #               breaks it). Not in CI yet.
@@ -109,6 +112,7 @@ run turns bash -c 'scripts/lint-turns.sh --self-test && scripts/lint-turns.sh'
 run gate-close bash -c 'scripts/gate-close-census.sh --self-test && scripts/gate-close-census.sh'
 run turns-doc-blocks bash -c 'python3 scripts/check-turns-doc-blocks.py --self-test && python3 scripts/check-turns-doc-blocks.py'
 run plan-index bash -c 'scripts/check-plan-index.sh --self-test && scripts/check-plan-index.sh'
+run image-pin bash -c 'scripts/check-ci-image-pin.sh --self-test && scripts/check-ci-image-pin.sh'
 run text-encoding bash -c 'python3 scripts/lint-text-encoding.py --self-test && python3 scripts/lint-text-encoding.py'
 run classify python3 scripts/classify-golden-changes.py --self-test
 if touches '\.(sh|bash)$' || touches "^${workflow//./\\.}$"; then
