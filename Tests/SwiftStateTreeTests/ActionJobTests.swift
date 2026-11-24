@@ -976,6 +976,7 @@ struct ResolverAbandonmentTests {
         #expect(during.abandoned == 2)
         #expect(during.abandonedActions == 1)
         #expect(during.abandonedCanJoin == 1)
+        try await expectAbandoned(keeper, .action, 1)
         try await expectAbandoned(keeper, .canJoin, 1)
 
         ActionJobGates.gate(stuck).release()
