@@ -46,9 +46,9 @@ Refusing `Date`, `UUID` and `URL` in payloads, server inputs, resolver outputs a
 
 ### 2.3 Q3: a diagnostic for a nested type without `@PlainData`
 
-A syntactic macro can't see whether a field's type has `@PlainData`. The compiler sees it when it checks the emitted `PlainDataCheck.field(T.self)`, and today says only "requires that 'T' conform to 'PlainData'". Two changes give the error a fix and a field name:
+A syntactic macro can't see whether a field's type has `@PlainData`. The compiler sees it when it checks the emitted `PlainDataCheck.field(value.position)`, and today says only "requires that 'T' conform to 'PlainData'". Since #772 round 5 the check reads the stored value, so the expansion's line already names the field (`field(value.position)`, `field(v0)` inside `if case let .moved(v0) = value`). One change gives the error a fix:
 - `PlainDataCheck` gains an unconstrained overload, `@available(*, unavailable, message: …)`. Overload resolution picks the constrained `field<T: PlainData>` whenever it applies, so the unavailable one is chosen only for a type that isn't `PlainData`, and its message is the error. Proposed message: "this field's type isn't PlainData: add @PlainData to your struct or enum; a class, closure or Any can't be stored".
-- Each emitted check passes the field's name: `SwiftStateTurns.PlainDataCheck.field((Position).self, "position")`. The error sits on that line of the expansion, so the field is named where the error points. An associated value passes `"case.index"`.
+- The field-name argument that rev 3 proposed is dropped: the value expression names the field where the error points (decided while implementing, after #772 round 5).
 
 Probe (one file, `swiftc -typecheck -swift-version 6`): the constrained overload wins for `Int`, a `PlainData` struct and `[PlainData struct]`, which compile. The unavailable message is the error for a nested struct without the conformance, `[that struct]`, a class, and an unconstrained generic `T`. The results are the same on Swift 6.4.2 (macOS) and 6.2.4 (`swift:6.2.4-noble`). The probe doesn't cover the error's position inside a macro expansion. The must-not-compile snippets below pin that.
 
@@ -81,24 +81,23 @@ Several already carry `@SnapshotConvertible`, and the two extension macros sit s
 ## 3. Tests and mutants
 
 Holds and events, never timing. Nothing here is concurrent.
-- The `SwiftStateTurnsMacrosTests` expansions stay green with one change: the `field` lines gain the name argument, on top of what #772's final round emits (module-qualified names, `same` lines, the existential closure form). That is the only expected diff, and the test diff shows it.
+- The `SwiftStateTurnsMacrosTests` expansions stay green unchanged: the walk moves without changing what it emits (#772's final round: module-qualified names, value-reading checks in a local `check(_ value: inout Self)`).
 - The `SwiftStateTreeMacros` tests stay green unchanged, apart from the `Decimal` message text.
-- New compile test: `PlainDataCheck.field(T.self)` for each DeterministicMath type from §2.4, in `SwiftStateTreeDeterministicMathTests`.
+- New compile test: a local `func requirePlainData<T: PlainData>(_: T.Type) {}` called for each DeterministicMath type from §2.4, in `SwiftStateTreeDeterministicMathTests`. Since #772 round 3, the plain-data lint refuses `PlainDataCheck` in code outside `SwiftStateTurns`, so tests don't call it (agreed with P4, which does the same).
 - New must-not-compile snippets:
   - a `@PlainData` struct holding a nested struct without `@PlainData` (`expect-error` is the new message, and the line names the field);
   - the same inside `[T]` and `[String: T]`.
 - Mutants:
   - (a) the unavailable overload deleted: the new snippets fail on their `expect-error`;
-  - (b) the name argument dropped from the emitted line: the expansion tests fail;
+  - (b) the walk's output changed in the move (the shared `checks` emits `field` for an existential): the expansion tests fail;
   - (c) `@PlainData` removed from `IVec2`: the compile test fails;
   - (d) `AnyCodable` dropped from the classifier's names: the existing `refusedSyncFieldType` tests fail.
 
 ## 3a. The lint and the new paths
 
-`scripts/lint-turns.sh` refuses any code use of `_plainDataCheck` outside `Sources/SwiftStateTurns/` and `Sources/SwiftStateTurnsMacros/` (#772). It strips comments and string literals first. For the paths this slice and P3/P4 add:
-- **`Sources/PlainDataMacroSupport/`.** The walk names `_plainDataCheck` only inside string literals, the generated code, so it needs no exemption. If a check of its own ever needs the word in code, the exemption is added then, with the path in the lint's core list.
-- **`Sources/SwiftStateTreeMacros/`.** The same: emission is in string literals.
-- **The macro declarations in `Sources/SwiftStateTree/`.** In P3 and P4, `@Payload` and `@StateNodeBuilder` gain `names: named(_plainDataCheck)` in their `@attached(…)` declarations. That is code, and the lint would refuse it. P3 (the first of the two to land) adds one narrow exemption: `named(_plainDataCheck)` inside an `@attached(` attribute, anywhere under `Sources/`. A role declaration names the member; it writes nothing. A self-test pins it: allowed in `@attached(extension, names: named(_plainDataCheck))`, refused in a `func`.
+The plain-data lint (`Tests/SwiftStateTurnsMacrosTests/PlainDataLintTests.swift`, since #772 rounds 2 and 3) refuses any `_plainDataCheck` or `PlainDataCheck` identifier token outside `Sources/SwiftStateTurns/`. It reads SwiftSyntax tokens, so string literals are never read as code. For the paths this slice and P3/P4 add:
+- **`Sources/PlainDataMacroSupport/` and `Sources/SwiftStateTreeMacros/`.** The walk and the emitters name both words only inside string literals, the generated code, so they need no exemption.
+- **The macro declarations in `Sources/SwiftStateTree/`.** In P3 and P4, `@Payload` and `@StateNodeBuilder` gain `names: named(_plainDataCheck)` in their `@attached(…)` declarations. That is code, and the lint would refuse it. Whichever of P3 and P4 lands first adds one narrow exemption to the visitor (agreed between their owners): an identifier inside `named(…)` in the arguments of an `@attached(…)` attribute of a macro declaration. A role declaration names the member; it writes nothing. Fixtures: allowed there, refused in a `func` and in `named(…)` of another attribute.
 
 ## 4. Verification
 
@@ -116,7 +115,7 @@ A/B: none. The slice is compile time only: `_plainDataCheck` is never called, an
 
 The rest is additive and source compatible:
 - `PlainData` conformances on the DeterministicMath types in §2.4;
-- `PlainDataCheck.field` gains a defaulted `StaticString` name parameter and an unavailable unconstrained overload. `PlainDataCheck` is public but documented "not for direct use".
+- `PlainDataCheck.field` gains an unavailable unconstrained overload, `field<T>(_: T)` (the name parameter rev 3 proposed was dropped in implementation). `PlainDataCheck` is public but documented "not for direct use".
 
 The new target isn't a product.
 

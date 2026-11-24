@@ -1,4 +1,4 @@
-// expect-error: to closure result type 'any PlainData'
+// expect-error: 'any Error'
 import SwiftStateTurns
 
 // A machine field that is an existential: its value can be a class.

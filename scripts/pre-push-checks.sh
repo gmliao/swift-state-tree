@@ -16,6 +16,8 @@
 #   text-encoding  scripts/lint-text-encoding.py --self-test, then deep-research/ and scripts/:
 #               Python text I/O without encoding= (a non-UTF-8 locale, such as cp950 on Windows,
 #               breaks it). Not in CI yet.
+#   classify    scripts/classify-golden-changes.py --self-test: the golden-change classes, the
+#               recordPayload class for #700 K1a included, on fixtures. Not in CI yet.
 #   ShellCheck  every tracked script, plus new untracked ones, outside CI's exclusion; an excluded
 #               script with no findings fails (CI: shellcheck). The exclusion is read from the
 #               workflow, so it can't drift. Needs ShellCheck 0.11.0, the version CI pins. Skipped
@@ -29,8 +31,9 @@
 #               server env list against Sources (#513), the pipefail-reader check against every
 #               tracked shell script, the sync-lag defaults against Sources and ws-loadtest, the
 #               state-shape fixtures, and the ignore rules the record paths rely on
-# Not covered (the build-slot verification and the push's own CI): swift build and test, E2E,
-# generated schemas and codegen, the TypeScript SDK and ws-loadtest tests.
+# Not covered (the build-slot verification and the push's own CI): swift build and test (with
+# them the plain-data lint, a test), E2E, generated schemas and codegen, the TypeScript SDK and
+# ws-loadtest tests.
 #
 # Usage: scripts/pre-push-checks.sh [base]   (default origin/main; run `git fetch` first)
 # Tests: scripts/test-pre-push-checks.sh
@@ -107,6 +110,7 @@ run gate-close bash -c 'scripts/gate-close-census.sh --self-test && scripts/gate
 run turns-doc-blocks bash -c 'python3 scripts/check-turns-doc-blocks.py --self-test && python3 scripts/check-turns-doc-blocks.py'
 run plan-index bash -c 'scripts/check-plan-index.sh --self-test && scripts/check-plan-index.sh'
 run text-encoding bash -c 'python3 scripts/lint-text-encoding.py --self-test && python3 scripts/lint-text-encoding.py'
+run classify python3 scripts/classify-golden-changes.py --self-test
 if touches '\.(sh|bash)$' || touches "^${workflow//./\\.}$"; then
   run shellcheck shell_check
 else
@@ -142,7 +146,7 @@ else
   done <<<"$readers"
   [ $ran_reader -eq 1 ] || echo "skip  deep-research and its readers (nothing they read changed)"
 fi
-echo "not covered: swift build/test, E2E, generated schemas/codegen, TypeScript SDK and ws-loadtest tests (build-slot verification and CI)"
+echo "not covered: swift build/test (incl. the plain-data lint test), E2E, generated schemas/codegen, TypeScript SDK and ws-loadtest tests (build-slot verification and CI)"
 if [ ${#failed[@]} -ne 0 ]; then
   echo "pre-push-checks: FAILED: ${failed[*]}"
   exit 1

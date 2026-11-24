@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Every Swift container image in the workflows is pinned to one digest, and every SwiftPM cache
 # step keys on that digest, so a cache never outlives the image it was filled with and the jobs
-# can't drift onto different images when the tag is pushed again.
+# can't drift onto different images when the tag is pushed again. The same holds for every Swift
+# `FROM` line of the repo's Dockerfiles (#780).
 #
 # Images: `image:`, `container:` and `uses: docker://` values naming a `swift:` image, quoted or
 # not, with or without a registry prefix, in .github/workflows/*.yml and *.yaml. They must all be
@@ -9,6 +10,14 @@
 # Cache steps: the steps whose `path:` is SwiftPM's shared cache (~/.cache/org.swift.swiftpm).
 # There must be at least one; its `key` and every `restore-keys` entry must hold the digest as a
 # key segment (`-<digest>-`), outside a comment.
+# Dockerfiles: every tracked file named exactly `Dockerfile` or `Dockerfile.<suffix>`, at any depth
+# (`git ls-files`). Not read: `*.dockerfile` and `Containerfile` (none exist today); a file that
+# should be checked has to be named one of the two. Each `FROM` line naming a `swift` image, with
+# or without `--platform=…` and `AS <stage>`, must be `swift:<tag>@sha256:<64 hex>` with the digest
+# of the workflows' pin. A `FROM` of another image (`ubuntu:24.04 AS runtime`) or of an earlier
+# stage isn't read: those stay pinned by tag. A `FROM` image holding a `$` (`FROM ${IMAGE}`, from
+# an `ARG`) can't be resolved here, so it is refused: pin the Swift image inline.
+# Errors name the file and line.
 #
 # Usage: scripts/check-ci-image-pin.sh [--self-test] [workflows dir]
 set -euo pipefail
@@ -16,6 +25,7 @@ cd "$(dirname "$0")/.."
 exec python3 - "$@" <<'PY'
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -31,6 +41,10 @@ FLOW_IMAGE = re.compile(r"""^\s*(?:-\s+)?container:\s*\{.*?\bimage:\s*["']?((?:[
 # it is refused, so an image can't hide from the check in a form it doesn't parse.
 BLOCK_IMAGE = re.compile(r"^\s*(?:-\s+)?(?:image|container):\s*[|>]")
 PINNED = re.compile(r"^swift:[\w.-]+@sha256:([0-9a-f]{64})$")
+# A Dockerfile `FROM` line: its options (`--platform=…`), the image, and an optional `AS <stage>`.
+FROM_LINE = re.compile(r"^\s*FROM\s+((?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?\s*$", re.IGNORECASE)
+# A Swift image in a `FROM` line: `swift`, with a registry prefix, a tag or a digest or none of them.
+SWIFT_FROM = re.compile(r"^(?:[\w.-]+(?::\d+)?/)*swift(?:[:@]\S*)?$")
 CACHE_DIR = "~/.cache/org.swift.swiftpm"
 STEP = re.compile(r"^(\s*)- ")
 
@@ -87,7 +101,41 @@ def block_values(step, names):
     return values
 
 
-def check(workflows):
+def dockerfile_errors(dockerfiles, digest):
+    """Errors for the Swift `FROM` lines of `dockerfiles` ({name: text}) against the workflows'
+    `digest`, and how many Swift lines were read."""
+    errors, count = [], 0
+    for name, text in sorted(dockerfiles.items()):
+        stages = set()
+        for n, line in enumerate(text.splitlines(), 1):
+            m = None if line.lstrip().startswith("#") else FROM_LINE.match(line)
+            if not m:
+                continue
+            image, stage = m.group(2), m.group(3)
+            if stage:
+                stages.add(stage.lower())
+            if "$" in image:
+                errors.append(f"{name}:{n}: a FROM image from a build argument can't be checked; pin the Swift image inline: {image}")
+                continue
+            if image.lower() in stages or not SWIFT_FROM.match(image):
+                continue
+            count += 1
+            pinned = PINNED.match(image)
+            if not pinned:
+                errors.append(f"{name}:{n}: a Swift FROM must be swift:<tag>@sha256:<64 hex>, not {image}")
+            elif pinned.group(1) != digest:
+                errors.append(f"{name}:{n}: the digest differs from the workflows' pin ({digest}): {image}")
+    return errors, count
+
+
+def tracked_dockerfiles():
+    """{path: text} for each tracked file named Dockerfile or Dockerfile.*, from the repo root."""
+    out = subprocess.run(["git", "ls-files"], capture_output=True, text=True, encoding="utf-8", check=True).stdout
+    paths = [p for p in out.splitlines() if re.match(r"(?i)^(?:.*/)?Dockerfile(?:\.[^/]*)?$", p)]
+    return {p: pathlib.Path(p).read_text(encoding="utf-8") for p in paths}
+
+
+def check(workflows, dockerfiles=None):
     errors = []
     files = sorted(list(workflows.glob("*.yml")) + list(workflows.glob("*.yaml")))
     images = {}
@@ -132,7 +180,15 @@ def check(workflows):
                 errors.append(f"{name}: {k} doesn't hold the image digest as a key segment: {v}")
     if errors:
         return errors
-    print(f"ci image pin: {next(iter(images))}; {len(cache_steps)} SwiftPM cache steps key on its digest")
+    summary = f"{len(cache_steps)} SwiftPM cache steps key on its digest"
+    if dockerfiles is not None:
+        errors, count = dockerfile_errors(dockerfiles, digest)
+        if errors:
+            return errors
+        if not count:
+            return ["no Swift FROM line found in the Dockerfiles"]
+        summary += f"; {count} Swift FROM lines in {len(dockerfiles)} Dockerfiles use it"
+    print(f"ci image pin: {next(iter(images))}; {summary}")
     return []
 
 
@@ -201,13 +257,41 @@ def self_test():
     ok = any("more than one" in e for e in errors)
     print(f"{'ok  ' if ok else 'FAIL'} self-test: a .yaml workflow")
     failed += not ok
+    # Dockerfiles, checked against the workflows' pin (GOOD).
+    pin = f"swift:6.2.4-noble@sha256:{D}"
+    docker_cases = [
+        ("dockerfile: a pinned FROM with AS builder", f"FROM {pin} AS builder\n", None),
+        ("dockerfile: a non-Swift FROM by tag", f"FROM {pin} AS builder\nFROM ubuntu:24.04 AS runtime\n", None),
+        ("dockerfile: a tag-only Swift FROM, with its file and line",
+         f"FROM {pin} AS builder\nFROM swift:6.2.4-noble\n", "Dockerfile:2: a Swift FROM must be"),
+        ("dockerfile: a digest that differs from the workflows'", f"FROM swift:6.2.4-noble@sha256:{other}\n", "Dockerfile:1: the digest differs"),
+        ("dockerfile: a truncated digest", f"FROM swift:6.2.4-noble@sha256:{D[:12]}\n", "a Swift FROM must be"),
+        ("dockerfile: a registry-qualified Swift image", f"FROM docker.io/library/{pin}\n", "a Swift FROM must be"),
+        ("dockerfile: no tag at all", "FROM swift\n", "a Swift FROM must be"),
+        ("dockerfile: lower-case keywords and a platform option", f"from --platform=linux/amd64 {pin} as builder\n", None),
+        ("dockerfile: a comment naming an unpinned FROM", f"# FROM swift:6.2.4-noble\nFROM {pin}\n", None),
+        ("dockerfile: a stage named swift is not an image", f"FROM {pin} AS swift\nFROM swift AS again\n", None),
+        ("dockerfile: no Swift FROM at all", "FROM ubuntu:24.04\n", "no Swift FROM line"),
+        ("dockerfile: a FROM image from an ARG, with its file and line",
+         "ARG SWIFT_IMAGE=swift:6.2.4-noble\nFROM ${SWIFT_IMAGE} AS builder\n", "Dockerfile:2: a FROM image from a build argument"),
+        ("dockerfile: a FROM image from a bare variable", f"FROM {pin} AS builder\nFROM $BASE\n", "Dockerfile:2: a FROM image from a build argument"),
+        ("dockerfile: a $ in a platform option is not the image", f"FROM --platform=$BUILDPLATFORM {pin} AS builder\n", None),
+    ]
+    for name, text, want in docker_cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            (d / "w.yml").write_text(GOOD, encoding="utf-8")
+            errors = check(d, {"Dockerfile": text})
+        ok = (not errors) if want is None else any(want in e for e in errors)
+        print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {errors}"))
+        failed += not ok
     return failed
 
 
 args = sys.argv[1:]
 if args[:1] == ["--self-test"]:
     sys.exit(1 if self_test() else 0)
-errors = check(pathlib.Path(args[0] if args else ".github/workflows"))
+errors = check(pathlib.Path(args[0] if args else ".github/workflows"), tracked_dockerfiles())
 for e in errors:
     print(f"::error::{e}")
 sys.exit(1 if errors else 0)

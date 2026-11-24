@@ -42,7 +42,7 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 |---|---|
 | `[PlayerID: Seat]`，兩者都是 `@PlainData` | 是 |
 | `Set<Int>`、`String?`、`Result<Int, TurnError>` | 是 |
-| `any Payload`、`[any Payload]`、`(any Payload)?`，其中 `protocol Payload: PlainData` | 是 |
+| `any Payload`、`[any Payload]`、`(any Payload)?`，其中 `protocol Payload: PlainData` | 是（作為 `@PlainData` 型別的欄位） |
 | `[String: Any]`、`Result<Int, any Error>` | 否：existential |
 | `Date`、`UUID`、`URL`、`Decimal` | 否：分別改存毫秒的 `Int64`（或讀 turn 的 `now`）、`String` 或專案自己的 ID 型別、`String`，以及最小單位的整數或 `String` |
 | `[() -> Void]` | 否：函式型別 |
@@ -52,15 +52,17 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 
 ### 自己的型別
 
-在 struct 或 enum 定義處加上 `@PlainData`。macro 會寫出 conformance，並為每個儲存屬性或 associated value 加一項檢查；該型別不是純資料就無法編譯。
+在 struct 或 enum 定義處加上 `@PlainData`。macro 會寫出 conformance，並為每個儲存屬性或 associated value 加一項檢查：檢查讀取儲存的值，值的型別不是純資料就無法編譯。因為讀的是值而不是寫出來的型別名稱，欄位型別的解析與宣告處相同，包括同一個外層型別裡巢狀的兄弟型別。
 - 每個儲存屬性都要有型別標註，macro 才能檢查。
 - 泛型型別需要 `where T: PlainData`。
 - `@PlainData` 加在 class 或 actor 上會被拒絕；型別是 class、actor、closure，或未 refine `PlainData` 的 protocol 的 existential 的欄位，也會被拒絕。
 - `any P` 欄位單獨出現時會被檢查，作為 `Optional`、`Array`、`ContiguousArray` 的元素或 `Dictionary` 的 value 時也會。放在其他泛型型別裡（`Set<any P>`、`Result<Int, any P>`）時，macro 看不出該型別怎麼使用它，所以會拒絕。
-- protocol 可以 refine `PlainData`。遵循它的型別仍需加上 `@PlainData`：`PlainData` 要求 macro 寫出的檢查，所以沒有 macro 的 class 或 struct 無法編譯。
-- 在 `SwiftStateTurns` 之外手寫 `: PlainData` 或 `_plainDataCheck`（包括 `@retroactive`）會被 `scripts/lint-turns.sh` 拒絕：那樣會不經任何檢查就符合。
+- protocol 可以 refine `PlainData`。遵循它的型別仍需加上 `@PlainData`：`PlainData` 要求 macro 寫出的檢查，所以沒有 macro 的 class 或 struct 無法編譯，除非手寫 `_plainDataCheck`，而 lint 會拒絕這種寫法。
+- 在 `SwiftStateTurns` 之外手寫 `: PlainData` 或 `_plainDataCheck`（包括 `@retroactive`）會被 plain-data lint（`Tests/SwiftStateTurnsMacrosTests/PlainDataLintTests.swift`，隨 `swift test` 執行）拒絕：那樣會不經任何檢查就符合。程式碼中任何對 `PlainDataCheck` 的使用（它的 alias 或 extension 可以加入 overload），以及名為 `SwiftStateTurns`、`Swift`、`Optional`、`Array`、`ContiguousArray` 或 `Dictionary` 的宣告也會被拒絕，因為它們可能改變 macro 的檢查解析到的對象。
 - 標準函式庫或 Foundation 的型別無法加上 macro。請改存 turn core 的值型別，例如用 `TurnInstant` 取代 `ContinuousClock.Instant`。
 - 本 repository 其他模組的型別，在它自己的模組、它的定義處加上 `@PlainData`，絕不在別處用 extension 加。land 的狀態與 transport 保存的 ID 和值都已這樣標註：`SessionID`、`PlayerID`、`ClientID`、`EventTarget`、`StateSnapshot`、`SnapshotValue` 和 `MessagePackValue`。machine 可以直接儲存它們。
+- **限制。** macro 與 lint 是用來抓錯誤的，不是安全邊界。Swift 沒有 sealed protocol，所以刻意寫來繞過它們的程式碼（手寫 witness、alias 或 extension 的技巧、被 lint 當成核心讀取的 symlink 原始碼目錄）可以讓非純資料的型別符合 `PlainData`，代價是 replay 的保真度。這類繞過是已知限制，不是檢查承諾要堵住的漏洞。有兩種正當的寫法會被拒絕而不是被檢查：欄位型別用到外層型別的泛型參數（`struct Outer<T> { @PlainData struct Inner { var value: T } }`，#782），以及基本名稱相同的 enum case（`case item(count: Int)` 與 `case item(label: String)` 並存；請給每個 case 不同的名稱）。
+- 在 `Optional`、`Array`、`ContiguousArray` 或 `Dictionary` 的 value 裡，請在欄位宣告處直接寫出 `any P`，不要經過 alias：macro 是靠讀到的 `any` 找出 existential，所以 `typealias PayloadValue = any Payload` 用在型別為 `PayloadValue` 的欄位可以，用在 `PayloadValue?` 或 `[PayloadValue]` 則無法編譯。
 
 下面的例子中，替第一個 `Room` 加上 `@PlainData` 會被拒絕：macro 會指出其中不是純資料的欄位。第二個可以編譯。
 

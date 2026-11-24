@@ -24,23 +24,46 @@ public protocol PlainData {
 @attached(extension, conformances: PlainData, names: named(_plainDataCheck))
 public macro PlainData() = #externalMacro(module: "SwiftStateTurnsMacros", type: "PlainDataMacro")
 
-/// What the macro's checks call. Not for direct use.
+/// What the macro's checks call. Not for direct use. Each takes a stored value, so it checks the
+/// type the value has, wherever the spelled type's name would resolve.
 public enum PlainDataCheck {
+    /// Compiles only when the value's type is `PlainData`.
     @inlinable @inline(__always)
-    public static func field<T: PlainData>(_: T.Type) {}
+    public static func field<T: PlainData>(_: T) {}
 
-    /// For a field `any P`, with the type in the closure's parameter: compiles only when `P`
-    /// refines `PlainData`, because only then does `any P` convert to `any PlainData`. A class
-    /// conforming through `P` still has to provide `_plainDataCheck`, which `@PlainData` refuses
-    /// to write for a class; written by hand, the compiler accepts it, and only this
-    /// repository's lint refuses it.
-    @inlinable @inline(__always)
-    public static func existential<E>(_ upcast: (E) -> any PlainData) {}
+    /// Chosen only when the constrained overload doesn't apply, so its message is the error for a
+    /// field whose type isn't `PlainData`, on the expansion's line that names the field.
+    @available(*, unavailable, message: "this field's type isn't PlainData: add @PlainData to your struct or enum; a class, closure or Any can't be stored; an existential `any P` (P refining PlainData) inside Optional, Array, ContiguousArray or a Dictionary's value must be spelled `any P` where the field is declared, not through an alias")
+    public static func field<T>(_: T) {}
 
-    /// Compiles only when both are the same type: a wrapper spelled `Array<…>` (or `Optional`,
-    /// `ContiguousArray`, `Dictionary`) is the standard library's, not a namesake in the module.
+    /// For a value `any P`: compiles only when `P` refines `PlainData`, because only then does
+    /// `any P` convert to `any PlainData`. A class conforming through `P` still has to provide
+    /// `_plainDataCheck`, which `@PlainData` refuses to write for a class; written by hand, the
+    /// compiler accepts it, and only this repository's lint refuses it.
     @inlinable @inline(__always)
-    public static func same<T>(_: T.Type, _: T.Type) {}
+    public static func existential(_: any PlainData) {}
+
+    // A wrapper spelled `Array<…>` (or `Optional`, `ContiguousArray`, `Dictionary`), bare,
+    // `Swift.`-qualified or as sugar, around an existential: each helper takes the standard
+    // library's type, named here where the user's module can't rebind `Swift` or the type's
+    // name, and passes its elements to the closure, which checks them. A namesake or an alias to
+    // another type doesn't compile.
+
+    /// Compiles only for the standard library's `Optional`.
+    @inlinable @inline(__always)
+    public static func optional<Wrapped>(_: Swift.Optional<Wrapped>, _: (Wrapped) -> Void) {}
+
+    /// Compiles only for the standard library's `Array`.
+    @inlinable @inline(__always)
+    public static func array<Element>(_: Swift.Array<Element>, _: (Element) -> Void) {}
+
+    /// Compiles only for the standard library's `ContiguousArray`.
+    @inlinable @inline(__always)
+    public static func contiguousArray<Element>(_: Swift.ContiguousArray<Element>, _: (Element) -> Void) {}
+
+    /// Compiles only for the standard library's `Dictionary`.
+    @inlinable @inline(__always)
+    public static func dictionary<Key, Value>(_: Swift.Dictionary<Key, Value>, _: (Key, Value) -> Void) {}
 }
 
 extension Bool: PlainData { public static func _plainDataCheck() {} }
@@ -84,8 +107,10 @@ public struct PlainPair<First: PlainData & Sendable & Hashable, Second: PlainDat
     public var second: Second
 
     public static func _plainDataCheck() {
-        PlainDataCheck.field(First.self)
-        PlainDataCheck.field(Second.self)
+        func check(_ value: Self) {
+            PlainDataCheck.field(value.first)
+            PlainDataCheck.field(value.second)
+        }
     }
 
     @inlinable public init(_ first: First, _ second: Second) {

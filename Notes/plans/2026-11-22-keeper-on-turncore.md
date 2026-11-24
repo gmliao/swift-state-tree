@@ -23,7 +23,7 @@ Code pointers are at main 8e622a20:
   - **K1a, the record keeps raw bytes** (PlainData plan Q4 and its slice P5, §3.11). Each queued action and client event holds its payload as bytes plus the decoded typed value. The record writes the bytes, and the encoding goes once in the record header. Record format 3.7. The wire frames don't change; every golden's record bytes do;
   - **K1b, the census and the split** (rev 4's K1, without the world): byte-identical.
 - **K1a's order:** after PlainData P3 and P4. K1b's after K1a. §3.11 lists what P3 must leave for K1a.
-- **New questions:** K1-Q1 to K1-Q3 (§9), for the maintainer through Main.
+- **New questions:** K1-Q1 to K1-Q3 (§9), for the maintainer through Main. All three decided as recommended (2026-11-24).
 
 **Rev 4** (Review's check of rev 3):
 - **MF-a, §3.2: the result slot's lifecycle**, written down from today's `actionSlots` (LK:2251–2257, LK:2312, LK:2446–2460, LK:2466–2495). One slot per sequence, created at admission before `.pending` returns. It holds one terminal outcome or one waiter, and is consumed once. An outcome that arrives before the wait is kept. A second wait gets `ActionResultUnavailable`, and so does a wait after `endAll`.
@@ -188,7 +188,7 @@ The world is lent mutably to steps and read-only to `core.read` between steps. I
 
 **Q2 (decided: no world).** `PlainData` covers `State`, payloads and entry facts after all (`2026-11-22-plaindata-all-the-way.md`), so the world isn't needed. The land definition, handlers and `LandConfig` are `Behavior` (#768). The value rule above becomes a compile-time check instead of a documented one.
 
-**The shared RNG (#765).** `DeterministicRngService` is a reference in `services`, drawn by handlers in steps and reachable by resolvers off the actor. #765 decides its fix. #700's K1 census lists it, and K2 doesn't move it.
+**The shared RNG (#765).** `DeterministicRngService` is a reference in `services`, drawn by handlers in steps and reachable by resolvers off the actor. **Decided 2026-11-24 (#773 L-Q2 (a)):** K1b moves the land RNG's state into the model as a plain generator state (seed and counter), and `ctx.random` draws from it in turns, so it is recorded and replayed with the model. `services` then holds only outside-world services. Resolvers stop reaching it with #769 (its §3.6). K2 doesn't move anything further.
 
 **K1b's census** (draft in Appendix A). Every stored field of `LandKeeper` gets a home: the model, `Behavior` (the land definition and `LandConfig`), a binding token, the per-player services table, an output, or the K2–K7 replacement list (Tasks and continuations, §3.4, §4). There is no world home. A field that fits nowhere is a finding for Review. The census also checks the model's type: `KeeperModel` is `@PlainData`, so a field that isn't plain doesn't compile.
 
@@ -526,7 +526,7 @@ K1a does that, and it is what lets a queued item become `PlainData` without an `
 
 **Format version 3.7.**
 - A 3.7 record's payloads are bytes in the header's encoding.
-- Replay of a 3.6 record: **K1-Q1**.
+- Replay of a 3.6 record: not replayable; `minimumReplayable` becomes 3.7 (**K1-Q1 (a)**, decided). A 3.6 record is still read.
 - A newer reader refuses nothing older than `minimumSupported` that it can read today. The JSON view renders a 3.6 tree as before and a 3.7 payload as base64.
 
 **Public API (K1a):**
@@ -587,7 +587,7 @@ K1a keeps it green with 3.7 records whose bytes fail the same way. The test also
 - **A hand-built item and a server input:** recorded in the header's encoding.
 - **A non-recording land:** its items hold no bytes. A `Mirror` test fails if `bytes` is set when `recordsInputs` is false.
 - **The header:** written once, and read back.
-- **3.6 records:** per K1-Q1.
+- **3.6 records:** per K1-Q1 (a): read, listed, and refused for replay with today's `minimumReplayable` error.
 
 **Mutants:**
 - `.sortedKeys` dropped from `canonicalJSON`. Caught by `canonicalJSONIsStableAcrossProcesses`;
@@ -655,7 +655,7 @@ A cell this plan needs that doesn't exist yet is added first, in a tool-only com
 
 | Slice | Content | Needs | Harness: allowed differences | Host A/B |
 |---|---|---|---|---|
-| **K1a** | The record keeps raw bytes (§3.11): queued actions and client events hold bytes plus the decoded value; the header's `payloadEncoding`; format 3.7; `actionType` computed; the public changes in §3.11. The action response's encode moves from the land definition to the transport's reply, and whether a response is recorded or compared at replay is decided here (Appendix A, F2: `ResponsePayload: PlainData` and `InputOutcome` are P3's). A tool-only commit first adds the `recordPayload` class to `classify-golden-changes.py` | PlainData P3 and P4 merged; K1-Q1 to K1-Q3 answered | the record part of every cell, all classified `recordPayload`; frames none | **small**, recording on: the default production cell and `rows-mp` |
+| **K1a** | The record keeps raw bytes (§3.11): queued actions and client events hold bytes plus the decoded value; the header's `payloadEncoding`; format 3.7; `actionType` computed; the public changes in §3.11. The action response's encode moves from the land definition to the transport's reply, and whether a response is recorded or compared at replay is decided here (Appendix A, F2: `ResponsePayload: PlainData` and `InputOutcome` are P3's). A tool-only commit first adds the `recordPayload` class to `classify-golden-changes.py` | PlainData P3 and P4 merged (K1-Q1 to K1-Q3 decided 2026-11-24) | the record part of every cell, all classified `recordPayload`; frames none | **small**, recording on: the default production cell and `rows-mp` |
 | **K1b** | The storage split and its census (§3.1), with no world: `KeeperModel<State>` is `@PlainData` and holds `State`, the queues and entry facts; `KeeperBehavior<State>` holds the definition and `LandConfig`. Turn bodies become synchronous functions over model and behavior. Every multi-await flow's segments become named synchronous functions. No core; behavior unchanged. Replay calls the same bodies | K1a | none | **small**: the default production cell and `rows-mp` |
 | **K2** | The cut-over. The layout and identity (§3.10). Every live entry becomes a core entry with its contract (§3.3). The entry barriers, server input's freeze exemption, and no intake holds (§3.3.1). Each K1 segment becomes a step; each await between segments becomes a `turn.run` whose result is an input, with today's checks in the handler. Also: fresh keys, the result slot and the sealed cancellation token (§3.2); record drafts and waits (§3.4); the scoped emitter, the binding token and the per-player services table (§3.1); the admission's package path and the callback audit (§3.7); drivers (§3.9); the lint rule. Follow-ups and the failure box work as today | `Behavior` (#768, merged), G2 #759; G3 #760 checked before the A/B is read | none | **full**, plus three cells: tick actions without resolvers, tick actions with resolvers, tickless client events |
 | **K3** | Sync follow-ups on the core (§3.5): the writer gate returns `nil`, and `waitForQuiescence` replaces the hand-rolled waits. The hand-rolled slots and the requested-sync-work waiters are deleted. The #695 acceptance tests are rewritten (§6.1) | K2 | only the arm-order change (§3.5), if a cell shows it | **small**: a host cell with join churn and kept-event follow-up churn |
@@ -760,7 +760,7 @@ For the maintainer, once rev 3 is GO.
 
 ## 9. Questions
 
-For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depends on K1-Q1 to K1-Q3; K2 depends on Q1.
+For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depended on K1-Q1 to K1-Q3, decided (a) each on 2026-11-24; K2 depends on Q1.
 
 **Q1. Where does a re-evaluation (replay) keeper keep its state until #612?** (§3.10)
 
@@ -780,21 +780,21 @@ For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q
 
 Rev 4 recommended (a). The decision went further than (b): `PlainData` on `State`, payloads, resolver outputs and entry facts, so no world is needed.
 
-**K1-Q1. Replay of a 3.6 record after K1a** (§3.11)
+**K1-Q1. Replay of a 3.6 record after K1a** (§3.11). **Decided (a)** (maintainer, 2026-11-24).
 
 | Option | What it is | Cost |
 |---|---|---|
 | **(a) Recommended** | `minimumReplayable` becomes 3.7: a 3.6 record is still read (the JSON view, the monitor's listing) but not replayed, as 3.6 did for records without a fingerprint | none; a recording made before K1a is re-recorded to replay |
 | (b) | a 3.6 reader keeps building items from the tree (today's public-init path, kept package-only) | a second item builder and its tests, until a later version drops it |
 
-**K1-Q2. MessagePack: the client's exact bytes, or the value packed canonically?** (§3.11)
+**K1-Q2. MessagePack: the client's exact bytes, or the value packed canonically?** (§3.11). **Decided (a)** (maintainer, 2026-11-24).
 
 | Option | What it is | Cost |
 |---|---|---|
 | **(a) Recommended** | pack the unpacked `MessagePackValue` canonically. The bytes decode to the same value with the live decoder; a client that sent a wider integer than needed is recorded in the narrower form | one canonical pack per recorded input |
 | (b) | keep the payload's byte range from the frame | the frame decoder keeps offsets for every payload, recording or not; a copy of the range per recorded input |
 
-**K1-Q3. Client events too?** Q4 named actions. A queued client event holds the same `PayloadDecodingSource` and `AnyCodable`, so it can't be `PlainData` either without the same change.
+**K1-Q3. Client events too?** **Decided (a)** (maintainer, 2026-11-24). Q4 named actions. A queued client event holds the same `PayloadDecodingSource` and `AnyCodable`, so it can't be `PlainData` either without the same change.
 
 | Option | What it is |
 |---|---|
@@ -871,7 +871,7 @@ It covers every stored property of `LandKeeper`, from `LK` at main d25ca82d: 123
 | Fields | Status | Note |
 |---|---|---|
 | `definition` (355) | not plain (handler closures) | the reason Behavior exists (#768) |
-| `services` (361) | not plain (references) | §3.1: land services are config. The RNG inside is #765's |
+| `services` (361) | not plain (references) | §3.1: land services are config. **The land RNG leaves it in K1b** (L-Q2 (a), decided 2026-11-24): its state moves into `KeeperModel` as a plain generator state that `ctx.random` advances in turns. What stays is outside-world services, Outside (A.3). Until K1b lands, #773's `det-behavior` lists `KeeperBehavior.services` as a temporary exception naming #700 |
 | `logger` (364) | not plain | immutable and Sendable |
 | `autoStartLoops`, `enableLoopPhaseOffset`, `enableLiveStateHashRecording` (365–368), `reevaluationOutputMode` (370), `mode` (378), `actualLandID` (473) | plain | `LandConfig`. `actualLandID` is set once at init (#751) |
 | `systemPlayerID`, `systemClientID`, `systemSessionID` (955–957) | plain | constants; could be static instead |

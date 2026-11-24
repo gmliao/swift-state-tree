@@ -53,7 +53,7 @@ jobs:
     name: build (variants)
     runs-on: ubuntu-22.04 # Linux runner (matching production environment)
     container:
-      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
+      image: swift:6.4.3-noble@sha256:4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a
     timeout-minutes: 180
 
     steps:
@@ -68,9 +68,9 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
-          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-
 
     # Lessons enforced in code (CLAUDE.md § Coding Conventions); the self-test proves the
     # checks still find what they look for before the repository is checked for zero findings.
@@ -231,7 +231,7 @@ jobs:
     name: release (turns, keeper, transport)
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
+      image: swift:6.4.3-noble@sha256:4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a
     steps:
     - uses: actions/checkout@v4
 
@@ -241,9 +241,9 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
-          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-
 
     - name: Show toolchain
       run: swift --version
@@ -274,7 +274,7 @@ jobs:
   examples:
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
+      image: swift:6.4.3-noble@sha256:4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a
 
     steps:
     - uses: actions/checkout@v4
@@ -288,9 +288,9 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
-          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-
 
     - name: Show toolchain
       run: swift --version
@@ -486,6 +486,13 @@ jobs:
         fi
       timeout-minutes: 15
 
+    # The golden-change classes, #700 K1a's recordPayload included, on fixtures: here because
+    # this job has Python and the Swift image doesn't. The tool reads goldens only when a change
+    # moves them; its self-test runs on every push.
+    - name: Classify golden changes self-test
+      run: python3 scripts/classify-golden-changes.py --self-test
+      timeout-minutes: 2
+
   # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
   # fail, and so do counts below it until it is lowered. On a pull request, a count raised over
   # the base branch's baseline prints `BASELINE RAISED` and a warning; the PR states the reason.
@@ -576,7 +583,7 @@ jobs:
   test-typescript-sdk:
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
+      image: swift:6.4.3-noble@sha256:4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a
       env:
         NODE_VERSION: 20
 

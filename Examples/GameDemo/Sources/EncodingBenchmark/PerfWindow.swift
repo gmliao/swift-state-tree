@@ -25,6 +25,10 @@ enum PerfWindowRun {
         if let refusal = refusal(config, isMultiRoom: isMultiRoom) {
             refuse(refusal)
         }
+        // The tickless land steps no ticks: a `ticks` window would never open.
+        if config.gameType.isTickless, settings.mode == .ticks {
+            refuse("\(PerfControlEnvKeys.window)=ticks doesn't support --game-type visibility-test-tickless (it has no tick loop; use nonsync or iteration)")
+        }
         do {
             let control = try PerfControl(controlPath: settings.controlPath, ackPath: settings.ackPath)
             current = PerfWindow(mode: settings.mode, control: control)

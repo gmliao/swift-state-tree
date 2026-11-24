@@ -1,4 +1,4 @@
-// expect-error: 'Peer' conform to 'PlainData'
+// expect-error: this field's type isn't PlainData: add @PlainData to your struct or enum
 import SwiftStateTurns
 
 // A machine field that is an actor.

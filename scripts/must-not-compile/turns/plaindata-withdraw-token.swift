@@ -1,4 +1,4 @@
-// expect-error: 'WithdrawToken' conform to 'PlainData'
+// expect-error: this field's type isn't PlainData: add @PlainData to your struct or enum
 import SwiftStateTurns
 
 // A machine that stores a withdraw token (the core reads tokens; a machine never keeps one).

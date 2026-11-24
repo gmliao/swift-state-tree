@@ -8,6 +8,7 @@ Each folder answers one question and has its own README (question, environment, 
 
 | Folder | Question | Last updated | Regenerate |
 |---|---|---|---|
+| [toolchain-643-aa-baseline/](toolchain-643-aa-baseline/README.md) | With Swift 6.4.3 pinned, how far apart are two builds of the same commit, per bench cell, in instructions:u? (the noise floor for 6.4.3 A/Bs) | 2026-11-24 | `collect.py`, `regenerate.py` |
 | [recomputation-cost/](recomputation-cost/README.md) | How large is the re-evaluation record that reproduces a land's sync stream, compared with the stream itself, per input cadence and player count? | not run yet | `regenerate.py` |
 | [replay-scale-fp-perturbation/](replay-scale-fp-perturbation/README.md) | Does per-tick state-hash replay stay at 0 mismatches over tens of recordings and thousands of ticks, and how fast does it detect injected floating/fixed-point perturbations? | 2026-11-04 | `regenerate.py`, `crossarch-verify.sh` |
 | [snapshot-baseline/](snapshot-baseline/README.md) | At equal encoding, how much does delta sync save over a per-sync full snapshot, and does the saving track the changed fraction? | 2026-09-15 (wording 2026-11-05) | `run.sh`, `collect.py`, `regenerate.py` |

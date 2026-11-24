@@ -1,0 +1,21 @@
+workload,side,rep,exit,instructions,detail
+EncodingBenchmark,A,1,0,188154928,137
+EncodingBenchmark,A,2,0,188217378,137
+EncodingBenchmark,A,3,0,188303735,137
+EncodingBenchmark,A,4,0,187932887,137
+EncodingBenchmark,A,5,0,188203687,137
+EncodingBenchmark,B,1,0,187894915,137
+EncodingBenchmark,B,2,0,188121114,137
+EncodingBenchmark,B,3,0,188223686,137
+EncodingBenchmark,B,4,0,188134930,137
+EncodingBenchmark,B,5,0,188011388,137
+ServerLoadTest,A,1,0,36748317218,Swift version 6.4.3 (swift-6.4.3-RELEASE)
+ServerLoadTest,A,2,0,36663754892,Swift version 6.4.3 (swift-6.4.3-RELEASE)
+ServerLoadTest,A,3,0,36815530122,Swift version 6.4.3 (swift-6.4.3-RELEASE)
+ServerLoadTest,A,4,0,36827319231,Swift version 6.4.3 (swift-6.4.3-RELEASE)
+ServerLoadTest,A,5,0,36743315221,Swift version 6.4.3 (swift-6.4.3-RELEASE)
+ServerLoadTest,B,1,0,36744357615,Swift version 6.4.3 (swift-6.4.3-RELEASE)
+ServerLoadTest,B,2,0,36765082105,Swift version 6.4.3 (swift-6.4.3-RELEASE)
+ServerLoadTest,B,3,0,37081441192,Swift version 6.4.3 (swift-6.4.3-RELEASE)
+ServerLoadTest,B,4,0,37111005758,Swift version 6.4.3 (swift-6.4.3-RELEASE)
+ServerLoadTest,B,5,0,36759835640,Swift version 6.4.3 (swift-6.4.3-RELEASE)
