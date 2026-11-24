@@ -489,7 +489,7 @@ public actor NIOLandHost {
     ///
     /// It calls `ProcessSignals.shutdownSignals(signals)`, so a second signal ends the process
     /// at once with `128 + signal`.
-    public func runUntilShutdownSignal(_ signals: [Int32] = [SIGINT, SIGTERM]) async throws {
+    public func runUntilShutdownSignal(_ signals: [Int32] = ProcessSignals.defaultShutdownSignals) async throws {
         let stream = ProcessSignals.shutdownSignals(signals)
         try await start()
         let logger = configuration.logger

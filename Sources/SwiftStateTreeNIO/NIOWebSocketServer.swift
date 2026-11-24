@@ -10,6 +10,24 @@ import NIOPosix
 import NIOWebSocket
 import SwiftStateTree
 import SwiftStateTreeTransport
+#if os(Windows)
+import WinSDK
+#endif
+
+/// The address option for the listening socket.
+///
+/// On POSIX, `SO_REUSEADDR` lets a restarted server bind a port whose previous connections are
+/// still in TIME_WAIT, while a port that is in use still fails with "address in use". On
+/// Windows the same option lets two sockets bind one port at once (a second server, or another
+/// process, would share or take over the port), so the listener asks for exclusive use of its
+/// port instead (`SO_EXCLUSIVEADDRUSE`, defined as `~SO_REUSEADDR`; NIO has no named constant).
+private var listenerAddressOption: NIOBSDSocket.Option {
+    #if os(Windows)
+    NIOBSDSocket.Option(rawValue: ~SO_REUSEADDR)
+    #else
+    .so_reuseaddr
+    #endif
+}
 
 /// Configuration for NIOWebSocketServer.
 public struct NIOWebSocketServerConfiguration: Sendable {
@@ -468,7 +486,7 @@ public actor NIOWebSocketServer {
 
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: Int32(configuration.listenBacklog))
-            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .serverChannelOption(ChannelOptions.socketOption(listenerAddressOption), value: 1)
             .childChannelInitializer { channel in
                 // Create HTTP handler with router support
                 let httpHandler = NIOHTTPRequestHandler(

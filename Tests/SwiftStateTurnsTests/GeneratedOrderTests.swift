@@ -126,8 +126,9 @@ actor OrderActor<Mail: OrderMail & PlainData>: TurnActor {
     /// The next mailbox check posts `mail` at its hold point, after its watermark is read.
     func postAtNextCheck(_ mail: Int) {
         let once = Once()
-        core.onMailboxCheckForTesting = { [unowned self] in
+        core.onMailboxCheckForTesting = { [weak self] in
             once.run {
+                guard let self else { return }
                 if self.postNumber(mail) { self.checkPosted.append(mail) }
             }
         }
