@@ -45,8 +45,10 @@ public struct LandMacro: MemberMacro, MemberAttributeMacro {
         return [definitionDecl]
     }
 
-    /// Puts `static var body` under the land's builder (#771 D-Q5), unless it already carries an
-    /// attribute: a hand-written `@LandDSL<…>` or an alias of it is left as written.
+    /// Puts a computed `static var body` under the land's builder (#771 D-Q5). A body with any
+    /// attribute other than `@available` is left as written: that attribute may be a hand-written
+    /// `@LandDSL<…>` or an alias of it, which the macro can't tell from another attribute. A
+    /// stored body gets nothing, since Swift refuses a builder attribute on a stored property.
     public static func expansion(
         of attribute: AttributeSyntax,
         attachedTo declaration: some DeclGroupSyntax,
@@ -56,7 +58,8 @@ public struct LandMacro: MemberMacro, MemberAttributeMacro {
         guard declaration.is(StructDeclSyntax.self),
               let variable = member.as(VariableDeclSyntax.self),
               isStaticBody(variable),
-              variable.attributes.isEmpty
+              isComputed(variable),
+              variable.attributes.allSatisfy(isAvailability)
         else { return [] }
         // A missing state type is the member expansion's diagnostic; this one adds nothing.
         guard let args = try? LandAttributeArguments.parse(from: attribute) else { return [] }
@@ -70,6 +73,17 @@ private func isStaticBody(_ variable: VariableDeclSyntax) -> Bool {
     return variable.bindings.contains { binding in
         binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text == "body"
     }
+}
+
+/// A `var` whose binding has accessors and no initializer.
+private func isComputed(_ variable: VariableDeclSyntax) -> Bool {
+    guard variable.bindingSpecifier.tokenKind == .keyword(.var) else { return false }
+    return variable.bindings.allSatisfy { $0.accessorBlock != nil && $0.initializer == nil }
+}
+
+/// `@available(…)`, which says nothing about the body's builder.
+private func isAvailability(_ element: AttributeListSyntax.Element) -> Bool {
+    element.as(AttributeSyntax.self)?.attributeName.trimmedDescription == "available"
 }
 
 private struct LandAttributeArguments {

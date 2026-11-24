@@ -68,4 +68,55 @@ final class LandMacroTests {
             macros: landMacros
         )
     }
+
+    @Test("@available alone doesn't opt a body out; a stored body gets no builder attribute")
+    func availabilityAndStoredBodies() {
+        expectMacroExpansion(
+            """
+            @Land(GameState.self, id: "available-land")
+            struct AvailableLand {
+                @available(*, deprecated)
+                static var body: [LandNode] {
+                    AccessControl { }
+                }
+            }
+            """,
+            expandedSource: """
+            struct AvailableLand {
+                @available(*, deprecated)
+                @LandDSL<GameState, NoServices>
+                static var body: [LandNode] {
+                    AccessControl { }
+                }
+
+                public static var definition: LandDefinition<GameState> {
+                    Land("available-land", using: GameState.self) {
+                        Self.body
+                    }
+                }
+            }
+            """,
+            macros: landMacros
+        )
+        expectMacroExpansion(
+            """
+            @Land(GameState.self, id: "stored-land")
+            struct StoredLand {
+                static let body: [LandNode] = []
+            }
+            """,
+            expandedSource: """
+            struct StoredLand {
+                static let body: [LandNode] = []
+
+                public static var definition: LandDefinition<GameState> {
+                    Land("stored-land", using: GameState.self) {
+                        Self.body
+                    }
+                }
+            }
+            """,
+            macros: landMacros
+        )
+    }
 }
