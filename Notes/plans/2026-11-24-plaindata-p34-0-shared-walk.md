@@ -1,6 +1,6 @@
 # PlainData P3/4-0: one field walk for both macro targets
 
-**Status:** rev 1, plan only. Stacked on #772 (`feat/plaindata-p1-p2` @ 06ce5f99); rebased onto `main` after #772 merges. A slice of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§4), added so that P3 (payloads) and P4 (`State`) can run in parallel: it lands what both of them need, once.
+**Status:** rev 1, plan only. Stacked on #772 (`feat/plaindata-p1-p2` @ 06ce5f99). After #772 merges, `main` is merged into this branch; the branch is never force-pushed. A slice of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§4), added so that P3 (payloads) and P4 (`State`) can run in parallel: it lands what both of them need, once.
 
 ## 1. Why a slice before P3 and P4
 
@@ -25,6 +25,8 @@ P3 makes `@Payload` emit `_plainDataCheck`, and P4 makes `@StateNodeBuilder` emi
 
 **Risk: SwiftPM and the swift-syntax prebuilt.** A macro target that depends on a regular target is supported. CI's 6.2.4 uses the prebuilt swift-syntax 602.0.0, and an extra host target between a macro and swift-syntax must not make SwiftPM build swift-syntax from source. Step 0 checks the first CI run's build log for the prebuilt, and the `build (variants)` and `release` job times against #772's run on 06ce5f99 (14m15s, 20m44s). If SwiftPM falls back to a source build, stop and report to Main with the numbers before choosing another way to share the code.
 
+The same stop rule holds if the toolchain bump to 6.4.3 lands on `main` before this PR. In that case, `main` is merged in, and the comparison base becomes the latest green `main` run on the bumped toolchain, not #772's run: the check is then whether the extra host target changes how SwiftPM uses the prebuilt on that toolchain.
+
 ### 2.2 Q2: the Foundation diagnostics, one copy
 
 `@PlainData` already refuses `Date`, `UUID`, `URL` and `Decimal`, and names the replacement (#772). After §2.1 that text is the only copy. `@StateNodeBuilder`'s and `@Payload`'s `Decimal` diagnostic uses it, and keeps its #597 reason (no wire form).
@@ -45,7 +47,16 @@ The must-not-compile snippets whose `expect-error` matches the old field text mo
 
 ### 2.4 `@PlainData` on the DeterministicMath types
 
-`SwiftStateTreeDeterministicMath` adds `SwiftStateTurns` to its dependencies. `@PlainData` goes on its value types with stored fields:
+`SwiftStateTreeDeterministicMath` adds `SwiftStateTurns` to its dependencies.
+
+**The module graph.** DeterministicMath isn't a leaf today. It depends on `SwiftStateTree` and `SwiftStateTreeMacros` (`Package.swift`, for `@SnapshotConvertible`), and `SwiftStateTree` depends on `SwiftStateTurns`. So `SwiftStateTurns` is already in its dependency closure, and the new entry adds no module to it. It only makes explicit an import the module now makes itself (`import SwiftStateTurns` for `@PlainData`), instead of relying on a transitive one.
+
+**Why not a conformance-only shim.** A shim would write the conformances in another module, for example `SwiftStateTree` or a new module between the two. That doesn't work:
+- `@PlainData` is an attached macro. It goes on the type's declaration, which is in DeterministicMath.
+- A conformance written in an extension elsewhere has to write `_plainDataCheck` by hand. Outside `SwiftStateTurns`, the lint refuses that (parent plan §3.2), and the hand-written checks would drift from the fields.
+- A retroactive conformance of another module's type is also what Swift warns about (`@retroactive`).
+
+`@PlainData` goes on its value types with stored fields:
 - `IVec2`, `IVec3`, `Position2`, `Velocity2`, `Acceleration2`, `Angle`;
 - `IAABB2`, `ICircle`, `ILineSegment`, `IRay`, `Grid2`;
 - `OverflowPolicy`.
