@@ -533,12 +533,8 @@ jobs:
       run: scripts/test-ci-apt-install.sh
       timeout-minutes: 3
 
-    # One digest for every Swift container image, named by every SwiftPM cache key. The self-test
-    # proves the check still finds what it looks for before the workflows are checked.
-    - name: Swift image pinned by one digest
-      run: |
-        scripts/check-ci-image-pin.sh --self-test
-        scripts/check-ci-image-pin.sh
+    # The Swift image pin check (one digest for every Swift container image and Dockerfile FROM
+    # line) runs in image-pin.yml, which this workflow's paths-ignore (.devcontainer/**) can't skip.
 
     # The build job runs its variants on one build, which is valid only while no variable is read at
     # build time: each appears only in its test step's env, and Package.swift reads no environment.
