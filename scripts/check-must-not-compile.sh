@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds each snippet in scripts/must-not-compile/ as its own target of a throwaway SwiftPM
 # package that depends on this repository by path, and checks the outcome its first line names:
-#   // expect: compiles               the snippet must build (a control for the setup)
+#   // expect: compiles               the snippet must build, with no warning (-warnings-as-errors)
 #   // expect-error: <text>           the build must fail with an error line containing <text>
 #                                     (not the source excerpt the compiler echoes beside it)
 # Prelude.swift is compiled into every snippet's target. SwiftPM resolves the dependencies'
@@ -54,10 +54,14 @@ mkdir -p "$package/Sources"
     echo '    targets: ['
     for snippet in "${snippets[@]}"; do
         name="$(target_name "$snippet")"
+        # A snippet that must compile must also compile without a warning: the macros' expansions
+        # must not warn under -warnings-as-errors (a deprecated field read by @PlainData's check).
+        strict=""
+        if [[ "$(head -n 1 "$snippet")" == "// expect: compiles" ]]; then strict=', .unsafeFlags(["-warnings-as-errors"])'; fi
         if is_turns "$snippet"; then
-            echo "        .target(name: \"$name\", dependencies: [.product(name: \"SwiftStateTurns\", package: \"$identity\")], swiftSettings: [.swiftLanguageMode(.v6)]),"
+            echo "        .target(name: \"$name\", dependencies: [.product(name: \"SwiftStateTurns\", package: \"$identity\")], swiftSettings: [.swiftLanguageMode(.v6)$strict]),"
         else
-            echo "        .target(name: \"$name\", dependencies: [.product(name: \"SwiftStateTree\", package: \"$identity\")]),"
+            echo "        .target(name: \"$name\", dependencies: [.product(name: \"SwiftStateTree\", package: \"$identity\")], swiftSettings: [${strict#, }]),"
         fi
     done
     echo '    ],'

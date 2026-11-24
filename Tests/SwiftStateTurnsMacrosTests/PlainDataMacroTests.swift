@@ -446,7 +446,7 @@ struct PlainDataMacroTests {
         #expect(text.contains("PlainDataCheck.field(value.degrees) SwiftStateTurns.PlainDataCheck.field(value.old) }"))
     }
 
-    @Test("Enum cases that share a base name are refused, naming the case; distinct names in `#if` clauses aren't")
+    @Test("Enum cases that share a base name are refused, naming the case, backticked or not; exclusive `#if` clauses may each declare it")
     func sharedCaseNames() {
         let (text, messages) = expand("""
             @PlainData
@@ -480,6 +480,74 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(distinct.isEmpty)
+        // Only one clause is active per build, so each may declare the same case.
+        let (_, exclusive) = expand("""
+            @PlainData
+            enum H {
+                #if os(Linux)
+                case item(count: Int)
+                #elseif DEBUG
+                case item(label: String, at: Int)
+                #else
+                case item
+                #endif
+                case other
+            }
+            """)
+        #expect(exclusive.isEmpty, "\(exclusive)")
+        // A clause's name still clashes with the enclosing list after the `#if`.
+        let (_, after) = expand("""
+            @PlainData
+            enum J {
+                #if DEBUG
+                case item(Int)
+                #endif
+                case item(label: String)
+            }
+            """)
+        #expect(after == ["@PlainData can't check enum cases that share the base name 'item'; give each case its own name"])
+        let (_, backticked) = expand("""
+            @PlainData
+            enum K {
+                case item(count: Int)
+                case `item`(label: String)
+            }
+            """)
+        #expect(backticked == ["@PlainData can't check enum cases that share the base name 'item'; give each case its own name"])
+    }
+
+    @Test("A nested type's field of an enclosing type's generic parameter adds that parameter's constraint; an unused one adds none (#782)")
+    func enclosingGenericParameters() {
+        let (text, messages) = expand("""
+            struct Outer<T, U> {
+                enum Middle {
+                    @PlainData
+                    struct Inner<V> {
+                        var value: T
+                        var own: V
+                        var count: Int
+                    }
+                    @PlainData
+                    struct Counter {
+                        var n: Int
+                    }
+                }
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("Inner: SwiftStateTurns.PlainData where V: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData {"))
+        #expect(!text.contains("U: SwiftStateTurns.PlainData"))
+        #expect(text.contains("Counter: SwiftStateTurns.PlainData {"))
+        // A parameter the nested type redeclares is its own, constrained once.
+        let (shadow, _) = expand("""
+            struct Outer<T> {
+                @PlainData
+                struct Inner<T> {
+                    var value: T
+                }
+            }
+            """)
+        #expect(shadow.contains("Inner: SwiftStateTurns.PlainData where T: SwiftStateTurns.PlainData {"))
     }
 
     @Test("A deprecated field or case is read inside a deprecated `check`, so the expansion doesn't warn")
