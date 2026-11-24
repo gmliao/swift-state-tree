@@ -13,6 +13,8 @@ import SwiftStateTreeDeterministicMath
 
 public enum VisibilityTestConfig {
     public static let landType = "visibility-test"
+    /// The land type of `VisibilityTest.makeLand(tickless: true)`: the same rules without a tick.
+    public static let ticklessLandType = "visibility-test-tickless"
     public static let tickIntervalMs: Int64 = 50
     /// Entities in the land by default; ids `e0` ... `e39` (`VISIBILITY_TEST_ENTITY_COUNT`).
     public static let entityCount = 40
@@ -37,6 +39,10 @@ public enum VisibilityTestConfig {
     public static let parkPosition = Position2(x: 50, y: 50)
 
     public static let maxPlayers = 16
+
+    /// `WideVisibilityResponse.tag`: 16 UTF-8 bytes, one past a small string's 15, so it is
+    /// heap-allocated and the response doesn't fit an existential's three-word inline buffer.
+    public static let wideResponseTag = "wide-response-v1"
 
     /// The viewer position of join slot `slot`.
     public static func viewerPosition(slot: Int) -> Position2 {
@@ -279,6 +285,18 @@ public struct SetMotionAction: ActionPayload {
     }
 }
 
+/// `SetMotionAction` answered with `WideVisibilityResponse`: the same state change, and a
+/// response too wide for an existential's inline buffer (EncodingBenchmark `--wide-response`).
+@Payload
+public struct SetMotionWideAction: ActionPayload {
+    public typealias Response = WideVisibilityResponse
+    public let enabled: Bool
+
+    public init(enabled: Bool) {
+        self.enabled = enabled
+    }
+}
+
 /// Puts every entity at `VisibilityTestConfig.parkPosition`, out of every viewer slot's view.
 @Payload
 public struct ParkEntitiesAction: ActionPayload {
@@ -312,6 +330,26 @@ public struct VisibilityTestResponse: ResponsePayload {
     }
 }
 
+/// `VisibilityTestResponse` and more: four `Int`s and a heap-allocated `String` (the tag is 16
+/// bytes, past a small string's 15), so a value of it doesn't fit an existential's three-word
+/// inline buffer. Only `SetMotionWideAction` answers with it.
+@Payload
+public struct WideVisibilityResponse: ResponsePayload {
+    public let viewEntries: Int
+    public let viewExits: Int
+    public let tickCount: Int
+    public let entityCount: Int
+    public let tag: String
+
+    public init(viewEntries: Int, viewExits: Int, tickCount: Int, entityCount: Int, tag: String) {
+        self.viewEntries = viewEntries
+        self.viewExits = viewExits
+        self.tickCount = tickCount
+        self.entityCount = entityCount
+        self.tag = tag
+    }
+}
+
 /// Moves the calling player's viewer.
 @Payload
 public struct MoveViewerEvent: ClientEventPayload {
@@ -342,83 +380,125 @@ public enum VisibilityTest {
 
     /// The land on `State`: `VisibilityTestState`, or `VisibilityTestBroadcastState` for the
     /// `broadcast` filter. The rules are the same for both.
-    public static func makeLand<State: VisibilityTestStateShape>(_ type: State.Type, settings: VisibilityTestSettings = .current) -> LandDefinition<State> {
-        Land(VisibilityTestConfig.landType, using: State.self) {
-            AccessControl {
-                AllowPublic(true)
-                MaxPlayers(VisibilityTestConfig.maxPlayers)
+    ///
+    /// With `tickless`, the land has no `Tick` block (its land type is
+    /// `VisibilityTestConfig.ticklessLandType`) and applies each input as it arrives, answering
+    /// an action with its handler's response; the tick land answers with an ACK and applies the
+    /// action on its next tick. Everything else, the rules included, is shared.
+    public static func makeLand<State: VisibilityTestStateShape>(
+        _ type: State.Type, settings: VisibilityTestSettings = .current, tickless: Bool = false
+    ) -> LandDefinition<State> {
+        if tickless {
+            return Land(VisibilityTestConfig.ticklessLandType, using: State.self) {
+                accessControl()
+                clientEvents()
+                rules(State.self, settings: settings)
             }
-
-            ClientEvents {
-                Register(MoveViewerEvent.self)
-            }
-
-            Rules {
-                OnJoin { (state: inout State, ctx: LandContext) in
-                    spawnEntitiesIfNeeded(&state, settings: settings)
-                    let taken = Set(state.viewers.values.map(\.slot))
-                    let slot = (0...).first { !taken.contains($0) } ?? 0
-                    state.viewers[ctx.playerID] = Viewer(slot: slot, position: VisibilityTestConfig.viewerPosition(slot: slot))
-                    updateVisibility(&state, settings: settings)
-                }
-
-                OnLeave { (state: inout State, ctx: LandContext) in
-                    state.viewers.removeValue(forKey: ctx.playerID)
-                    updateVisibility(&state, settings: settings)
-                }
-
-                HandleAction(SetMotionAction.self) { (state: inout State, action: SetMotionAction, ctx: LandContext) in
-                    // EncodingBenchmark's input count; no probe is registered elsewhere.
-                    ctx.services.get(InputProbe.self)?.noteApplied()
-                    state.motion = action.enabled
-                    return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
-                }
-
-                HandleAction(ParkEntitiesAction.self) { (state: inout State, _: ParkEntitiesAction, _: LandContext) in
-                    spawnEntitiesIfNeeded(&state, settings: settings)
-                    for id in state.entities.keys {
-                        state.entities[id]?.position = VisibilityTestConfig.parkPosition
-                    }
-                    updateVisibility(&state, settings: settings)
-                    return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
-                }
-
-                // validate refuses an unknown id before anything is written (#586): before the
-                // lazy spawn, by the id scheme `spawnEntitiesIfNeeded` uses.
-                HandleAction(PlaceEntityAction.self, validate: { (state: State, action: PlaceEntityAction, _: ValidateContext) in
-                    guard entityExists(action.id, in: state, settings: settings) else {
-                        throw VisibilityTestError.unknownEntity(action.id)
-                    }
-                }, apply: { (state: inout State, action: PlaceEntityAction, _: LandContext) in
-                    spawnEntitiesIfNeeded(&state, settings: settings)
-                    for position in action.positions {
-                        state.entities[action.id]?.position = position
-                        updateVisibility(&state, settings: settings)
-                    }
-                    return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
-                })
-
-                HandleEvent(MoveViewerEvent.self) { (state: inout State, event: MoveViewerEvent, ctx: LandContext) in
-                    guard state.viewers[ctx.playerID] != nil else { return }
-                    state.viewers[ctx.playerID]?.position = event.position
-                    updateVisibility(&state, settings: settings)
-                }
-            }
+        }
+        return Land(VisibilityTestConfig.landType, using: State.self) {
+            accessControl()
+            clientEvents()
+            rules(State.self, settings: settings)
 
             Lifetime {
                 Tick(every: .milliseconds(VisibilityTestConfig.tickIntervalMs)) { (state: inout State, ctx: LandContext) in
-                    state.tickCount = ctx.tickId ?? state.tickCount + 1
-                    spawnEntitiesIfNeeded(&state, settings: settings)
-                    guard state.motion else { return }
-                    for id in state.entities.keys.sorted() {
-                        guard var entity = state.entities[id] else { continue }
-                        moveWithBounce(&entity)
-                        state.entities[id] = entity
-                    }
-                    updateVisibility(&state, settings: settings)
+                    tick(&state, ctx: ctx, settings: settings)
                 }
             }
         }
+    }
+
+    private static func accessControl() -> AccessControlNode {
+        AccessControl {
+            AllowPublic(true)
+            MaxPlayers(VisibilityTestConfig.maxPlayers)
+        }
+    }
+
+    private static func clientEvents() -> ClientEventsNode {
+        ClientEvents {
+            Register(MoveViewerEvent.self)
+        }
+    }
+
+    /// The land's rules, shared by the tick land and the tickless one.
+    private static func rules<State: VisibilityTestStateShape>(_ type: State.Type, settings: VisibilityTestSettings) -> RulesNode {
+        Rules {
+            OnJoin { (state: inout State, ctx: LandContext) in
+                spawnEntitiesIfNeeded(&state, settings: settings)
+                let taken = Set(state.viewers.values.map(\.slot))
+                let slot = (0...).first { !taken.contains($0) } ?? 0
+                state.viewers[ctx.playerID] = Viewer(slot: slot, position: VisibilityTestConfig.viewerPosition(slot: slot))
+                updateVisibility(&state, settings: settings)
+            }
+
+            OnLeave { (state: inout State, ctx: LandContext) in
+                state.viewers.removeValue(forKey: ctx.playerID)
+                updateVisibility(&state, settings: settings)
+            }
+
+            HandleAction(SetMotionAction.self) { (state: inout State, action: SetMotionAction, ctx: LandContext) in
+                setMotion(&state, enabled: action.enabled, ctx: ctx)
+                return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
+            }
+
+            HandleAction(SetMotionWideAction.self) { (state: inout State, action: SetMotionWideAction, ctx: LandContext) in
+                setMotion(&state, enabled: action.enabled, ctx: ctx)
+                return WideVisibilityResponse(
+                    viewEntries: state.viewEntries, viewExits: state.viewExits,
+                    tickCount: Int(state.tickCount), entityCount: state.entities.count,
+                    tag: VisibilityTestConfig.wideResponseTag)
+            }
+
+            HandleAction(ParkEntitiesAction.self) { (state: inout State, _: ParkEntitiesAction, _: LandContext) in
+                spawnEntitiesIfNeeded(&state, settings: settings)
+                for id in state.entities.keys {
+                    state.entities[id]?.position = VisibilityTestConfig.parkPosition
+                }
+                updateVisibility(&state, settings: settings)
+                return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
+            }
+
+            // validate refuses an unknown id before anything is written (#586): before the
+            // lazy spawn, by the id scheme `spawnEntitiesIfNeeded` uses.
+            HandleAction(PlaceEntityAction.self, validate: { (state: State, action: PlaceEntityAction, _: ValidateContext) in
+                guard entityExists(action.id, in: state, settings: settings) else {
+                    throw VisibilityTestError.unknownEntity(action.id)
+                }
+            }, apply: { (state: inout State, action: PlaceEntityAction, _: LandContext) in
+                spawnEntitiesIfNeeded(&state, settings: settings)
+                for position in action.positions {
+                    state.entities[action.id]?.position = position
+                    updateVisibility(&state, settings: settings)
+                }
+                return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
+            })
+
+            HandleEvent(MoveViewerEvent.self) { (state: inout State, event: MoveViewerEvent, ctx: LandContext) in
+                guard state.viewers[ctx.playerID] != nil else { return }
+                state.viewers[ctx.playerID]?.position = event.position
+                updateVisibility(&state, settings: settings)
+            }
+        }
+    }
+
+    /// The state change of `SetMotionAction` and `SetMotionWideAction`.
+    private static func setMotion<State: VisibilityTestStateShape>(_ state: inout State, enabled: Bool, ctx: LandContext) {
+        // EncodingBenchmark's input count; no probe is registered elsewhere.
+        ctx.services.get(InputProbe.self)?.noteApplied()
+        state.motion = enabled
+    }
+
+    private static func tick<State: VisibilityTestStateShape>(_ state: inout State, ctx: LandContext, settings: VisibilityTestSettings) {
+        state.tickCount = ctx.tickId ?? state.tickCount + 1
+        spawnEntitiesIfNeeded(&state, settings: settings)
+        guard state.motion else { return }
+        for id in state.entities.keys.sorted() {
+            guard var entity = state.entities[id] else { continue }
+            moveWithBounce(&entity)
+            state.entities[id] = entity
+        }
+        updateVisibility(&state, settings: settings)
     }
 
     /// Whether `id` names an entity, also before the lazy spawn has created them: `e<i>` with

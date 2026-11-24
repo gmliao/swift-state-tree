@@ -208,6 +208,9 @@ enum ResultsManager {
             "joinThroughRouter": RouterJoin.config != nil,
             // `--row-addressing` resolved, not whether the flag was given.
             "rowAddressingRequested": RouterJoin.config?.rowAddressing ?? false,
+            // `--wide-response`: the visibility test's actions are SetMotionWideAction, answered with
+            // WideVisibilityResponse.
+            "wideResponse": InputRun.wideResponse,
             // Bytes counted after the outbound writer drained, with no skipped cycle (#160).
             "bytesCountedAfterDrain": true,
             // timeMs covers ticks and syncs only: the drain is never timed, in every mode.

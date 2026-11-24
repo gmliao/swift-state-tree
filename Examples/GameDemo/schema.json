@@ -997,6 +997,20 @@
         "nodeKind" : "leaf"
       }
     },
+    "SetMotionWideAction" : {
+      "properties" : {
+        "enabled" : {
+          "type" : "boolean"
+        }
+      },
+      "required" : [
+        "enabled"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "ShootEvent" : {
       "properties" : {
 
@@ -1536,6 +1550,36 @@
       "x-stateTree" : {
         "nodeKind" : "object"
       }
+    },
+    "WideVisibilityResponse" : {
+      "properties" : {
+        "entityCount" : {
+          "type" : "integer"
+        },
+        "tag" : {
+          "type" : "string"
+        },
+        "tickCount" : {
+          "type" : "integer"
+        },
+        "viewEntries" : {
+          "type" : "integer"
+        },
+        "viewExits" : {
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "entityCount",
+        "tag",
+        "tickCount",
+        "viewEntries",
+        "viewExits"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
     }
   },
   "lands" : {
@@ -1913,6 +1957,9 @@
         },
         "SetMotion" : {
           "$ref" : "#\/defs\/SetMotionAction"
+        },
+        "SetMotionWide" : {
+          "$ref" : "#\/defs\/SetMotionWideAction"
         }
       },
       "clientEventHashes" : {
@@ -1974,6 +2021,9 @@
         },
         "SetMotion" : {
           "$ref" : "#\/defs\/SetMotionAction"
+        },
+        "SetMotionWide" : {
+          "$ref" : "#\/defs\/SetMotionWideAction"
         }
       },
       "clientEventHashes" : {
@@ -2026,7 +2076,7 @@
       }
     }
   },
-  "schemaHash" : "a2ba85577a8816de",
+  "schemaHash" : "8e7825f3b64cf258",
   "version" : "0.1.0",
   "x-stateTree" : {
     "atomicEncoding" : "positional"

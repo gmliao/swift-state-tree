@@ -37,6 +37,8 @@ enum InputRun {
     nonisolated(unsafe) static var fromWire = false
     /// Visibility test: `SetMotionAction`s per player per iteration (0: none).
     nonisolated(unsafe) static var actionsPerPlayer = 0
+    /// `--wide-response`: the actions are `SetMotionWideAction`s.
+    nonisolated(unsafe) static var wideResponse = false
 
     /// Why the inputs can't run as given, or nil. Only the serial multi-room runners submit them,
     /// one room at a time, and only Hero Defense (moves) and the visibility test (actions) have
@@ -47,7 +49,7 @@ enum InputRun {
         }
         if config.actionsPerPlayer > 0 {
             let unsupported = [
-                (config.gameType != .visibilityTest, "--game-type other than visibility-test"),
+                (!config.gameType.isVisibilityTest, "--game-type other than visibility-test and visibility-test-tickless"),
                 (!config.inputsFromWire, "runs without --inputs-from-wire (actions are sent as client frames)"),
                 // The land answers each action with an immediate Void ACK, and opcode JSON's
                 // payload encoder has no Void case: it traps (#521 plan §2.3).
@@ -56,6 +58,12 @@ enum InputRun {
             if !unsupported.isEmpty {
                 return "--actions-per-player doesn't support \(unsupported.joined(separator: ", "))"
             }
+        }
+        if config.wideResponse, config.actionsPerPlayer == 0 {
+            return "--wide-response needs --actions-per-player (it changes the action the runner sends)"
+        }
+        if config.gameType.isTickless, config.actionsPerPlayer == 0 {
+            return "--game-type visibility-test-tickless needs --actions-per-player: with no tick, the actions are its only work"
         }
         guard config.inputsFromWire else { return nil }
         let unsupported = [
@@ -69,7 +77,7 @@ enum InputRun {
             (config.gameType == .heroDefense && !config.activePlayers, "hero-defense without --active-players (the moves are its inputs)"),
             // Hero-defense applies a MoveTo event on its next tick: with no tick, none is applied.
             (config.gameType == .heroDefense && config.ticksPerSync == 0, "hero-defense with --ticks-per-sync 0 (moves are applied on ticks)"),
-            (config.gameType == .visibilityTest && config.actionsPerPlayer == 0, "visibility-test without --actions-per-player"),
+            (config.gameType.isVisibilityTest && config.actionsPerPlayer == 0, "visibility-test without --actions-per-player"),
         ].filter(\.0).map(\.1)
         guard unsupported.isEmpty else {
             return "--inputs-from-wire doesn't support \(unsupported.joined(separator: ", "))"
@@ -129,10 +137,13 @@ struct WireInputs {
     /// Each room's sessions, by player index (the benchmark's own IDs, as the joins used).
     let sessions: [[SessionID]]
     let actionsPerPlayer: Int
+    /// `--wide-response`: the visibility test's actions are `SetMotionWideAction`s.
+    let wideResponse: Bool
 
-    init(roomCount: Int, playersPerRoom: Int, encoding: TransportEncoding, actionsPerPlayer: Int) {
+    init(roomCount: Int, playersPerRoom: Int, encoding: TransportEncoding, actionsPerPlayer: Int, wideResponse: Bool = false) {
         self.encoding = encoding
         self.actionsPerPlayer = actionsPerPlayer
+        self.wideResponse = wideResponse
         sessions = (0 ..< roomCount).map { roomIndex in
             (0 ..< playersPerRoom).map { SessionID(fixed: "room\(roomIndex)-session-\($0)") }
         }
@@ -161,23 +172,28 @@ struct WireInputs {
     }
 
     /// Visibility test: `actionsPerPlayer` `SetMotionAction(enabled: true)` frames per player for
-    /// `iteration` in room `roomIndex`, with a request ID unique in the run. Motion is on from the
-    /// start, so they leave the state as it is.
+    /// `iteration` in room `roomIndex`, with a request ID unique in the run (`SetMotionWideAction`
+    /// with `--wide-response`). Motion is on from the start, so they leave the state as it is.
     func actionFrames(roomIndex: Int, iteration: Int) -> [(session: SessionID, frame: Data)] {
         do {
-            let payload = try JSONDecoder().decode(AnyCodable.self, from: JSONEncoder().encode(SetMotionAction(enabled: true)))
+            let payload = try JSONDecoder().decode(
+                AnyCodable.self,
+                from: wideResponse
+                    ? JSONEncoder().encode(SetMotionWideAction(enabled: true))
+                    : JSONEncoder().encode(SetMotionAction(enabled: true)))
+            let typeIdentifier = wideResponse ? "SetMotionWide" : "SetMotion"
             var frames: [(session: SessionID, frame: Data)] = []
             for (playerIndex, session) in sessions[roomIndex].enumerated() {
                 for k in 0 ..< actionsPerPlayer {
                     let requestID = "r\(roomIndex)-p\(playerIndex)-i\(iteration)-k\(k)"
                     let frame = try ClientFrames.action(
-                        requestID: requestID, typeIdentifier: "SetMotion", payload: payload, encoding: encoding)
+                        requestID: requestID, typeIdentifier: typeIdentifier, payload: payload, encoding: encoding)
                     frames.append((session, frame))
                 }
             }
             return frames
         } catch {
-            fatalError("--inputs-from-wire: can't encode a SetMotion frame: \(error)")
+            fatalError("--inputs-from-wire: can't encode a \(wideResponse ? "SetMotionWide" : "SetMotion") frame: \(error)")
         }
     }
 }
@@ -195,33 +211,50 @@ struct InputCounts {
     var rejected: [Int]
     /// Each room's `InputProbe.applied`, measured iterations only.
     var applied: [Int]
+    /// Each room's action response frames sent, measured iterations only. nil unless the land
+    /// answers each action with its handler's response (`--game-type visibility-test-tickless`),
+    /// so other runs' results carry exactly what they did.
+    var replied: [Int]?
 
-    init(rooms: Int, expectedPerRoom: Int) {
+    init(rooms: Int, expectedPerRoom: Int, countsReplies: Bool = false) {
         self.expectedPerRoom = expectedPerRoom
         submitted = Array(repeating: 0, count: rooms)
         rejected = Array(repeating: 0, count: rooms)
         applied = Array(repeating: 0, count: rooms)
+        replied = countsReplies ? Array(repeating: 0, count: rooms) : nil
     }
 
     var json: [String: Any] {
         let submittedTotal = submitted.reduce(0, +)
         let rejectedTotal = rejected.reduce(0, +)
-        return [
+        var fields: [String: Any] = [
             "submitted": submittedTotal, "accepted": submittedTotal - rejectedTotal, "rejected": rejectedTotal,
             "applied": applied.reduce(0, +), "expected": expectedPerRoom * submitted.count,
         ]
+        if let replied { fields["replied"] = replied.reduce(0, +) }
+        return fields
     }
 
-    /// Exits with a message naming the first room whose count differs from the expected one: a
-    /// run whose inputs didn't all arrive and apply isn't the workload asked for.
-    func requireComplete(label: String) {
+    /// The message naming the first room whose count differs from the expected one, or nil when
+    /// every room's counts equal it: a run whose inputs didn't all arrive, apply and (where
+    /// counted) get their reply isn't the workload asked for.
+    func shortfall(label: String) -> String? {
         for room in submitted.indices {
             let accepted = submitted[room] - rejected[room]
+            let replied = replied?[room]
             guard submitted[room] != expectedPerRoom || accepted != expectedPerRoom || applied[room] != expectedPerRoom
+                || (replied != nil && replied != expectedPerRoom)
             else { continue }
-            try? FileHandle.standardError.write(contentsOf: Data(
-                "error: \(label): room \(room): inputs submitted \(submitted[room]), accepted \(accepted) (rejected \(rejected[room])), applied \(applied[room]); expected \(expectedPerRoom) each\n".utf8))
-            exit(1)
+            let repliedText = replied.map { ", replied \($0)" } ?? ""
+            return "error: \(label): room \(room): inputs submitted \(submitted[room]), accepted \(accepted) (rejected \(rejected[room])), applied \(applied[room])\(repliedText); expected \(expectedPerRoom) each\n"
         }
+        return nil
+    }
+
+    /// Exits with `shortfall`'s message, if there is one.
+    func requireComplete(label: String) {
+        guard let message = shortfall(label: label) else { return }
+        try? FileHandle.standardError.write(contentsOf: Data(message.utf8))
+        exit(1)
     }
 }

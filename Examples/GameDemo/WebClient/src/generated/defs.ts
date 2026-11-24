@@ -43,6 +43,7 @@ export type ResolverTestState = { applied: number; joins: number; lastResult: st
 export type ResumeVerificationAction = { [key: string]: any }
 export type ResumeVerificationResponse = { [key: string]: any }
 export type SetMotionAction = { enabled: boolean }
+export type SetMotionWideAction = { enabled: boolean }
 export type ShootEvent = { [key: string]: any }
 export type StartVerificationAction = { landType: string; recordFilePath: string }
 export type StartVerificationResponse = { [key: string]: any }
@@ -67,6 +68,7 @@ export type VisibilityTestResponse = { viewEntries: number; viewExits: number }
 export type VisibilityTestState = { entities: { [key: string]: VisibleEntity }; motion: boolean; tickCount: number; viewEntries: number; viewExits: number; viewers: { [key: string]: Viewer } }
 // @ts-ignore - DeterministicMath classes (IVec2, Position2) are used in type definitions
 export type VisibleEntity = { id: string; position: Position2; step: IVec2; visibleTo: PlayerID[] }
+export type WideVisibilityResponse = { entityCount: number; tag: string; tickCount: number; viewEntries: number; viewExits: number }
 
 // Generic Optional type for all Optional<T> usages
 export type Optional<T> = T | null | undefined

@@ -39,7 +39,11 @@ func runMultiRoomBenchmarkTestLand(
             format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
             parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel
         )
-    case .visibilityTest:
+    case .visibilityTest, .visibilityTestTickless:
+        // The tickless land has no Tick block and answers each action with its handler's response:
+        // the runner waits for those replies (`awaitsReplies`) instead of stepping ticks.
+        let tickless = gameType.isTickless
+        let landType = tickless ? VisibilityTestConfig.ticklessLandType : VisibilityTestConfig.landType
         let settings = VisibilityTestSettings.current
         let captureCell: [String: Any] = [
             "visibility": [
@@ -51,18 +55,21 @@ func runMultiRoomBenchmarkTestLand(
         // `broadcast`: the twin state, entities in one broadcast field (VISIBILITY_TEST_FILTER).
         if settings.filter == .broadcast {
             return await runMultiRoomBenchmarkLand(
-                landType: VisibilityTestConfig.landType, makeLand: { VisibilityTest.makeLand(VisibilityTestBroadcastState.self) },
+                landType: landType,
+                makeLand: { VisibilityTest.makeLand(VisibilityTestBroadcastState.self, tickless: tickless) },
                 makeState: { VisibilityTestBroadcastState() },
                 format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
                 parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel,
-                captureCell: captureCell, recordMetadata: settings.recordMetadata
+                captureCell: captureCell, recordMetadata: settings.recordMetadata, awaitsReplies: tickless
             )
         }
         return await runMultiRoomBenchmarkLand(
-            landType: VisibilityTestConfig.landType, makeLand: { VisibilityTest.makeLand() }, makeState: { VisibilityTestState() },
+            landType: landType,
+            makeLand: { VisibilityTest.makeLand(VisibilityTestState.self, tickless: tickless) },
+            makeState: { VisibilityTestState() },
             format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
             parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel,
-            captureCell: captureCell, recordMetadata: settings.recordMetadata
+            captureCell: captureCell, recordMetadata: settings.recordMetadata, awaitsReplies: tickless
         )
     case .heroDefense:
         preconditionFailure("Hero Defense runs through runMultiRoomBenchmark")
@@ -73,6 +80,12 @@ func runMultiRoomBenchmarkTestLand(
 /// each room, then every iteration steps `ticksPerSync` ticks and syncs every room.
 /// With `--capture-views`, the first rooms are captured as in the hero-defense runner, with
 /// `captureCell` added to each header's cell.
+///
+/// With `awaitsReplies` (a tickless land, `--actions-per-player`), a serial iteration steps no
+/// ticks: it submits each room's action frames, then waits until the room's transport has sent
+/// every action's reply (or an error frame), inside the same `nonsync` perf span the tick path
+/// brackets. The result's inputs then also count the replies, and the run fails unless submitted,
+/// applied and replied are equal.
 func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     landType: String,
     makeLand: @Sendable () -> LandDefinition<State>,
@@ -86,7 +99,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     progressEvery: Int = 0,
     progressLabel: String? = nil,
     captureCell: [String: Any] = [:],
-    recordMetadata: [String: String] = [:]
+    recordMetadata: [String: String] = [:],
+    awaitsReplies: Bool = false
 ) async -> BenchmarkResult {
     // Extract pathHashes from schema
     let landDef = makeLand()
@@ -106,7 +120,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
 
     for roomIndex in 0 ..< roomCount {
         let landID = LandID(landType: landType, instanceId: "benchmark-\(roomIndex)")
-        let transport = CountingTransport(capturing: ViewCapture.config.map { roomIndex < $0.rooms } ?? false)
+        let transport = CountingTransport(
+            capturing: ViewCapture.config.map { roomIndex < $0.rooms } ?? false, countsReplies: awaitsReplies)
         // `--record-dir`: the captured rooms record the measured run itself. Every keeper gets its
         // land ID at creation, recorded or not, so the RNG seed (derived from it) doesn't depend
         // on the flag.
@@ -195,7 +210,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
 
     // Deterministic warmup (avoid wall-clock tick/sync loops affecting workload).
     // This makes serial vs parallel comparable on bytesPerSync.
-    let warmupTicks = 5
+    // A tickless land has no tick to warm up.
+    let warmupTicks = awaitsReplies ? 0 : 5
     for _ in 0 ..< warmupTicks {
         for room in rooms {
             await room.keeper.stepTickOnce()
@@ -214,9 +230,13 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     // `--actions-per-player` (with `--inputs-from-wire`): the actions go in as client frames
     // (InputInjection.swift), counted from here.
     let wire = InputRun.actionsPerPlayer > 0
-        ? WireInputs(roomCount: roomCount, playersPerRoom: playersPerRoom, encoding: format.messageEncoding, actionsPerPlayer: InputRun.actionsPerPlayer)
+        ? WireInputs(
+            roomCount: roomCount, playersPerRoom: playersPerRoom, encoding: format.messageEncoding,
+            actionsPerPlayer: InputRun.actionsPerPlayer, wideResponse: InputRun.wideResponse)
         : nil
-    var inputCounts = wire.map { InputCounts(rooms: roomCount, expectedPerRoom: $0.inputsPerRoomIteration * iterations) }
+    var inputCounts = wire.map {
+        InputCounts(rooms: roomCount, expectedPerRoom: $0.inputsPerRoomIteration * iterations, countsReplies: awaitsReplies)
+    }
     let appliedBefore = inputProbes.map(\.applied)
     let capture: ViewCaptureWriter<State>?
     do {
@@ -293,6 +313,14 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
                         await room.adapter.onMessage(input.frame, from: input.session)
                     }
                     inputCounts?.submitted[roomIndex] += actionFrames[roomIndex].count
+                    // A tickless land applies each action as it arrives, and the reply goes out
+                    // through the adapter's outbound writer: wait on the transport's counter
+                    // (replies plus error frames since the window began) until every action
+                    // submitted so far is answered. No timer; an error frame ends the wait and
+                    // `requireComplete` fails the run.
+                    if awaitsReplies, let submitted = inputCounts?.submitted[roomIndex] {
+                        await room.transport.waitForAnswers(atLeast: submitted)
+                    }
                     if ticksPerSync > 0 {
                         let tickStart = ContinuousClock.now
                         perfWindow?.begin(.ticks)
@@ -331,6 +359,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
         for (roomIndex, room) in rooms.enumerated() {
             inputCounts?.rejected[roomIndex] = await room.transport.errorFrameCount()
             inputCounts?.applied[roomIndex] = inputProbes[roomIndex].applied - appliedBefore[roomIndex]
+            if awaitsReplies { inputCounts?.replied?[roomIndex] = await room.transport.replyFrameCount() }
         }
     }
     do { try capture?.close() } catch { fatalError("--capture-views failed: \(error)") }
@@ -1392,6 +1421,8 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             "activePlayers": config.activePlayers,
             "monsterCap": config.monsterCap,
             "monsterActiveEvery": config.monsterActiveEvery,
+            // `--wide-response`: the actions sent were SetMotionWideAction.
+            "wideResponse": config.wideResponse,
             // `--join-through-router` (false without it); `--row-addressing` as given (null when
             // not given) and as resolved.
             "joinThroughRouter": config.joinThroughRouter,
@@ -1431,6 +1462,7 @@ struct EncodingBenchmark {
         MessageEncodingOverride.current = config.messageEncoding
         InputRun.fromWire = config.inputsFromWire
         InputRun.actionsPerPlayer = config.actionsPerPlayer
+        InputRun.wideResponse = config.wideResponse
         RejoinRun.every = config.rejoinEvery
 
         // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.
@@ -2180,7 +2212,7 @@ struct EncodingBenchmark {
             "activePlayers": config.activePlayers,
             "formats": formats.map(\.rawValue)
         ]
-        if config.gameType == .visibilityTest {
+        if config.gameType.isVisibilityTest {
             // The settings the land ran with, defaults included (they come from the environment).
             benchmarkConfig["visibility"] = VisibilityTestSettings.current.recordMetadata
         }
