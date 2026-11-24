@@ -10,10 +10,13 @@
 # Cache steps: the steps whose `path:` is SwiftPM's shared cache (~/.cache/org.swift.swiftpm).
 # There must be at least one; its `key` and every `restore-keys` entry must hold the digest as a
 # key segment (`-<digest>-`), outside a comment.
-# Dockerfiles: every tracked file named Dockerfile or Dockerfile.* (`git ls-files`). Each `FROM`
-# line naming a `swift` image, with or without `--platform=…` and `AS <stage>`, must be
-# `swift:<tag>@sha256:<64 hex>` with the digest of the workflows' pin. A `FROM` of another image
-# (`ubuntu:24.04 AS runtime`) or of an earlier stage isn't read: those stay pinned by tag.
+# Dockerfiles: every tracked file named exactly `Dockerfile` or `Dockerfile.<suffix>`, at any depth
+# (`git ls-files`). Not read: `*.dockerfile` and `Containerfile` (none exist today); a file that
+# should be checked has to be named one of the two. Each `FROM` line naming a `swift` image, with
+# or without `--platform=…` and `AS <stage>`, must be `swift:<tag>@sha256:<64 hex>` with the digest
+# of the workflows' pin. A `FROM` of another image (`ubuntu:24.04 AS runtime`) or of an earlier
+# stage isn't read: those stay pinned by tag. A `FROM` image holding a `$` (`FROM ${IMAGE}`, from
+# an `ARG`) can't be resolved here, so it is refused: pin the Swift image inline.
 # Errors name the file and line.
 #
 # Usage: scripts/check-ci-image-pin.sh [--self-test] [workflows dir]
@@ -111,6 +114,9 @@ def dockerfile_errors(dockerfiles, digest):
             image, stage = m.group(2), m.group(3)
             if stage:
                 stages.add(stage.lower())
+            if "$" in image:
+                errors.append(f"{name}:{n}: a FROM image from a build argument can't be checked; pin the Swift image inline: {image}")
+                continue
             if image.lower() in stages or not SWIFT_FROM.match(image):
                 continue
             count += 1
@@ -266,6 +272,10 @@ def self_test():
         ("dockerfile: a comment naming an unpinned FROM", f"# FROM swift:6.2.4-noble\nFROM {pin}\n", None),
         ("dockerfile: a stage named swift is not an image", f"FROM {pin} AS swift\nFROM swift AS again\n", None),
         ("dockerfile: no Swift FROM at all", "FROM ubuntu:24.04\n", "no Swift FROM line"),
+        ("dockerfile: a FROM image from an ARG, with its file and line",
+         "ARG SWIFT_IMAGE=swift:6.2.4-noble\nFROM ${SWIFT_IMAGE} AS builder\n", "Dockerfile:2: a FROM image from a build argument"),
+        ("dockerfile: a FROM image from a bare variable", f"FROM {pin} AS builder\nFROM $BASE\n", "Dockerfile:2: a FROM image from a build argument"),
+        ("dockerfile: a $ in a platform option is not the image", f"FROM --platform=$BUILDPLATFORM {pin} AS builder\n", None),
     ]
     for name, text, want in docker_cases:
         with tempfile.TemporaryDirectory() as tmp:
