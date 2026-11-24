@@ -1,3 +1,4 @@
+import Foundation
 import SwiftStateTurns
 import Testing
 
@@ -49,8 +50,8 @@ struct SystemTurnClockTests {
         #expect(clock.now < instant)
     }
 
-    @Test("A sleep cancelled while it sleeps returns")
-    func cancelWhileSleeping() async {
+    @Test("A sleep cancelled after it was entered returns; the sleeper has signalled right before the call")
+    func cancelAroundTheSleep() async {
         let clock = SystemTurnClock()
         let instant = clock.now + .seconds(3600)
         let started = AsyncStream<Void>.makeStream()
@@ -58,10 +59,67 @@ struct SystemTurnClockTests {
             started.continuation.yield()
             await clock.sleep(until: instant)
         }
-        // The sleeper has begun; cancelling it now, or just before its sleep starts, must end it.
         for await _ in started.stream { break }
+        // The signal comes right before `sleep` is entered, and nothing in the clock lets a test
+        // see that it is inside the sleep, so a few yields make it likely that the cancellation
+        // lands during the sleep, not before it. Either way the sleeper must return; the path
+        // where the sleep is already running relies on `Task.sleep(nanoseconds:)` throwing
+        // `CancellationError`, which `sleep(until:)` turns into a return.
+        for _ in 0..<16 { await Task.yield() } // wall-clock: not time: the clock has no hook to see its sleep begin; yields let the sleeper reach it, and the test passes whichever side of it the cancel lands on
         sleeper.cancel()
         await sleeper.value
         #expect(clock.now < instant)
     }
+
+    // The wrapping `TurnInstant + Duration` and `-` (#791) can make an instant's sign disagree
+    // with its order. The clock compares by order first, as the core does.
+
+    @Test("A sleep until the earliest possible instant returns")
+    func minimumInstantReturns() async {
+        let clock = SystemTurnClock()
+        let instant = TurnInstant(nanoseconds: .min)
+        await clock.sleep(until: instant)
+        #expect(clock.now >= instant)
+    }
+
+    @Test("A sleep until a saturated deadline that wrapped to the past returns")
+    func wrappedDeadlineReturns() async {
+        let clock = SystemTurnClock()
+        // Make sure the process origin exists, so that `now` is not negative: then
+        // `now + .seconds(.max)` saturates and wraps below `now`.
+        _ = TurnInstant.processOrigin
+        let instant = clock.now + .seconds(Int64.max)
+        #expect(instant < clock.now)
+        await clock.sleep(until: instant)
+        #expect(clock.now >= instant)
+    }
+
+    @Test("A sleep until a far future instant stays asleep until it is cancelled, and then returns")
+    func farFutureStaysAsleep() async {
+        let clock = SystemTurnClock()
+        let instant = TurnInstant(nanoseconds: .max)
+        let returned = Flag()
+        let started = AsyncStream<Void>.makeStream()
+        let sleeper = Task {
+            started.continuation.yield()
+            await clock.sleep(until: instant)
+            returned.set()
+        }
+        for await _ in started.stream { break }
+        for _ in 0..<16 { await Task.yield() } // wall-clock: not time: yields let the sleeper enter its sleep; a premature return is then caught by the flag, and a sleeper that hasn't run yet can't fail the test
+        // Not cancelled yet: a return now would be an early one.
+        #expect(!returned.isSet)
+        #expect(clock.now < instant)
+        sleeper.cancel()
+        await sleeper.value
+        #expect(returned.isSet)
+    }
+}
+
+/// A flag one task sets and another reads.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }

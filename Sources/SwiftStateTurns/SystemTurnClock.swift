@@ -8,17 +8,31 @@
 /// cancelled. A timed sleep can wake slightly early on some platforms, so the sleep reads the clock
 /// again after each wake and sleeps on for what is left. It sleeps with `Task.sleep(nanoseconds:)`,
 /// never `Task.sleep(for:)`, which can crash in macOS release builds under load.
+///
+/// It compares instants by their order, never by the sign of their difference: `TurnInstant`'s `+`
+/// and `-` wrap, so a saturated deadline can wrap to an instant that orders as past while
+/// `instant - now` is about +292 years. Only an ordered pair is subtracted.
 public struct SystemTurnClock: TurnClock {
     public init() {}
 
     public var now: TurnInstant { TurnInstant(ContinuousClock.now) }
 
+    /// The longest single sleep: one hour. A longer wait sleeps in chunks and reads the clock
+    /// between them, so no sleep is given a length near the range's end.
+    private static let longestSleepNanoseconds: UInt64 = 3_600_000_000_000
+
     public func sleep(until instant: TurnInstant) async {
         while !Task.isCancelled {
-            let remaining = (instant - now).turnNanoseconds
-            if remaining <= 0 { return }
+            let current = now
+            if current >= instant { return }
+            // `current < instant`, so the true difference is positive. It overflows `Int64` only
+            // when `current` is negative and `instant` is far above zero: sleep a full chunk then.
+            let (difference, overflow) = instant.nanoseconds.subtractingReportingOverflow(current.nanoseconds)
+            let chunk = overflow || difference <= 0
+                ? Self.longestSleepNanoseconds
+                : min(UInt64(difference), Self.longestSleepNanoseconds)
             do {
-                try await turnsSafeSleep(nanoseconds: UInt64(remaining))
+                try await turnsSafeSleep(nanoseconds: chunk)
             } catch {
                 // The protocol's sleep doesn't throw: a cancelled sleep returns at once.
                 return
