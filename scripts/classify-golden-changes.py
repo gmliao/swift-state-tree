@@ -7,7 +7,8 @@ Usage: scripts/classify-golden-changes.py <old-commit> [<new-commit>]
 Reads every golden at both commits (the new one defaults to the working tree) and compares the
 decoded content, ignoring `recordedWith` and the record's bytes (the decoded record is compared
 instead), type-aware: `true` -> `1`, `1` -> `1.0` and `null` -> absent are changes. Each changed
-leaf is classified; a leaf under a `payload` is the game's data, never a position or a turnKind:
+leaf is classified; a leaf under a `payload` or `resolverOutputs` is the game's data, never a position or
+a turnKind:
 
   1 turnKind   a sync output's `turnKind`, `legacyCycle` -> `syncOnly`
   2 positions  a turn position (`afterPass`, `sequence`, `passOrdinal`, ...) moved
@@ -98,8 +99,9 @@ def classify(path, old, new):
         return "3 recordPayload"
     if path == RECORD_HEADER + ("payloadEncoding",) and old is MISSING and type(new) is str and new in PAYLOAD_ENCODINGS:
         return "3 recordPayload"
-    # A payload's fields are the game's data: a `sequence` or `turnKind` there is no turn position.
-    if "payload" in path[:-1]:
+    # A payload's or a resolver output's fields are the game's data: a `sequence` or `turnKind`
+    # there is no turn position.
+    if "payload" in path[:-1] or "resolverOutputs" in path[:-1]:
         return "other"
     key = path[-1] if path else None
     if key == "turnKind" and type(old) is str and type(new) is str and (old, new) == ("legacyCycle", "syncOnly"):
@@ -192,6 +194,11 @@ def self_test():
          golden("3.6", edit=lambda d: at(d, *ACTION, "payload").update(sequence=2)),
          ["changed  f.json: other x1", "totals: other x1",
           f"OTHER    f.json: {action}.payload.sequence: 1 -> 2"], 1),
+        ("a position key inside a resolver output stays other",
+         golden("3.6", edit=lambda d: at(d, *ACTION).update(resolverOutputs={"r": {"value": {"tickId": 1}}})),
+         golden("3.6", edit=lambda d: at(d, *ACTION).update(resolverOutputs={"r": {"value": {"tickId": 2}}})),
+         ["changed  f.json: other x1", "totals: other x1",
+          f"OTHER    f.json: {action}.resolverOutputs.r.value.tickId: 1 -> 2"], 1),
         ("another version step is other", golden("3.6"), golden("3.8", "json"),
          ["changed  f.json: 3 recordPayload x1, other x1", "totals: 3 recordPayload x1, other x1",
           f'OTHER    f.json: {header}.version: "3.6" -> "3.8"'], 1),

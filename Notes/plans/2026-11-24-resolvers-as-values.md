@@ -1,6 +1,6 @@
 # #769: a resolver is a PlainData value
 
-**Status:** rev 2, plan only, no code. It follows the maintainer's 2026-11-22 decisions on #769 (the issue body, then three comments: `currentState` removed, the value form, and capability protocols for dependencies), and R-Q1 as decided 2026-11-24 (§3.4). Rev 2 answers Review's NOT GO on rev 1 (1ee8b88f); what changed is listed in §9. Open questions are in §8.
+**Status:** rev 2.1, plan only, no code. Rev 2 is GO (659cd242); 2.1 folds in its notes (§9). R-Q1 to R-Q4 are all decided (§8). It follows the maintainer's 2026-11-22 decisions on #769 (the issue body, then three comments: `currentState` removed, the value form, and capability protocols for dependencies), and R-Q1 as decided 2026-11-24 (§3.4). Rev 2 answers Review's NOT GO on rev 1 (1ee8b88f); what changed is listed in §9. Open questions are in §8.
 
 Code pointers are at main c9f149ad. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. The dependency probe in §3.4 is a one-file probe kept outside the repository. It passed on Swift 6.4.2 and 6.4.3, without the real `@PlainData` (§3.1.1). **The pin is moving to 6.4.3** (a bump PR is in flight), so R0 probes on 6.4.3 as the target toolchain, in the pinned image once the bump lands. If the bump hasn't landed when R1 starts, R0 also probes on 6.2.4, since CI still gates on it.
 
@@ -47,7 +47,7 @@ Each piece answers a defect of today's form:
 | From | What this plan takes | Why |
 |---|---|---|
 | PlainData P3 | typed payloads (the builder closure gets the typed action); `ResolverOutput` refines `PlainData` | the builder reads `action.productID`; the output is held in the model |
-| PlainData P4 | `State` is `PlainData` | the builder reads State in the turn |
+| PlainData P4 | `State` is `PlainData` | R2: the record and the model hold values built from State. R1 doesn't need it: a builder reads State whether or not it is `PlainData` (R-Q4) |
 | `@PlainData` (P1/P2's macro) | a generic parameter is constrained only when stored content names it (§3.1.1) | a resolver generic over its dependencies is `PlainData` |
 | #700 K5 | resolvers as keyed requests on the core (#700 §3.4): an action's request under its entry's key or `.land`, OnInitialize under `.initialization`. Admission is a step, so it has a position in the record (§3.5) | the value is the request's payload. #769 lands **with K5** (the issue's "with #700's action slice") |
 | #700 K2 | the per-player services table, and its OnLeave test (§3.4) | R3 changes what that test asserts |
@@ -57,7 +57,7 @@ Each piece answers a defect of today's form:
 | #773 | the determinism lint, and its L-Q2 on where the land's RNG state lives | §3.6 states the same rule for randomness as #773 |
 | #768 | the machine's immutable behavior | the builder closures live in the land definition, which steps reach through it |
 
-**Order:** P3 → P4 → (#700 K1a … K4) → **R1 with #771** → **R2 with K5** → R3 with K6. R0 (probes) can run now. The macro change (§3.1.1) goes before R1.
+**Order (R-Q4, decided 2026-11-24):** P3 → **R1 with #771**, in parallel with P4 (one Code session each) → (#700 K1a … K4) → **R2 with K5** → R3 with K6. R0 (probes) can run now. The macro change (§3.1.1) and #771's D1 go before R1.
 
 ## 3. Design
 
@@ -146,7 +146,14 @@ HandleAction(A.self,
   - the replay factory (`GameReevaluationFactory.swift`, `ReevaluationRunner/main.swift`), `SchemaGen/main.swift` and the schema fingerprint test add `.definition`. A replay never calls `resolve` (§3.5), so a replay keeper needs no `Services`;
   - the live keepers in `ResolverTestLandTests.swift` (3) and `TickProbeTests.swift` (1) need the services value. They use a typed keeper initializer, `LandKeeper(land: TypedLand<State, S>, resolverServices: S, …)`.
   
-  A live keeper built from `.definition` alone, for a land that declares services, is refused when it's created: a precondition naming the land and its services type. That is the one run-time check left, and only a hand-built keeper reaches it. R0 probes the typed initializer next to the registration.
+  **What the definition stores so the check can know:** `LandDefinition<State>` gains `servicesType: Any.Type?`, erased. `Land(_:using:services:)` sets it to `Services.self`, and `Land(_:using:)` leaves it nil. A `TypedLand` and its `.definition` always agree, since one builds the other.
+
+  **A services land without its services is an error, not a crash.** The check goes in `validateForRegistration` (LandRegistration.swift:141), as a new `LandRegistrationError` case naming the land and its services type. It fails when `servicesType` is set and the entry point brought no services value:
+  - the no-services `register(landType:land:…)` given a services land's `.definition` throws it at registration, as every registration error does;
+  - a live keeper built from `.definition` alone gets it as its `LandInitializationError`. A keeper built directly already runs the registration check that no entry point ran, and holds its error as the initialization failure (LandInitializationError.swift:5–6, #535). Every join, leave, action and client event then throws it;
+  - a reevaluation keeper is exempt: replay never calls `resolve` (§3.5).
+
+  It is tested in-process, with no exit test: a live keeper from `.definition` refuses its first join with the error, and the no-services registration throws it. That is the one run-time check left, and only a hand-built keeper or a `.definition` passed to the untyped registration reaches it. R0 probes the typed initializer next to the registration.
 - **The builders are generic over `Services` too:** #771 makes them `RulesBuilder<State>`, and this plan adds a second parameter, `<State, Services>`, so each entry knows the land's services type.
 - **The declaration requires `R.Dependencies == Services`.** So `D` is inferred at the declaration: the user writes `ProductInfo(productID:)`, never `ProductInfo<AppServices>`. A missing capability fails to compile there: "generic struct 'ProductInfo' requires that 'ThinServices' conform to 'HasPriceCache'" (the probe's text on 6.4.2).
 - **A resolver sees only what it declares.** `resolve` gets `D`, constrained to the protocols it lists with `&`. Its body can use those members only.
@@ -179,22 +186,22 @@ HandleAction(A.self,
   - while it is held, an action B without resolvers changes `state.x` and is applied;
   - A is released and applied after B. The record has A's request built from the old `x`;
   - replay reports no mismatch. A mutant that builds at apply reports one, on the request. It is caught.
-- **Format:** a version after K1a's 3.7. Whether older records stay replayable is **R-Q2**.
+- **Format:** a version after K1a's 3.7. Older records stay readable and are not replayable: R2 raises `minimumReplayable` (R-Q2, decided (b)).
 - **R1 keeps today's record.** R1 changes how outputs reach the handler, not the record. So until R2:
   - R1 writes each output under the derived name of the resolver's base type name, as today (`convertResolverTypeToPropertyName` of `ProductInfo`, not of `ProductInfo<AppServices>`). Goldens don't change in R1;
   - R1's replay maps each recorded name to the declaration's position;
-  - two resolvers of the same base type in one declaration would collide under one name, as they do today. R1 refuses that at registration, until R2's positions make it possible.
+  - two resolvers of the same base type in one declaration would collide under one name, as they do today. R1 refuses that at registration (a `LandRegistrationError`), until R2's positions make it possible. It is a new refusal (§4). Two declarations on main do it, both in `InitializeResolverFailureTests.swift` (lines 357 and 362, `InitFailureResolver` twice and three times, to test the failure policy with several resolvers). R1 gives them distinct resolver types.
 
   The derived-name code goes in R2, with the new format.
 - **Failures** are recorded as today: a group that fails or times out refuses the input before its record, and the init failure policy (`2026-11-07-init-resolver-failure-policy.md`) is unchanged.
 
 ### 3.6 Randomness, and #765
 
-**The rule, the same sentence in this plan, #773's and L-Q2:** handlers draw `ctx.random` (the land's RNG, whose state moves into the model if L-Q2 (a) is decided); builders get none until admission is a recorded turn (K2/K5); resolvers use their own source, recorded.
+**The rule, the same sentence in this plan, #773's and L-Q2:** handlers draw `ctx.random` (the land's RNG, whose state moves into the model in #700 K1b (L-Q2 (a))); builders get none until admission is a recorded turn (K2/K5); resolvers use their own source, recorded.
 
 - **Resolvers can't reach the land's RNG.** The keeper creates it (LK:1012) and registers it in `LandServices`, which handlers reach as `ctx.random`. Under §3.4 a resolver gets the land's `Services` value. The land's factory makes it, and the keeper never puts its RNG into it. That is how #765 closes by construction: the only way a resolver gets randomness is its own source, part of the outside world. Its output is recorded, and replay doesn't call `resolve`.
 - **Builders draw nothing.** `ValidateContext` has no `random`, and the builder mutates nothing (§3.2). Before K2, admission isn't a turn: drawing from the land's RNG there would advance it outside turn order, which is #765 again. Once admission is a step with a recorded position (§3.5), a builder that draws could replay. Whether to allow it is a later decision, not part of this plan.
-- **The test:** #765's repro, rewritten in the new form, as a regression test. Its resolver has its own RNG, and replay matches every tick. A must-not-compile snippet pins the other side: a resolver whose `Dependencies` asks for `DeterministicRngService` fails at a land that doesn't provide one. Whether `Services` may hold a `DeterministicRngService` at all is **R-Q3**.
+- **The test:** #765's repro, rewritten in the new form, as a regression test. Its resolver has its own RNG, and replay matches every tick. A must-not-compile snippet pins the other side: a resolver whose `Dependencies` asks for `DeterministicRngService` fails at a land that doesn't provide one. `Services` may hold the user's own `DeterministicRngService` (R-Q3, decided (a)); the docs say it isn't the land's RNG.
 
 ### 3.7 What else moves
 
@@ -218,6 +225,9 @@ All breaking, with no deprecation path; there are no external users yet (the iss
 - `LandContext`'s dynamic member subscript for outputs is removed;
 - `Land(_:using:services:)`, `TypedLand<State, Services>`, `NoServices`, `register(_: TypedLand, services:)` and `LandKeeper(land:resolverServices:…)` are added (§3.4);
 - `ReevaluationRecordedResolverOutput` and the record's resolver fields change in R2 (R-Q2).
+- **Behavior, new refusals at registration** (`LandRegistrationError`, so a directly built keeper gets them as its initialization failure):
+  - a land that declares services, registered or run live without a services value (§3.4);
+  - from R1 until R2, two resolvers of the same base type in one declaration (§3.5). Two test declarations on main do it, and R1 changes them.
 
 ## 5. Tests
 
@@ -244,7 +254,8 @@ All breaking, with no deprecation path; there are no external users yet (the iss
 - replay decode (§3.3): one good output and one bad. The handler isn't called, State is unchanged, and the mismatch names position 1;
 - replay feeds recorded outputs: `resolve` is never called during replay (a counter in the fake);
 - #765's regression (§3.6);
-- a live keeper built from `.definition` of a land with services is refused at creation (§3.4);
+- a live keeper built from `.definition` of a land with services refuses its first join with the registration error, and the no-services registration throws it (§3.4); a reevaluation keeper from `.definition` replays;
+- two resolvers of the same base type in one declaration are refused at registration, from R1 until R2 (§3.5);
 - deadlines, abandonment and failure policy: today's suites (`ResolverDeadline*`, `ResolverFeasibilityTests`, the init failure policy tests) ported to the new form and unchanged in what they assert.
 
 **Mutants:**
@@ -264,11 +275,11 @@ All breaking, with no deprecation path; there are no external users yet (the iss
 |---|---|---|---|
 | **R0** | Probes on 6.4.3, the pin after the bump (and on 6.2.4 too if the bump hasn't landed when R1 starts), all with the real `@PlainData`: §3.1.1's cases; the dependency probe (positive and missing-capability cases); Main's R-Q1 (c) probe with the typed keeper initializer; their combination with #771's generic builder and `D`'s inference through the builder closure's return; the parameter pack of §3.2. Results go in this plan; no library code | now | none |
 | **macro** | §3.1.1's change to `@PlainData`, its macro tests, must-not-compile snippets and M7 | R0 | none |
-| **R1** | `Resolver`, `TypedLand` and the registration (§3.4), the builder closures at admission and typed outputs, `ResolverContext` deleted for actions, OnInitialize and OnFinalize, every call site migrated with #771's codemod, Examples, docs. Resolvers still run as today's jobs (the value replaces the snapshot). The record is today's (§3.5) | P3, P4, R0, macro, #771's builders | the resolver cell: an action with one resolver, live, A/B against main |
+| **R1** | `Resolver`, `TypedLand` and the registration (§3.4), the builder closures at admission and typed outputs, `ResolverContext` deleted for actions, OnInitialize and OnFinalize, every call site migrated with #771's codemod, Examples, docs. Resolvers still run as today's jobs (the value replaces the snapshot). The record is today's (§3.5) | P3, R0, macro, #771's D1 (not P4: R-Q4) | the resolver cell: an action with one resolver, live, A/B against main |
 | **R2** | The record and replay (§3.5): the admission point, requests and positions, eager decode; #765's regression. With K5, so the value is the keyed request's payload | R1, K1a, K5 | the record part of the goldens; frames none |
 | **R3** | CanJoin, OnJoin and OnLeave carry values with the land's `Services`; per-join services leave resolvers, and #700's K2 OnLeave test is rewritten (§3.4). With K6 | R2, K6 | none beyond K6's |
 
-R1 doesn't depend on #700 and could go before K1a. That is **R-Q4**.
+R1 doesn't depend on #700 or on P4, so it goes right after P3, in parallel with P4 (R-Q4, decided). R1 (with #771's codemod across `Tests/`) and P4 (State types' declarations) touch many of the same test files. Whichever lands second rebases; the codemod's output commit is regenerated by re-running the tool at the new base (#771 §4).
 
 ## 7. Prior art
 
@@ -283,9 +294,9 @@ R1 doesn't depend on #700 and could go before K1a. That is **R-Q4**.
 | # | Question | Options | Recommendation |
 |---|---|---|---|
 | R-Q1 | How the land definition carries `Services` | **Decided 2026-11-24: (c)**, `TypedLand<State, Services>` from `Land(_:using:services:)`, taken only by `register(_:services:)` (§3.4) | — |
-| R-Q2 | Records from before this format | (a) replayable: a missing `request` skips the equality check, and outputs are mapped from today's derived names to positions; (b) not replayable: raise `minimumReplayable` | **(b)**, as K1-Q1 decided for 3.6: no external users, and (a) keeps today's derived-name code alive for old records only |
-| R-Q3 | May a land's `Services` hold a `DeterministicRngService`? | (a) allowed: it is the user's own RNG, not the land's, and its draws are outside world; (b) refused at registration, so nobody mistakes it for the land's | **(a)**, with the docs saying the land's RNG is reachable only in handlers (§3.6) |
-| R-Q4 | When R1 lands | (a) after #700's K4, right before K5 (the plan's order); (b) as soon as P3, P4 and #771 are in, before #700's K slices | **(b)** if #771 is ready first: R1 changes no keeper flow, and it shrinks K5's diff. (a) if the maintainer wants one public break for resolvers |
+| R-Q2 | Records from before this format | **Decided 2026-11-24: (b).** Records from before R2's format are readable, not replayable: R2 raises `minimumReplayable`. Option (a), replayable with a missing `request` skipping the check and derived names mapped to positions, would keep the derived-name code alive for old records only | — |
+| R-Q3 | May a land's `Services` hold a `DeterministicRngService`? | **Decided 2026-11-24: (a).** A user's `Services` may hold its own `DeterministicRngService` for resolvers: it is the user's RNG, not the land's, and its draws are outside world, recorded. The docs say it is not the land RNG, which only handlers reach, through `ctx.random` (§3.6) | — |
+| R-Q4 | When R1 lands | **Decided 2026-11-24:** R1 moves up to right after P3, in parallel with P4 (two Code sessions, one each), before #700's K slices. R1 changes no keeper flow, and it shrinks K5's diff | — |
 
 ## 9. Revisions
 
@@ -298,3 +309,9 @@ R1 doesn't depend on #700 and could go before K1a. That is **R-Q4**.
 - **Should, eager decode:** §3.3. Every output is decoded before the handler runs; a failure is a pass mismatch at that point, and nothing is applied. Test with one good and one bad output; M6.
 - **Nit:** the base type name without generic arguments is pinned for the record's name field too (§3.1, §3.5).
 - **R-Q1 (c)**, decided: §3.4. It counts the lands that declare services (one, GameDemo's, 10 call sites), and adds a typed keeper initializer for live keepers built in tests.
+
+**Rev 2.1** folds in Review's notes on rev 2 (GO at 659cd242: 2 should, 1 nit):
+- **S1** (what the definition stores so the keeper can know it needs services): `servicesType: Any.Type?`, set by `Land(_:using:services:)` (§3.4).
+- **S2** (a precondition can only be tested by an exit test): the check is a `LandRegistrationError` in `validateForRegistration`. Registration throws it, and a directly built keeper holds it as its initialization failure, as #535's check does. Tested in-process (§3.4, §5).
+- **Nit** (same base type twice is a new refusal): named in §4 under behavior, with the two declarations on main that do it (§3.5).
+- **R-Q2 decided (b)**, **R-Q3 decided (a)** and **R-Q4 decided** (R1 right after P3, in parallel with P4), all 2026-11-24: recorded in §2, §3.5, §3.6, §6 and §8.

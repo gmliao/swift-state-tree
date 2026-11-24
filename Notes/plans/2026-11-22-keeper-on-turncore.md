@@ -188,7 +188,7 @@ The world is lent mutably to steps and read-only to `core.read` between steps. I
 
 **Q2 (decided: no world).** `PlainData` covers `State`, payloads and entry facts after all (`2026-11-22-plaindata-all-the-way.md`), so the world isn't needed. The land definition, handlers and `LandConfig` are `Behavior` (#768). The value rule above becomes a compile-time check instead of a documented one.
 
-**The shared RNG (#765).** `DeterministicRngService` is a reference in `services`, drawn by handlers in steps and reachable by resolvers off the actor. #765 decides its fix. #700's K1 census lists it, and K2 doesn't move it.
+**The shared RNG (#765).** `DeterministicRngService` is a reference in `services`, drawn by handlers in steps and reachable by resolvers off the actor. **Decided 2026-11-24 (#773 L-Q2 (a)):** K1b moves the land RNG's state into the model as a plain generator state (seed and counter), and `ctx.random` draws from it in turns, so it is recorded and replayed with the model. `services` then holds only outside-world services. Resolvers stop reaching it with #769 (its §3.6). K2 doesn't move anything further.
 
 **K1b's census** (draft in Appendix A). Every stored field of `LandKeeper` gets a home: the model, `Behavior` (the land definition and `LandConfig`), a binding token, the per-player services table, an output, or the K2–K7 replacement list (Tasks and continuations, §3.4, §4). There is no world home. A field that fits nowhere is a finding for Review. The census also checks the model's type: `KeeperModel` is `@PlainData`, so a field that isn't plain doesn't compile.
 
@@ -871,7 +871,7 @@ It covers every stored property of `LandKeeper`, from `LK` at main d25ca82d: 123
 | Fields | Status | Note |
 |---|---|---|
 | `definition` (355) | not plain (handler closures) | the reason Behavior exists (#768) |
-| `services` (361) | not plain (references) | §3.1: land services are config. The RNG inside is #765's |
+| `services` (361) | not plain (references) | §3.1: land services are config. **The land RNG leaves it in K1b** (L-Q2 (a), decided 2026-11-24): its state moves into `KeeperModel` as a plain generator state that `ctx.random` advances in turns. What stays is outside-world services, Outside (A.3). Until K1b lands, #773's `det-behavior` lists `KeeperBehavior.services` as a temporary exception naming #700 |
 | `logger` (364) | not plain | immutable and Sendable |
 | `autoStartLoops`, `enableLoopPhaseOffset`, `enableLiveStateHashRecording` (365–368), `reevaluationOutputMode` (370), `mode` (378), `actualLandID` (473) | plain | `LandConfig`. `actualLandID` is set once at init (#751) |
 | `systemPlayerID`, `systemClientID`, `systemSessionID` (955–957) | plain | constants; could be static instead |

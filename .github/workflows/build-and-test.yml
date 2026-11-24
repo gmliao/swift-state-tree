@@ -486,6 +486,13 @@ jobs:
         fi
       timeout-minutes: 15
 
+    # The golden-change classes, #700 K1a's recordPayload included, on fixtures: here because
+    # this job has Python and the Swift image doesn't. The tool reads goldens only when a change
+    # moves them; its self-test runs on every push.
+    - name: Classify golden changes self-test
+      run: python3 scripts/classify-golden-changes.py --self-test
+      timeout-minutes: 2
+
   # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
   # fail, and so do counts below it until it is lowered. On a pull request, a count raised over
   # the base branch's baseline prints `BASELINE RAISED` and a warning; the PR states the reason.

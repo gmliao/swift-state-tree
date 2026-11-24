@@ -287,5 +287,5 @@ All source breaks without deprecation, as the parent plan's §5:
 | P4-Q1 | **(a)** `@SnapshotConvertible` also writes the `PlainData` conformance and `_plainDataCheck`, and nothing when the type carries `@PlainData` too |
 | P4-Q2 | **(a)** `StateProtocol` refines `PlainData` |
 | P4-Q3 | **(a)** delete `ReactiveDictionary` and `ReactiveSet` |
-| P4-Q4 | ~~(a) P4-2 lands right after P4-1~~, reopened (Review MF2 on rev 1), then decided **(b)** (2026-11-24): debug builds keep the walks as the guard outside the repository; release builds drop them (§3.6) |
+| P4-Q4 | ~~(a) P4-2 lands right after P4-1~~, reopened (Review MF2 on rev 1), then decided **(b)** (2026-11-24): debug builds keep the walks as the guard outside the repository; release builds drop them (§3.6). The maintainer confirmed (2026-11-24) that (b) covers all three † walks: the #464 Mirror walk, `existentialField` and the State-`Decimal` check run under `#if DEBUG` only, and their public error cases stay in both builds |
 | name visibility (§2) | **(a)**: `@_exported import SwiftStateTurns` in SwiftStateTree (2026-11-24) |
