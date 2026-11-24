@@ -231,7 +231,10 @@ struct SchemaTypeNameCollisionTests {
         let definition = Land("schema-name-events", using: SchemaNameEventsState.self) {
             ClientEvents { Register(SchemaNameA.HitEvent.self) }
             ServerEvents { Register(SchemaNameB.HitEvent.self) }
-            Rules {}
+            Rules {
+                // Registered for the schema only; a registered client event needs a handler (#771).
+                HandleEvent(SchemaNameA.HitEvent.self) { _, _, _ in }
+            }
         }
         // They don't share a dispatch path, so registration takes them (#600).
         try definition.validateForRegistration(context: .encodingIndependent)

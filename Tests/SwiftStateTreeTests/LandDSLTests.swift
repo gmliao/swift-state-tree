@@ -70,6 +70,8 @@ func testLandBuilderCollectsNodes() {
         }
 
         Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(DemoChatEvent.self) { _, _, _ in }
             HandleAction(JoinAction.self) { (state: inout DemoLandState, action: JoinAction, ctx: LandContext) in
                 state.players[ctx.playerID] = action.name
                 return JoinResult(ok: true)
@@ -182,6 +184,8 @@ func testLandKeeperAllowedEvents() async throws {
         }
         
         Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(DemoChatEvent.self) { _, _, _ in }
             HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
                 // Synchronous handler: mutate state directly
                 state.spawnedTaskCount += 1
@@ -469,7 +473,11 @@ func testClientEventsRegister() {
             Register(TestEvent1.self)
             Register(TestEvent2.self)
         }
-        Rules { }
+        Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(TestEvent1.self) { _, _, _ in }
+            HandleEvent(TestEvent2.self) { _, _, _ in }
+        }
     }
     
     // Verify client events are registered
@@ -571,7 +579,10 @@ func testEventRegistryIsRegistered() {
         ClientEvents {
             Register(TestRegisteredEvent.self)
         }
-        Rules { }
+        Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(TestRegisteredEvent.self) { _, _, _ in }
+        }
     }
     
     // Test registered event
@@ -603,7 +614,10 @@ func testBothClientAndServerEvents() {
         ServerEvents {
             Register(ServerEvent.self)
         }
-        Rules { }
+        Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(ClientEvent.self) { _, _, _ in }
+        }
     }
     
     // Verify both registries are populated

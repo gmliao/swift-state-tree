@@ -248,7 +248,7 @@ public func leave(playerID: PlayerID, ...) async throws {
 
 ```swift
 Lifetime {
-    Tick(every: .milliseconds(100)) { (state: inout GameState, ctx: LandContext) in
+    Tick(every: .milliseconds(100)) { state, ctx in
         // 每 100ms 執行一次
         state.stepSimulation()
     }

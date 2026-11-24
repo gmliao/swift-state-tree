@@ -19,12 +19,14 @@ private func warnIfHandlerAlreadyDefined(_ handlerName: String, landID: String) 
 enum LandBuilder {
     /// Builds a `LandDefinition` from a list of `LandNode`s.
     ///
-    /// This function iterates through the provided nodes, flattening nested structures (like `RulesNode`),
-    /// and aggregating configuration into the final definition.
+    /// This function iterates through the provided nodes and aggregates their configuration into
+    /// the final definition. `Rules` blocks arrive flattened: the land's builder splices their
+    /// nodes in (`LandDSL.buildExpression(LandRules)`).
     static func build<State: StateNodeProtocol>(
         id: String,
         stateType: State.Type,
-        nodes: [LandNode]
+        nodes: [LandNode],
+        servicesType: Any.Type? = nil
     ) -> LandDefinition<State> {
         var accessControl = AccessControlConfig()
         var allowedClientEvents: Set<AllowedEventIdentifier> = []
@@ -46,6 +48,10 @@ enum LandBuilder {
         var duplicateHandlers: [DuplicateHandlerDeclaration] = []
         var clientEventRegistrations: [Any.Type] = []
         var serverEventRegistrations: [Any.Type] = []
+        // A node no case below matches: another State's node, or a type the builder doesn't
+        // know. Dropping it would leave the land without its handlers, so registration and an
+        // unregistered keeper's initialization refuse the land instead (#794).
+        var unrecognizedNodes: [String] = []
 
         func ingest(nodes: [LandNode]) {
             for node in nodes {
@@ -54,8 +60,6 @@ enum LandBuilder {
                     accessControl = access.config
                 case let allowed as AllowedClientEventsNode:
                     allowedClientEvents.formUnion(allowed.allowed)
-                case let rules as RulesNode:
-                    ingest(nodes: rules.nodes)
                 case let canJoinNode as CanJoinNode<State>:
                     canJoin = canJoinNode.handler
                     canJoinResolverExecutors = canJoinNode.resolverExecutors
@@ -135,16 +139,28 @@ enum LandBuilder {
                     for registration in serverEvents.registrations {
                         serverEventRegistrations.append(registration.type)
                     }
-                case let serverEvent as ServerEventNode:
-                    // Legacy ServerEvent(_:) support - collect for backward compatibility
-                    serverEventRegistrations.append(serverEvent.type)
                 default:
-                    continue
+                    unrecognizedNodes.append(String(reflecting: type(of: node)))
                 }
             }
         }
 
         ingest(nodes: nodes)
+
+        // #771 §3.3: the land's client event registrations and its HandleEvent handlers agree.
+        // A registered event without a handler, or a handled one that isn't registered, would
+        // otherwise fail per event at intake; registration refuses the land instead. A type
+        // registered twice is named once.
+        var clientEventMismatches: [String] = []
+        var seenRegistrations: Set<ObjectIdentifier> = []
+        for type in clientEventRegistrations where seenRegistrations.insert(ObjectIdentifier(type)).inserted {
+            if !eventHandlers.contains(where: { $0.canHandle(type) }) {
+                clientEventMismatches.append("\(String(reflecting: type)): registered, no HandleEvent")
+            }
+        }
+        for handler in eventHandlers where !seenRegistrations.contains(ObjectIdentifier(handler.handledType)) {
+            clientEventMismatches.append("\(String(reflecting: handler.handledType)): handled, not in ClientEvents")
+        }
 
         let landConfig = LandConfig(
             allowPublic: accessControl.allowPublic,
@@ -175,8 +191,7 @@ enum LandBuilder {
             onInitializeResolverFailure: lifetimeConfig.onInitializeResolverFailure,
             onFinalize: lifetimeConfig.onFinalize,
             onFinalizeResolverExecutors: lifetimeConfig.onFinalizeResolverExecutors,
-            afterFinalize: lifetimeConfig.afterFinalize,
-            onShutdown: lifetimeConfig.onShutdown
+            afterFinalize: lifetimeConfig.afterFinalize
         )
 
         // The registries are keyed by event name: two registered types with one name would leave
@@ -208,7 +223,10 @@ enum LandBuilder {
             eventHandlers: eventHandlers,
             serverInputHandlers: serverInputHandlers,
             duplicateHandlers: duplicateHandlers,
-            lifetimeHandlers: lifetimeHandlers
+            clientEventMismatches: clientEventMismatches,
+            unrecognizedNodes: unrecognizedNodes,
+            lifetimeHandlers: lifetimeHandlers,
+            servicesType: servicesType
         )
     }
 }

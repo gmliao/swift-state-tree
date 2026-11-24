@@ -40,8 +40,21 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// Registration refuses such a land (`LandRegistrationError.duplicateHandlers`), and so does
     /// a keeper built without registration, at initialization.
     package let duplicateHandlers: [DuplicateHandlerDeclaration]
-    /// Lifecycle handlers (join, leave, tick, shutdown).
+    /// Client event types registered without a `HandleEvent`, or handled without a registration
+    /// (#771 §3.3), one line per type. Registration refuses such a land
+    /// (`LandRegistrationError.clientEventMismatches`), and so does a keeper built without
+    /// registration, at initialization.
+    package let clientEventMismatches: [String]
+    /// Nodes the land's builder doesn't recognize, by type (#794): another State's node, or a
+    /// node type `LandBuilder` has no case for. Registration refuses such a land
+    /// (`LandRegistrationError.unrecognizedNodes`), and so does a keeper built without
+    /// registration, at initialization.
+    package let unrecognizedNodes: [String]
+    /// Lifecycle handlers (join, leave, tick, initialize and finalize).
     public let lifetimeHandlers: LifetimeHandlers<State>
+    /// The services type the land declares (`Land(_:using:services:)`), nil for a land without
+    /// services (`Land(_:using:)`). Read by registration and the keeper from #769 R1 on.
+    package let servicesType: Any.Type?
     /// This definition's record schema fingerprint, computed once (#521 D15). A copy of the
     /// definition shares it; a definition built again computes its own.
     let schemaFingerprintCache = SchemaFingerprintCache()
@@ -60,7 +73,10 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
             eventHandlers: eventHandlers,
             serverInputHandlers: serverInputHandlers,
             duplicateHandlers: duplicateHandlers,
-            lifetimeHandlers: lifetimeHandlers
+            clientEventMismatches: clientEventMismatches,
+            unrecognizedNodes: unrecognizedNodes,
+            lifetimeHandlers: lifetimeHandlers,
+            servicesType: servicesType
         )
     }
 }
@@ -169,11 +185,6 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     /// This is called after OnFinalize, when state is no longer mutable.
     /// Use this for async cleanup operations (e.g., closing database connections, sending metrics).
     public var afterFinalize: (@Sendable (State, LandContext) async -> Void)?
-    
-    /// Handler called when the Land is shutting down.
-    ///
-    /// **Deprecated**: Use `OnFinalize` (sync, supports resolvers) and `AfterFinalize` (async) instead.
-    public var onShutdown: (@Sendable (State) async -> Void)?
 
     public init(
         canJoin: (@Sendable (State, PlayerSession, LandContext) throws -> JoinDecision)? = nil,
@@ -195,8 +206,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         onInitializeResolverFailure: InitializeResolverFailure = .failLand,
         onFinalize: (@Sendable (inout State, LandContext) -> Void)? = nil,
         onFinalizeResolverExecutors: [any AnyResolverExecutor] = [],
-        afterFinalize: (@Sendable (State, LandContext) async -> Void)? = nil,
-        onShutdown: (@Sendable (State) async -> Void)? = nil
+        afterFinalize: (@Sendable (State, LandContext) async -> Void)? = nil
     ) {
         self.canJoin = canJoin
         self.canJoinResolverExecutors = canJoinResolverExecutors
@@ -218,7 +228,6 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         self.onFinalize = onFinalize
         self.onFinalizeResolverExecutors = onFinalizeResolverExecutors
         self.afterFinalize = afterFinalize
-        self.onShutdown = onShutdown
     }
 }
 
