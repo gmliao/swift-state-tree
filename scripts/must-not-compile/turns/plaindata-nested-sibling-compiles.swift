@@ -25,3 +25,15 @@ struct Hidden {
     private var secret: Int = 0
     lazy var cached: [Int] = []
 }
+
+// A deprecated field and case are read inside the deprecated `check`, without a warning.
+@PlainData
+struct Legacy {
+    @available(*, deprecated) var old: Int
+}
+
+@PlainData
+enum LegacyCase {
+    case current(Int)
+    @available(*, deprecated) case old(String)
+}

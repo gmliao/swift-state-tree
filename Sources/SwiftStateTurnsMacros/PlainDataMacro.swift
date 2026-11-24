@@ -27,6 +27,7 @@ public struct PlainDataMacro: ExtensionMacro {
             checks = checkLines(structDecl.memberBlock.members, isEnum: false, failed: &failed, context)
         } else if let enumDecl = declaration.as(EnumDeclSyntax.self) {
             generics = enumDecl.genericParameterClause
+            diagnoseSharedCaseNames(enumDecl.memberBlock.members, failed: &failed, context)
             checks = checkLines(enumDecl.memberBlock.members, isEnum: true, failed: &failed, context)
         } else {
             context.diagnose(Diagnostic(node: node, message: PlainDataDiagnostic.notValue))
@@ -43,7 +44,14 @@ public struct PlainDataMacro: ExtensionMacro {
         // A local function, not a closure: the compiler checks each statement of a function on
         // its own, so every field that isn't plain data gets its error, where a closure's body
         // stops at the first. `inout`, so a `lazy` property's mutating getter can be read.
-        let body = checks.isEmpty ? "" : "func check(_ value: inout Self) {\n\(checks)\n}"
+        // Deprecated, so reading a deprecated field or case inside it doesn't warn; it is never
+        // called, so it warns about nothing itself.
+        let body = checks.isEmpty ? "" : """
+            @available(*, deprecated, message: "the @PlainData checks; never called")
+            func check(_ value: inout Self) {
+            \(checks)
+            }
+            """
         let decl: DeclSyntax = """
             extension \(type.trimmed)\(raw: conformance)\(raw: whereClause) {
                 /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
@@ -54,6 +62,34 @@ public struct PlainDataMacro: ExtensionMacro {
             """
         guard let ext = decl.as(ExtensionDeclSyntax.self) else { return [] }
         return [ext]
+    }
+
+    /// Cases that share a base name (`case item(count: Int)` and `case item(label: String)`) are
+    /// refused: `if case let .item(v0) = value` is ambiguous, and a labelled pattern doesn't
+    /// pick one when the arities differ. Cases in `#if` clauses count as one list, so two
+    /// exclusive clauses that declare the same case are refused too.
+    private static func diagnoseSharedCaseNames(
+        _ members: MemberBlockItemListSyntax,
+        failed: inout Bool,
+        _ context: some MacroExpansionContext
+    ) {
+        var seen: Set<String> = []
+        func walk(_ members: MemberBlockItemListSyntax) {
+            for member in members {
+                if let ifConfig = member.decl.as(IfConfigDeclSyntax.self) {
+                    for clause in ifConfig.clauses {
+                        if case .decls(let nested) = clause.elements { walk(nested) }
+                    }
+                    continue
+                }
+                guard let cases = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
+                for element in cases.elements where !seen.insert(element.name.text).inserted {
+                    context.diagnose(Diagnostic(node: element.name, message: PlainDataDiagnostic.sharedCaseName(element.name.text)))
+                    failed = true
+                }
+            }
+        }
+        walk(members)
     }
 
     /// The witness is as visible as the type: a public type's conformance needs a public one, and
@@ -389,6 +425,7 @@ enum PlainDataDiagnostic: DiagnosticMessage {
     case metatype
     case existentialInGeneric
     case foundation(String, String)
+    case sharedCaseName(String)
 
     /// What to store instead of a Foundation value type, or nil for any other name.
     static func foundationReplacement(_ name: String) -> String? {
@@ -414,6 +451,7 @@ enum PlainDataDiagnostic: DiagnosticMessage {
         case .existentialInGeneric: "@PlainData checks an existential only as a field, or inside Optional, Array, ContiguousArray or a Dictionary's value; it can't see what this type does with it"
         case .foundation(let type, let replacement): "\(type) isn't plain data; store \(replacement) (for your own type of that name, qualify it with its module)"
         case .tuple: "a tuple can't conform to PlainData; use PlainPair or a @PlainData struct"
+        case .sharedCaseName(let name): "@PlainData can't check enum cases that share the base name '\(name)'; give each case its own name"
         }
     }
 

@@ -53,7 +53,7 @@ struct PlainDataMacroTests {
         #expect(messages.isEmpty)
         #expect(text.contains("extension Room: SwiftStateTurns.PlainData {"))
         // Each check reads the stored value, never a spelled type.
-        #expect(text.contains("func check(_ value: inout Self) { SwiftStateTurns.PlainDataCheck.field(value.players)"))
+        #expect(text.contains("@available(*, deprecated, message: \"the @PlainData checks; never called\") func check(_ value: inout Self) { SwiftStateTurns.PlainDataCheck.field(value.players)"))
         #expect(text.contains("PlainDataCheck.field(value.open)"))
         #expect(text.contains("PlainDataCheck.field(value.ticks)"))
         // `ticks` is checked once (Int); `count` and `shared` aren't checked at all.
@@ -444,6 +444,54 @@ struct PlainDataMacroTests {
             """)
         #expect(messages.isEmpty, "\(messages)")
         #expect(text.contains("PlainDataCheck.field(value.degrees) SwiftStateTurns.PlainDataCheck.field(value.old) }"))
+    }
+
+    @Test("Enum cases that share a base name are refused, naming the case; distinct names in `#if` clauses aren't")
+    func sharedCaseNames() {
+        let (text, messages) = expand("""
+            @PlainData
+            enum E {
+                case item(count: Int)
+                case item(label: String)
+                case other
+            }
+            """)
+        #expect(messages == ["@PlainData can't check enum cases that share the base name 'item'; give each case its own name"])
+        #expect(!text.contains("extension E"))
+        let (_, nested) = expand("""
+            @PlainData
+            enum F {
+                case item(Int)
+                #if DEBUG
+                case item(label: String)
+                #else
+                case trace(String)
+                #endif
+            }
+            """)
+        #expect(nested == ["@PlainData can't check enum cases that share the base name 'item'; give each case its own name"])
+        let (_, distinct) = expand("""
+            @PlainData
+            enum G {
+                case item(Int)
+                #if DEBUG
+                case trace(String)
+                #endif
+            }
+            """)
+        #expect(distinct.isEmpty)
+    }
+
+    @Test("A deprecated field or case is read inside a deprecated `check`, so the expansion doesn't warn")
+    func deprecatedMembers() {
+        let (text, messages) = expand("""
+            @PlainData
+            struct S {
+                @available(*, deprecated) var old: Int
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("@available(*, deprecated, message: \"the @PlainData checks; never called\") func check(_ value: inout Self) { SwiftStateTurns.PlainDataCheck.field(value.old) }"))
     }
 
     @Test("An enum case's closure payload is refused")
