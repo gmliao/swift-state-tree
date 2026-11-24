@@ -352,7 +352,7 @@ The decision is the maintainer's (§8, D-Q5).
 **The 6.4.3 re-run (2026-11-24): passes, so commit 2's precondition is met.** Swift 6.4.3 (swift-6.4.3-RELEASE), the pinned image `swift:6.4.3-noble@sha256:4ed5e0210b24…`, aarch64 under Docker on the Mac, the same harness and `swiftc -typecheck`:
 - Every probe line is the same as on 6.4.2: the compiles, the three refusals with the same text, and the nodes in each run.
 - Probe 4's medians: D0's DSL 0.318 s, with the overload 0.328 s (+3.1%, within the 5%). No expression over 200 ms.
-- An x86_64 re-run, as in CI, goes with #769's R0 re-run on the measurement host.
+- The x86_64 re-run, as in CI, on the measurement host with #769's R0: every probe line is the same; probe 4's median change is +0.5%.
 
 **Under (a), who writes `@LandDSL<S, NoServices>` on `@Land`'s `body`: not known yet, a D1 check.** `@Land` is a `member` macro today (LandMacros.swift:31, `named(definition)`): it adds `definition` and leaves `body` as written. Two outcomes, decided by one probe at the start of D1's commit 2 (it needs the macro built, so it runs in the slot):
 - **(i) The macro writes it.** `@Land` gains the `memberAttribute` role and attaches `@LandDSL<S, NoServices>` to a static member named `body` only, with `S` taken from its first argument. The user writes `static var body: [LandNode] { … }`. It holds only if an attribute a macro adds makes `body` a builder body, with closures inferred as when it's written by hand. The compiles snippet is `@Land(GameState.self) struct GameLand { static var body: [LandNode] { Rules { OnJoin { state, _ in state.n += 1 } } } }`, and a macro-expansion test shows the attribute on `body` and on no other member.
