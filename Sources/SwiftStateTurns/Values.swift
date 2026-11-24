@@ -204,8 +204,8 @@ extension Duration {
 }
 
 /// The clock a core reads and sleeps on. Injected, with no default: a production adopter passes
-/// one that measures from `TurnInstant.processOrigin` and sleeps with its own safe sleep; a test
-/// passes one it drives by hand.
+/// `SystemTurnClock`, which measures from `TurnInstant.processOrigin` and sleeps with a safe
+/// sleep; a test passes one it drives by hand.
 public protocol TurnClock: Sendable {
     var now: TurnInstant { get }
     /// Returns once `now` has reached `instant`, never earlier unless its task is cancelled: the

@@ -322,9 +322,9 @@ A periodic game tick is a timer that re-arms itself, not a `while` loop. The tic
 
 One timer in each core serves every request deadline, every follow-up's gate deadline and every timer. The core keeps one sleeping task, which sleeps until the earliest instant that is set. When it wakes, it takes the entries due by then and fires them in instant order. Entries at the same instant fire in the order the core armed them. The core arms what a step set when the step ends: its timers first, then its gate deadlines, then its request deadlines. So within one step, that order isn't the order of the calls. An entry armed while a wake is firing waits for a later wake, even when its instant is earlier than an entry the wake still has to fire. Pending mail is the exception: on a core with a mailbox, the first live entry a wake reaches takes the pending mail before the wake takes the rest of its entries, so an entry that mail arms at or before the wake's instant can fire in this wake, up to the per-wake limit. A wake whose due entries are all stale takes no mail. Limit: a mail replay places each mail by ordinal, the entry it was taken before, and doesn't record the wake. Which entries a wake fires can depend on whether mail stepped before the wake or at its first take. So when mail arms entries at or before the wake's instant in a chain, past either per-wake limit (64 entries fired, 256 stale entries popped), or across more than one take, a replay can group the wake's entries differently, and nothing reports it (#756). Each entry fires as its own input, in its own batch. One wake fires at most 64 entries; the rest fire on a later wake, and other work queued on the actor can run first. The sleeping task runs at medium priority, whichever task armed the first entry. Cancelling a request or replacing a timer wakes nothing: the old entry stays until its instant, or until the core drops it, and then does nothing.
 
-A clock's sleep must not return before its instant, unless its task is cancelled. The core fires the entries due at the instant it slept until, without reading the clock again, so a clock that woke early would fire them early.
+A clock's sleep must not return before its instant, unless its task is cancelled. The core fires the entries due at the instant it slept until, without reading the clock again, so a clock that woke early would fire them early. `SystemTurnClock` is the production clock that meets this: its instants are measured from the process's origin, and its sleep reads the clock again after every wake.
 
-API: `timer(at:for:_:)`, `now`, `TurnClock`, `TurnInstant`.
+API: `timer(at:for:_:)`, `now`, `TurnClock`, `SystemTurnClock`, `TurnInstant`.
 
 ### Follow-ups
 
@@ -379,7 +379,7 @@ let core: TurnCore<Keeper>
 nonisolated let mailbox: TurnMailbox<Keeper.Mail>?
 
 init() {
-    let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
+    let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: SystemTurnClock())
     self.core = core
     // The core's own mailbox: a lint checks it's assigned from `core.mailbox`.
     self.mailbox = core.mailbox
@@ -412,7 +412,7 @@ A *batch* is the steps one entry into the actor causes: a `send`, a `sendAndWait
 ```swift
 queueLimit: 64,
 maxReleasesPerBatch: 16,
-clock: ContinuousTurnClock()
+clock: SystemTurnClock()
 ```
 
 API: `TurnCore.init`.
@@ -457,7 +457,7 @@ API: `CallerCancellation`.
 | Hold | What must wait behind work in flight? | `Hold` |
 | Input policy | Does this input wait, and whose is it? | `InputPolicy`, `queue` |
 | Withdraw token | Can the sender give up an input before it steps? | `WithdrawToken`, `revoke` |
-| Timer and clock | How does a step act later, and how does a test control time? | `timer`, `now`, `TurnClock` |
+| Timer and clock | How does a step act later, and how does a test control time? | `timer`, `now`, `TurnClock`, `SystemTurnClock` |
 | Follow-up | How does a key ask for one step later, however often it asks? | `followUp`, `consumeFollowUp`, `waitForQuiescence` |
 | Mailbox | How does another thread tell the machine something before its next step? | `Mail`, `post`, `takeMail` |
 | Batch | How much runs per entry? | `maxReleasesPerBatch` |
