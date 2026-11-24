@@ -3,7 +3,10 @@
 import Foundation
 
 /// A value that can't call through to anything or change behind its holder: no class, closure,
-/// actor, existential, lock or token, at any depth.
+/// actor, lock or token, at any depth, and no existential but one: a field of a `@PlainData`
+/// type may be `any P` where `P` refines `PlainData` (also as the element of an optional, an
+/// array or a dictionary's value), which the macro checks per field. `any P` itself doesn't
+/// conform, so a `where T: PlainData` generic refuses it.
 ///
 /// Conform with `@PlainData`, which checks every stored property (or associated value) of a
 /// struct or enum. The checks are its one requirement, so a type that conforms without the
@@ -26,11 +29,18 @@ public enum PlainDataCheck {
     @inlinable @inline(__always)
     public static func field<T: PlainData>(_: T.Type) {}
 
-    /// For a field `any P`: compiles only when `P` refines `PlainData`, because only then does
-    /// `any P` convert to `any PlainData`. The value can't be a class: a class can't conform
-    /// without `@PlainData`, which refuses one.
+    /// For a field `any P`, with the type in the closure's parameter: compiles only when `P`
+    /// refines `PlainData`, because only then does `any P` convert to `any PlainData`. A class
+    /// conforming through `P` still has to provide `_plainDataCheck`, which `@PlainData` refuses
+    /// to write for a class; written by hand, the compiler accepts it, and only this
+    /// repository's lint refuses it.
     @inlinable @inline(__always)
-    public static func existential<E>(_: E.Type, _ upcast: (E) -> any PlainData) {}
+    public static func existential<E>(_ upcast: (E) -> any PlainData) {}
+
+    /// Compiles only when both are the same type: a wrapper spelled `Array<…>` (or `Optional`,
+    /// `ContiguousArray`, `Dictionary`) is the standard library's, not a namesake in the module.
+    @inlinable @inline(__always)
+    public static func same<T>(_: T.Type, _: T.Type) {}
 }
 
 extension Bool: PlainData { public static func _plainDataCheck() {} }

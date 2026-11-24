@@ -13,6 +13,13 @@ struct Queue {
     var all: [any Payload]
     var byName: [String: any Payload]
     var nested: [[any Payload]?]
+    var sendable: any Payload & Sendable
+    var grouped: any (Payload & Sendable)
+    var later: ContiguousArray<any Payload>
+    var spelledOptional: Optional<any Payload>
+    var spelledArray: Array<any Payload>
+    var spelledDictionary: Dictionary<String, any Payload>
+    var qualified: Swift.Array<any Payload>
 }
 @PlainData
 indirect enum Tree {
