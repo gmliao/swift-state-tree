@@ -27,6 +27,9 @@ actor CountingTransport: Transport {
     /// A run's wait for its replies (`waitForAnswers(atLeast:)`): resumed by the `send(_:to:)`
     /// that brings replies plus error frames to its count.
     private var answerWaiter: (count: Int, continuation: CheckedContinuation<Void, Never>)?
+    /// The latest answer wait's ticket (`beginAnswerWait()`), and whether its answers are final.
+    private var answerWaitTicket = 0
+    private var answersFinal = false
     /// `--join-through-router on`: each session's first sync sequence since the last
     /// `resetCounts()` (`sendToSession`). Empty on the default path.
     private var firstSyncSeqs: [SessionID: UInt64] = [:]
@@ -52,13 +55,37 @@ actor CountingTransport: Transport {
         }
     }
 
-    /// Returns once `count` of the run's inputs have been answered: reply frames plus error
-    /// frames (a refused input is answered with an error and never gets a reply) since the last
-    /// `resetCounts()`. Waits on the counter, with no timer: `send(_:to:)` resumes it. Needs
-    /// `countsReplies` and `countsErrors`; one waiter at a time.
+    /// Opens an answer wait and returns its ticket. A later `markAnswersFinal(ticket:)` counts
+    /// only while its ticket is the latest, so a settle that finishes after its wait already
+    /// returned can't cut a later wait short.
+    func beginAnswerWait() -> Int {
+        answerWaitTicket += 1
+        answersFinal = false
+        return answerWaitTicket
+    }
+
+    /// Says no answer will come that isn't counted yet: the caller saw every input handled (each
+    /// answer is queued before its input's `onMessage` returns) and the adapter's writer handed
+    /// over what it queued. Ends a pending wait, though the count is short, so the run's
+    /// `requireComplete` reports the shortfall instead of the run hanging. Ignored for a ticket
+    /// that is not the latest.
+    func markAnswersFinal(ticket: Int) {
+        guard ticket == answerWaitTicket else { return }
+        answersFinal = true
+        if let waiter = answerWaiter {
+            answerWaiter = nil
+            waiter.continuation.resume()
+        }
+    }
+
+    /// Returns once `count` of the run's inputs have been answered (reply frames plus error
+    /// frames, since a refused input is answered with an error and never gets a reply), or once
+    /// the answers are final (`markAnswersFinal(ticket:)`) with fewer. Waits on events, with no
+    /// timer: `send(_:to:)` and `markAnswersFinal(ticket:)` resume it. Needs `countsReplies`
+    /// and `countsErrors`; one waiter at a time.
     func waitForAnswers(atLeast count: Int) async {
         precondition(countsReplies && countsErrors, "waitForAnswers needs countsReplies and countsErrors")
-        guard replyFrames + errorFrames < count else { return }
+        guard replyFrames + errorFrames < count, !answersFinal else { return }
         precondition(answerWaiter == nil, "one waiter at a time")
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             answerWaiter = (count, continuation)
