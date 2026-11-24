@@ -1,0 +1,89 @@
+# Autobahn|Testsuite against the NIO WebSocket server
+
+Runs the [Autobahn|Testsuite](https://github.com/crossbario/autobahn-testsuite) fuzzing client,
+the usual WebSocket conformance suite, against a server built on `NIOWebSocketServer` (#798).
+
+This is test tooling. It changes nothing under `Sources/` or `Tests/`, and it is not a gate: the
+server fails many cases today (see [Baseline](#baseline)), and the run reports them.
+
+## Pieces
+
+| File | Role |
+|------|------|
+| `Tools/AutobahnEcho/` | A SwiftPM executable: an echo server on `NIOWebSocketServer` and `WebSocketTransport`. It sends every message it receives back to its sender. |
+| `fuzzingclient.json` | The suite's configuration: one server (`ws://127.0.0.1:9001`), every case except sections 9, 12 and 13. |
+| `run.sh` | Builds and starts the harness, runs the suite's Docker image against it, stops the harness, prints a summary. |
+| `summarize.py` | Reads `reports/servers/index.json`: a count per result, a table per section, the FAILED case ids. |
+| `expected-failures.txt` | The cases that fail today, with a one-word cause each. |
+| `../../.github/workflows/autobahn.yml` | Runs all of it in CI. |
+
+## Running it
+
+Needs Swift (the toolchain the repository pins), Docker and Python 3.
+
+```bash
+scripts/autobahn/run.sh
+```
+
+It builds the harness with `swift build`, starts it on `127.0.0.1:9001` (fixed, as in `fuzzingclient.json`), and runs
+`crossbario/autobahn-testsuite` (pinned by digest) with `--network host`, so the container reaches
+the harness on the host's loopback. A full run takes a few minutes. Reports land in
+`scripts/autobahn/reports/` (git-ignored): `servers/index.html` is the suite's own overview,
+`servers/index.json` the machine-readable one, `summary.txt` this directory's summary.
+
+| Variable | Effect |
+|----------|--------|
+| `AUTOBAHN_ECHO_BIN` | A built `AutobahnEcho` executable. Skips the build (CI builds it in another job). |
+| `AUTOBAHN_IMAGE` | The suite's Docker image (default: the pinned digest). |
+
+Exit codes: `0` when the suite ran to the end (whatever it found), `3` for a missing executable,
+`4` when the harness didn't start listening, `5` when the suite didn't run to the end, `6` when it
+wrote no `index.json`. A failed case is not an error of the script.
+
+To list the failed cases of a run, or to write `expected-failures.txt` again after a fix:
+
+```bash
+python3 scripts/autobahn/summarize.py scripts/autobahn/reports/servers/index.json --failed-only
+python3 scripts/autobahn/summarize.py scripts/autobahn/reports/servers/index.json --expected-failures
+```
+
+## What the harness is
+
+`AutobahnEcho` registers a `TransportDelegate` on a `WebSocketTransport` and sends each message
+back with `transport.send(_, to: .session(id))`. It listens on `127.0.0.1` (the port is the first
+argument, else `AUTOBAHN_ECHO_PORT`, else 9001), accepts every path, takes the default limits except
+a 16 MiB frame limit (`maxFrameSize`, the default), and stops on SIGINT or SIGTERM.
+
+**Limit of the harness:** the server sends every message as a binary frame
+(`WebSocketSessionHandler.sendOnLoop`), so a text message comes back with the right payload in the
+wrong frame type. Autobahn counts that as a failure of every text-echo case. The cause is listed as
+`text-as-binary`; the cases fail for that and nothing else, which hides what the server does
+with the rest of such a case (the checks of sections 6 and 7 that need a text echo). If the server
+gets a text send path, this is the first thing to re-run.
+
+## Reading a result
+
+Every case has two verdicts: `behavior` (what the server echoed) and `behaviorClose` (how the
+connection ended). `summarize.py` takes the worse of the two, ordered FAILED, UNIMPLEMENTED,
+NON-STRICT, INFORMATIONAL, OK. INFORMATIONAL is a case the suite doesn't judge (here 7.1.6, 7.13.1 and 7.13.2); it is not a failure.
+
+Sections run: 1 framing, 2 pings and pongs, 3 reserved bits, 4 opcodes, 5 fragmentation, 6 UTF-8
+handling, 7 close handling, 10 miscellaneous. Not run: 9 (limits and performance, long and
+dependent on the machine), 12 and 13 (permessage-deflate).
+
+## Baseline
+
+`expected-failures.txt` is the run on the commit that added it. The cause of each case is a
+guess made by `summarize.py` from the case's report, so read it as a pointer:
+
+| Cause | Cases | What the suite saw |
+|-------|-------|--------------------|
+| `text-as-binary` | 88 | The echo has the payload but arrives as a binary frame (the limit above). |
+| `reserved-bits` | 6 | A frame with RSV bits set (section 3) is not failed with 1002. |
+| `reserved-opcode` | 10 | A frame with a reserved opcode (section 4) is not failed with 1002. |
+| `fragmentation` | 10 | A bad fragment sequence (section 5) is not failed. |
+| `utf8` | 75 | A text message with invalid UTF-8 (section 6) is not failed with 1007. |
+| `close-code` | 10 | An invalid close code or close reason (section 7) is not answered with 1002. |
+
+A case that fails and isn't listed is a regression, a listed case that passes is a fix: update the
+file with the second command above in the same change.
