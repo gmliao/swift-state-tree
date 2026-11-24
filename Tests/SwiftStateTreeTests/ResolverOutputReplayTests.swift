@@ -238,7 +238,7 @@ struct ResolverOutputReplayTests {
         #expect(replayed.mismatchRead == "nil", "\(form)")
         let warnings = logs.all.filter { $0.level == .warning && $0.message.contains("doesn't decode in replay") }
         #expect(warnings.count == 1, "\(form): \(logs.all.map(\.message))")
-        #expect(warnings.first?.metadata["output"] == "resolverReplayStamp", "\(form)")
+        #expect(warnings.first?.metadata["output"] == "resolverReplayStampFetch", "\(form)")
         #expect(warnings.first?.metadata["requestedType"].map { "\($0)".hasSuffix("ResolverReplayMismatch") } == true, "\(form)")
         // The outputs that do decode log nothing.
         #expect(replayed.seen == live.seen, "\(form)")
