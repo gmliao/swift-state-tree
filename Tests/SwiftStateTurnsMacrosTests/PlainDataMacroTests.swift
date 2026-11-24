@@ -87,6 +87,51 @@ struct PlainDataMacroTests {
         #expect(text.contains("PlainDataCheck.field(value.index)"))
     }
 
+    @Test("A generic parameter no stored value names adds no constraint (#769)")
+    func unstoredParameters() {
+        let (text, messages) = expand("""
+            @PlainData
+            struct ProductInfo<D: HasProductDatabase> {
+                let productID: Int
+                func lookup(_ deps: D) -> String { "" }
+                var none: D? { nil }
+            }
+            @PlainData
+            enum Choice<T, U> {
+                case some(T)
+                case none
+            }
+            @PlainData
+            struct Nested<A, B, C: Collection> {
+                var list: [A]
+                var first: C.Element?
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("extension ProductInfo: SwiftStateTurns.PlainData {"))
+        #expect(text.contains("extension Choice: SwiftStateTurns.PlainData where T: SwiftStateTurns.PlainData {"))
+        // Named inside another type, or by a member type: `[A]` names A, `C.Element` names C.
+        #expect(text.contains("extension Nested: SwiftStateTurns.PlainData where A: SwiftStateTurns.PlainData, C: SwiftStateTurns.PlainData {"))
+    }
+
+    @Test("A field of a type or typealias the body declares constrains every parameter, `#if` included", arguments: [
+        "struct Inner { let x: Int }",
+        "enum Inner { case x }",
+        "typealias Inner = Int",
+        "#if DEBUG\ntypealias Inner = Int\n#endif",
+    ])
+    func localTypesConstrainEverything(_ local: String) {
+        let (text, messages) = expand("""
+            @PlainData
+            struct Outer<A, B> {
+                \(local)
+                let inner: Inner
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("extension Outer: SwiftStateTurns.PlainData where A: SwiftStateTurns.PlainData, B: SwiftStateTurns.PlainData {"))
+    }
+
     @Test("An enum checks every associated value of every case")
     func enumAssociatedValues() {
         let (text, messages) = expand("""

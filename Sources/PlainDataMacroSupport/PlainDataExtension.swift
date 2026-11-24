@@ -10,8 +10,8 @@ import SwiftSyntaxMacros
 /// compiler asks for it) and the `_plainDataCheck` witness with one check per stored value.
 public enum PlainDataExtension {
     /// - Parameters:
-    ///   - constrainGenerics: whether the extension adds `where T: PlainData` for the type's
-    ///     generic parameters and the enclosing ones its members name. `@Payload` passes false
+    ///   - constrainGenerics: whether the extension adds `where T: PlainData` for the generic
+    ///     parameters, the type's and the enclosing ones, that its stored values name. `@Payload` passes false
     ///     when its type conforms through a payload protocol: that conformance is unconditional,
     ///     so a conditional witness couldn't satisfy it, and the parameters carry the constraint
     ///     themselves.
@@ -43,9 +43,14 @@ public enum PlainDataExtension {
         // The expansion names the core's module, so a namesake type in the user's module can't
         // stand in for `PlainData` or `PlainDataCheck`.
         let members = declaration.memberBlock.members
-        let own = (generics?.parameters ?? []).map(\.name.text)
-        let ownNames = Set(own.map { String($0.filter { $0 != "`" }) })
-        let enclosing = enclosingParameters(usedIn: members, in: context).filter { !ownNames.contains(String($0.filter { $0 != "`" })) }
+        let named = storedNames(members)
+        // A field of a type or typealias declared in the body may stand for any parameter, so
+        // it constrains them all.
+        let all = !named.isDisjoint(with: localTypeNames(members))
+        let parameters = generics?.parameters ?? []
+        let own = parameters.filter { all || named.contains(name(of: $0)) }.map(\.name.text)
+        let ownNames = Set(parameters.map(name(of:)))
+        let enclosing = enclosingParameters(named: named, in: context).filter { !ownNames.contains(String($0.filter { $0 != "`" })) }
         let constraints = constrainGenerics ? (own + enclosing).map { "\($0): SwiftStateTurns.PlainData" } : []
         let whereClause = constraints.isEmpty ? "" : " where " + constraints.joined(separator: ", ")
         let conformance = protocols.isEmpty ? "" : ": SwiftStateTurns.PlainData"
@@ -111,14 +116,21 @@ public enum PlainDataExtension {
         walk(members, &seen)
     }
 
-    /// The generic parameters of the enclosing types that the stored values' declarations name:
-    /// a nested type's field of the parent's `T` is plain data only where `T` is (#782). Only
-    /// what the checks read counts: a stored property's type and initializer, and an enum case's
-    /// associated values. A parameter that only a method or a computed property names adds no
-    /// constraint, so such a nested type stays unconditionally `PlainData`. A member must spell
-    /// the parameter: the parent's alias for it, or a parameter of an enclosing extension's type,
-    /// isn't read, and such a field stays refused.
-    private static func enclosingParameters(usedIn members: MemberBlockItemListSyntax, in context: some MacroExpansionContext) -> [String] {
+    /// A generic parameter's name without backticks: `T` and `` `T` `` are one.
+    private static func name(of parameter: GenericParameterSyntax) -> String {
+        parameter.name.identifier?.name ?? parameter.name.text
+    }
+
+    /// The names the stored values' declarations spell, which decide the generic parameters the
+    /// conformance requires to be `PlainData`: a parameter named nowhere in them is stored
+    /// nowhere, so the value is plain data whatever its argument (a resolver generic over the
+    /// services it doesn't store, #769). Only what the checks read counts: a stored property's
+    /// type and initializer, and an enum case's associated values. A parameter that only a
+    /// method or a computed property names adds no constraint. A name is a whole identifier
+    /// anywhere in them: `D`, `[D]`, `Box<D>` and `D.Element` all name `D`. The checks still
+    /// read every stored value, so a parameter this misses is a field that fails to compile,
+    /// never one that conforms unchecked.
+    private static func storedNames(_ members: MemberBlockItemListSyntax) -> Set<String> {
         var names: Set<String> = []
         func collect(_ syntax: some SyntaxProtocol) {
             for token in syntax.tokens(viewMode: .sourceAccurate) {
@@ -151,6 +163,42 @@ public enum PlainDataExtension {
             }
         }
         walk(members)
+        return names
+    }
+
+    /// The types and typealiases the body declares, `#if` clauses included. The macro can't see
+    /// which parameters such a type captures, so a field that names one constrains them all.
+    private static func localTypeNames(_ members: MemberBlockItemListSyntax) -> Set<String> {
+        var names: Set<String> = []
+        func walk(_ members: MemberBlockItemListSyntax) {
+            for member in members {
+                let decl = member.decl
+                if let ifConfig = decl.as(IfConfigDeclSyntax.self) {
+                    for clause in ifConfig.clauses {
+                        if case .decls(let nested) = clause.elements { walk(nested) }
+                    }
+                    continue
+                }
+                let declared: TokenSyntax?
+                if let d = decl.as(StructDeclSyntax.self) { declared = d.name }
+                else if let d = decl.as(EnumDeclSyntax.self) { declared = d.name }
+                else if let d = decl.as(ClassDeclSyntax.self) { declared = d.name }
+                else if let d = decl.as(ActorDeclSyntax.self) { declared = d.name }
+                else if let d = decl.as(TypeAliasDeclSyntax.self) { declared = d.name }
+                else { declared = nil }
+                if let declared { names.insert(declared.identifier?.name ?? declared.text) }
+            }
+        }
+        walk(members)
+        return names
+    }
+
+    /// The generic parameters of the enclosing types that the stored values' declarations name
+    /// (`named`, from `storedNames`): a nested type's field of the parent's `T` is plain data
+    /// only where `T` is (#782). A member must spell the parameter: the parent's alias for it,
+    /// or a parameter of an enclosing extension's type, isn't read, and such a field stays
+    /// refused.
+    private static func enclosingParameters(named names: Set<String>, in context: some MacroExpansionContext) -> [String] {
         // Compared by name (`T` and `` `T` ``are one), emitted as spelled: a keyword name such
         // as `` `repeat` `` keeps its backticks in the `where` clause.
         var found: [String] = []

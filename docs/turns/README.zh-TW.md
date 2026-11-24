@@ -54,7 +54,10 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 
 在 struct 或 enum 定義處加上 `@PlainData`。macro 會寫出 conformance，並為每個儲存屬性或 associated value 加一項檢查：檢查讀取儲存的值，值的型別不是純資料就無法編譯。因為讀的是值而不是寫出來的型別名稱，欄位型別的解析與宣告處相同，包括同一個外層型別裡巢狀的兄弟型別。
 - 每個儲存屬性都要有型別標註，macro 才能檢查。
-- 泛型型別需要 `where T: PlainData`。
+- 泛型型別的 conformance，以被儲存值寫到的每個泛型參數是 `PlainData` 為條件：`struct Box<T> { var value: T }` 在 `T` 是 `PlainData` 時才是 `PlainData`。沒有任何 stored property 或 associated value 寫到的參數不加條件，因為值裡沒有存那個型別的東西。所以泛型於某個它不儲存的 services 型別的型別，例如 `struct ProductInfo<D> { let productID: Int }`，即使 `D` 持有 class，也是 `PlainData`。
+  - 參數名稱只要出現在欄位型別的任何位置就算寫到：`D`、`[D]`、`Box<D>` 和 `D.Element` 都寫到了 `D`。
+  - 欄位型別若是在型別本體內宣告的型別或 typealias，所有參數都會成為條件，因為 macro 看不出那個型別用到哪些參數。
+  - 參數的成員型別需要自己的條件：`let first: C.Element?` 要在宣告上寫 `where C.Element: PlainData`。macro 寫的是 `C: PlainData`，推不出前者，所以不寫的話宣告會編譯失敗。
 - `@PlainData` 加在 class 或 actor 上會被拒絕；型別是 class、actor、closure，或未 refine `PlainData` 的 protocol 的 existential 的欄位，也會被拒絕。
 - `any P` 欄位單獨出現時會被檢查，作為 `Optional`、`Array`、`ContiguousArray` 的元素或 `Dictionary` 的 value 時也會。放在其他泛型型別裡（`Set<any P>`、`Result<Int, any P>`）時，macro 看不出該型別怎麼使用它，所以會拒絕。
 - protocol 可以 refine `PlainData`。遵循它的型別仍需加上 `@PlainData`：`PlainData` 要求 macro 寫出的檢查，所以沒有 macro 的 class 或 struct 無法編譯，除非手寫 `_plainDataCheck`，而 lint 會拒絕這種寫法。
