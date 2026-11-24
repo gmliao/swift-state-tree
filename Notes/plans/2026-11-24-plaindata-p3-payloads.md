@@ -1,6 +1,6 @@
 # PlainData P3: payloads, server inputs, responses and resolver outputs are PlainData
 
-**Status:** rev 2, plan only, no code. Rev 2 answers Review's NOT GO on rev 1.1 (3 must-fix, 6 should, 3 nits; §9). P3-Q1 is decided (#616 closed); P3-Q2 is with the maintainer. Slice P3 of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§3.3, §4), on [P3/4-0](2026-11-24-plaindata-p34-0-shared-walk.md) (GO at a31edbb8), which lands the shared field walk, the re-export of `SwiftStateTurns` and Q3's diagnostic first. It takes in F2 of the #700 plan's census (Appendix A.6, agreed 2026-11-24): `ResponsePayload` refines `PlainData`, and an input's success is a plain `InputOutcome`. It leaves for #700 K1a what that plan's §3.11 lists under "What P3 must leave for K1a".
+**Status:** rev 2.1, plan only, no code. Rev 2 answered Review's NOT GO on rev 1.1; rev 2.1 answers its targeted NOT GO on rev 2: the design stands, and tests that wouldn't catch their mutants are fixed (§9). P3-Q1 is decided (#616 closed); P3-Q2 is with the maintainer. Slice P3 of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§3.3, §4), on [P3/4-0](2026-11-24-plaindata-p34-0-shared-walk.md) (GO at a31edbb8), which lands the shared field walk, the re-export of `SwiftStateTurns` and Q3's diagnostic first. It takes in F2 of the #700 plan's census (Appendix A.6, agreed 2026-11-24): `ResponsePayload` refines `PlainData`, and an input's success is a plain `InputOutcome`. It leaves for #700 K1a what that plan's §3.11 lists under "What P3 must leave for K1a".
 
 Code pointers are at main c3d416d9. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. Counts are from a scan of `Sources/`, `Tests/` and `Examples/` at that commit, outside the macro tests: a declaration's or extension's own inheritance clause, attributes on the lines above it. Rev 2's counts were redone and agree with Review's Codex track.
 
@@ -108,32 +108,38 @@ package struct PendingServerInputItem: Sendable {
 
 - **The record writes `payload`, the tree, as today.** It doesn't re-encode the typed value. A re-encode differs from the tree whenever decode-then-encode isn't the identity, for example:
   - an `Int??` field holding `.some(nil)` is in the tree as an explicit nil; it decodes to `.none` and re-encodes with the key absent;
-  - a hand-written `Codable` that reads a legacy key and writes the current one.
+  - a hand-written `Codable` whose `init(from:)` normalizes what `encode(to:)` wrote verbatim: it lowercases a string, so `"ABC"` is in the tree and `"abc"` in the re-encode.
   
   So "record unchanged" holds by construction, not by a property of every type, and the record goldens can't move.
 - **Live applies `decoded`**, the value decoded from that same tree: the value replay decodes. The tree and the value come from one decode, at submit.
-- **Live, at submit, in order** (P3-Q2 (a), §7):
-  1. the identity check;
-  2. the drain check;
-  3. `recordedForm`: today's `.unencodable` for a tree that can't be built or exceeds the record's depth;
-  4. the in-flight cap;
-  5. **the decode** (`ServerInputCodec.decode`, the handler's `I`). A tree that doesn't decode back is refused `.unencodable`;
-  6. the sequence and the queue.
+- **Live, at submit, in order** (P3-Q2 (a), §7). Steps 1–5 are today's (LK:3204–3236):
+  1. `ensureInitialized`: a land that failed to initialize refuses `.draining`;
+  2. the mode: a keeper that isn't live refuses `.notLive`;
+  3. the identity check: `.unknownType`;
+  4. the drain check: `.draining`;
+  5. `recordedForm`: `.unencodable` for a tree that can't be built or exceeds the record's depth. This one fires **before** the cap, as today;
+  6. the in-flight cap: `.overCap`;
+  7. **the decode** (new; `ServerInputCodec.decode`, the handler's `I`). A tree that doesn't decode back is refused `.unencodable`. This one fires **after** the cap;
+  8. the sequence and the queue.
   
-  The decode comes after the cap check, so an input refused for the cap costs no decode. It comes before the sequence is taken, so a refused input leaves no gap in the sequence. **Two inputs pin the combined case:** one that is over the cap and doesn't decode back is refused `.overCap` (the cap comes first), and one under the cap that doesn't decode back is refused `.unencodable` with the sequence unchanged.
-- **Under a debug freeze** the decode happens at submit too: the held item (`serverInputsHeldWhileFrozen`) has `decoded` set before it waits. A resume only queues it, so a freeze changes no refusal.
+  The new decode comes after the cap check, so an input refused for the cap costs no decode. It comes before the sequence is taken, so a refused input leaves no gap in the sequence. **Two inputs pin the combined case:** one that is over the cap and doesn't decode back is refused `.overCap` (the cap comes first), and one under the cap that doesn't decode back is refused `.unencodable` with the sequence unchanged.
+- **Under a debug freeze** the decode happens at submit too: the held item (`serverInputsHeldWhileFrozen`) has `decoded` set before it waits. A resume only queues it, and apply reads `decoded`, so an input is decoded once across freeze, resume and apply, and a freeze changes no refusal.
 - **Replay, at build** (LK:4405): `decoded` is the decode of the recorded tree. A tree that doesn't decode is still queued, with `.failure(RecordedPayloadDecodeFailure)`. At apply it throws at the same point as today, so the input fails alone with the same report. That covers records written before P3 and hand-edited ones.
 - **The failure, per source.** Today a too-deep recorded server input throws `CanonicalMessagePackError.nestingTooDeep` from the record codec (ServerInput.swift:201), not `PayloadNesting.TooDeep`. So the failure record gets a case per source, and each rebuilds its source's error type:
 
   ```swift
-  @PlainData enum RecordedPayloadDecodeFailure {
+  @PlainData package enum RecordedPayloadDecodeFailure: Error {
       case tooDeep(limit: Int)        // rebuilt as PayloadNesting.TooDeep(limit:) (K1a: actions, events)
       case recordTooDeep              // rebuilt as CanonicalMessagePackError.nestingTooDeep (server inputs)
       case undecodable(String)        // rebuilt as RecordedPayloadDecodeError, the decode error's text
   }
   ```
 
-  `recordTooDeep` is the case K1a's shape (#700 §3.11) doesn't have. K1a reuses the enum as it is. A test pins the rebuilt error's type and value for both server-input cases (§4).
+  - It is `package` and an `Error`, since the item holds it as `Result`'s failure.
+  - `recordTooDeep` is the case K1a's shape (#700 §3.11) doesn't have. K1a reuses the enum as it is.
+  - **Which errors keep today's type.** Only the too-deep one: `.recordTooDeep` rebuilds today's `CanonicalMessagePackError.nestingTooDeep`. A field of the wrong type throws `CanonicalMessagePackError.typeMismatch` today. After P3b it arrives as `.undecodable(text)`, and apply throws `RecordedPayloadDecodeError`, a new type.
+  - So that the report doesn't change, `RecordedPayloadDecodeError` is `CustomStringConvertible`, and its `description` returns the stored text verbatim: `String(describing:)` of today's error. Nothing in replay matches a server input's error by type. `applyInputs` logs `String(describing: error)` and counts it (LK:3941–3960), so the log line and `replayRejected` are unchanged.
+  - A unit test pins the rebuilt error for each case: its type, and its description against today's (§4).
 - **The handler** takes the typed value. `AnyServerInputHandler` gains `decode: (AnyCodable) throws -> any ServerInputPayload` for the two decode points. Its invoke casts to `I`: the submit's identity check and the build's decode guarantee the cast.
 
 `ServerInputRefusal.unencodable`'s doc drops "a `Date` outside the years 0001–9999" (a `Date` can't be a server input field any more) and adds "or its record form doesn't decode back to its type".
@@ -154,10 +160,21 @@ package struct PendingServerInputItem: Sendable {
   - **A package `invokeTyped(_:action:ctx:) -> any ResponsePayload`** is what the keeper calls (LK:3609, today `invokeErased`).
   - **The package init** (`invoke: … -> AnyCodable`) takes `… -> any ResponsePayload`.
 - **Two tests use the package init to answer with a dictionary**, which can't be a `ResponsePayload` any more: `UntypedEventPayloadTests` (`makeUntypedResponseLand`, line 174) and `ClosedGatePendingFailureTests` (`makeClosedGateLand`, line 74). They test what happens when an action's answer fails to encode at the adapter. **The new seam keeps that failure at the adapter's encode:**
-  - a test response type, `@Payload struct UnencodableReply: ResponsePayload`, whose hand-written `encode(to:)` throws a test error;
+  - **The throw sits in a field's type, not in the reply's own `encode(to:)`.** The compressed encoders don't call a `@Payload` type's `encode(to:)`. They call its `_writePayloadFields` (PayloadMacro.swift:248–265, MessagePackTransportMessageEncoder.swift:254–280), so a throwing `encode(to:)` on the reply would be bypassed on `messagepack` and `opcodeJsonArray`, which most of these tests use (ClosedGatePendingFailureTests.swift:203–309). A field of a plain `Codable` type is written through the writer's `Codable` fallback on every encoder. So:
+
+    ```swift
+    @PlainData struct UnencodableMarker {          // test fixture
+        func encode(to encoder: any Encoder) throws { throw UnencodableMarkerError() }
+    }
+    @Payload struct UnencodableReply: ResponsePayload { let marker: UnencodableMarker }
+    @Payload struct UnencodableResponseAction: ActionPayload { typealias Response = UnencodableReply; let tag: String }
+    ```
+  - **The fixture's error first.** A unit test encodes `UnencodableReply` with each transport encoder (`json`, `opcodeJsonArray`, `messagepack`) and expects `UnencodableMarkerError` from each. Only then do the land tests run on it;
   - the handler is the public `HandleAction` form, so the package init has no dictionary user left;
-  - the keeper never encodes a response (it converts to `AnyCodable` at the exit, below, without encoding), so the first encode is the adapter's, on every encoding. The tests' holds (`.failureSubmit`) and their expectations stay;
-  - the PR shows each test reaching the same hold, with the same outcome, as on main. A mutant, the reply's `encode(to:)` succeeding, makes both tests fail.
+  - the keeper never encodes a response (it converts to `AnyCodable` at the exit, below, without encoding), so the first encode is the adapter's. The tests' holds (`.failureSubmit`) stay;
+  - **assertions that name `UntypedPayloadError` for the response land** move to `UnencodableMarkerError`, for example the failure detail at UntypedEventPayloadTests.swift:347. The PR lists each. The untyped-event assertions stay as they are: `AnyServerEvent(type:payload:)` can still carry a dictionary;
+  - **`UntypedResponseAction` and `UntypedResponseReply` stay.** `ActionErrorReplyEncodeTests` (lines 20–25) uses them for an action whose `validate` throws; its reply never encodes. Only the two failing-encode lands move to `UnencodableResponseAction`;
+  - the PR shows each test reaching the same hold, with the same outcome, as on main. A mutant, the marker's `encode(to:)` succeeding, makes both tests fail.
 - **The keeper's inventory**, every place that holds an input's success as `AnyCodable` today. Each holds `Result<InputOutcome, any Error>` after P3c:
   - the action slots (`actionSlots`, LK:2251) and `fillActionSlot` (LK:2447);
   - the job's completion (LK:2350–2372) and its cancellation (`cancelActionJob`, LK:2519);
@@ -199,7 +216,16 @@ package struct RecordedResolverOutput: Sendable {
 
 **The path, end to end:**
 - **Build.** `replayedResolverOutputs` (LK:1183) returns `[String: HeldResolverOutput]` of `.recorded`, with `integralFloats` set as today, for a `JSONReevaluationSource`. Live resolution (LK:2324, 1783, 2008, 2705) produces `.live`.
-- **Pending storage.** `PendingActionItem`, `PendingLifecycleItem` and `PendingAction` hold `package let heldResolverOutputs: [String: HeldResolverOutput]`. **Their public `resolverOutputs: [String: any ResolverOutput]` property** (LK:168, 208, 331) can't hold a `.recorded` output, so it goes. That is a public break (§6). Their public initializers keep taking `[String: any ResolverOutput]` and wrap each in `.live`. `with(resolverOutputs:resolvedAtTick:)` (package) takes the held form. The one test that reads the property (TicklessReplayPassTests.swift:661) reads the package one.
+- **The replayed items' init.** The replay builds an action item (LK:4358) and a lifecycle item (LK:4434) with the public initializers today. Each gets a package initializer that takes the held form, `heldResolverOutputs: [String: HeldResolverOutput]`. The action's keeps today's `AnyCodablePayloadSource` for the recorded payload and `decoded: nil`, so the payload is decoded at apply as today (K1a changes that, not P3).
+- **Pending storage.** `PendingActionItem` and `PendingLifecycleItem` hold `package let heldResolverOutputs: [String: HeldResolverOutput]`.
+  - **Their public `resolverOutputs: [String: any ResolverOutput]` property** (LK:208, 168) can't hold a `.recorded` output, so it goes. That is a public break (§6).
+  - Their public initializers keep taking `[String: any ResolverOutput]` and wrap each in `.live`.
+  - **`PendingAction`** (LK:331), the legacy queue's item, has no replay path, so its outputs are always live. It keeps its public property, a narrower break than rev 2 listed. `TicklessReplayPassTests.swift:661` reads `PendingAction`'s and is unaffected.
+- **The held map is carried end to end:**
+  - `LandContext.getAllResolverOutputs()` returns `[String: HeldResolverOutput]`;
+  - `completeAction` (LK:2336) passes it on;
+  - `with(resolverOutputs:resolvedAtTick:)` (package, LK:258) takes the held form, renamed `with(heldResolverOutputs:resolvedAtTick:)`;
+  - nothing converts back to `[String: any ResolverOutput]` on the way, so a `.recorded` output can't be dropped by a cast.
 - **`makeContext`** (LK:3326) and `LandContext`'s private storage take `[String: HeldResolverOutput]`:
   - the internal init takes the held form;
   - `setResolverOutput` (a live resolver writing its output) stores `.live`;
@@ -271,21 +297,33 @@ Holds and events, never timing.
 - E2E in three encodings and the record/replay E2E (0 mismatch). Frames unchanged except the monitor fixture in `PayloadFrameGoldenTests` and the removed `PFFallbacksEvent` entries. Record goldens unchanged.
 
 **P3b.**
-- `replayServerInputDecodeFailureIsReportedAsBefore`, pinned on main first, as K1a's `replayPayloadDecodeFailureIsReportedAsBefore` is (#778). It has three recorded server inputs: a field of the wrong type, a tree nested past the record codec's depth, and a good one. The first two fail alone, with today's log text and outcome, and **with today's error types**, checked by `#expect(throws:)`: `CanonicalMessagePackError.nestingTooDeep` for the deep one. The third applies. It stays green after P3b.
+- **`replayServerInputDecodeFailureIsReportedAsBefore`**, pinned on main first, as K1a's `replayPayloadDecodeFailureIsReportedAsBefore` is (#778). It stays green after P3b.
+  - **Three recorded server inputs:** a field of the wrong type, a tree nested past the record codec's depth, and a good one.
+  - **The frame is built in memory,** with `JSONReevaluationSource(metadata:frames:)`. A record file can't hold the deep one: the loader refuses a tree that deep (ActionSource.swift:265, CanonicalMessagePack.swift:754), so a file-based fixture would never reach the build.
+  - **What it pins.** Replay applies a failing input inside `applyInputs`, which logs and counts it (LK:3941–3960) and throws nothing to the caller. So the test pins what that leaves:
+    - the state after the tick: the good input applied, the other two not;
+    - `replayRejected`;
+    - the log text of each failure, captured.
+- **The rebuilt errors** are a unit test of `RecordedPayloadDecodeFailure`, not of the replay:
+  - `.recordTooDeep` rebuilds `CanonicalMessagePackError.nestingTooDeep`, today's type and value;
+  - `.undecodable(text)` rebuilds `RecordedPayloadDecodeError`, whose `description` equals `text`. `text` is `String(describing:)` of today's `CanonicalMessagePackError.typeMismatch` for the wrong-type fixture;
+  - `.tooDeep(limit:)` rebuilds `PayloadNesting.TooDeep(limit:)`.
 - **Refused at submit, nothing queued or recorded:** a server input whose form doesn't decode back (a hand-written `Codable` whose `init(from:)` requires a key its `encode(to:)` doesn't write) is refused `.unencodable`. The sequence counter is unchanged. Mutant: skip the submit-time decode, and it is accepted.
 - **The combined case:** the same input with the land at its in-flight cap is refused `.overCap`. Mutant: decode before the cap check, and it is refused `.unencodable`.
-- **Under a freeze:** the same input submitted while frozen is refused at submit. An input that decodes is held with `decoded` set, and applied at the resume.
-- **`serverInputRecordFormUnchanged`:** per `ServerInputTests` fixture, the record's tree is today's `recordedForm`, byte for byte in canonical MessagePack. Two fixtures where a re-encode would differ:
-  - an `Int??` field holding `.some(nil)`;
-  - a hand-written `Codable` that reads a legacy key and writes the current one.
-  
-  Mutant: the recorder writes `AnyCodable(decoded)`, the typed value re-encoded, instead of the tree. Both fixtures fail. (Rev 1's mutant leaned on `Data` being `bin` in MessagePack and base64 in JSON. In the record codec, `Data` is an array of bytes, since the codec doesn't use `bin` (CanonicalMessagePack.swift:139), so that premise was wrong.)
+- **Under a freeze:** the same input submitted while frozen is refused at submit. An input that decodes is held with `decoded` set, and applied at the resume. **A counting fixture** (its `init(from:)` increments a counter) shows one decode per input across freeze, resume and apply. Mutant: the resume decodes the held tree again, and the count is two.
+- **`serverInputRecordFormUnchanged`:** per `ServerInputTests` fixture, the record's tree is today's `recordedForm`, byte for byte in canonical MessagePack. Two fixtures where a re-encode differs:
+  - **a normalizing `Codable`:** a `@Payload` server input with a field whose type's `init(from:)` lowercases the string that its `encode(to:)` wrote verbatim. Submitted with `"ABC"`, the tree holds `"ABC"`, and the decoded value re-encodes as `"abc"`. (Rev 2's legacy-key `Codable` doesn't kill the mutant: it reads the key it writes, so the re-encode equals the tree.)
+  - **an `Int??` field holding `.some(nil)`.** `@Payload` refuses optional fields (PayloadMacro.swift:116–123), and a type with `@PlainData` alone, fields but no field metadata, breaks the record schema fingerprint (SchemaFingerprint.swift:78–90). So this fixture is `@PlainData` only, declared in a recording-only unit test that is never registered: the test submits it to a keeper built directly, with no fingerprint check, and reads the recorder's entry.
+
+  **Each fixture first asserts that the two canonical encodings differ** (the tree's and `AnyCodable(decoded)`'s), so the fixture can kill the mutant. Then the record is compared with the tree. Mutant: the recorder writes `AnyCodable(decoded)`, the typed value re-encoded, instead of the tree. Both fixtures fail. (Rev 1's mutant leaned on `Data` being `bin` in MessagePack and base64 in JSON. In the record codec, `Data` is an array of bytes, since the codec doesn't use `bin` (CanonicalMessagePack.swift:139), so that premise was wrong.)
 - The existing server-input record/replay tests and goldens unchanged.
 
 **P3c.**
 - A tickless land's action reply and a tick land's ACK reach the adapter with today's values: frame goldens unchanged, and a unit test on the conversion (`.none` → `AnyCodable(())`, `.response(r)` → `AnyCodable(r)`).
 - The public `invoke` and `invokeErased` return the same `AnyCodable` as on main for one action (a unit test).
-- `UntypedEventPayloadTests` and `ClosedGatePendingFailureTests` on the new seam (§2.4): the same holds and outcomes as on main. Mutant: the reply encodes, and both fail.
+- **The seam's fixture first:** `UnencodableReply` throws `UnencodableMarkerError` from the `json`, `opcodeJsonArray` and `messagepack` encoders.
+- `UntypedEventPayloadTests` and `ClosedGatePendingFailureTests` on the new seam (§2.4): the same holds and outcomes as on main, with the failure detail naming `UnencodableMarkerError` where it named `UntypedPayloadError` for the response. Mutant: the marker encodes, and both fail.
+- `ActionErrorReplyEncodeTests` unchanged, on `UntypedResponseAction`.
 - Mutant: `.response` converted as `.none`: the action reply tests fail.
 
 ## 5. Verification
@@ -302,7 +340,7 @@ Every break is a source break with no deprecation step, as for #593: there are n
   - `ActionPayload`, `ClientEventPayload`, `ServerEventPayload`, `ServerInputPayload`, `ResponsePayload` and `ResolverOutput` refine `PlainData`. A conformer needs `@Payload` or `@PlainData`. A field that isn't `PlainData` stops compiling: a class, a closure, `Any`, `AnyCodable`, `Date`, `UUID`, `URL`, `Decimal`, or a nested type without `@PlainData`. A generic conformer constrains its stored parameters to `PlainData`.
   - `TickProcessedEvent.expectedState`, `actualState` and its initializer take `String` (were `AnyCodable`). The live wire form is unchanged.
   - `TickProcessedPayload` is removed.
-  - `PendingActionItem.resolverOutputs`, `PendingLifecycleItem.resolverOutputs` and `PendingAction.resolverOutputs` (public, `[String: any ResolverOutput]`, LK:208, 168, 331) are removed. A replayed item's outputs aren't `ResolverOutput` values any more (§2.5). Their public initializers keep their parameters.
+  - `PendingActionItem.resolverOutputs` and `PendingLifecycleItem.resolverOutputs` (public, `[String: any ResolverOutput]`, LK:208, 168) are removed. A replayed item's outputs aren't `ResolverOutput` values any more (§2.5). Their public initializers keep their parameters. `PendingAction.resolverOutputs` stays: the legacy queue has no replay path.
   - `@Payload` refuses `@PlainData` and `@SnapshotConvertible` beside it, and a generic payload that stores a parameter without `T: PlainData`.
 - **Additive (P3a):** `@Payload` declares an extension role (`conformances: PlainData`, `names: named(_plainDataCheck)`). It makes a type `PlainData`. `LandID` is `PlainData`.
 - **Unchanged (P3a):** `ReevaluationStepResult.actualState: AnyCodable?` (the monitor bridges it, §2.2). `LandContext`'s public API.
@@ -354,3 +392,12 @@ Every break is a source break with no deprecation step, as for #593: there are n
   - the randomness sentence names K1b and L-Q2 (a), decided;
   - the lint exemption covers `_plainDataCheck` only, in `names: named(…)` of `@attached` only;
   - §2.4's inventory adds the job's completion and cancellation, `fillActionSlot` and the adapter's `Result<AnyCodable, any Error>`.
+
+**Rev 2.1** answers Review's targeted NOT GO on rev 2 (the design's MF1–3 were closed; these are tests that wouldn't have caught their mutants):
+- **MF1** (§2.4, §4 P3c): the compressed encoders bypass a `@Payload` type's `encode(to:)`, so the throw moves into a stored `@PlainData` field type, reached through the `Codable` fallback on every encoder. The fixture's error is asserted on all three encoders before the holds. The response-land assertions on `UntypedPayloadError` move to the fixture's error. `ActionErrorReplyEncodeTests` keeps `UntypedResponseAction`.
+- **MF2** (§2.3, §4 P3b): the legacy-key fixture didn't kill the mutant. It is replaced by a normalizing `Codable` (lowercase on decode). The `Int??` fixture is `@PlainData` only, in a recording-only unit test, since `@Payload` refuses optionals and a fieldless-metadata type breaks the fingerprint. Each fixture asserts up front that the two encodings differ.
+- **Shoulds:**
+  1. The replay test builds its frame in memory, since the loader refuses deep trees. It pins state, `replayRejected` and the log text, since `applyInputs` logs and doesn't throw. The rebuilt errors are a unit test. Only `.recordTooDeep` keeps today's type. `RecordedPayloadDecodeError` returns the stored text as its description, so the log text holds (§2.3, §4).
+  2. The resolver carrier: package held-form inits for the replayed action and lifecycle items, keeping `AnyCodablePayloadSource` and `decoded: nil`. The held map goes through `getAllResolverOutputs`, `completeAction` and `with(…)`. `PendingAction` keeps its public property, so the break is narrower (§2.5, §6).
+  3. The freeze path: a counting fixture shows one decode per input across freeze, resume and apply, with a mutant (§4).
+- **Nits:** `RecordedPayloadDecodeFailure` is `package` and an `Error`. The submit order lists the leading guards, and says that `recordedForm`'s `.unencodable` fires before `.overCap` and the new decode's after it (§2.3).
