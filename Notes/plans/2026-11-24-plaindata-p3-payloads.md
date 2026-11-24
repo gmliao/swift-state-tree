@@ -1,6 +1,6 @@
 # PlainData P3: payloads, server inputs, responses and resolver outputs are PlainData
 
-**Status:** rev 1, plan only, no code. Slice P3 of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§3.3, §4), on [P3/4-0](2026-11-24-plaindata-p34-0-shared-walk.md) (GO at a31edbb8), which lands the shared field walk, the re-export of `SwiftStateTurns` and Q3's diagnostic first. It takes in F2 of the #700 plan's census (Appendix A.6, agreed 2026-11-24): `ResponsePayload` refines `PlainData`, and an input's success is a plain `InputOutcome`. It leaves for #700 K1a what that plan's §3.11 lists under "What P3 must leave for K1a".
+**Status:** rev 1.1, plan only, no code. Rev 1.1 records P3-Q1 as decided (#616 closed). Slice P3 of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§3.3, §4), on [P3/4-0](2026-11-24-plaindata-p34-0-shared-walk.md) (GO at a31edbb8), which lands the shared field walk, the re-export of `SwiftStateTurns` and Q3's diagnostic first. It takes in F2 of the #700 plan's census (Appendix A.6, agreed 2026-11-24): `ResponsePayload` refines `PlainData`, and an input's success is a plain `InputOutcome`. It leaves for #700 K1a what that plan's §3.11 lists under "What P3 must leave for K1a".
 
 Code pointers are at main c3d416d9. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. Counts are from a scan of `Sources/`, `Tests/` and `Examples/` at that commit: a declaration's own inheritance clause, attributes on the lines above it.
 
@@ -37,7 +37,7 @@ No conformer is a class or an actor. Three are generic: `ENGenericEvent<T: Codab
 
 ### 2.2 The call sites that change
 
-The compiler finds them; this is what the scan expects.
+The compiler finds them; this is what the scan expects. Registration doesn't change: a land still lists its types (`ClientEvents { Register(…) }` and the other blocks, kept by #771 rev 2.2), and nothing here assumes a payload registers itself.
 - **Payloads without `@Payload`** get `@Payload`, or `@PlainData` where the test is about a payload without `@Payload` (`FPPlainNote`, the server-input fingerprint tests: a type that lists no fields keeps that path, #521 D15) and for the `SchemaGenTests` enums (`@Payload` handles structs only).
 - **Resolver outputs** get `@PlainData`: 39 types, 4 in GameDemo, 1 in Sources (see `AnyCodableResolverOutput` below).
 - **Fields that stop compiling** (Q2 decided: refuse, with the replacement named):
@@ -108,9 +108,9 @@ P3 moves the decode, not the rule:
 
 **With #769.** #769 rev 2.1 (GO, 659cd242) runs R1 after P3. It relies on `ResolverOutput: PlainData` (§3.1) and on the outputs in §2.2 holding no Foundation types. P3 touches no resolver *declaration* and no `ContextResolver`, so R1's codemod sees the same call sites. #769's generic-parameter finding (§3.1.1, `@PlainData` constrains every generic parameter) applies to `@Payload`'s extension too, since it shares the builder; R1's macro change fixes both.
 
-### 2.6 #616: not in P3
+### 2.6 #616: closed, not in P3
 
-#616 (a live input's payload checked for depth once, by its frame's decode) was parked "until P3 removes the `AnyCodable` payload path". The census agreement leaves that path in place: P3 must not change `PayloadDecodingSource` or the pending items' stored shape, and K1a keeps `InboundPayloadDecoding`'s JSON round trip (#700 §3.11). Since #521 an action decodes once, at intake (LK:2978–2980). The redundant work #616 removes is one `PayloadNesting.check` walk per JSON-sourced action or event. Its own A/B measured the proof's plumbing as a +1.82 % regression before 917a0d24 trimmed it. P3-Q1 asks what happens to it.
+#616 (a live input's payload checked for depth once, by its frame's decode) was parked "until P3 removes the `AnyCodable` payload path". The census agreement leaves that path in place: P3 must not change `PayloadDecodingSource` or the pending items' stored shape, and K1a keeps `InboundPayloadDecoding`'s JSON round trip (#700 §3.11). Since #521 an action decodes once, at intake (LK:2978–2980). The redundant work #616 removes is one `PayloadNesting.check` walk per JSON-sourced action or event. Its own A/B measured the proof's plumbing as a +1.82 % regression before 917a0d24 trimmed it. **Decided (P3-Q1):** the maintainer closed #616 on 2026-11-24. The remaining JSON walk goes with #606. P3 does nothing for it.
 
 ## 3. Slices
 
@@ -184,7 +184,7 @@ Every break is a source break with no deprecation step, as for #593: there are n
 
 | Q | Question | Options | Recommended |
 |---|---|---|---|
-| P3-Q1 | #616 | (a) close it as not needed: P3 doesn't remove the `AnyCodable` path, and K1a keeps the round trip. If a later change decodes a JSON payload from its frame bytes with no tree, the walk goes with the tree. (b) Keep it parked until K1a lands, then redesign it on K1a's typed item. (c) Take it into P3 | **(a).** What it saves is one walk per JSON-sourced input, and its plumbing measured as a regression. The lasting fix is to drop the tree, not to prove the walk redundant. That is a separate issue, for after K1a, if a profile shows the walk |
+| P3-Q1 | #616 | **Decided 2026-11-24:** closed by the maintainer; the remaining JSON walk goes with #606 | — |
 | P3-Q2 | A server input whose record form doesn't decode back to its type | (a) refused at submit (`.unencodable`): it is a broken `Codable` that no apply could run. (b) Accepted, recorded and failed in its turn, as today: the item then has to hold the failure live too | **(a)**: the caller learns at once, and a live keeper never queues an input it can't apply |
 
 ## 8. What P3 leaves for K1a (cross-check with #700 §3.11)
