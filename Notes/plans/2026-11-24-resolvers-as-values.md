@@ -252,6 +252,7 @@ HandleAction(A.self,
   - The user writes the requirement on the declaration (`<C: Collection> where C.Element: PlainData`), and then it compiles.
   - This is not a regression. The macro PR documents it, and adds this case to its macro tests as a must-not-compile snippet with its constrained pair.
   - The snippet's expected fragment is `'C.Element' conform to 'PlainData'`. That is the stable part of the message: the subject before it depends on which check fails (6.4.2 says `enum 'PlainDataCheck' requires that …`), and none of it names the declaration's `where` clause. The 6.4.3 re-run confirms the fragment.
+  - **Superseded on main (2026-11-24).** Since #790 the field check has an unavailable overload, so a failing field reports `'field' is unavailable: this field's type isn't PlainData: …` and no longer names `C.Element`. #814's snippet expects `this field's type isn't PlainData: add @PlainData to your struct or enum`, the fragment the other field-check snippets use. The 6.4.2 and 6.4.3 results above were taken at #772's macro, before #790.
 
 **§3.4, the dependency probe and Main's R-Q1 (c) probe, with the real macro.**
 - **The positive case runs only with the patched rule.** A `cart` land with `AppServices` and a no-services `ping` land register. A resolver's output arrives (`p7 @ 70`).
