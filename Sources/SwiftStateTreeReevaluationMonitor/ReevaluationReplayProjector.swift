@@ -40,12 +40,13 @@ public struct HeroDefenseReplayProjector: ReevaluationReplayProjecting {
 
     private func parseProjectedState(from actualState: AnyCodable?) throws -> [String: AnyCodable] {
         // The monitor's bridge: the built-in runner's JSON text, or another value as JSON text.
-        guard let state = actualState, let jsonText = ReevaluationStateText.text(of: state) else {
-            return [:]
-        }
+        // A state JSON can't hold throws, and the tick's verification fails with that error.
+        guard let state = actualState else { return [:] }
+        let jsonText = try ReevaluationStateText.text(of: state)
 
+        // A scalar state is a JSON fragment; like any non-object, it projects to no keys.
         let jsonData = Data(jsonText.utf8)
-        let rawJSON = try JSONSerialization.jsonObject(with: jsonData)
+        let rawJSON = try JSONSerialization.jsonObject(with: jsonData, options: [.fragmentsAllowed])
         guard let jsonObject = rawJSON as? [String: Any] else {
             return [:]
         }

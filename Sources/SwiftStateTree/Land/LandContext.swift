@@ -295,8 +295,7 @@ public struct LandContext: Sendable {
     ///
     /// **Replay:** a recorded output is held as `RecordedResolverOutput`, and this subscript decodes
     /// it into the requested type with the record's own codec (`RecordPayloadSource`, #707), as a
-    /// replayed server event is: a `Date`, `Data`, `URL` or `Decimal` field reads back in the form the
-    /// recorder wrote. An output that doesn't decode into the requested type reads as `nil`, with a
+    /// replayed server event is: a `Data` field reads back in the form the recorder wrote. An output that doesn't decode into the requested type reads as `nil`, with a
     /// warning naming the output and the error: in replay a `nil` the live handler didn't see is a
     /// divergence, and a silent one is how #707 went unnoticed.
     public subscript<T: ResolverOutput>(dynamicMember member: String) -> T? {

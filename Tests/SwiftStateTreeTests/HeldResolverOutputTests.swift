@@ -38,10 +38,25 @@ struct HeldResolverOutputTests {
     }
 
     @Test("The monitor's state text: a String passes through, any other value is JSON text with sorted keys")
-    func stateText() {
-        #expect(ReevaluationStateText.text(of: AnyCodable(#"{"b":1}"#)) == #"{"b":1}"#)
+    func stateText() throws {
+        #expect(try ReevaluationStateText.text(of: AnyCodable(#"{"b":1}"#)) == #"{"b":1}"#)
         // Eight keys, so an unsorted encoding can't pass by chance.
         let object = AnyCodable(["h": AnyCodable(0), "c": AnyCodable(1), "a": AnyCodable(2), "f": AnyCodable(3), "b": AnyCodable(4), "g": AnyCodable(5), "d": AnyCodable(6), "e": AnyCodable(7)])
-        #expect(ReevaluationStateText.text(of: object) == #"{"a":2,"b":4,"c":1,"d":6,"e":7,"f":3,"g":5,"h":0}"#)
+        #expect(try ReevaluationStateText.text(of: object) == #"{"a":2,"b":4,"c":1,"d":6,"e":7,"f":3,"g":5,"h":0}"#)
+        // A scalar is a JSON fragment; a value JSON can't hold throws.
+        #expect(try ReevaluationStateText.text(of: AnyCodable(42)) == "42")
+        #expect(throws: EncodingError.self) { try ReevaluationStateText.text(of: AnyCodable(Double.nan)) }
+    }
+
+    @Test("The projector: a scalar state projects to no keys, as before; a state JSON can't hold fails the tick")
+    func projectorScalarAndUnencodable() throws {
+        func result(_ state: AnyCodable) -> ReevaluationStepResult {
+            ReevaluationStepResult(tickId: 1, stateHash: "h", recordedHash: "h", isMatch: true, actualState: state)
+        }
+        let projector = HeroDefenseReplayProjector()
+        for scalar in [AnyCodable(42), AnyCodable(true)] {
+            #expect(try projector.project(result(scalar)).stateObject.isEmpty)
+        }
+        #expect(throws: EncodingError.self) { try projector.project(result(AnyCodable(Double.nan))) }
     }
 }

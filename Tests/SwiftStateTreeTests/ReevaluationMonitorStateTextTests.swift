@@ -5,6 +5,7 @@
 // tree there gets the same text, with sorted keys, on the wire.
 
 import Foundation
+import Logging
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeReevaluationMonitor
@@ -51,7 +52,7 @@ private actor StateTextRunner: ReevaluationRunnerProtocol {
 
 @Suite("The monitor sends a step's state as JSON text", .serialized, .timeLimit(.minutes(1)))
 struct ReevaluationMonitorStateTextTests {
-    @Test("A step result whose state is an object tree reaches TickProcessedEvent as JSON text with sorted keys; a String passes through")
+    @Test("A step result's state reaches TickProcessedEvent as JSON text: an object tree with sorted keys, a String as is, a scalar as a fragment; one JSON can't hold is logged and its event skipped")
     func objectTreeBecomesJSONText() async throws {
         let results = [
             ReevaluationStepResult(
@@ -62,12 +63,24 @@ struct ReevaluationMonitorStateTextTests {
                 tickId: 2, stateHash: "h2", recordedHash: "h2", isMatch: true,
                 actualState: AnyCodable(#"{"z":2}"#)
             ),
+            ReevaluationStepResult(
+                tickId: 3, stateHash: "h3", recordedHash: "h3", isMatch: true,
+                actualState: AnyCodable(42)
+            ),
+            // JSON can't hold a NaN: the land logs it and skips this tick's TickProcessedEvent.
+            ReevaluationStepResult(
+                tickId: 4, stateHash: "h4", recordedHash: "h4", isMatch: true,
+                actualState: AnyCodable(Double.nan)
+            ),
         ]
+        let logs = ResolverReplayLogRecords()
         let schema = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(ReevaluationMonitor.makeLand())])
         let pathHashes = try #require(schema.lands["reevaluation-monitor"]?.pathHashes)
         let service = ReevaluationRunnerService(
             factory: StateTextFactory(results: results),
-            projectorResolver: { _ in HeroDefenseReplayProjector() }
+            // No projector: a projector parses the state and would fail the run at tick 4
+            // before the land sees it (HeldResolverOutputTests covers that path).
+            projectorResolver: { _ in nil }
         )
         var services = LandServices()
         services.register(service, as: ReevaluationRunnerService.self)
@@ -76,7 +89,8 @@ struct ReevaluationMonitorStateTextTests {
             initialState: ReevaluationMonitorState(),
             services: services,
             autoStartLoops: false,
-            landID: "reevaluation-monitor:state-text"
+            landID: "reevaluation-monitor:state-text",
+            logger: Logger(label: "monitor-state-text") { _ in ResolverReplayLogHandler(records: logs) }
         )
         // Pinned, so no environment flag reaches this test (scripts/check-variant-test-selection.sh).
         var config = TransportEnvConfig(
@@ -125,5 +139,11 @@ struct ReevaluationMonitorStateTextTests {
         // so an unsorted encoding can't pass by chance.
         #expect(text.contains(#""actualState":"{\"a\":2,\"b\":4,\"c\":1,\"d\":6,\"e\":7,\"f\":3,\"g\":5,\"h\":0}""#), "\(sent.count) frames: \(text)")
         #expect(text.contains(#""actualState":"{\"z\":2}""#), "\(text)")
+        #expect(text.contains(#""actualState":"42""#), "\(text)")
+        // Ticks 1-3 send their TickProcessedEvent; tick 4's is skipped, and logged.
+        #expect(text.components(separatedBy: #""type":"TickProcessed""#).count - 1 == 3, "\(text)")
+        let skipped = logs.all.filter { $0.level == .error && $0.message.hasPrefix("Reevaluation monitor: a step's state can't be sent as JSON text") }
+        #expect(skipped.count == 1, "\(logs.all.map(\.message))")
+        #expect(skipped.first?.metadata["tickId"]?.description == "4")
     }
 }

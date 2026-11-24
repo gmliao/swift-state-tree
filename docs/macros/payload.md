@@ -14,6 +14,8 @@
 
 `@Payload` also makes the type [`PlainData`](../turns/README.md#what-counts-as-plain-data), and checks every field at compile time: a field can't be `Date`, `UUID`, `URL`, `Decimal`, `AnyCodable`, `Any`, a class or a closure. Store a time as `Int64` milliseconds (`timestampMillis: Int64`), an ID or a URL as `String`, and an amount of money as an integer in its smallest unit (`priceCents: Int64`). A struct or enum used as a field needs `@PlainData` (or `@Payload`).
 
+The macro reads `Date`, `UUID`, `URL` and `Decimal` by their spelling, so a type of your own with one of those names is refused too. Spell it with its module (`Money.Decimal`) to use it as a field.
+
 ## Basic Usage
 
 ### Action Payload

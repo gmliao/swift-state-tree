@@ -14,6 +14,8 @@
 
 `@Payload` 也會讓型別成為 [`PlainData`](../turns/README.zh-TW.md#什麼算純資料)，並在編譯期檢查每個欄位：欄位不能是 `Date`、`UUID`、`URL`、`Decimal`、`AnyCodable`、`Any`、class 或 closure。時間存成 `Int64` 毫秒（`timestampMillis: Int64`），ID 或 URL 存成 `String`，金額存成最小單位的整數（`priceCents: Int64`）。當作欄位的 struct 或 enum 需要 `@PlainData`（或 `@Payload`）。
 
+巨集是依拼寫判斷 `Date`、`UUID`、`URL` 和 `Decimal` 的，所以你自己定義、剛好同名的型別也會被拒絕。要拿它當欄位，請加上模組名稱（`Money.Decimal`）。
+
 ## 基本使用
 
 ### Action Payload

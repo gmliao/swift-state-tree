@@ -88,7 +88,7 @@ struct PayloadExtensionRoleTests {
         #expect(conditional.contains("extension Pair: SwiftStateTurns.PlainData where A: SwiftStateTurns.PlainData {"), "\(conditional)")
     }
 
-    @Test("A stored generic parameter without PlainData is refused at the parameter, naming the field; an unreadable constraint is left to the compiler")
+    @Test("A stored generic parameter without PlainData is refused at the parameter, naming the field; what the macro can't read with certainty is left to the compiler")
     func unconstrainedParameter() {
         let (_, messages) = expand("""
             @Payload
@@ -111,6 +111,25 @@ struct PayloadExtensionRoleTests {
             }
             """, conforming: false)
         #expect(unreadable.isEmpty, "\(unreadable)")
+        // Deferred to the compiler, never refused: a same-type requirement, a backticked
+        // parameter in `where`, and member types spelled like the parameter.
+        for source in [
+            "struct SameEvent<T>: ServerEventPayload where T == Int {\n    let value: T\n}",
+            "struct TickEvent<T>: ServerEventPayload where `T`: PlainData {\n    let value: T\n}",
+            "struct NamedEvent<T>: ServerEventPayload {\n    let value: Namespace.T\n}",
+            "struct ElementEvent<T: Codable & Sendable>: ServerEventPayload {\n    let value: T.Element\n}",
+        ] {
+            let (_, deferred) = expand("@Payload\n" + source, conforming: false)
+            #expect(deferred.isEmpty, "\(source): \(deferred)")
+        }
+        // A reference inside another type still counts.
+        let (_, nested) = expand("""
+            @Payload
+            struct ListEvent<T: Codable & Sendable>: ServerEventPayload {
+                let values: [String: [T]]
+            }
+            """, conforming: false)
+        #expect(nested == ["generic parameter 'T' is stored in 'values'; a payload must declare 'T: PlainData'"], "\(nested)")
         // A parameter no stored property names needs nothing.
         let (_, unused) = expand("""
             @Payload

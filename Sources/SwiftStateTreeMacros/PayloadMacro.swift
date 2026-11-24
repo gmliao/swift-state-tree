@@ -385,8 +385,9 @@ extension PayloadMacro: ExtensionMacro {
     /// must be `PlainData` itself: declared on the parameter or in a `where` requirement on it,
     /// as `PlainData` or one of the payload protocols. The diagnostic fires only where the
     /// macro can tell: no constraint, or only standard protocols that don't refine `PlainData`.
-    /// A spelling the macro can't read (an alias, another refining protocol) passes here and is
-    /// left to the compiler.
+    /// Whatever it can't read with certainty passes here and is left to the compiler: a
+    /// constraint spelled otherwise (an alias, another refining protocol), and any same-type or
+    /// layout requirement that names the parameter (`where T == Int`).
     private static func diagnoseUnconstrainedParameters(
         of structDecl: StructDeclSyntax,
         failed: inout Bool,
@@ -399,15 +400,23 @@ extension PayloadMacro: ExtensionMacro {
             "Copyable", "Escapable", "BitwiseCopyable", "Swift", "any", "&", "~",
         ]
         for parameter in structDecl.genericParameterClause?.parameters ?? [] {
+            // `T` and `` `T` `` are one name.
             let name = parameter.name.identifier?.name ?? parameter.name.text
             guard let field = storedProperty(naming: name, in: structDecl) else { continue }
             var constraints: [Syntax] = parameter.inheritedType.map { [Syntax($0)] } ?? []
+            var deferred = false
             for requirement in structDecl.genericWhereClause?.requirements ?? [] {
-                if case .conformanceRequirement(let conformance) = requirement.requirement,
-                   conformance.leftType.trimmedDescription == name {
-                    constraints.append(Syntax(conformance.rightType))
+                switch requirement.requirement {
+                case .conformanceRequirement(let conformance):
+                    if let left = conformance.leftType.as(IdentifierTypeSyntax.self), normalized(left.name) == name {
+                        constraints.append(Syntax(conformance.rightType))
+                    }
+                default:
+                    // A same-type or layout requirement: the compiler decides.
+                    if mentions(requirement, name) { deferred = true }
                 }
             }
+            if deferred { continue }
             let names = constraints.flatMap { $0.tokens(viewMode: .sourceAccurate).map { $0.identifier?.name ?? $0.text } }
             let constrained = names.contains { plain.contains($0) }
             let unreadable = names.contains { !notPlain.contains($0) && !plain.contains($0) }
@@ -418,7 +427,9 @@ extension PayloadMacro: ExtensionMacro {
         }
     }
 
-    /// The first stored property whose type names `parameter`.
+    /// The first stored property whose type refers to `parameter` as a type: `T`, `[T]`, `T?`,
+    /// `Box<T>`. A member type spelled like it (`Namespace.T`) is another type, and a member of
+    /// it (`T.Element`) doesn't need `T` itself to be `PlainData`: neither counts.
     private static func storedProperty(naming parameter: String, in structDecl: StructDeclSyntax) -> String? {
         for member in structDecl.memberBlock.members {
             guard let variable = member.decl.as(VariableDeclSyntax.self),
@@ -426,7 +437,9 @@ extension PayloadMacro: ExtensionMacro {
             for binding in variable.bindings where binding.accessorBlock == nil {
                 guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self),
                       let type = binding.typeAnnotation?.type else { continue }
-                if type.tokens(viewMode: .sourceAccurate).contains(where: { ($0.identifier?.name ?? $0.text) == parameter }) {
+                let references = TypeReferences(viewMode: .sourceAccurate)
+                references.walk(type)
+                if references.names.contains(parameter) {
                     return pattern.identifier.identifier?.name ?? pattern.identifier.text
                 }
             }
@@ -434,9 +447,31 @@ extension PayloadMacro: ExtensionMacro {
         return nil
     }
 
+    /// A name with its backticks removed.
+    private static func normalized(_ token: TokenSyntax) -> String {
+        token.identifier?.name ?? token.text
+    }
+
+    /// Whether `syntax` names `parameter` anywhere, as a token.
+    private static func mentions(_ syntax: some SyntaxProtocol, _ parameter: String) -> Bool {
+        syntax.tokens(viewMode: .sourceAccurate).contains { normalized($0) == parameter }
+    }
+
     private static func lastName(_ type: TypeSyntax) -> String {
         if let member = type.as(MemberTypeSyntax.self) { return member.name.text }
         return type.trimmedDescription
+    }
+}
+
+/// The names a type refers to as whole types: not a member type's name (`Namespace.T`), nor
+/// the base of a member type (`T` in `T.Element`). Compared without backticks.
+private final class TypeReferences: SyntaxVisitor {
+    var names: Set<String> = []
+
+    override func visit(_ node: IdentifierTypeSyntax) -> SyntaxVisitorContinueKind {
+        let isMemberBase = node.parent?.as(MemberTypeSyntax.self).map { $0.baseType.id == node.id } ?? false
+        if !isMemberBase { names.insert(node.name.identifier?.name ?? node.name.text) }
+        return .visitChildren
     }
 }
 
