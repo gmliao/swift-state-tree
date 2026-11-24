@@ -48,6 +48,10 @@ enum LandBuilder {
         var duplicateHandlers: [DuplicateHandlerDeclaration] = []
         var clientEventRegistrations: [Any.Type] = []
         var serverEventRegistrations: [Any.Type] = []
+        // A node no case below matches: another State's node, or a type the builder doesn't
+        // know. Dropping it would leave the land without its handlers, so registration and an
+        // unregistered keeper's initialization refuse the land instead (#794).
+        var unrecognizedNodes: [String] = []
 
         func ingest(nodes: [LandNode]) {
             for node in nodes {
@@ -136,7 +140,7 @@ enum LandBuilder {
                         serverEventRegistrations.append(registration.type)
                     }
                 default:
-                    continue
+                    unrecognizedNodes.append(String(reflecting: type(of: node)))
                 }
             }
         }
@@ -220,6 +224,7 @@ enum LandBuilder {
             serverInputHandlers: serverInputHandlers,
             duplicateHandlers: duplicateHandlers,
             clientEventMismatches: clientEventMismatches,
+            unrecognizedNodes: unrecognizedNodes,
             lifetimeHandlers: lifetimeHandlers,
             servicesType: servicesType
         )

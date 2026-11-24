@@ -45,7 +45,12 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// (`LandRegistrationError.clientEventMismatches`), and so does a keeper built without
     /// registration, at initialization.
     package let clientEventMismatches: [String]
-    /// Lifecycle handlers (join, leave, tick, shutdown).
+    /// Nodes the land's builder doesn't recognize, by type (#794): another State's node, or a
+    /// node type `LandBuilder` has no case for. Registration refuses such a land
+    /// (`LandRegistrationError.unrecognizedNodes`), and so does a keeper built without
+    /// registration, at initialization.
+    package let unrecognizedNodes: [String]
+    /// Lifecycle handlers (join, leave, tick, initialize and finalize).
     public let lifetimeHandlers: LifetimeHandlers<State>
     /// The services type the land declares (`Land(_:using:services:)`), nil for a land without
     /// services (`Land(_:using:)`). Read by registration and the keeper from #769 R1 on.
@@ -69,6 +74,7 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
             serverInputHandlers: serverInputHandlers,
             duplicateHandlers: duplicateHandlers,
             clientEventMismatches: clientEventMismatches,
+            unrecognizedNodes: unrecognizedNodes,
             lifetimeHandlers: lifetimeHandlers,
             servicesType: servicesType
         )

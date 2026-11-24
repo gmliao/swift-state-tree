@@ -2,7 +2,8 @@
 // and its `HandleEvent` handlers must agree. A registered event without a handler, or a handled
 // event that isn't registered, is refused at registration and by a directly built keeper,
 // instead of failing per event at intake. Also: handlers declared inside nested `Rules` are kept
-// (§3.1, the builder flattens `Rules`).
+// (§3.1, the builder flattens `Rules`), and a node the builder doesn't recognize is refused, not
+// dropped with its handlers (#794).
 
 import Foundation
 import Testing
@@ -15,6 +16,19 @@ struct ClientEventRegistrationState: StateNodeProtocol {
 
     public init() {}
 }
+
+/// Another land's State: its nodes aren't this land's.
+@StateNodeBuilder
+struct CEROtherState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var count: Int = 0
+
+    public init() {}
+}
+
+/// A node type `LandBuilder` has no case for.
+struct CERStrayNode: LandNode {}
+
 
 @Payload
 struct CERHandledEvent: ClientEventPayload {
@@ -202,6 +216,91 @@ struct ClientEventRegistrationTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         #expect(try await ackTotal(send(keeper, CERInnerAction(amount: 1))) == 1)
         #expect(try await ackTotal(send(keeper, CERDeepAction(amount: 2))) == 21)
+    }
+
+    @Test("A registration and its HandleEvent agree across nested Rules; a nested HandleEvent with no registration is still refused")
+    func agreementAcrossNestedRules() throws {
+        let agreeing = Land("cer-nested-agree", using: ClientEventRegistrationState.self) {
+            ClientEvents { Register(CERHandledEvent.self) }
+            Rules {
+                Rules {
+                    HandleEvent(CERHandledEvent.self) { state, event, _ in state.total += event.amount }
+                }
+            }
+        }
+        #expect(agreeing.clientEventMismatches.isEmpty)
+        try agreeing.validateForRegistration(context: .encodingIndependent)
+
+        let nestedUnregistered = Land("cer-nested-unregistered", using: ClientEventRegistrationState.self) {
+            ClientEvents { Register(CERHandledEvent.self) }
+            Rules {
+                HandleEvent(CERHandledEvent.self) { state, event, _ in state.total += event.amount }
+                Rules {
+                    HandleEvent(CERUnregisteredEvent.self) { state, event, _ in state.total += event.amount }
+                }
+            }
+        }
+        let error = try registrationError(nestedUnregistered)
+        #expect(error.clientEventMismatches == ["\(String(reflecting: CERUnregisteredEvent.self)): handled, not in ClientEvents"])
+    }
+
+    @Test("A type registered twice is named once when it has no handler, and agrees once handled")
+    func typeRegisteredTwice() throws {
+        let unhandled = Land("cer-twice-unhandled", using: ClientEventRegistrationState.self) {
+            ClientEvents {
+                Register(CERUnhandledEvent.self)
+                Register(CERUnhandledEvent.self)
+            }
+            Rules {}
+        }
+        #expect(unhandled.clientEventMismatches == ["\(String(reflecting: CERUnhandledEvent.self)): registered, no HandleEvent"])
+
+        let handled = Land("cer-twice-handled", using: ClientEventRegistrationState.self) {
+            ClientEvents {
+                Register(CERHandledEvent.self)
+                Register(CERHandledEvent.self)
+            }
+            Rules {
+                HandleEvent(CERHandledEvent.self) { state, event, _ in state.total += event.amount }
+            }
+        }
+        #expect(handled.clientEventMismatches.isEmpty)
+    }
+
+    @Test("With records replayed, a mismatched land reports the mismatch, and the fingerprint isn't computed in its place")
+    func mismatchUnderReplayReportsTheMismatch() throws {
+        // The server input holds a type named like the state's (#602): computed, the fingerprint
+        // would report that collision too.
+        let land = Land("cer-replay-mismatch", using: SchemaNameFirstLandState.self) {
+            Rules {
+                HandleServerInput(SchemaNameC.Holder.self) { _, _, _ in }
+                HandleEvent(CERUnregisteredEvent.self) { _, _, _ in }
+            }
+        }
+        let error = try #require(throws: LandRegistrationError.self) {
+            try land.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
+        }
+        #expect(error.clientEventMismatches == ["\(String(reflecting: CERUnregisteredEvent.self)): handled, not in ClientEvents"])
+        #expect(error.typeNameCollisions.isEmpty, "the fingerprint waits for the other rows: \(error)")
+        #expect(error.schemaFingerprint == nil)
+    }
+
+    @Test("A node the builder doesn't recognize (another State's, or an unknown type) is refused at registration and by a directly built keeper, not dropped")
+    func unrecognizedNodesAreRefused() async throws {
+        let foreign = OnJoin { (state: inout CEROtherState, _: LandContext) in state.count += 1 }
+        let nodes: [LandNode] = [foreign, CERStrayNode()]
+        func definition() -> LandDefinition<ClientEventRegistrationState> {
+            LandBuilder.build(id: "cer-unrecognized", stateType: ClientEventRegistrationState.self, nodes: nodes)
+        }
+        let expected = [String(reflecting: OnJoinNode<CEROtherState>.self), String(reflecting: CERStrayNode.self)]
+        #expect(definition().unrecognizedNodes == expected)
+
+        let error = try registrationError(definition())
+        #expect(error.unrecognizedNodes == expected)
+        #expect(error.description.contains(expected[0]), "\(error)")
+
+        let held = try await keeperFailure(definition())
+        #expect(held.unrecognizedNodes == expected)
     }
 }
 
