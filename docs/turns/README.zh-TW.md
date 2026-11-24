@@ -42,7 +42,7 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 |---|---|
 | `[PlayerID: Seat]`，兩者都是 `@PlainData` | 是 |
 | `Set<Int>`、`String?`、`Result<Int, TurnError>` | 是 |
-| `any Payload`、`[any Payload]`、`(any Payload)?`，其中 `protocol Payload: PlainData` | 是 |
+| `any Payload`、`[any Payload]`、`(any Payload)?`，其中 `protocol Payload: PlainData` | 是（作為 `@PlainData` 型別的欄位） |
 | `[String: Any]`、`Result<Int, any Error>` | 否：existential |
 | `Date`、`UUID`、`URL`、`Decimal` | 否：分別改存毫秒的 `Int64`（或讀 turn 的 `now`）、`String` 或專案自己的 ID 型別、`String`，以及最小單位的整數或 `String` |
 | `[() -> Void]` | 否：函式型別 |
@@ -57,8 +57,8 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 - 泛型型別需要 `where T: PlainData`。
 - `@PlainData` 加在 class 或 actor 上會被拒絕；型別是 class、actor、closure，或未 refine `PlainData` 的 protocol 的 existential 的欄位，也會被拒絕。
 - `any P` 欄位單獨出現時會被檢查，作為 `Optional`、`Array`、`ContiguousArray` 的元素或 `Dictionary` 的 value 時也會。放在其他泛型型別裡（`Set<any P>`、`Result<Int, any P>`）時，macro 看不出該型別怎麼使用它，所以會拒絕。
-- protocol 可以 refine `PlainData`。遵循它的型別仍需加上 `@PlainData`：`PlainData` 要求 macro 寫出的檢查，所以沒有 macro 的 class 或 struct 無法編譯。
-- 在 `SwiftStateTurns` 之外手寫 `: PlainData` 或 `_plainDataCheck`（包括 `@retroactive`）會被 `scripts/lint-turns.sh` 拒絕：那樣會不經任何檢查就符合。
+- protocol 可以 refine `PlainData`。遵循它的型別仍需加上 `@PlainData`：`PlainData` 要求 macro 寫出的檢查，所以沒有 macro 的 class 或 struct 無法編譯，除非手寫 `_plainDataCheck`，而 lint 會拒絕這種寫法。
+- 在 `SwiftStateTurns` 之外手寫 `: PlainData` 或 `_plainDataCheck`（包括 `@retroactive`）會被 plain-data lint（`Tests/SwiftStateTurnsMacrosTests/PlainDataLintTests.swift`，隨 `swift test` 執行）拒絕：那樣會不經任何檢查就符合。對 `PlainDataCheck` 的 extension，以及名為 `PlainDataCheck`、`SwiftStateTurns` 或 `Swift` 的宣告也會被拒絕，因為它們可能改變 macro 的檢查解析到的對象。
 - 標準函式庫或 Foundation 的型別無法加上 macro。請改存 turn core 的值型別，例如用 `TurnInstant` 取代 `ContinuousClock.Instant`。
 - 本 repository 其他模組的型別，在它自己的模組、它的定義處加上 `@PlainData`，絕不在別處用 extension 加。land 的狀態與 transport 保存的 ID 和值都已這樣標註：`SessionID`、`PlayerID`、`ClientID`、`EventTarget`、`StateSnapshot`、`SnapshotValue` 和 `MessagePackValue`。machine 可以直接儲存它們。
 

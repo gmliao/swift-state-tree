@@ -42,7 +42,7 @@ An effect's result, a deadline or a timer comes back as a new input. Each entry 
 |---|---|
 | `[PlayerID: Seat]`, where both are `@PlainData` | yes |
 | `Set<Int>`, `String?`, `Result<Int, TurnError>` | yes |
-| `any Payload`, `[any Payload]`, `(any Payload)?`, where `protocol Payload: PlainData` | yes |
+| `any Payload`, `[any Payload]`, `(any Payload)?`, where `protocol Payload: PlainData` | yes, as a field of a `@PlainData` type |
 | `[String: Any]`, `Result<Int, any Error>` | no: an existential |
 | `Date`, `UUID`, `URL`, `Decimal` | no: store an `Int64` of milliseconds (or read the turn's `now`), a `String` or a project ID type, a `String`, and an integer in the smallest unit or a `String` |
 | `[() -> Void]` | no: a function type |
@@ -57,8 +57,8 @@ Mark a struct or an enum with `@PlainData` where it is defined. The macro writes
 - A generic type needs `where T: PlainData`.
 - `@PlainData` on a class or an actor is refused, and so is a field whose type is a class, an actor, a closure or an existential of a protocol that doesn't refine `PlainData`.
 - An `any P` field is checked on its own, or as the element of `Optional`, `Array`, `ContiguousArray` or a `Dictionary`'s value. Inside any other generic type (`Set<any P>`, `Result<Int, any P>`) the macro can't see what the type does with it, so it is refused.
-- A protocol may refine `PlainData`. A type that conforms to it still needs `@PlainData`: `PlainData` requires the checks the macro writes, so a class or a struct without the macro doesn't compile.
-- A hand-written `: PlainData` or `_plainDataCheck` outside `SwiftStateTurns`, `@retroactive` included, is refused by `scripts/lint-turns.sh`: it would conform without checking anything.
+- A protocol may refine `PlainData`. A type that conforms to it still needs `@PlainData`: `PlainData` requires the checks the macro writes, so a class or a struct without the macro doesn't compile, unless it writes `_plainDataCheck` by hand, which the lint refuses.
+- A hand-written `: PlainData` or `_plainDataCheck` outside `SwiftStateTurns`, `@retroactive` included, is refused by the plain-data lint (`Tests/SwiftStateTurnsMacrosTests/PlainDataLintTests.swift`, run with `swift test`): it would conform without checking anything. So are an extension of `PlainDataCheck` and a declaration named `PlainDataCheck`, `SwiftStateTurns` or `Swift`, which could change what the macro's checks resolve to.
 - A type from the standard library or Foundation can't take the macro. Store the turn core's value type in its place, for example `TurnInstant` instead of `ContinuousClock.Instant`.
 - A type from another module of this repository takes `@PlainData` at its definition, in its own module, never through an extension elsewhere. The IDs and values a land's state and its transport keep are marked this way: `SessionID`, `PlayerID`, `ClientID`, `EventTarget`, `StateSnapshot`, `SnapshotValue` and `MessagePackValue`. A machine can store them as they are.
 

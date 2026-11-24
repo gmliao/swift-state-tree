@@ -29,7 +29,7 @@ The compile probes ran `swiftc -typecheck -swift-version 6`. Each is one file wi
 
 ### 3.1 Existential fields (Cover 1)
 
-`@PlainData` accepts a field of type `any P` when `P` refines `PlainData`, and emits `PlainDataCheck.existential((any P).self) { $0 }` for it. For the nested forms it checks the element:
+`@PlainData` accepts a field of type `any P` when `P` refines `PlainData`, and emits `SwiftStateTurns.PlainDataCheck.existential { (value: any P) in value }` for it (#772's form; rev 1 showed a metatype argument, which doesn't parse for `any (P & Q)`). A wrapper spelled out (`Array<any P>`, bare or `Swift.`-qualified) also gets a pinned check, `PlainDataCheck.array((Array<any P>).self)`, which compiles only for the standard library's type. For the nested forms it checks the element:
 - `[any P]`, `ContiguousArray<any P>`, `Set` can't hold an existential (not `Hashable`), so it doesn't arise;
 - `(any P)?`;
 - `[K: any P]`: `K` with `field`, the value with `existential`;
