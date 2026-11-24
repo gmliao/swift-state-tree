@@ -14,9 +14,12 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - 'Package.swift'
+      - 'Package.resolved'
+      - 'Sources/SwiftStateTreeTransport/**'
+      - 'Sources/SwiftStateTreeNIO/**'
       - 'Tools/AutobahnEcho/**'
       - 'scripts/autobahn/**'
-      - 'Sources/SwiftStateTreeNIO/**'
       - '.github/workflows/autobahn.yml'
 
 # A new push to a pull request cancels its run still in progress; every other run gets a group of

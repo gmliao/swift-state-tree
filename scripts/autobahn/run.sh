@@ -9,7 +9,8 @@
 # The report is written to scripts/autobahn/reports/ (index.json, one JSON file and one HTML
 # page per case; open reports/servers/index.html). The exit status is 0 when the suite ran and
 # the report exists, whatever the cases found: Autobahn failures are reported, not gated, yet.
-# It is non-zero when the harness doesn't build or start, or the suite doesn't run.
+# It is non-zero when the harness doesn't build or start, the suite doesn't run, the harness
+# exits mid-suite, or the index is partial (summarize.py validates the case count).
 #
 # Environment:
 #   AUTOBAHN_ECHO_BIN   a built AutobahnEcho executable; skips the build.
@@ -44,18 +45,27 @@ harness_pid=$!
 stop_harness() {
     if kill -0 "$harness_pid" 2>/dev/null; then
         kill -TERM "$harness_pid" 2>/dev/null || true
+        # Bound the wait to 10 s, then force-kill.
+        for _ in $(seq 1 20); do
+            kill -0 "$harness_pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        if kill -0 "$harness_pid" 2>/dev/null; then
+            echo "autobahn: harness did not stop after TERM; sending KILL" >&2
+            kill -KILL "$harness_pid" 2>/dev/null || true
+        fi
         wait "$harness_pid" 2>/dev/null || true
     fi
 }
 trap stop_harness EXIT
 
-# Wait for the listener: up to 60 s.
+# Wait for the harness's own listening line: up to 60 s.
 ready=0
 for _ in $(seq 1 120); do
     if ! kill -0 "$harness_pid" 2>/dev/null; then
         break
     fi
-    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    if grep -qF "AutobahnEcho listening" "$harness_log" 2>/dev/null; then
         ready=1
         break
     fi
@@ -76,6 +86,12 @@ if ! docker run --rm --network host \
     wstest -m fuzzingclient -s /config/fuzzingclient.json; then
     echo "autobahn: the suite did not run to the end" >&2
     exit 5
+fi
+
+# Fail distinctly when the harness exited before the suite finished.
+if ! kill -0 "$harness_pid" 2>/dev/null; then
+    echo "autobahn: the harness exited before the suite finished" >&2
+    exit 7
 fi
 
 stop_harness

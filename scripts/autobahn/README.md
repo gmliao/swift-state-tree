@@ -57,9 +57,10 @@ a 16 MiB frame limit (`maxFrameSize`, the default), and stops on SIGINT or SIGTE
 **Limit of the harness:** the server sends every message as a binary frame
 (`WebSocketSessionHandler.sendOnLoop`), so a text message comes back with the right payload in the
 wrong frame type. Autobahn counts that as a failure of every text-echo case. The cause is listed as
-`text-as-binary`; the cases fail for that and nothing else, which hides what the server does
-with the rest of such a case (the checks of sections 6 and 7 that need a text echo). If the server
-gets a text send path, this is the first thing to re-run.
+`text-as-binary`; the data-exchange check fails for that reason, but a `text-as-binary` case can
+still have a second failure hidden behind it: the close verdict (`behaviorClose`) and the payload
+preview in the report may be incomplete because Autobahn stops inspecting once it records the
+binary-frame mismatch. If the server gets a text send path, this is the first thing to re-run.
 
 ## Reading a result
 
@@ -73,17 +74,21 @@ dependent on the machine), 12 and 13 (permessage-deflate).
 
 ## Baseline
 
-`expected-failures.txt` is the run on the commit that added it. The cause of each case is a
-guess made by `summarize.py` from the case's report, so read it as a pointer:
+`expected-failures.txt` lists the cases that failed on the baseline run. Each cause is a
+guess from `summarize.py`. Causes without a `guess:` prefix (`text-as-binary`) are diagnosed from
+the case report. Causes with `guess:` are derived from the section number alone — the section's
+usual failure mode — and may be wrong for individual cases; file separate issues when a cause is
+confirmed.
 
 | Cause | Cases | What the suite saw |
 |-------|-------|--------------------|
-| `text-as-binary` | 88 | The echo has the payload but arrives as a binary frame (the limit above). |
-| `reserved-bits` | 6 | A frame with RSV bits set (section 3) is not failed with 1002. |
-| `reserved-opcode` | 10 | A frame with a reserved opcode (section 4) is not failed with 1002. |
-| `fragmentation` | 10 | A bad fragment sequence (section 5) is not failed. |
-| `utf8` | 75 | A text message with invalid UTF-8 (section 6) is not failed with 1007. |
-| `close-code` | 10 | An invalid close code or close reason (section 7) is not answered with 1002. |
+| `text-as-binary` | 88 | The echo has the payload but arrives as a binary frame (the limit above). A `text-as-binary` case can hide a second failure in the same case; see the note in [What the harness is](#what-the-harness-is). |
+| `guess:reserved-bits` | 6 | Section 3: a frame with RSV bits set is not failed with 1002. |
+| `guess:reserved-opcode` | 10 | Section 4: a frame with a reserved opcode is not failed with 1002. |
+| `guess:fragmentation` | 10 | Section 5: a bad fragment sequence is not failed. |
+| `guess:utf8` | 75 | Section 6: invalid UTF-8 in a text message is not failed with 1007. |
+| `guess:close-code` | 9 | Section 7: an invalid close code or close reason is not answered with 1002. |
+| `guess:utf8-close-reason` | 1 | Section 7 (7.5.1): code 1000 with an invalid UTF-8 reason; expected 1007/1002. |
 
 A case that fails and isn't listed is a regression, a listed case that passes is a fix: update the
 file with the second command above in the same change.
