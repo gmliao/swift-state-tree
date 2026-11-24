@@ -1,6 +1,6 @@
 # PlainData P3: payloads, server inputs, responses and resolver outputs are PlainData
 
-**Status:** rev 2.1, plan only, no code. Rev 2 answered Review's NOT GO on rev 1.1; rev 2.1 answers its targeted NOT GO on rev 2: the design stands, and tests that wouldn't catch their mutants are fixed (§9). P3-Q1 is decided (#616 closed); P3-Q2 is with the maintainer. Slice P3 of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§3.3, §4), on [P3/4-0](2026-11-24-plaindata-p34-0-shared-walk.md) (GO at a31edbb8), which lands the shared field walk, the re-export of `SwiftStateTurns` and Q3's diagnostic first. It takes in F2 of the #700 plan's census (Appendix A.6, agreed 2026-11-24): `ResponsePayload` refines `PlainData`, and an input's success is a plain `InputOutcome`. It leaves for #700 K1a what that plan's §3.11 lists under "What P3 must leave for K1a".
+**Status:** rev 2.1, plan only, no code. Rev 2 answered Review's NOT GO on rev 1.1; rev 2.1 answers its targeted NOT GO on rev 2: the design stands, and tests that wouldn't catch their mutants are fixed (§9). P3-Q1 and P3-Q2 are decided (§7). Slice P3 of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§3.3, §4), on [P3/4-0](2026-11-24-plaindata-p34-0-shared-walk.md) (GO at a31edbb8), which lands the shared field walk, the re-export of `SwiftStateTurns` and Q3's diagnostic first. It takes in F2 of the #700 plan's census (Appendix A.6, agreed 2026-11-24): `ResponsePayload` refines `PlainData`, and an input's success is a plain `InputOutcome`. It leaves for #700 K1a what that plan's §3.11 lists under "What P3 must leave for K1a".
 
 Code pointers are at main c3d416d9. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. Counts are from a scan of `Sources/`, `Tests/` and `Examples/` at that commit, outside the macro tests: a declaration's or extension's own inheritance clause, attributes on the lines above it. Rev 2's counts were redone and agree with Review's Codex track.
 
@@ -112,7 +112,7 @@ package struct PendingServerInputItem: Sendable {
   
   So "record unchanged" holds by construction, not by a property of every type, and the record goldens can't move.
 - **Live applies `decoded`**, the value decoded from that same tree: the value replay decodes. The tree and the value come from one decode, at submit.
-- **Live, at submit, in order** (P3-Q2 (a), §7). Steps 1–5 are today's (LK:3204–3236):
+- **Live, at submit, in order** (P3-Q2 (a), decided, §7). Steps 1–5 are today's (LK:3204–3236):
   1. `ensureInitialized`: a land that failed to initialize refuses `.draining`;
   2. the mode: a keeper that isn't live refuses `.notLive`;
   3. the identity check: `.unknownType`;
@@ -344,7 +344,7 @@ Every break is a source break with no deprecation step, as for #593: there are n
   - `@Payload` refuses `@PlainData` and `@SnapshotConvertible` beside it, and a generic payload that stores a parameter without `T: PlainData`.
 - **Additive (P3a):** `@Payload` declares an extension role (`conformances: PlainData`, `names: named(_plainDataCheck)`). It makes a type `PlainData`. `LandID` is `PlainData`.
 - **Unchanged (P3a):** `ReevaluationStepResult.actualState: AnyCodable?` (the monitor bridges it, §2.2). `LandContext`'s public API.
-- **Behavior (P3b):** a server input whose record form doesn't decode back to its type is refused at submit (`.unencodable`), where today it was accepted and failed in its turn. `ServerInputRefusal.unencodable`'s doc changes to match (§2.3).
+- **Behavior (P3b, P3-Q2 (a)):** a server input whose record form doesn't decode back to its type is refused at submit (`.unencodable`), where today it was accepted and failed in its turn. One that decodes to a different value is accepted, and both live and replay apply the decoded value. `ServerInputRefusal.unencodable`'s doc changes to match (§2.3).
 - **None public (P3c):** `InputOutcome`, `ActionSubmission`, `awaitActionResult`, `invokeTyped` and the slots are internal or package. `handleActionEnvelope`, `AnyActionHandler.invoke` and `invokeErased` keep `-> AnyCodable`. The package init's closure type changes (`-> any ResponsePayload`).
 
 `RecordedResolverOutput` (was `AnyCodableResolverOutput`) and `HeldResolverOutput` are package. `PendingServerInputItem` is package. `RecordedPayloadDecodeFailure` is package (K1a decides whether its record view exposes it).
@@ -354,7 +354,7 @@ Every break is a source break with no deprecation step, as for #593: there are n
 | Q | Question | Options | Recommended |
 |---|---|---|---|
 | P3-Q1 | #616 | **Decided 2026-11-24:** closed by the maintainer; the remaining JSON walk goes with #606 | — |
-| P3-Q2 | A server input whose record form doesn't decode back to its type | (a) refused at submit (`.unencodable`), after the cap check and before the sequence is taken (§2.3): it is a broken `Codable` that no apply could run. (b) Accepted, recorded and failed in its turn, as today: the item then has to hold the failure live too | **(a)**, with Review: the caller learns at once, and a live keeper never queues an input it can't apply. **With the maintainer** |
+| P3-Q2 | A server input whose record form doesn't decode back to its type | **Decided 2026-11-24: (a).** Refused at submit (`.unencodable`), after the cap check and before the sequence is taken (§2.3). It catches a broken hand-written `Codable` at the developer's first test, not at replay. A value that decodes to a *different* value (`Int??` holding `.some(nil)`, a normalizing `Codable`) isn't refused: live and replay both apply the decoded value, and the record keeps the tree. Option (b), accepted, recorded and failed in its turn as today, was declined | — |
 
 ## 8. What P3 leaves for K1a (cross-check with #700 §3.11)
 
@@ -401,3 +401,4 @@ Every break is a source break with no deprecation step, as for #593: there are n
   2. The resolver carrier: package held-form inits for the replayed action and lifecycle items, keeping `AnyCodablePayloadSource` and `decoded: nil`. The held map goes through `getAllResolverOutputs`, `completeAction` and `with(…)`. `PendingAction` keeps its public property, so the break is narrower (§2.5, §6).
   3. The freeze path: a counting fixture shows one decode per input across freeze, resume and apply, with a mutant (§4).
 - **Nits:** `RecordedPayloadDecodeFailure` is `package` and an `Error`. The submit order lists the leading guards, and says that `recordedForm`'s `.unencodable` fires before `.overCap` and the new decode's after it (§2.3).
+- **P3-Q2 decided (a)** by the maintainer, 2026-11-24, with its rationale (§7, §6).
