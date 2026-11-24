@@ -435,6 +435,8 @@ private func fpLand<S: StateNodeProtocol, E: ServerEventPayload, A: ActionPayloa
         ClientEvents { Register(FPv1.FPNote.self) }
         ServerEvents { Register(E.self) }
         Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(FPv1.FPNote.self) { _, _, _ in }
             // No action is sent in these tests: the handler only declares the action and its response.
             HandleAction(A.self) { (_: inout S, _: A, _: LandContext) -> A.Response in fatalError("no action is sent") }
             HandleServerInput(I.self) { (_: inout S, _: I, _: LandContext) in }
@@ -451,6 +453,8 @@ private func fpTwoActions<A: ActionPayload, B: ActionPayload>(_: A.Type, _: B.Ty
         ClientEvents { Register(FPv1.FPNote.self) }
         ServerEvents { Register(FPv1.FPEvent.self) }
         Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(FPv1.FPNote.self) { _, _, _ in }
             HandleAction(A.self) { (_: inout FPv1.FPState, _: A, _: LandContext) -> A.Response in fatalError("no action is sent") }
             HandleAction(B.self) { (_: inout FPv1.FPState, _: B, _: LandContext) -> B.Response in fatalError("no action is sent") }
             HandleServerInput(FPv1.FPInput.self) { (_: inout FPv1.FPState, _: FPv1.FPInput, _: LandContext) in }
@@ -475,6 +479,8 @@ private func fpWithExtraAction() -> LandDefinition<FPv1.FPState> {
         ClientEvents { Register(FPv1.FPNote.self) }
         ServerEvents { Register(FPv1.FPEvent.self) }
         Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(FPv1.FPNote.self) { _, _, _ in }
             HandleAction(FPv1.FPAction.self) { (_: inout FPv1.FPState, _: FPv1.FPAction, _: LandContext) in FPv1.FPResponse(ok: true) }
             HandleAction(FPExtraAction.self) { (_: inout FPv1.FPState, _: FPExtraAction, _: LandContext) in FPv1.FPResponse(ok: true) }
             HandleServerInput(FPv1.FPInput.self) { (_: inout FPv1.FPState, _: FPv1.FPInput, _: LandContext) in }
@@ -657,7 +663,10 @@ struct SchemaFingerprintTests {
             (Self.thrownError {
                 try fingerprint(Land(fpLandID, using: FPv1.FPState.self) {
                     ClientEvents { Register(FPPlainNote.self) }
-                    Rules {}
+                    Rules {
+                        // Registered for the schema only; a registered client event needs a handler (#771).
+                        HandleEvent(FPPlainNote.self) { _, _, _ in }
+                    }
                 })
             }, "FPPlainNote")
         }

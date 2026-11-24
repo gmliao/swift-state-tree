@@ -10,6 +10,7 @@ Land is the smallest runnable unit of server logic, responsible for defining joi
 - Land DSL only describes behavior, doesn't expose Transport details
 - Handlers are synchronous; emit outputs via `ctx.emitEvent(...)` / `ctx.requestSync*()` and keep async I/O out-of-band (e.g., via Resolver).
 - Event type registration (Client/ServerEvents) used for schema and validation
+- Handler closures don't name their types: the state type comes from `Land(_:using:)`, and each input type from the `.self` argument of its handler
 
 ## Basic Structure
 
@@ -43,6 +44,8 @@ ServerEvents {
     Register(PongEvent.self)
 }
 ```
+
+A land registers each client event it handles, and handles each client event it registers. Registration refuses a land whose two lists disagree: an event registered with no `HandleEvent`, or an event handled with no `Register`. The error, `LandRegistrationError.clientEventMismatches`, names each such event and the side it's missing. A keeper built without registration refuses the land when it initializes.
 
 Server events are notifications; the synced state is the source of truth. A session that is still joining gets the targeted events sent to it right after its firstSync, in emission order, and their effects are already in that firstSync (see [Transport](../transport/README.md#join-and-session-flow)).
 
@@ -83,12 +86,12 @@ Input handlers can't throw after they write (#586). The single-closure `HandleAc
 
 ```swift
 HandleAction(BuyAction.self,
-    validate: { (state: ShopState, action: BuyAction, ctx: ValidateContext) throws -> BuyPlan in
+    validate: { state, action, ctx in
         guard let item = state.shop[action.itemID] else { throw ShopError.notFound }
         guard (state.players[ctx.playerID]?.gold ?? 0) >= item.price else { throw ShopError.noGold }
         return BuyPlan(item: item)
     },
-    apply: { (state: inout ShopState, action: BuyAction, plan: BuyPlan, ctx: LandContext) -> BuyResponse in
+    apply: { state, action, plan, ctx in
         state.players[ctx.playerID]?.gold -= plan.item.price
         state.players[ctx.playerID]?.items.append(plan.item)
         return BuyResponse(ok: true)
@@ -178,7 +181,7 @@ struct BuyItemResponse: ResponsePayload {
 let maxAppliedPurchases = 64
 
 // In the land's Rules:
-HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemAction, ctx: LandContext) -> BuyItemResponse in
+HandleAction(BuyItemAction.self) { state, action, ctx in
     let player = ctx.playerID
     let coins = state.coins[player] ?? 0
     var applied = state.appliedPurchases[player] ?? []
@@ -204,6 +207,57 @@ HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemActio
 - On a tick land the client sees `BuyItemResponse` only as the ACK. It reads `coins` from state instead.
 - The checks here don't refuse the action, they answer it (`applied: false`), so one body that can't throw is enough. An action that should fail with an error throws from `validate` instead, which writes nothing ([Two-Phase Handlers](#two-phase-handlers)).
 
+## Helpers and `@Land`
+
+A land's rules are the game's rules: who can join, how inputs change the state, how time advances, which events exist. A helper is a function that returns part of them, such as `chatRules()`, the chat rules. Put the land's builder on it, with the land's state type, and return `LandRules` with the same types. Its closures infer their types as they do inside `Land(_:using:)`:
+
+```swift
+@LandDSL<GameState, NoServices>
+func joinRules() -> LandRules<GameState, NoServices> {
+    OnJoin { state, ctx in state.players[ctx.playerID] = 0 }
+}
+
+let land = Land("game", using: GameState.self) {
+    joinRules()
+    Rules { joinRules() }
+}
+```
+
+`NoServices` is the services type of a land without services. Typealiases give a shorter spelling of the same helper: `typealias GameDSL = LandDSL<GameState, NoServices>` and `typealias GameRules = LandRules<GameState, NoServices>`, then `@GameDSL func joinRules() -> GameRules`.
+
+A helper is spliced only into a land with its state type and services type. One built for another state, or for other services, doesn't compile where it's spliced. A helper for several lands is generic: over a protocol their states share, and over the services type, so lands with any services can use it:
+
+```swift
+protocol HasPlayers: StateNodeProtocol {
+    var players: [PlayerID: Int] { get set }
+}
+
+@LandDSL<S, Svc>
+func leaveRules<S: HasPlayers, Svc: Sendable>() -> LandRules<S, Svc> {
+    OnLeave { state, ctx in state.players[ctx.playerID] = nil }
+}
+
+let game = Land("game", using: GameState.self) { leaveRules() }
+let lobby = Land("lobby", using: LobbyState.self, services: LobbyServices.self) { leaveRules() }
+```
+
+`@Land` declares a land as a type. Its `body` is under the builder and returns `LandRules`, like a helper:
+
+```swift
+@Land(GameState.self)
+struct GameLand {
+    static var body: LandRules<GameState, NoServices> {
+        Rules {
+            OnJoin { state, ctx in state.players[ctx.playerID] = 0 }
+        }
+    }
+}
+
+let definition = GameLand.definition
+```
+
+Limit: `@Land` makes a land without services. A land with services is built with `Land(_:using:services:)`.
+
 ## LandContext
 
 Handlers receive `LandContext`, containing:
@@ -226,7 +280,7 @@ Resolvers execute in parallel first, then synchronously enter handler after succ
 - `StateSync(every:)`: State synchronization (read-only callback, will be called)
 - `DestroyWhenEmpty(after:)`: Auto-close empty rooms
 - `PersistSnapshot(every:)`: Snapshot period
-- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`. Like the input handlers, none of them throws after it writes (#593):
+- `OnInitialize` / `OnFinalize` / `AfterFinalize`. Like the input handlers, none of them throws after it writes (#593):
   - `OnFinalize` and the `DestroyWhenEmpty(after:_:)` handler take bodies that don't throw. The land is ending, so nothing would act on a refusal: a body that calls throwing code handles its errors itself.
   - `OnInitialize` takes a body that doesn't throw, or two stages, `validate` and `apply`, as an input does ([Two-Phase Handlers](#two-phase-handlers)). A `validate` that throws fails the land's initialization, as a failing resolver does, with nothing written (see the example below).
 - `OnInitialize(resolvers:onResolverFailure:)`: a throwing resolver fails the land's initialization by default (`.failLand`); `.continue` runs OnInitialize without the resolvers' outputs. See [Resolver deadline](resolver.md#deadline)
@@ -234,7 +288,7 @@ Resolvers execute in parallel first, then synchronously enter handler after succ
 ```swift
 Lifetime {
     // Game logic updates (20Hz)
-    Tick(every: .milliseconds(50)) { (state: inout GameState, ctx: LandContext) in
+    Tick(every: .milliseconds(50)) { state, ctx in
         // Use ctx.tickId (Int64) for deterministic, replay-compatible logic
         if let tickId = ctx.tickId {
             let tickIntervalSeconds = 0.05  // 50ms = 0.05s
@@ -245,7 +299,7 @@ Lifetime {
     
     // Network synchronization (10Hz)
     // Callback is read-only and will be called during sync - do NOT modify state
-    StateSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+    StateSync(every: .milliseconds(100)) { state, ctx in
         // Read-only callback - will be called during sync
         // Use for logging, metrics, or other read-only operations
         // Network sync mechanism triggers network synchronization after callback
@@ -265,11 +319,11 @@ Lifetime {
     OnInitialize(
         resolvers: RoomConfigResolver.self,
         onResolverFailure: .continue,
-        validate: { (_: RoomState, ctx: ValidateContext) throws -> RoomConfigOutput in
+        validate: { _, ctx in
             guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
             return config
         },
-        apply: { (state: inout RoomState, config: RoomConfigOutput, _: LandContext) in
+        apply: { state, config, _ in
             state.maxPlayers = config.maxPlayers
         }
     )

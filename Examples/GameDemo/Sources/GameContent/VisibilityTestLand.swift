@@ -422,7 +422,7 @@ public enum VisibilityTest {
     }
 
     /// The land's rules, shared by the tick land and the tickless one.
-    private static func rules<State: VisibilityTestStateShape>(_ type: State.Type, settings: VisibilityTestSettings) -> RulesNode {
+    private static func rules<State: VisibilityTestStateShape>(_ type: State.Type, settings: VisibilityTestSettings) -> LandRules<State, NoServices> {
         Rules {
             OnJoin { (state: inout State, ctx: LandContext) in
                 spawnEntitiesIfNeeded(&state, settings: settings)

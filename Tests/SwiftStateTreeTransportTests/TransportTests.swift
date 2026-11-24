@@ -56,6 +56,8 @@ func testTransportAdapterForwardsEvents() async throws {
             Register(TestMessageEvent.self)
         }
         Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(TestChatEvent.self) { _, _, _ in }
             HandleEvent(TestIncrementEvent.self) { (state: inout TestState, event: TestIncrementEvent, _) in
                     state.count += 1
             }

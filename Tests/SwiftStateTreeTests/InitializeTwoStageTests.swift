@@ -50,11 +50,11 @@ private func makeRoomDefinition() -> LandDefinition<RoomState> {
             OnInitialize(
                 resolvers: RoomConfigResolver.self,
                 onResolverFailure: .continue,
-                validate: { (_: RoomState, ctx: ValidateContext) throws -> RoomConfigOutput in
+                validate: { _, ctx in
                     guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
                     return config
                 },
-                apply: { (state: inout RoomState, config: RoomConfigOutput, _: LandContext) in
+                apply: { state, config, _ in
                     state.maxPlayers = config.maxPlayers
                 }
             )

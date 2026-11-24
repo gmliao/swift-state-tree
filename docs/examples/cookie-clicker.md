@@ -168,7 +168,7 @@ Use `Lifetime` block to handle periodic logic:
 ```swift
 Lifetime {
     // Game logic updates (can modify state)
-    Tick(every: .seconds(1)) { (state: inout CookieGameState, ctx: LandContext) in
+    Tick(every: .seconds(1)) { state, ctx in
         state.ticks += 1
         
         // Apply passive cookie generation for each player
@@ -186,7 +186,7 @@ Lifetime {
     }
     
     // Network synchronization (read-only callback for type inference)
-    StateSync(every: .seconds(1)) { (state: CookieGameState, ctx: LandContext) in
+    StateSync(every: .seconds(1)) { state, ctx in
         // Read-only callback - will be called during sync
         // Do NOT modify state here - use Tick for state mutations
         // Use for logging, metrics, or other read-only operations

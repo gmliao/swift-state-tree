@@ -65,12 +65,12 @@ let land = Land("demo", using: GameState.self) {
         }
         
         // 遊戲邏輯更新（可修改 state）
-        Tick(every: .milliseconds(100)) { (state: inout GameState, ctx: LandContext) in
+        Tick(every: .milliseconds(100)) { state, ctx in
             // Game logic here
         }
         
         // 網路同步（唯讀 callback 用於類型推斷）
-        StateSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+        StateSync(every: .milliseconds(100)) { state, ctx in
             // 唯讀 callback - 會在 sync 時被調用
             // 請勿在此修改 state - 使用 Tick 進行 state 變更
             // 用於日誌記錄、指標收集或其他唯讀操作
@@ -227,7 +227,7 @@ let gameLand = Land("multiplayer-game", using: GameState.self) {
     }
     
     Lifetime {
-        Tick(every: .milliseconds(100)) { (state: inout GameState, ctx: LandContext) in
+        Tick(every: .milliseconds(100)) { state, ctx in
             // Check if game should start
             if state.gameStatus == "waiting" && state.players.count >= 2 {
                 state.gameStatus = "playing"
@@ -506,7 +506,7 @@ let resourceGameLand = Land("resource-game", using: ResourceGameState.self) {
     Rules {
         HandleAction(PurchaseAction.self,
             // validate: checks only; a throw refuses the action and nothing is written
-            validate: { (state: ResourceGameState, action: PurchaseAction, ctx: ValidateContext) throws -> ResourceState in
+            validate: { state, action, ctx in
                 // Validate player exists
                 guard state.players[action.playerID] != nil else {
                     throw GameError.playerNotFound
@@ -519,7 +519,7 @@ let resourceGameLand = Land("resource-game", using: ResourceGameState.self) {
                 return currentResources
             },
             // apply: writes the state; it can't throw
-            apply: { (state: inout ResourceGameState, action: PurchaseAction, currentResources: ResourceState, ctx: LandContext) -> PurchaseResponse in
+            apply: { state, action, currentResources, ctx in
                 // Check if player has enough resources (an answer, not a refusal)
                 guard currentResources.gold >= action.cost.gold,
                       currentResources.wood >= action.cost.wood,
