@@ -436,17 +436,18 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
 
 /// Registers OnFinalize with a resolver (#769).
 ///
-/// `resolvers` runs when the land finalizes, with its final State. The body runs once it has
-/// resolved, with its output. A resolver that throws skips the body; the teardown goes on.
+/// `resolvers` runs when the land finalizes, with its final State and a read-only context (the
+/// land's ID is `ctx.landID`). The body runs once it has resolved, with its output. A
+/// resolver that throws skips the body; the teardown goes on.
 public func OnFinalize<State: StateNodeProtocol, Services: Sendable, R1: Resolver>(
-    resolvers: @escaping @Sendable (State) -> R1?,
+    resolvers: @escaping @Sendable (State, ValidateContext) -> R1?,
     fileID: String = #fileID,
     line: Int = #line,
     _ body: @escaping @Sendable (inout State, R1.Output?, LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services {
     let site = "\(fileID):\(line)"
-    let declaration = ResolverDeclaration<State>(names: [ResolverExecutor.baseTypeName(R1.self)], servicesType: Services.self, site: site) { state, _ in
-        let value = resolvers(state)
+    let declaration = ResolverDeclaration<State>(names: [ResolverExecutor.baseTypeName(R1.self)], servicesType: Services.self, site: site) { state, ctx in
+        let value = resolvers(state, ctx)
         return resolverExecutor(value)
     }
     return ResolvingNode { config in
@@ -458,17 +459,18 @@ public func OnFinalize<State: StateNodeProtocol, Services: Sendable, R1: Resolve
 
 /// Registers OnFinalize with 2 resolvers (#769).
 ///
-/// `resolvers` runs when the land finalizes, with its final State. The body runs once they have
-/// resolved, with their outputs. A resolver that throws skips the body; the teardown goes on.
+/// `resolvers` runs when the land finalizes, with its final State and a read-only context (the
+/// land's ID is `ctx.landID`). The body runs once they have resolved, with their outputs. A
+/// resolver that throws skips the body; the teardown goes on.
 public func OnFinalize<State: StateNodeProtocol, Services: Sendable, R1: Resolver, R2: Resolver>(
-    resolvers: @escaping @Sendable (State) -> (R1?, R2?),
+    resolvers: @escaping @Sendable (State, ValidateContext) -> (R1?, R2?),
     fileID: String = #fileID,
     line: Int = #line,
     _ body: @escaping @Sendable (inout State, (R1.Output?, R2.Output?), LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services {
     let site = "\(fileID):\(line)"
-    let declaration = ResolverDeclaration<State>(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self)], servicesType: Services.self, site: site) { state, _ in
-        let value = resolvers(state)
+    let declaration = ResolverDeclaration<State>(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self)], servicesType: Services.self, site: site) { state, ctx in
+        let value = resolvers(state, ctx)
         return resolverExecutor(value.0) + resolverExecutor(value.1)
     }
     return ResolvingNode { config in
@@ -480,17 +482,18 @@ public func OnFinalize<State: StateNodeProtocol, Services: Sendable, R1: Resolve
 
 /// Registers OnFinalize with 3 resolvers (#769).
 ///
-/// `resolvers` runs when the land finalizes, with its final State. The body runs once they have
-/// resolved, with their outputs. A resolver that throws skips the body; the teardown goes on.
+/// `resolvers` runs when the land finalizes, with its final State and a read-only context (the
+/// land's ID is `ctx.landID`). The body runs once they have resolved, with their outputs. A
+/// resolver that throws skips the body; the teardown goes on.
 public func OnFinalize<State: StateNodeProtocol, Services: Sendable, R1: Resolver, R2: Resolver, R3: Resolver>(
-    resolvers: @escaping @Sendable (State) -> (R1?, R2?, R3?),
+    resolvers: @escaping @Sendable (State, ValidateContext) -> (R1?, R2?, R3?),
     fileID: String = #fileID,
     line: Int = #line,
     _ body: @escaping @Sendable (inout State, (R1.Output?, R2.Output?, R3.Output?), LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services, R3.Dependencies == Services {
     let site = "\(fileID):\(line)"
-    let declaration = ResolverDeclaration<State>(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self), ResolverExecutor.baseTypeName(R3.self)], servicesType: Services.self, site: site) { state, _ in
-        let value = resolvers(state)
+    let declaration = ResolverDeclaration<State>(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self), ResolverExecutor.baseTypeName(R3.self)], servicesType: Services.self, site: site) { state, ctx in
+        let value = resolvers(state, ctx)
         return resolverExecutor(value.0) + resolverExecutor(value.1) + resolverExecutor(value.2)
     }
     return ResolvingNode { config in
