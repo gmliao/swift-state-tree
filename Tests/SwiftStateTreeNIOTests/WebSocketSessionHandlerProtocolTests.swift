@@ -10,7 +10,7 @@ import NIOWebSocket
 import Testing
 @testable import SwiftStateTreeNIO
 
-private func makeSession(_ sessionID: String = "proto-s1") throws -> EmbeddedChannel {
+private func makeSessionWithHandler(_ sessionID: String = "proto-s1") throws -> (EmbeddedChannel, WebSocketSessionHandler) {
     let channel = EmbeddedChannel()
     try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
     let handler = WebSocketSessionHandler(
@@ -21,20 +21,34 @@ private func makeSession(_ sessionID: String = "proto-s1") throws -> EmbeddedCha
         logger: Logger(label: "test")
     )
     try channel.pipeline.syncOperations.addHandler(handler)
-    return channel
+    return (channel, handler)
 }
 
-/// Reads the first connectionClose frame from the outbound buffer and returns its close code (nil
-/// for an empty close payload). `channel.isActive` is read after the frame is consumed.
-private func outboundCloseResult(_ channel: EmbeddedChannel) throws -> (code: UInt16?, active: Bool) {
+private func makeSession(_ sessionID: String = "proto-s1") throws -> EmbeddedChannel {
+    try makeSessionWithHandler(sessionID).0
+}
+
+/// Reads the first connectionClose frame from the outbound buffer. `hadClose` is true when a
+/// close frame was found (even with no code); `code` is the 2-byte code or nil for empty payload.
+/// `channel.isActive` is read after the frame is consumed.
+private func outboundCloseResult(_ channel: EmbeddedChannel) throws -> (code: UInt16?, hadClose: Bool, active: Bool) {
     while let frame = try channel.readOutbound(as: WebSocketFrame.self) {
         if frame.opcode == .connectionClose {
             var data = frame.unmaskedData
             let code = data.readInteger(as: UInt16.self)
-            return (code, channel.isActive)
+            return (code, true, channel.isActive)
         }
     }
-    return (nil, channel.isActive)
+    return (nil, false, channel.isActive)
+}
+
+/// Returns every opcode found in the outbound buffer.
+private func outboundOpcodes(_ channel: EmbeddedChannel) throws -> [WebSocketOpcode] {
+    var opcodes: [WebSocketOpcode] = []
+    while let frame = try channel.readOutbound(as: WebSocketFrame.self) {
+        opcodes.append(frame.opcode)
+    }
+    return opcodes
 }
 
 @Suite("WebSocketSessionHandler protocol checks (#810)")
@@ -118,7 +132,7 @@ struct WebSocketSessionHandlerProtocolTests {
 
     @Test(
         "Invalid close code → 1002",
-        arguments: [UInt16(0), 1, 999, 1004, 1005, 1006, 1015, 1016, 2999]
+        arguments: [UInt16(0), 1, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000]
     )
     func invalidCloseCode(code: UInt16) throws {
         let channel = try makeSession()
@@ -129,6 +143,22 @@ struct WebSocketSessionHandlerProtocolTests {
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1002, "close code \(code) should be rejected with 1002")
+        #expect(!r.active)
+    }
+
+    @Test(
+        "Valid close code → reply with 1000",
+        arguments: [UInt16(1000), 1003, 1007, 1011, 1012, 1014, 3000, 4999]
+    )
+    func validCloseCodeRepliedWith1000(code: UInt16) throws {
+        let channel = try makeSession()
+        var buf = ByteBuffer()
+        buf.writeInteger(code)
+        try channel.writeInbound(
+            WebSocketFrame(fin: true, opcode: .connectionClose, data: buf))
+        channel.embeddedEventLoop.run()
+        let r = try outboundCloseResult(channel)
+        #expect(r.code == 1000, "valid code \(code) should be replied with 1000, not echoed")
         #expect(!r.active)
     }
 
@@ -167,7 +197,93 @@ struct WebSocketSessionHandlerProtocolTests {
             WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
+        #expect(r.hadClose, "should reply with a close frame")
         #expect(r.code == nil, "empty close should reply with no code")
         #expect(!r.active)
+    }
+
+    // MARK: - Trailing frames after a protocol failure (RFC 6455 §7.1.7)
+
+    @Test("RSV failure: trailing ping and data are dropped, only one Close sent, cause is error")
+    func rsvFailureDropsTrailingFrames() throws {
+        let (channel, handler) = try makeSessionWithHandler("proto-rsv-trail")
+
+        // Buffer a fragment so we can verify it is cleared.
+        try channel.writeInbound(
+            WebSocketFrame(fin: false, opcode: .binary, data: ByteBuffer(string: "fragment")))
+
+        // RSV failure.
+        try channel.writeInbound(
+            WebSocketFrame(fin: true, rsv1: true, opcode: .binary, data: ByteBuffer(string: "bad")))
+
+        // Trailing frames that must be dropped.
+        try channel.writeInbound(
+            WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
+        try channel.writeInbound(
+            WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(string: "after")))
+
+        channel.embeddedEventLoop.run()
+
+        let opcodes = try outboundOpcodes(channel)
+        #expect(opcodes == [.connectionClose], "expected exactly one close frame, got \(opcodes)")
+        let r = try outboundCloseResult(EmbeddedChannel())  // already drained above; check code via opcodes
+        _ = r  // code is 1002 by RSV test coverage above; here we only need opcode count
+
+        // No Pong.
+        #expect(!opcodes.contains(.pong), "ping after failure must not be answered with a pong")
+        #expect(!channel.isActive)
+
+        // Cause recorded as .error (not .serverClose).
+        #expect(handler.closeCause == .error)
+    }
+
+    @Test("Reserved opcode failure: trailing ping and data are dropped, only one Close sent, cause is error")
+    func opcodeFailureDropsTrailingFrames() throws {
+        let (channel, handler) = try makeSessionWithHandler("proto-opcode-trail")
+        let reserved = try #require(WebSocketOpcode(encodedWebSocketOpcode: 3))
+
+        // Buffer a fragment.
+        try channel.writeInbound(
+            WebSocketFrame(fin: false, opcode: .binary, data: ByteBuffer(string: "fragment")))
+
+        // Reserved opcode failure.
+        try channel.writeInbound(
+            WebSocketFrame(fin: true, opcode: reserved, data: ByteBuffer()))
+
+        // Trailing frames that must be dropped.
+        try channel.writeInbound(
+            WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
+        try channel.writeInbound(
+            WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(string: "after")))
+
+        channel.embeddedEventLoop.run()
+
+        let opcodes = try outboundOpcodes(channel)
+        #expect(opcodes == [.connectionClose], "expected exactly one close frame, got \(opcodes)")
+        #expect(!opcodes.contains(.pong))
+        #expect(!channel.isActive)
+        #expect(handler.closeCause == .error)
+    }
+
+    @Test("Bad close: trailing ping is dropped after the error close")
+    func badCloseDropsTrailingPing() throws {
+        let channel = try makeSession("proto-badclose-trail")
+
+        // 1-byte close payload → protocol error.
+        var buf = ByteBuffer()
+        buf.writeInteger(UInt8(0))
+        try channel.writeInbound(
+            WebSocketFrame(fin: true, opcode: .connectionClose, data: buf))
+
+        // Trailing ping after the connection is failed.
+        try channel.writeInbound(
+            WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
+
+        channel.embeddedEventLoop.run()
+
+        let opcodes = try outboundOpcodes(channel)
+        #expect(opcodes == [.connectionClose], "expected exactly one close frame, got \(opcodes)")
+        #expect(!opcodes.contains(.pong))
+        #expect(!channel.isActive)
     }
 }

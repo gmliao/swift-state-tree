@@ -386,12 +386,21 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             handleFrameInCloseGrace(frame, context: context)
             return
         }
+        // Once the connection is failed, discard all frames (RFC 6455 §7.1.7). A close frame
+        // from the peer completes the handshake; anything else is dropped without processing.
+        if isClosed {
+            if frame.opcode == .connectionClose { peerCloseReceived = true }
+            return
+        }
         // Any frame from the peer shows it is alive: it answers an outstanding ping (#108).
         notePeerAlive()
 
         // RSV1–3 MUST be 0 unless a negotiated extension defines them (RFC 6455 §5.2).
         if frame.rsv1 || frame.rsv2 || frame.rsv3 {
+            fragmentBuffer = nil
+            noteCloseCause(.error, code: .protocolError)
             closeOnLoop(code: .protocolError)
+            enqueueDisconnect()
             return
         }
 
@@ -410,7 +419,10 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         default:
             // Unknown or reserved opcode: Fail the connection (RFC 6455 §5.2).
+            fragmentBuffer = nil
+            noteCloseCause(.error, code: .protocolError)
             closeOnLoop(code: .protocolError)
+            enqueueDisconnect()
         }
     }
 
@@ -694,11 +706,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             return
         }
 
-        guard let codeValue = payload.readInteger(as: UInt16.self) else {
-            closeOnLoop(code: .protocolError)
-            enqueueDisconnect()
-            return
-        }
+        // readableBytes >= 2 (guarded above), so readInteger always succeeds.
+        let codeValue = payload.readInteger(as: UInt16.self)!
 
         // Invalid close code (RFC 6455 §7.4.2).
         guard isValidCloseCode(codeValue) else {
