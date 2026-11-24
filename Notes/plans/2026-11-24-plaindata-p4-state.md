@@ -1,6 +1,6 @@
 # PlainData P4: land State is PlainData
 
-**Status:** rev 1, plan only, no code. Slice P4 of `2026-11-22-plaindata-all-the-way.md` (rev 2, in PR #772), which sets the rule (§3.3, first row) and the maintainer's decisions Q1–Q6. This plan is how P4 does it. It builds on Code-1's P3/4-0 PR (the shared field walk, the Q2/Q3 diagnostics, `@PlainData` on the DeterministicMath types), which isn't up yet. §2 lists what P4 takes from it; anything that PR doesn't do moves into P4.
+**Status:** rev 1, plan only, no code. P4-Q1–Q4 decided by the maintainer as recommended (2026-11-24, §9). Slice P4 of `2026-11-22-plaindata-all-the-way.md` (rev 2, in PR #772), which sets the rule (§3.3, first row) and the maintainer's decisions Q1–Q6. This plan is how P4 does it. It builds on Code-1's P3/4-0 PR (the shared field walk, the Q2/Q3 diagnostics, `@PlainData` on the DeterministicMath types), which isn't up yet. §2 lists what P4 takes from it; anything that PR doesn't do moves into P4.
 
 Code pointers are at #772's head 06ce5f99 (P1 + P2 on main 8a3f3e15). The compile probe in §3.2 ran on Swift 6.4.2 (macOS). P4 re-runs it on 6.2.4 before relying on it.
 
@@ -229,3 +229,12 @@ All source breaks without deprecation, as the parent plan's §5:
 | P4-Q2 | `StateProtocol` | (a) refine `PlainData`; (b) leave it; (c) deprecate it (it adds only `Codable, Sendable`) | (a): the error then lands on the type's declaration |
 | P4-Q3 | `ReactiveDictionary` / `ReactiveSet` | (a) delete; (b) drop `onChange` and make them `@PlainData` | (a): unused, and they predate the dirty tracking `Sync` does |
 | P4-Q4 | Retirement timing | (a) P4-2 right after P4-1; (b) keep the runtime walk one release as a debug-only assertion | (a): the compile check covers every field the walk sees, and a check that can't fire only costs registration time |
+
+### Decisions (maintainer, 2026-11-24)
+
+| Q | Decision |
+|---|---|
+| P4-Q1 | **(a)** `@SnapshotConvertible` also writes the `PlainData` conformance and `_plainDataCheck`, and nothing when the type carries `@PlainData` too |
+| P4-Q2 | **(a)** `StateProtocol` refines `PlainData` |
+| P4-Q3 | **(a)** delete `ReactiveDictionary` and `ReactiveSet` |
+| P4-Q4 | **(a)** P4-2 lands right after P4-1 |
