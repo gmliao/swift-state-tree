@@ -441,11 +441,7 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     
     /// Resolver executors for the onDestroyWhenEmpty handler.
     public var onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = []
-    
-    /// Handler called when the Land is shutting down.
-    ///
-    /// **Deprecated**: Use `OnFinalize` (sync, supports resolvers) and `AfterFinalize` (async) instead.
-    public var onShutdown: (@Sendable (State) async -> Void)?
+
 
     public init(
         tickInterval: Duration? = nil,
@@ -453,8 +449,7 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
         persistInterval: Duration? = nil,
         tickHandler: (@Sendable (inout State, LandContext) -> Void)? = nil,
         syncInterval: Duration? = nil,
-        syncHandler: (@Sendable (State, LandContext) -> Void)? = nil,
-        onShutdown: (@Sendable (State) async -> Void)? = nil
+        syncHandler: (@Sendable (State, LandContext) -> Void)? = nil
     ) {
         self.tickInterval = tickInterval
         self.destroyWhenEmptyAfter = destroyWhenEmptyAfter
@@ -462,7 +457,6 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
         self.tickHandler = tickHandler
         self.syncInterval = syncInterval
         self.syncHandler = syncHandler
-        self.onShutdown = onShutdown
     }
 }
 
@@ -975,19 +969,6 @@ public func AfterFinalize<State: StateNodeProtocol>(
     }
 }
 
-/// Registers a handler called when the Land is shutting down.
-///
-/// **Deprecated**: Use `OnFinalize` (sync, supports resolvers) and `AfterFinalize` (async) instead.
-///
-/// - Parameter body: The async closure to execute.
-public func OnShutdown<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (State) async -> Void
-) -> LifetimeDirective<State> {
-    return { config in
-        config.onShutdown = body
-    }
-}
-
 // MARK: - Land DSL Builder
 
 /// A land body's builder, generic over the land's `State` and `Services` (#771 §3.1). Each node
@@ -1018,7 +999,6 @@ public enum LandDSL<State: StateNodeProtocol, Services: Sendable> {
     public static func buildExpression(_ node: AllowedClientEventsNode) -> [LandNode] { [node] }
     public static func buildExpression(_ node: ClientEventsNode) -> [LandNode] { [node] }
     public static func buildExpression(_ node: ServerEventsNode) -> [LandNode] { [node] }
-    public static func buildExpression(_ node: ServerEventNode) -> [LandNode] { [node] }
     /// Nodes built elsewhere: a helper under `@LandDSL<State, Services>`, or the `@Land` macro's
     /// `body` (#771 D-Q5). Each node in it was checked by the builder that made it.
     public static func buildExpression(_ nodes: [LandNode]) -> [LandNode] { nodes }
@@ -1298,29 +1278,6 @@ public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
 }
 
 // MARK: - Server Event Registration
-
-/// Land node that represents a registered server event payload type.
-/// @deprecated: Use ServerEvents { Register(...) } instead.
-public struct ServerEventNode: LandNode {
-    public let type: Any.Type
-    
-    public init(type: Any.Type) {
-        self.type = type
-    }
-}
-
-/// Register a server event payload type for schema/code generation.
-/// @deprecated: Use ServerEvents { Register(...) } instead.
-///
-/// Example:
-/// ```swift
-/// ServerEvent(DemoServerEvent.self)
-/// ```
-public func ServerEvent<E: ServerEventPayload>(
-    _ type: E.Type
-) -> ServerEventNode {
-    ServerEventNode(type: type)  // Single-expression: omit return
-}
 
 // MARK: - Server Events Registration DSL
 

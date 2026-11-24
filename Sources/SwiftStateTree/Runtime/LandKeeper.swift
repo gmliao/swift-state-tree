@@ -5951,12 +5951,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await afterFinalizeHandler(snapshot, ctx)
         }
 
-        // Legacy OnShutdown handler (deprecated)
-        if let handler = definition.lifetimeHandlers.onShutdown {
-            let snapshot = state
-            await handler(snapshot)
-        }
-
         // Notify transport that land has been destroyed
         // This allows transport layer to perform cleanup (e.g., remove from LandManager)
         // Note: tickTask and syncTask were already cancelled at the start of shutdownIfIdle

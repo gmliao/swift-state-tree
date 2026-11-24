@@ -135,9 +135,6 @@ enum LandBuilder {
                     for registration in serverEvents.registrations {
                         serverEventRegistrations.append(registration.type)
                     }
-                case let serverEvent as ServerEventNode:
-                    // Legacy ServerEvent(_:) support - collect for backward compatibility
-                    serverEventRegistrations.append(serverEvent.type)
                 default:
                     continue
                 }
@@ -175,8 +172,7 @@ enum LandBuilder {
             onInitializeResolverFailure: lifetimeConfig.onInitializeResolverFailure,
             onFinalize: lifetimeConfig.onFinalize,
             onFinalizeResolverExecutors: lifetimeConfig.onFinalizeResolverExecutors,
-            afterFinalize: lifetimeConfig.afterFinalize,
-            onShutdown: lifetimeConfig.onShutdown
+            afterFinalize: lifetimeConfig.afterFinalize
         )
 
         // The registries are keyed by event name: two registered types with one name would leave

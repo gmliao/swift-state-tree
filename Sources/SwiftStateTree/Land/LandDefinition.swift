@@ -173,11 +173,6 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     /// This is called after OnFinalize, when state is no longer mutable.
     /// Use this for async cleanup operations (e.g., closing database connections, sending metrics).
     public var afterFinalize: (@Sendable (State, LandContext) async -> Void)?
-    
-    /// Handler called when the Land is shutting down.
-    ///
-    /// **Deprecated**: Use `OnFinalize` (sync, supports resolvers) and `AfterFinalize` (async) instead.
-    public var onShutdown: (@Sendable (State) async -> Void)?
 
     public init(
         canJoin: (@Sendable (State, PlayerSession, LandContext) throws -> JoinDecision)? = nil,
@@ -199,8 +194,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         onInitializeResolverFailure: InitializeResolverFailure = .failLand,
         onFinalize: (@Sendable (inout State, LandContext) -> Void)? = nil,
         onFinalizeResolverExecutors: [any AnyResolverExecutor] = [],
-        afterFinalize: (@Sendable (State, LandContext) async -> Void)? = nil,
-        onShutdown: (@Sendable (State) async -> Void)? = nil
+        afterFinalize: (@Sendable (State, LandContext) async -> Void)? = nil
     ) {
         self.canJoin = canJoin
         self.canJoinResolverExecutors = canJoinResolverExecutors
@@ -222,7 +216,6 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         self.onFinalize = onFinalize
         self.onFinalizeResolverExecutors = onFinalizeResolverExecutors
         self.afterFinalize = afterFinalize
-        self.onShutdown = onShutdown
     }
 }
 

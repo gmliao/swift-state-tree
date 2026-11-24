@@ -58,9 +58,8 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// Checked only under `LandRegistrationContext.recordsForReplay`, and only when `sync` is nil.
     public let schemaFingerprint: SchemaFingerprintError?
     /// Server event types a replay can't decode (#521 EV8): their descriptor has no decoder,
-    /// because the type isn't a `ServerEventPayload` (given to the deprecated
-    /// `ServerEventNode(type:)`) or the descriptor was built with the public
-    /// `AnyEventDescriptor` init. Checked only under `LandRegistrationContext.recordsForReplay`.
+    /// because it was built with the public `AnyEventDescriptor` init. Checked only under
+    /// `LandRegistrationContext.recordsForReplay`.
     /// Empty when there are none.
     public let serverEventsWithoutDecoder: [String]
     /// Registered server event, client event and action types whose wire name
