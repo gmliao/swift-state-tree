@@ -15,8 +15,7 @@ import ucrt
 #endif
 
 extension ProcessSignals {
-    /// SIGINT and SIGTERM; on Windows also SIGBREAK, which the CRT raises for Ctrl-Break and for
-    /// a closing console window.
+    /// SIGINT and SIGTERM; on Windows also SIGBREAK, which the CRT raises for Ctrl-Break.
     public static var defaultShutdownSignals: [Int32] {
         #if os(Windows)
         [SIGINT, SIGTERM, SIGBREAK]
@@ -45,8 +44,18 @@ extension ProcessSignals {
     /// - **Children:** a handler, unlike an ignored signal, is reset to the default across
     ///   `exec`, so a child process you spawn gets SIGINT and SIGTERM normally.
     /// - **Calling it again** returns another stream fed by the same handler and thread.
+    /// - **On Windows** the setup differs: the C runtime's `signal()` handler, not `sigaction`,
+    ///   catches the signals, and it runs on a thread the runtime starts for each Ctrl-C and
+    ///   Ctrl-Break. The runtime resets a caught signal to its default before it calls the
+    ///   handler, so the handler arms the signal again at once; the second signal still ends the
+    ///   process with `128 + signal`. Windows never raises SIGTERM for a process (only `raise`
+    ///   in this process does), so a supervisor has to stop it another way. When the console
+    ///   window is closed, Windows ends the process a moment after the close event, so a
+    ///   graceful shutdown isn't guaranteed there. The signal tests are POSIX-only, so CI doesn't
+    ///   cover these paths.
     ///
-    /// - Parameter signals: The signals to catch. Defaults to SIGINT and SIGTERM.
+    /// - Parameter signals: The signals to catch. Defaults to SIGINT and SIGTERM (plus SIGBREAK
+    ///   on Windows).
     public static func shutdownSignals(_ signals: [Int32] = defaultShutdownSignals) -> AsyncStream<Int32> {
         ShutdownSignalReader.shared.subscribe(signals: signals, escalates: true)
     }
@@ -62,6 +71,22 @@ extension ProcessSignals {
 /// handler never runs this global's lazy initialization.
 nonisolated(unsafe) private var shutdownSignalWriteFD: Int32 = -1
 
+#if os(Windows)
+/// One `_write` to the pipe, with `errno` saved and restored. The pipe has no non-blocking mode
+/// here, so a full pipe would block this thread until the reader drains it; the reader does so
+/// at once, and 4096 bytes are far more than a person can send with Ctrl-C.
+///
+/// The runtime resets a caught signal to its default before it calls the handler (System V
+/// semantics), so the first thing the handler does is arm the signal again. Without that, a
+/// second Ctrl-C would end the process through the runtime default, not with `128 + signal`.
+private func shutdownSignalHandler(_ signal: Int32) {
+    _ = ucrt.signal(signal, shutdownSignalHandler)
+    let saved = errno
+    var byte = UInt8(truncatingIfNeeded: signal)
+    _ = _write(shutdownSignalWriteFD, &byte, 1)
+    errno = saved
+}
+#else
 /// Async-signal-safe: one `write`, with `errno` saved and restored (a signal can land between
 /// another thread's failing call and its read of `errno`). A full pipe (`EAGAIN`) drops the
 /// byte: the pipe then already holds bytes the reader hasn't consumed, so the shutdown starts
@@ -69,13 +94,10 @@ nonisolated(unsafe) private var shutdownSignalWriteFD: Int32 = -1
 private let shutdownSignalHandler: @convention(c) (Int32) -> Void = { signal in
     let saved = errno
     var byte = UInt8(truncatingIfNeeded: signal)
-    #if os(Windows)
-    _ = _write(shutdownSignalWriteFD, &byte, 1)
-    #else
     _ = write(shutdownSignalWriteFD, &byte, 1)
-    #endif
     errno = saved
 }
+#endif
 
 /// The self-pipe, its reader thread and the streams it feeds (one per process).
 final class ShutdownSignalReader: @unchecked Sendable {
@@ -139,8 +161,12 @@ final class ShutdownSignalReader: @unchecked Sendable {
 
     private func install(_ signal: Int32) {
         #if os(Windows)
-        // The CRT signal() handler runs on its own thread for Ctrl-C; SIG_ERR is not imported.
-        _ = ucrt.signal(signal, shutdownSignalHandler)
+        // `signal()` returns SIG_ERR, `(void (*)(int))-1`, for a signal the runtime doesn't support;
+        // Swift doesn't import that name, so compare the bits.
+        let previous = ucrt.signal(signal, shutdownSignalHandler)
+        guard unsafeBitCast(previous, to: Int.self) != -1 else {
+            preconditionFailure("ShutdownSignals: signal(\(signal)) failed (errno \(errno))")
+        }
         #else
         var action = sigaction()
         #if canImport(Glibc)
