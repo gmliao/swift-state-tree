@@ -21,7 +21,7 @@ jobs:
     name: differential harness (goldens)
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
+      image: swift:6.4.3-noble@sha256:4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a
     steps:
     - uses: actions/checkout@v4
 
@@ -29,9 +29,9 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
-          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-
 
     - name: Install python3
       run: scripts/ci-apt-install.sh python3  # apt retried on mirror errors (#453)

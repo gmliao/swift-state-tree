@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-EXPECTED_SWIFT="Swift version 6.2.4"
+EXPECTED_SWIFT="Swift version 6.4.3"
 FILTER='^SwiftStateTreeNIOTests\.DifferentialHarness/(DifferentialHarnessTests|DiffSelfCheckTests)/'
 INDEX=Tests/SwiftStateTreeNIOTests/Differential/Golden/index.json
 SUITES=(Tests/SwiftStateTreeNIOTests/Differential/DifferentialHarnessTests.swift
