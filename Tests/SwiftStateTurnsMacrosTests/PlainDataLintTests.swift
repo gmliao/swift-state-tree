@@ -92,6 +92,21 @@ private final class PlainDataVisitor: SyntaxVisitor {
         type.tokens(viewMode: .sourceAccurate).contains { identifier($0) == "PlainData" }
     }
 
+    /// Whether a type that inherits this alias would conform to PlainData: the alias is
+    /// PlainData itself or a composition holding it. `any PlainData`, or PlainData as a generic
+    /// argument, can't be inherited.
+    private func conformsThrough(_ type: TypeSyntax) -> Bool {
+        if let paren = type.as(TupleTypeSyntax.self), paren.elements.count == 1, let only = paren.elements.first {
+            return conformsThrough(only.type)
+        }
+        if let composition = type.as(CompositionTypeSyntax.self) {
+            return composition.elements.contains { conformsThrough($0.type) }
+        }
+        if let named = type.as(IdentifierTypeSyntax.self) { return identifier(named.name) == "PlainData" }
+        if let member = type.as(MemberTypeSyntax.self) { return identifier(member.name) == "PlainData" }
+        return false
+    }
+
     private func reserved(_ name: TokenSyntax) {
         if let text = identifier(name), PlainDataLint.reservedNames.contains(text) {
             note(name, PlainDataLint.reserved(text))
@@ -143,7 +158,7 @@ private final class PlainDataVisitor: SyntaxVisitor {
 
     override func visit(_ node: TypeAliasDeclSyntax) -> SyntaxVisitorContinueKind {
         reserved(node.name)
-        if namesPlainData(node.initializer.value) { note(node.initializer, PlainDataLint.alias) }
+        if conformsThrough(node.initializer.value) { note(node.initializer, PlainDataLint.alias) }
         return .visitChildren
     }
 
@@ -244,6 +259,8 @@ struct PlainDataLintTests {
         ("extension Other: Hashable & PlainData {}", 1, PlainDataLint.conformance),
         ("typealias Alias = PlainData", 1, PlainDataLint.alias),
         ("typealias Joined = Sendable &\n    PlainData", 1, PlainDataLint.alias),
+        ("typealias Qualified = SwiftStateTurns.PlainData", 1, PlainDataLint.alias),
+        ("typealias Wrapped = (Sendable & PlainData)", 1, PlainDataLint.alias),
         ("struct H { @`_implements`(PlainData, other()) static func anything() {} }", 1, PlainDataLint.implements),
         ("extension PlainDataCheck { static func field(_: Ref.Type) {} }", 1, PlainDataLint.helper),
         ("extension SwiftStateTurns.PlainDataCheck {}", 1, PlainDataLint.helper),
@@ -279,6 +296,8 @@ struct PlainDataLintTests {
         "protocol HasPayload { associatedtype P: PlainData }",
         "@PlainData\nstruct Model { var n: Int }",
         "typealias Pair = PlainPair<Int, Int>",
+        "typealias AnyPlain = any PlainData",
+        "typealias Plains = [any PlainData & Sendable]",
         "import SwiftStateTurns\nlet pair = SwiftStateTurns.PlainPair<Int, Int>(1, 2)",
         "let version = \"Swift 6\"; let swift = 6",
         "let text = \"SwiftStateTurns.PlainDataCheck.field((Int).self)\"",
