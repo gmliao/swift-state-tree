@@ -186,6 +186,32 @@ private struct MarkedChain: Encodable {
     }
 }
 
+/// Fills each unkeyed container until its `count` reaches one, with a nested container `depth`
+/// levels down. It stops after `maxLoops` turns of its loops in all, so a `count` that never
+/// advances fails the test instead of hanging it.
+private struct FillsByCount: Encodable {
+    struct TooManyLoops: Error {}
+
+    let depth: Int
+    let loops: VisitCount
+    static let maxLoops = 4 * CanonicalMessagePack.maxDepth
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.unkeyedContainer()
+        try fill(&container, depth: depth)
+    }
+
+    private func fill(_ container: inout UnkeyedEncodingContainer, depth: Int) throws {
+        guard depth > 0 else { return }
+        while container.count < 1 {
+            loops.count += 1
+            if loops.count > Self.maxLoops { throw TooManyLoops() }
+            var nested = container.nestedUnkeyedContainer()
+            try fill(&nested, depth: depth - 1)
+        }
+    }
+}
+
 @Suite("Canonical codec: the depth bound and the direct AnyCodable paths (#802)")
 struct CanonicalAnyCodablePathTests {
     /// `AnyCodable` bases with every case of its `encode(to:)`, in the order it tries them.
@@ -393,6 +419,24 @@ struct CanonicalAnyCodablePathTests {
         let atLimit = onLargeThread { Outcome { try CanonicalMessagePack.encode(SIDeep(depth: CanonicalMessagePack.maxDepth + 1)) } }
         #expect("\(atLimit)" == "error CanonicalMessagePackError: \(CanonicalMessagePackError.nestingTooDeep)")
         let within = onLargeThread { Outcome { try CanonicalMessagePack.encode(SIDeep(depth: CanonicalMessagePack.maxDepth)) } }
+        guard case .value = within else {
+            Issue.record("\(within)")
+            return
+        }
+    }
+
+    @Test("A refused nested container still advances count: a value that fills its container by count is refused, not stuck (#809)")
+    func refusedNestedContainerAdvancesCount() {
+        let loops = VisitCount()
+        let outcome = onLargeThread {
+            Outcome { try CanonicalMessagePack.encode(FillsByCount(depth: CanonicalMessagePack.maxDepth + 2, loops: loops)) }
+        }
+        #expect("\(outcome)" == "error CanonicalMessagePackError: \(CanonicalMessagePackError.nestingTooDeep)")
+        // One turn per level: the refused levels count as filled, as accepted ones do.
+        #expect(loops.count == CanonicalMessagePack.maxDepth + 2)
+        let within = onLargeThread {
+            Outcome { try CanonicalMessagePack.encode(FillsByCount(depth: 8, loops: VisitCount())) }
+        }
         guard case .value = within else {
             Issue.record("\(within)")
             return
