@@ -14,22 +14,27 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 
-private final class LargeThreadResult<R>: @unchecked Sendable {
+/// `onLargeThread`'s work and its result. The thread's block is `@Sendable` on Linux; the work
+/// runs there alone while the caller waits, so nothing is shared at once.
+private final class LargeThreadWork<R>: @unchecked Sendable {
+    let body: () -> R
     var value: R?
+
+    init(_ body: @escaping () -> R) { self.body = body }
 }
 
 /// Runs `body` on a new thread with an 8 MiB stack and waits for it.
 private func onLargeThread<R>(_ body: @escaping () -> R) -> R {
-    let result = LargeThreadResult<R>()
+    let work = LargeThreadWork(body)
     let done = DispatchSemaphore(value: 0)
     let thread = Thread {
-        result.value = body()
+        work.value = work.body()
         done.signal()
     }
     thread.stackSize = 8 << 20
     thread.start()
     done.wait()
-    return result.value!
+    return work.value!
 }
 
 /// The address of a local in the caller's frame: the stack's current depth.
