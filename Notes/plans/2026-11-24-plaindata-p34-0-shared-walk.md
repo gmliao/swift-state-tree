@@ -115,7 +115,7 @@ A/B: none. The slice is compile time only: `_plainDataCheck` is never called, an
 
 The rest is additive and source compatible:
 - `PlainData` conformances on the DeterministicMath types in §2.4;
-- `PlainDataCheck.field` gains a defaulted `StaticString` name parameter and an unavailable unconstrained overload. `PlainDataCheck` is public but documented "not for direct use".
+- `PlainDataCheck.field` gains an unavailable unconstrained overload, `field<T>(_: T)` (the name parameter rev 3 proposed was dropped in implementation). `PlainDataCheck` is public but documented "not for direct use".
 
 The new target isn't a product.
 

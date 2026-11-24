@@ -33,7 +33,7 @@ public enum PlainDataCheck {
 
     /// Chosen only when the constrained overload doesn't apply, so its message is the error for a
     /// field whose type isn't `PlainData`, on the expansion's line that names the field.
-    @available(*, unavailable, message: "this field's type isn't PlainData: add @PlainData to your struct or enum; a class, closure or Any can't be stored; inside Optional, Array or Dictionary, spell an existential `any P` where the field is declared, not through an alias")
+    @available(*, unavailable, message: "this field's type isn't PlainData: add @PlainData to your struct or enum; a class, closure or Any can't be stored; an existential `any P` (P refining PlainData) inside Optional, Array, ContiguousArray or a Dictionary's value must be spelled `any P` where the field is declared, not through an alias")
     public static func field<T>(_: T) {}
 
     /// For a value `any P`: compiles only when `P` refines `PlainData`, because only then does
