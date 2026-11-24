@@ -10,7 +10,7 @@ Scripts for running the full matchmaking stack locally. Provisioning is built in
 ## Prerequisites
 
 - Node.js 18+
-- Swift 6.2+
+- Swift 6.4+
 - Control plane built: `cd Packages/control-plane && npm run build`
 
 ## Usage

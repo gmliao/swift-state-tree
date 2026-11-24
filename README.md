@@ -82,7 +82,7 @@ The library default (`NIOLandServerConfiguration`) is JSON; GameServer defaults 
 
 ## 📦 System Requirements
 
-- Swift 6.2+
+- Swift 6.4+
 - **macOS** (native development, supports Apple Silicon)
 - **Windows**: Supported via VSCode/Cursor [Dev Containers](https://code.visualstudio.com/docs/devcontainers/containers) (configuration file: `.devcontainer/devcontainer.json`)
 
