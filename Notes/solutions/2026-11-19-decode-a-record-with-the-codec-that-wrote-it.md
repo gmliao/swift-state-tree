@@ -10,7 +10,7 @@ symptoms:
   - "-0.0 replays as +0.0 from the JSON view"
   - "a replayed handler sees nil for a resolver output with a Date, Data or URL field"
   - "a recorded server input with ratio: 2.0 replayed from the JSON view is refused: expected float64"
-root_cause: a_recorded_payload_was_decoded_with_a_codec_other_than_the_one_that_wrote_it
+root_cause: a_recorded_payload_was_decoded_with_rules_other_than_its_writers_codec_and_its_sources_allowance
 resolution_type: design_rule
 severity: high
 tags:
@@ -45,7 +45,7 @@ The JSON record view looked like a second format with its own rules, so a second
 
 ## Root cause
 
-A recorded payload is a tree whose shape is set by the encoder that wrote it, not by the type it came from. Decoding it with another codec applies that codec's rules for the special types (dates, bytes, URLs, decimals) to values written under different rules. The tree type (`AnyCodable`) hides the mismatch: the read succeeds, and the failure appears only when the tree is decoded into the type.
+A recorded payload is a tree whose shape is set by the encoder that wrote it, not by the type it came from. Decoding it with another codec applies that codec's rules for the special types (dates, bytes, URLs, decimals) to values written under different rules. The tree type (`AnyCodable`) hides the mismatch: the read succeeds, and the failure appears only when the tree is decoded into the type. The source is part of the rule set too: the JSON view holds the record codec's trees with JSON's numbers, so the right codec without the view's integer-to-float allowance still refuses a whole-valued float (#818).
 
 ## Fix
 
