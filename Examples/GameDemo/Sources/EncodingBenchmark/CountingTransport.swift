@@ -20,13 +20,21 @@ actor CountingTransport: Transport {
     /// Counted only when `countsErrors`, so other runs send exactly as before.
     private var errorFrames: Int = 0
     private let countsErrors: Bool
+    /// `--game-type visibility-test-tickless`: action response frames sent (`ActionResponsePeek`),
+    /// the replies the land's handlers produced. Counted only when `countsReplies`.
+    private var replyFrames: Int = 0
+    private let countsReplies: Bool
+    /// A run's wait for its replies (`waitForAnswers(atLeast:)`): resumed by the `send(_:to:)`
+    /// that brings replies plus error frames to its count.
+    private var answerWaiter: (count: Int, continuation: CheckedContinuation<Void, Never>)?
     /// `--join-through-router on`: each session's first sync sequence since the last
     /// `resetCounts()` (`sendToSession`). Empty on the default path.
     private var firstSyncSeqs: [SessionID: UInt64] = [:]
 
-    init(capturing: Bool = false, countsErrors: Bool = InputRun.fromWire) {
+    init(capturing: Bool = false, countsErrors: Bool = InputRun.fromWire, countsReplies: Bool = false) {
         captured = capturing ? [] : nil
         self.countsErrors = countsErrors
+        self.countsReplies = countsReplies
     }
 
     func start() async throws {}
@@ -36,8 +44,29 @@ actor CountingTransport: Transport {
         sentBytes += message.count
         sentMessages += 1
         if countsErrors, ErrorFramePeek.isError(message) { errorFrames += 1 }
+        if countsReplies, ActionResponsePeek.isActionResponse(message) { replyFrames += 1 }
         captured?.append(CapturedFrame(target: ViewCapture.target(target), data: message))
+        if let waiter = answerWaiter, replyFrames + errorFrames >= waiter.count {
+            answerWaiter = nil
+            waiter.continuation.resume()
+        }
     }
+
+    /// Returns once `count` of the run's inputs have been answered: reply frames plus error
+    /// frames (a refused input is answered with an error and never gets a reply) since the last
+    /// `resetCounts()`. Waits on the counter, with no timer: `send(_:to:)` resumes it. Needs
+    /// `countsReplies` and `countsErrors`; one waiter at a time.
+    func waitForAnswers(atLeast count: Int) async {
+        precondition(countsReplies && countsErrors, "waitForAnswers needs countsReplies and countsErrors")
+        guard replyFrames + errorFrames < count else { return }
+        precondition(answerWaiter == nil, "one waiter at a time")
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            answerWaiter = (count, continuation)
+        }
+    }
+
+    /// Action response frames sent since the last `resetCounts()` (0 unless `countsReplies`).
+    func replyFrameCount() -> Int { replyFrames }
 
     /// A frame for one session from its router-path connection, with the frame's sync sequence
     /// (nil for a frame without one): counted as `send(_:to:)` counts it.
@@ -67,6 +96,7 @@ actor CountingTransport: Transport {
         sentBytes = 0
         sentMessages = 0
         errorFrames = 0
+        replyFrames = 0
         firstSyncSeqs.removeAll(keepingCapacity: true)
     }
 

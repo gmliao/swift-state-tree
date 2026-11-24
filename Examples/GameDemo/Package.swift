@@ -107,6 +107,8 @@ let package = Package(
             dependencies: [
                 "GameContent",
                 "LoadTestPacing",
+                // EncodingBenchmarkRunTests runs the benchmark's runner in process.
+                "EncodingBenchmark",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),

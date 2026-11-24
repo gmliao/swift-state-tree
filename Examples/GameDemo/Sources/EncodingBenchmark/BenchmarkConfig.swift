@@ -194,6 +194,14 @@ enum GameType: String, CaseIterable {
     case cardGame = "card-game"
     /// Per-player projection that changes every tick (#65): entities move only in ticks.
     case visibilityTest = "visibility-test"
+    /// The visibility-test land without its Tick block: it applies each input as it arrives and
+    /// answers an action with its handler's response (the tick land answers with an ACK).
+    case visibilityTestTickless = "visibility-test-tickless"
+
+    /// The visibility-test land, with or without its tick.
+    var isVisibilityTest: Bool { self == .visibilityTest || self == .visibilityTestTickless }
+    /// No tick loop: the generic runner steps no ticks and waits for the replies instead.
+    var isTickless: Bool { self == .visibilityTestTickless }
 }
 
 // MARK: - Benchmark Configuration
@@ -268,6 +276,9 @@ struct BenchmarkConfig {
     var inputsFromWire: Bool = false
     /// `--actions-per-player <n>`: visibility test, `SetMotionAction`s per player per iteration.
     var actionsPerPlayer: Int = 0
+    /// `--wide-response`: the visibility test's actions are `SetMotionWideAction`s, answered with
+    /// `WideVisibilityResponse` instead of `VisibilityTestResponse`.
+    var wideResponse: Bool = false
     /// `--rejoin-every <k>`: hero-defense, player 0 of each room leaves and rejoins every k-th
     /// measured iteration (Rejoin.swift). 0: never.
     var rejoinEvery: Int = 0
@@ -556,6 +567,8 @@ enum ArgumentParser {
             }
             config.actionsPerPlayer = value
             i += 1
+        case "--wide-response":
+            config.wideResponse = true
         case "--rejoin-every":
             guard i + 1 < args.count, let value = Int(args[i + 1]), value > 0 else {
                 try? FileHandle.standardError.write(contentsOf: Data("--rejoin-every needs a positive integer\n".utf8))
@@ -630,6 +643,7 @@ enum ArgumentParser {
             let unsupported = [
                 (config.recordDir != nil && config.gameType != .visibilityTest, "--record-dir other than with --game-type visibility-test"),
                 (config.gameType == .cardGame, "--game-type card-game"),
+                (config.gameType.isTickless, "--game-type visibility-test-tickless"),
                 (config.hashCost, "--hash-cost"),
                 (config.compareWorkerPool, "--compare-worker-pool"),
                 (config.useWorkerPool, "--use-worker-pool"),
@@ -658,6 +672,10 @@ enum ArgumentParser {
         if config.gameType == .visibilityTest, !ticksPerSyncGiven {
             // Its entities move only in ticks: without one there is nothing to sync.
             config.ticksPerSync = 1
+        }
+        if config.gameType.isTickless, config.ticksPerSync > 0 {
+            try? FileHandle.standardError.write(contentsOf: Data("--game-type visibility-test-tickless has no tick: --ticks-per-sync (and --include-tick) must be 0\n".utf8))
+            exit(2)
         }
         return config
     }
@@ -726,11 +744,18 @@ enum ArgumentParser {
       --iterations <count>    Number of iterations/syncs (default: 100)
       --output <format>       Output format: table or json (default: table)
       --parallel <bool>       Enable parallel execution across rooms (default: true)
-      --game-type <type>      Game type: hero-defense, card-game or visibility-test (default:
-                              hero-defense). Other than hero-defense, runs use the multi-room
-                              path (--rooms, --players-per-room) even with one room, and not
-                              --hash-cost or the worker pool. visibility-test defaults to
-                              --ticks-per-sync 1 (its entities move only in ticks).
+      --game-type <type>      Game type: hero-defense, card-game, visibility-test or
+                              visibility-test-tickless (default: hero-defense). Other than
+                              hero-defense, runs use the multi-room path (--rooms,
+                              --players-per-room) even with one room, and not --hash-cost or the
+                              worker pool. visibility-test defaults to --ticks-per-sync 1 (its
+                              entities move only in ticks). visibility-test-tickless is the same
+                              land without its tick: it needs --inputs-from-wire and
+                              --actions-per-player, steps no ticks, applies each action as it
+                              arrives and waits, inside each timed iteration, until every
+                              action's reply has been sent; the result's inputs also record
+                              replied, and the run fails unless submitted, applied and replied
+                              are equal. Not with --capture-views.
       --monster-cap <int>     Hero-defense: keep live monsters at ~this count (0 = default spawning)
       --monster-active-every <int>
                               With --monster-cap: update each monster in one tick in <int>, so
@@ -745,9 +770,15 @@ enum ArgumentParser {
                               submitted, accepted, rejected and applied; the run fails unless
                               all equal rooms x players x iterations (x N for actions).
       --actions-per-player <n>
-                              Visibility-test with --inputs-from-wire: n SetMotionAction(enabled:
-                              true) per player per iteration, before the ticks. Motion is on
-                              from the start, so the state is unchanged.
+                              Visibility-test (either land) with --inputs-from-wire: n
+                              SetMotionAction(enabled: true) per player per iteration, before the
+                              ticks. Motion is on from the start, so the state is unchanged.
+      --wide-response         With --actions-per-player: send SetMotionWideAction instead, the same
+                              state change answered with WideVisibilityResponse (four Ints and a
+                              16-byte String, too wide for an existential's inline buffer).
+                              Recorded as wideResponse in each result's config and in the saved
+                              results' metadata. The tick land answers an action with an ACK, so
+                              there the response is built and held, not encoded.
       --rejoin-every <k>      Hero-defense: every k-th measured iteration, player 0 of each room
                               leaves and joins again with a new session. The leave and the
                               admission run before the timed span; the joiner's standalone
