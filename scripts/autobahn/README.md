@@ -87,13 +87,9 @@ confirmed.
 
 | Cause | Cases | What the suite saw |
 |-------|-------|--------------------|
-| `text-as-binary` | 88 | The echo has the payload but arrives as a binary frame (the limit above). A `text-as-binary` case can hide a second failure in the same case; see the note in [What the harness is](#what-the-harness-is). |
-| `guess:reserved-bits` | 6 | Section 3: a frame with RSV bits set is not failed with 1002. |
-| `guess:reserved-opcode` | 10 | Section 4: a frame with a reserved opcode is not failed with 1002. |
+| `text-as-binary` | 91 | The echo has the payload but arrives as a binary frame (the limit above). A `text-as-binary` case can hide a second failure in the same case; see the note in [What the harness is](#what-the-harness-is). |
 | `guess:fragmentation` | 10 | Section 5: a bad fragment sequence is not failed. |
 | `guess:utf8` | 75 | Section 6: invalid UTF-8 in a text message is not failed with 1007. |
-| `guess:close-code` | 9 | Section 7: an invalid close code or close reason is not answered with 1002. |
-| `guess:utf8-close-reason` | 1 | Section 7 (7.5.1): code 1000 with an invalid UTF-8 reason; expected 1007/1002. |
 
 A case that fails and isn't listed is a regression, a listed case that passes is a fix: update the
 file with the second command above in the same change.
