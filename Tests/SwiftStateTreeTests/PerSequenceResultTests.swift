@@ -92,7 +92,7 @@ private func makePerSequenceDefinition(tick: Bool) -> LandDefinition<PerSequence
             ServerEvents { Register(PerSequenceEvent.self) }
             perSequenceRules()
             Lifetime {
-                Tick(every: .seconds(3600)) { (state: inout PerSequenceTestState, _: LandContext) in
+                Tick(every: .seconds(3600)) { state, _ in
                     state.log.append("tick")
                 }
             }
@@ -106,31 +106,31 @@ private func makePerSequenceDefinition(tick: Bool) -> LandDefinition<PerSequence
 
 private func perSequenceRules() -> LandRules<PerSequenceTestState, NoServices> {
     Rules {
-        OnJoin { (state: inout PerSequenceTestState, ctx: LandContext) in
+        OnJoin { state, ctx in
             state.log.append("join:\(ctx.playerID.rawValue)")
         }
-        OnLeave { (state: inout PerSequenceTestState, ctx: LandContext) in
+        OnLeave { state, ctx in
             state.log.append("leave:\(ctx.playerID.rawValue)")
         }
         HandleAction(PerSequencePlainAction.self) {
-            (state: inout PerSequenceTestState, action: PerSequencePlainAction, ctx: LandContext) in
+            state, action, ctx in
             state.total += action.amount
             state.log.append("plain:\(action.amount)")
             ctx.emitEvent(PerSequenceEvent(amount: action.amount), to: .all)
             return PerSequenceAck(amount: action.amount)
         }
-        HandleAction(PerSequenceGatedAction.self, resolvers: PerSequenceGatedResolver.self) {
-            (state: inout PerSequenceTestState, action: PerSequenceGatedAction, _: LandContext) in
+        HandleAction(PerSequenceGatedAction.self, resolvers: { _, action, _ in PerSequenceGatedResolver(amount: action.amount) }) {
+            state, action, _, _ in
             state.total += action.amount
             state.log.append("gated:\(action.amount)")
             return PerSequenceAck(amount: action.amount)
         }
         HandleAction(PerSequenceThrowingAction.self, validate: {
-            (state: PerSequenceTestState, action: PerSequenceThrowingAction, _: ValidateContext) in
+            state, action, _ in
             if state.refusedTags.contains(action.tag) || PerSequenceRefuseOnce.take(action.tag) {
                 throw PerSequenceHandlerFailure(tag: action.tag)
             }
-        }, apply: { (state: inout PerSequenceTestState, action: PerSequenceThrowingAction, _: LandContext) in
+        }, apply: { state, action, _ in
             state.total += action.amount
             state.log.append("throwing:\(action.tag)")
             return PerSequenceAck(amount: action.amount)

@@ -111,21 +111,21 @@ func makeResolverReplayLand() -> LandDefinition<ResolverReplayState> {
     Land("resolver-replay", using: ResolverReplayState.self) {
         Rules {
             HandleAction(ResolverReplayAction.self, resolvers: ResolverReplayStampResolver.self) {
-                (state: inout ResolverReplayState, _: ResolverReplayAction, ctx: LandContext) in
+                state, _, ctx in
                 state.seen = resolverReplaySeen(ctx.resolverReplayStamp as ResolverReplayStamp?)
                 state.seenViaGetter = resolverReplaySeen(ctx.getResolverOutput(ResolverReplayStamp.self, forPropertyName: "resolverReplayStamp"))
                 state.mismatchRead = (ctx.resolverReplayStamp as ResolverReplayMismatch?) == nil ? "nil" : "value"
                 return ResolverReplayResponse(ok: true)
             }
-            OnJoin(resolvers: ResolverReplayStampResolver.self) { (state: inout ResolverReplayState, ctx: LandContext) in
-                state.seenAtJoin = resolverReplaySeen(ctx.resolverReplayStamp as ResolverReplayStamp?)
+            OnJoin(resolvers: ResolverReplayStampResolver.self) { state, resolverReplayStamp, ctx in
+                state.seenAtJoin = resolverReplaySeen(resolverReplayStamp as ResolverReplayStamp?)
             }
         }
         Lifetime {
-            OnInitialize(resolvers: ResolverReplayStampResolver.self) { (state: inout ResolverReplayState, ctx: LandContext) in
+            OnInitialize(resolvers: ResolverReplayStampResolver.self) { state, ctx in
                 state.seenAtInit = resolverReplaySeen(ctx.resolverReplayStamp as ResolverReplayStamp?)
             }
-            Tick(every: .seconds(3600)) { (_: inout ResolverReplayState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
 }

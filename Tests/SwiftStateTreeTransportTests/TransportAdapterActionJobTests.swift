@@ -175,18 +175,18 @@ private struct Fixture {
 private func makeFixture() async -> Fixture {
     let definition = Land("adapter-job", using: AdapterJobTestState.self) {
         Rules {
-            HandleAction(AdapterJobHeldAction.self, resolvers: AdapterJobHeldResolver.self) {
-                (_: inout AdapterJobTestState, _: AdapterJobHeldAction, _: LandContext) in
+            HandleAction(AdapterJobHeldAction.self, resolvers: { _, action, _ in AdapterJobHeldResolver(key: action.key) }) {
+                _, _, _, _ in
                 AdapterJobAck(ok: true)
             }
             HandleAction(AdapterJobPlainAction.self) {
-                (state: inout AdapterJobTestState, action: AdapterJobPlainAction, _: LandContext) in
+                state, action, _ in
                 state.total += action.amount
                 return AdapterJobAck(ok: true)
             }
         }
         Lifetime {
-            Tick(every: .seconds(3600)) { (_: inout AdapterJobTestState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
     let transport = AdapterJobTransport()

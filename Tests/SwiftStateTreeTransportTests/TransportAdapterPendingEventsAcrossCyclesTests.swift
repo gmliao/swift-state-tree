@@ -255,10 +255,10 @@ private struct KeptEventsFixture {
             definition = Land("kept-events-test", using: KeptEventsTestState.self) {
                 ServerEvents { Register(KeptEventsEvent.self) }
                 Rules {
-                    OnJoin { (state: inout KeptEventsTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.scores[ctx.playerID] = 0
                     }
-                    HandleAction(KeptEventsSetAction.self) { (state: inout KeptEventsTestState, action: KeptEventsSetAction, ctx: LandContext) in
+                    HandleAction(KeptEventsSetAction.self) { state, action, ctx in
                         if action.field == "tick" {
                             state.tick = action.value
                         } else {
@@ -272,13 +272,13 @@ private struct KeptEventsFixture {
             definition = Land("kept-events-test", using: KeptEventsTestState.self) {
                 ServerEvents { Register(KeptEventsEvent.self) }
                 Lifetime {
-                    StateSync(every: .seconds(3600)) { (_: KeptEventsTestState, _: LandContext) in }
+                    StateSync(every: .seconds(3600)) { _, _ in }
                 }
                 Rules {
-                    OnJoin { (state: inout KeptEventsTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.scores[ctx.playerID] = 0
                     }
-                    HandleAction(KeptEventsSetAction.self) { (state: inout KeptEventsTestState, action: KeptEventsSetAction, ctx: LandContext) in
+                    HandleAction(KeptEventsSetAction.self) { state, action, ctx in
                         if action.field == "tick" {
                             state.tick = action.value
                         } else {
@@ -623,13 +623,13 @@ struct LandKeeperHasPeriodicSyncTests {
         }
         let ticked = Land("periodic-tick", using: KeptEventsTestState.self) {
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout KeptEventsTestState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
             Rules {}
         }
         let synced = Land("periodic-sync", using: KeptEventsTestState.self) {
             Lifetime {
-                StateSync(every: .seconds(3600)) { (_: KeptEventsTestState, _: LandContext) in }
+                StateSync(every: .seconds(3600)) { _, _ in }
             }
             Rules {}
         }

@@ -66,10 +66,12 @@ struct LifecycleLogInitOutput: ResolverOutput {
 }
 
 /// Never returns until the test's gate opens: the land's initialization times out.
-struct LifecycleLogStuckResolver: ContextResolver {
+@PlainData
+struct LifecycleLogStuckResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = LifecycleLogInitOutput
     static let gate = TestGate()
-    static func resolve(ctx: ResolverContext) async throws -> LifecycleLogInitOutput {
+    func resolve(_ deps: NoServices) async throws -> LifecycleLogInitOutput {
         await gate.arrive()
         return LifecycleLogInitOutput(value: 0)
     }
@@ -79,7 +81,7 @@ private func stuckInitLand(_ landID: LandID) -> LandDefinition<LifecycleLogTestS
     Land(landID.landType, using: LifecycleLogTestState.self) {
         Rules {}
         Lifetime {
-            OnInitialize(resolvers: LifecycleLogStuckResolver.self) { (_: inout LifecycleLogTestState, _: LandContext) in }
+            OnInitialize(resolvers: { _, _ in LifecycleLogStuckResolver() }) { _, _, _ in }
         }
     }
 }
@@ -87,7 +89,7 @@ private func stuckInitLand(_ landID: LandID) -> LandDefinition<LifecycleLogTestS
 private func emptyTimeoutLand(_ landID: LandID) -> LandDefinition<LifecycleLogTestState> {
     Land(landID.landType, using: LifecycleLogTestState.self) {
         Lifetime {
-            DestroyWhenEmpty(after: .milliseconds(10)) { (_: inout LifecycleLogTestState, _: LandContext) in }
+            DestroyWhenEmpty(after: .milliseconds(10)) { _, _ in }
         }
         Rules {}
     }

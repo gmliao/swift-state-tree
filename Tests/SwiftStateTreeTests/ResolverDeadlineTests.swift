@@ -71,10 +71,10 @@ private func makeDeadlineDefinition(destroyWhenEmpty: Bool) -> LandDefinition<De
     guard destroyWhenEmpty else {
         return Land("deadline-test", using: DeadlineTestState.self) {
             Rules {
-                OnJoin(resolvers: DeadlineJoinResolver.self) { (state: inout DeadlineTestState, ctx: LandContext) in
+                OnJoin(resolvers: DeadlineJoinResolver.self) { state, _, ctx in
                     state.log.append("join:\(ctx.playerID.rawValue)")
                 }
-                OnLeave(resolvers: DeadlineLeaveResolver.self) { (state: inout DeadlineTestState, ctx: LandContext) in
+                OnLeave(resolvers: DeadlineLeaveResolver.self) { state, _, ctx in
                     state.log.append("leave:\(ctx.playerID.rawValue)")
                 }
             }
@@ -82,15 +82,15 @@ private func makeDeadlineDefinition(destroyWhenEmpty: Bool) -> LandDefinition<De
     }
     return Land("deadline-test", using: DeadlineTestState.self) {
         Rules {
-            OnJoin(resolvers: DeadlineJoinResolver.self) { (state: inout DeadlineTestState, ctx: LandContext) in
+            OnJoin(resolvers: DeadlineJoinResolver.self) { state, _, ctx in
                 state.log.append("join:\(ctx.playerID.rawValue)")
             }
-            OnLeave(resolvers: DeadlineLeaveResolver.self) { (state: inout DeadlineTestState, ctx: LandContext) in
+            OnLeave(resolvers: DeadlineLeaveResolver.self) { state, _, ctx in
                 state.log.append("leave:\(ctx.playerID.rawValue)")
             }
         }
         Lifetime {
-            DestroyWhenEmpty(after: .milliseconds(1)) { (_: inout DeadlineTestState, _: LandContext) in }
+            DestroyWhenEmpty(after: .milliseconds(1)) { _, _ in }
         }
     }
 }
@@ -110,15 +110,15 @@ struct DeadlineInitResolver: ContextResolver {
 private func makeInitDefinition() -> LandDefinition<DeadlineTestState> {
     Land("deadline-init", using: DeadlineTestState.self) {
         Rules {
-            OnJoin { (state: inout DeadlineTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.log.append("join:\(ctx.playerID.rawValue)")
             }
         }
         Lifetime {
-            OnInitialize(resolvers: DeadlineInitResolver.self) { (state: inout DeadlineTestState, _: LandContext) in
+            OnInitialize(resolvers: { _, ctx in DeadlineInitResolver(landID: ctx.landID) }) { state, _, _ in
                 state.log.append("init")
             }
-            OnFinalize { (state: inout DeadlineTestState, _: LandContext) in
+            OnFinalize { state, _ in
                 state.log.append("finalize")
             }
         }

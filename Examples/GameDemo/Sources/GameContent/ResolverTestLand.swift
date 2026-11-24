@@ -370,22 +370,22 @@ public enum ResolverTest {
             }
 
             Rules {
-                OnJoin(resolvers: JoinCheckResolver.self) { (state: inout ResolverTestState, _: LandContext) in
+                OnJoin(resolvers: JoinCheckResolver.self) { state, _, _ in
                     state.joins += 1
                 }
 
-                OnLeave(resolvers: LeaveCheckResolver.self) { (state: inout ResolverTestState, _: LandContext) in
+                OnLeave(resolvers: LeaveCheckResolver.self) { state, _, _ in
                     state.leaves += 1
                 }
 
                 // validate checks the resolver output and hands it to apply as the plan (#586).
                 HandleAction(CallServiceAction.self, resolvers: ServiceCallResolver.self, validate: {
-                    (_: ResolverTestState, _: CallServiceAction, ctx: ValidateContext) -> ServiceCall in
+                    _, _, ctx in
                     guard let call = ctx.serviceCall as ServiceCall? else {
                         throw ResolverError.custom("ServiceCallResolver output missing")
                     }
                     return call
-                }, apply: { (state: inout ResolverTestState, _: CallServiceAction, call: ServiceCall, ctx: LandContext) in
+                }, apply: { state, _, call, ctx in
                     state.applied += 1
                     state.lastTag = call.tag
                     state.lastResult = call.result
@@ -397,7 +397,7 @@ public enum ResolverTest {
             }
 
             Lifetime {
-                Tick(every: .milliseconds(ResolverTestConfig.tickIntervalMs)) { (state: inout ResolverTestState, ctx: LandContext) in
+                Tick(every: .milliseconds(ResolverTestConfig.tickIntervalMs)) { state, ctx in
                     // Server-side tick timing (`TickProbe`); no probe in re-evaluation.
                     ctx.services.get(TickProbe.self)?.noteTickStart()
                     state.tickCount = ctx.tickId ?? state.tickCount + 1

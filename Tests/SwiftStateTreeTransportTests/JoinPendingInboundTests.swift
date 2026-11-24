@@ -64,10 +64,12 @@ private final class PendingResolverGate: @unchecked Sendable {
 
 private let pendingResolverGate = PendingResolverGate()
 
-struct PendingGateResolver: ContextResolver {
+@PlainData
+struct PendingGateResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = PendingGateOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> PendingGateOutput {
+    func resolve(_ deps: NoServices) async throws -> PendingGateOutput {
         await pendingResolverGate.current?.arrive()
         return PendingGateOutput()
     }
@@ -151,16 +153,16 @@ private struct PendingHarness {
                 Register(PendingActionEvent.self)
             }
             Rules {
-                OnJoin { (state: inout PendingInboundState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.log.append("joined")
                     ctx.emitEvent(PendingJoinEvent(note: "onJoin"), to: .session(ctx.sessionID))
                 }
-                HandleAction(PendingTagAction.self) { (state: inout PendingInboundState, action: PendingTagAction, ctx: LandContext) in
+                HandleAction(PendingTagAction.self) { state, action, ctx in
                     state.log.append(action.tag)
                     ctx.emitEvent(PendingActionEvent(tag: action.tag), to: .session(ctx.sessionID))
                     return PendingTagResponse(count: state.log.count)
                 }
-                HandleAction(PendingGatedAction.self, resolvers: PendingGateResolver.self) { (state: inout PendingInboundState, action: PendingGatedAction, _: LandContext) in
+                HandleAction(PendingGatedAction.self, resolvers: { _, _, _ in PendingGateResolver() }) { state, action, _, _ in
                     state.log.append(action.tag)
                     return PendingTagResponse(count: state.log.count)
                 }

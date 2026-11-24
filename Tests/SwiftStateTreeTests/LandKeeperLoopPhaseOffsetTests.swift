@@ -40,11 +40,11 @@ private func phaseOffsetLand(
     Land("phase-offset-test", using: PhaseOffsetTestState.self) {
         Rules {}
         Lifetime {
-            Tick(every: interval) { (state: inout PhaseOffsetTestState, _) in
+            Tick(every: interval) { state, _ in
                 recorder.append(now())
                 state.ticks += 1
             }
-            StateSync(every: interval) { (_: PhaseOffsetTestState, _: LandContext) in }
+            StateSync(every: interval) { _, _ in }
         }
     }
 }

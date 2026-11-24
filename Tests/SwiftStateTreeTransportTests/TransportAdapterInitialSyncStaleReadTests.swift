@@ -87,7 +87,7 @@ private struct StaleReadFixture {
 private func makeFixture() async -> StaleReadFixture {
     let definition = Land("stale-read", using: StaleReadTestState.self) {
         Rules {
-            HandleAction(StaleReadSetScoreAction.self) { (state: inout StaleReadTestState, action: StaleReadSetScoreAction, _: LandContext) in
+            HandleAction(StaleReadSetScoreAction.self) { state, action, _ in
                 state.scores[PlayerID(action.player)] = action.score
                 return StaleReadSetScoreResponse(score: action.score)
             }

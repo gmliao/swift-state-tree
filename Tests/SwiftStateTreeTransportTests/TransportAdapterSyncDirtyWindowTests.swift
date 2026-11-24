@@ -47,11 +47,11 @@ struct DirtyWindowSetResponse: ResponsePayload {
 private func makeDirtyWindowLand() -> LandDefinition<DirtyWindowTestState> {
     Land("dirty-window-test", using: DirtyWindowTestState.self) {
         Rules {
-            OnJoin { (state: inout DirtyWindowTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.scores[ctx.playerID] = 0
                 state.bonuses[ctx.playerID] = 0
             }
-            HandleAction(DirtyWindowSetAction.self) { (state: inout DirtyWindowTestState, action: DirtyWindowSetAction, ctx: LandContext) in
+            HandleAction(DirtyWindowSetAction.self) { state, action, ctx in
                 switch action.field {
                 case "a": state.a = action.value
                 case "b": state.b = action.value

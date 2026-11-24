@@ -63,16 +63,16 @@ struct SlowDeterministicConsistencyOutput: ResolverOutput {
 private func createConsistencyTestLandDefinition() -> LandDefinition<AsyncResolverConsistencyTestState> {
     Land("async-resolver-consistency-test", using: AsyncResolverConsistencyTestState.self) {
         Rules {
-            OnJoin(resolvers: SlowDeterministicConsistencyResolver.self) { (state: inout AsyncResolverConsistencyTestState, ctx: LandContext) in
-                state.playersJoined[ctx.playerID.rawValue] = Int((ctx.slowDeterministicConsistency as SlowDeterministicConsistencyOutput?)?.stableInt ?? 0)
+            OnJoin(resolvers: SlowDeterministicConsistencyResolver.self) { state, slowDeterministicConsistency, ctx in
+                state.playersJoined[ctx.playerID.rawValue] = Int((slowDeterministicConsistency as SlowDeterministicConsistencyOutput?)?.stableInt ?? 0)
             }
 
-            OnLeave(resolvers: SlowDeterministicConsistencyResolver.self) { (state: inout AsyncResolverConsistencyTestState, ctx: LandContext) in
+            OnLeave(resolvers: SlowDeterministicConsistencyResolver.self) { state, _, ctx in
                 state.playersJoined.removeValue(forKey: ctx.playerID.rawValue)
             }
 
             HandleAction(IncrementCounterConsistencyAction.self, resolvers: SlowDeterministicConsistencyResolver.self) {
-                (state: inout AsyncResolverConsistencyTestState, action: IncrementCounterConsistencyAction, ctx: LandContext) in
+                state, action, ctx in
                 let bias = Int((ctx.slowDeterministicConsistency as SlowDeterministicConsistencyOutput?)?.stableInt ?? 0) % 7
                 state.counter += action.amount + bias
                 return IncrementCounterConsistencyResponse(newValue: state.counter)
@@ -81,7 +81,7 @@ private func createConsistencyTestLandDefinition() -> LandDefinition<AsyncResolv
 
         Lifetime {
             // Interval won't be used in this test because we run with autoStartLoops:false and manual stepping.
-            Tick(every: .seconds(3600)) { (state: inout AsyncResolverConsistencyTestState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
         }

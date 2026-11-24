@@ -55,10 +55,10 @@ private func oldInstanceLand(
     Land(landID.landType, using: SingleFlightTestState.self) {
         Rules {}
         Lifetime {
-            OnFinalize { (_: inout SingleFlightTestState, _: LandContext) in
+            OnFinalize { _, _ in
                 log.record("old-finalize")
             }
-            AfterFinalize { (_: SingleFlightTestState, _: LandContext) in
+            AfterFinalize { _, _ in
                 log.record("old-afterFinalize-start")
                 if let afterFinalizeGate { await afterFinalizeGate.arrive() }
                 log.record("old-afterFinalize-end")
@@ -72,7 +72,7 @@ private func newInstanceLand(_ landID: LandID, log: LifecycleLog) -> LandDefinit
     Land(landID.landType, using: SingleFlightTestState.self) {
         Rules {}
         Lifetime {
-            OnInitialize { (_: inout SingleFlightTestState, _: LandContext) in
+            OnInitialize { _, _ in
                 log.record("new-initialize")
             }
         }

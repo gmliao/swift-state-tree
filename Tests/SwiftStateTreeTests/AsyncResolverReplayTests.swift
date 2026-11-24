@@ -69,10 +69,10 @@ func testAsyncResolverRecording() async throws {
         using: AsyncResolverTestState.self
     ) {
         Rules {
-            HandleAction(AsyncResolverTestAction.self, resolvers: TestAsyncResolver.self) {
-                (state: inout AsyncResolverTestState, action: AsyncResolverTestAction, ctx: LandContext) in
+            HandleAction(AsyncResolverTestAction.self, resolvers: { _, _, ctx in TestAsyncResolver(playerID: ctx.playerID) }) {
+                state, action, testAsync, ctx in
                 // Access resolver output (explicit type cast for dynamic member lookup)
-                if let resolverOutput = ctx.testAsync as TestResolverOutput? {
+                if let resolverOutput = testAsync as TestResolverOutput? {
                     state.resolverValue = resolverOutput.value
                     state.value = action.input
                     return AsyncResolverTestResponse(success: true, value: resolverOutput.value)
@@ -82,7 +82,7 @@ func testAsyncResolverRecording() async throws {
         }
         Lifetime {
             // Use manual tick stepping in this test (autoStartLoops: false).
-            Tick(every: .seconds(3600)) { (_: inout AsyncResolverTestState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
     

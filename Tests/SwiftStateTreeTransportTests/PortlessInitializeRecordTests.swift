@@ -19,14 +19,14 @@ func makeTicklessInitVerifierLand() -> LandDefinition<VerifierState> {
     Land("sync-output-verifier-tickless-init-test", using: VerifierState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
         Rules {
-            HandleAction(VerifierSetAction.self) { (state: inout VerifierState, action: VerifierSetAction, ctx: LandContext) in
+            HandleAction(VerifierSetAction.self) { state, action, ctx in
                 state.scores[ctx.playerID] = action.value
                 ctx.requestSyncNow()
                 return SyncStreamSetResponse(ok: true)
             }
         }
         Lifetime {
-            OnInitialize { (state: inout VerifierState, ctx: LandContext) in
+            OnInitialize { state, ctx in
                 ctx.emitEvent(SyncStreamTestEvent(message: "init"), to: .all)
             }
         }

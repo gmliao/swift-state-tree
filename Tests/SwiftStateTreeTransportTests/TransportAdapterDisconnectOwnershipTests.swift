@@ -18,7 +18,7 @@ struct DisconnectOwnershipTestState: StateNodeProtocol {
 private func makeAdapter() async -> (TransportAdapter<DisconnectOwnershipTestState>, LandKeeper<DisconnectOwnershipTestState>) {
     let definition = Land("disconnect-ownership", using: DisconnectOwnershipTestState.self) {
         Rules {
-            OnJoin { (state: inout DisconnectOwnershipTestState, _: LandContext) in
+            OnJoin { state, _ in
                 state.ticks += 1
             }
         }

@@ -113,33 +113,33 @@ func makeDiffLand(_ kind: DiffLandKind) -> LandDefinition<DiffState> {
             AccessControl { MaxPlayers(diffMaxPlayers) }
             ServerEvents { Register(DiffBumped.self) }
             Rules {
-                CanJoin { (_: DiffState, session: PlayerSession, _: LandContext) in
+                CanJoin { _, session, _ in
                     session.playerID == diffRefusedPlayer
                         ? .deny(reason: "refused by CanJoin")
                         : .allow(playerID: PlayerID(session.playerID))
                 }
-                OnJoin { (state: inout DiffState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players.append(ctx.playerID.rawValue)
                     state.notes[ctx.playerID] = "joined"
                 }
-                OnLeave { (state: inout DiffState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.players.removeAll { $0 == ctx.playerID.rawValue }
                     state.notes.removeValue(forKey: ctx.playerID)
                 }
-                HandleAction(DiffBumpAction.self) { (state: inout DiffState, action: DiffBumpAction, ctx: LandContext) in
+                HandleAction(DiffBumpAction.self) { state, action, ctx in
                     state.counter += action.amount
                     state.notes[ctx.playerID] = "bumped \(state.counter)"
                     ctx.emitEvent(DiffBumped(by: ctx.playerID.rawValue, counter: state.counter), to: .all)
                     return DiffBumpResponse(counter: state.counter)
                 }
-                HandleAction(DiffHeldAction.self, resolvers: DiffHeldResolver.self) { (state: inout DiffState, action: DiffHeldAction, ctx: LandContext) in
+                HandleAction(DiffHeldAction.self, resolvers: { _, action, _ in DiffHeldResolver(key: action.key) }) { state, action, _, ctx in
                     state.notes[ctx.playerID] = "held \(action.key)"
                     return DiffHeldResponse(key: action.key)
                 }
             }
             Lifetime {
                 // Hourly: with the loops off, only the runner's steps run it.
-                Tick(every: .seconds(3600)) { (state: inout DiffState, _: LandContext) in
+                Tick(every: .seconds(3600)) { state, _ in
                     state.ticks += 1
                 }
             }
@@ -149,26 +149,26 @@ func makeDiffLand(_ kind: DiffLandKind) -> LandDefinition<DiffState> {
             AccessControl { MaxPlayers(diffMaxPlayers) }
             ServerEvents { Register(DiffBumped.self) }
             Rules {
-                CanJoin { (_: DiffState, session: PlayerSession, _: LandContext) in
+                CanJoin { _, session, _ in
                     session.playerID == diffRefusedPlayer
                         ? .deny(reason: "refused by CanJoin")
                         : .allow(playerID: PlayerID(session.playerID))
                 }
-                OnJoin { (state: inout DiffState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players.append(ctx.playerID.rawValue)
                     state.notes[ctx.playerID] = "joined"
                 }
-                OnLeave { (state: inout DiffState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.players.removeAll { $0 == ctx.playerID.rawValue }
                     state.notes.removeValue(forKey: ctx.playerID)
                 }
-                HandleAction(DiffBumpAction.self) { (state: inout DiffState, action: DiffBumpAction, ctx: LandContext) in
+                HandleAction(DiffBumpAction.self) { state, action, ctx in
                     state.counter += action.amount
                     state.notes[ctx.playerID] = "bumped \(state.counter)"
                     ctx.emitEvent(DiffBumped(by: ctx.playerID.rawValue, counter: state.counter), to: .all)
                     return DiffBumpResponse(counter: state.counter)
                 }
-                HandleAction(DiffHeldAction.self, resolvers: DiffHeldResolver.self) { (state: inout DiffState, action: DiffHeldAction, ctx: LandContext) in
+                HandleAction(DiffHeldAction.self, resolvers: { _, action, _ in DiffHeldResolver(key: action.key) }) { state, action, _, ctx in
                     state.notes[ctx.playerID] = "held \(action.key)"
                     return DiffHeldResponse(key: action.key)
                 }

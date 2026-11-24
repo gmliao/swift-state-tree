@@ -191,7 +191,7 @@ func testTwoPlayersJoinAndSync_DoesNotCrash() async throws {
     // today; may become default later), perPlayerByPlayer is used and the guard avoids crash when a key is missing.
     let definition = Land("two-player-sync", using: InitialSyncTestState.self) {
         Rules {
-            OnJoin { (state: inout InitialSyncTestState, _: LandContext) in
+            OnJoin { state, _ in
                 state.ticks += 1
             }
         }

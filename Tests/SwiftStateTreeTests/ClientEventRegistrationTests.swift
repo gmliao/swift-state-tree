@@ -82,7 +82,7 @@ private func registeredWithoutHandlerLand() -> LandDefinition<ClientEventRegistr
             Register(CERUnhandledEvent.self)
         }
         Rules {
-            HandleEvent(CERHandledEvent.self) { (state: inout ClientEventRegistrationState, event: CERHandledEvent, _: LandContext) in
+            HandleEvent(CERHandledEvent.self) { state, event, _ in
                 state.total += event.amount
             }
         }
@@ -94,10 +94,10 @@ private func handledNotRegisteredLand() -> LandDefinition<ClientEventRegistratio
     Land("cer-handled-not-registered", using: ClientEventRegistrationState.self) {
         ClientEvents { Register(CERHandledEvent.self) }
         Rules {
-            HandleEvent(CERHandledEvent.self) { (state: inout ClientEventRegistrationState, event: CERHandledEvent, _: LandContext) in
+            HandleEvent(CERHandledEvent.self) { state, event, _ in
                 state.total += event.amount
             }
-            HandleEvent(CERUnregisteredEvent.self) { (state: inout ClientEventRegistrationState, event: CERUnregisteredEvent, _: LandContext) in
+            HandleEvent(CERUnregisteredEvent.self) { state, event, _ in
                 state.total += event.amount
             }
         }
@@ -172,10 +172,10 @@ struct ClientEventRegistrationTests {
                 Register(CERHandledEvent.self)
             }
             Rules {
-                HandleEvent(CERHandledEvent.self) { (state: inout ClientEventRegistrationState, event: CERHandledEvent, _: LandContext) in
+                HandleEvent(CERHandledEvent.self) { state, event, _ in
                     state.total += event.amount
                 }
-                HandleEvent(CERSecondEvent.self) { (state: inout ClientEventRegistrationState, event: CERSecondEvent, _: LandContext) in
+                HandleEvent(CERSecondEvent.self) { state, event, _ in
                     state.total += event.amount
                 }
             }
@@ -198,12 +198,12 @@ struct ClientEventRegistrationTests {
     func nestedRulesHandlersAreKept() async throws {
         let definition = Land("cer-nested-rules", using: ClientEventRegistrationState.self) {
             Rules {
-                HandleAction(CERInnerAction.self) { (state: inout ClientEventRegistrationState, action: CERInnerAction, _: LandContext) in
+                HandleAction(CERInnerAction.self) { state, action, _ in
                     state.total += action.amount
                     return CERAck(total: state.total)
                 }
                 Rules {
-                    HandleAction(CERDeepAction.self) { (state: inout ClientEventRegistrationState, action: CERDeepAction, _: LandContext) in
+                    HandleAction(CERDeepAction.self) { state, action, _ in
                         state.total += action.amount * 10
                         return CERAck(total: state.total)
                     }
@@ -319,7 +319,7 @@ struct ClientEventRegistrationTests {
 
     @Test("A node the builder doesn't recognize (another State's, or an unknown type) is refused at registration and by a directly built keeper, not dropped")
     func unrecognizedNodesAreRefused() async throws {
-        let foreign = OnJoin { (state: inout CEROtherState, _: LandContext) in state.count += 1 }
+        let foreign = OnJoin { state, _ in state.count += 1 }
         let nodes: [LandNode] = [foreign, CERStrayNode()]
         func definition() -> LandDefinition<ClientEventRegistrationState> {
             LandBuilder.build(id: "cer-unrecognized", stateType: ClientEventRegistrationState.self, nodes: nodes)

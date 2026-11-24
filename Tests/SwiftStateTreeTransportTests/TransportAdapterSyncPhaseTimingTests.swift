@@ -30,7 +30,7 @@ struct PhaseTimingBumpResponse: ResponsePayload {
 private func phaseTimingLand(_ id: String) -> LandDefinition<PhaseTimingState> {
     Land(id, using: PhaseTimingState.self) {
         Rules {
-            HandleAction(PhaseTimingBumpAction.self) { (state: inout PhaseTimingState, _: PhaseTimingBumpAction, ctx: LandContext) in
+            HandleAction(PhaseTimingBumpAction.self) { state, _, ctx in
                 state.round += 1
                 state.scores[ctx.playerID, default: 0] += 1
                 return PhaseTimingBumpResponse(ok: true)

@@ -63,26 +63,26 @@ private func makeDefinition(tick: Bool) -> LandDefinition<ActionJobTestState> {
     if tick {
         return Land("action-job-test", using: ActionJobTestState.self) {
             Rules {
-                HandleAction(ActionJobGatedAction.self, resolvers: ActionJobGatedResolver.self) {
-                    (state: inout ActionJobTestState, action: ActionJobGatedAction, _: LandContext) in
+                HandleAction(ActionJobGatedAction.self, resolvers: { _, action, _ in ActionJobGatedResolver(amount: action.amount) }) {
+                    state, action, _, _ in
                     state.total += action.amount
                     return ActionJobAck(ok: true)
                 }
                 HandleAction(ActionJobPlainAction.self) {
-                    (state: inout ActionJobTestState, action: ActionJobPlainAction, _: LandContext) in
+                    state, action, _ in
                     state.total += action.amount
                     return ActionJobAck(ok: true)
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout ActionJobTestState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
     }
     return Land("action-job-test", using: ActionJobTestState.self) {
         Rules {
-            HandleAction(ActionJobGatedAction.self, resolvers: ActionJobGatedResolver.self) {
-                (state: inout ActionJobTestState, action: ActionJobGatedAction, _: LandContext) in
+            HandleAction(ActionJobGatedAction.self, resolvers: { _, action, _ in ActionJobGatedResolver(amount: action.amount) }) {
+                state, action, _, _ in
                 state.total += action.amount
                 return ActionJobAck(ok: true)
             }
@@ -801,19 +801,19 @@ struct KindOnLeaveResolver: ContextResolver {
 private func makeKindKeeper(_ name: String) async -> LandKeeper<ActionJobTestState> {
     let definition = Land("action-job-kinds", using: ActionJobTestState.self) {
         Rules {
-            HandleAction(ActionJobGatedAction.self, resolvers: ActionJobGatedResolver.self) {
-                (state: inout ActionJobTestState, action: ActionJobGatedAction, _: LandContext) in
+            HandleAction(ActionJobGatedAction.self, resolvers: { _, action, _ in ActionJobGatedResolver(amount: action.amount) }) {
+                state, action, _, _ in
                 state.total += action.amount
                 return ActionJobAck(ok: true)
             }
-            CanJoin(resolvers: KindCanJoinResolver.self) { (_: ActionJobTestState, session: PlayerSession, _: LandContext) in
+            CanJoin(resolvers: KindCanJoinResolver.self) { _, session, _, _ in
                 .allow(playerID: PlayerID(session.playerID))
             }
-            OnJoin(resolvers: KindOnJoinResolver.self) { (_: inout ActionJobTestState, _: LandContext) in }
-            OnLeave(resolvers: KindOnLeaveResolver.self) { (_: inout ActionJobTestState, _: LandContext) in }
+            OnJoin(resolvers: KindOnJoinResolver.self) { _, _, _ in }
+            OnLeave(resolvers: KindOnLeaveResolver.self) { _, _, _ in }
         }
         Lifetime {
-            Tick(every: .seconds(3600)) { (_: inout ActionJobTestState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
     let keeper = LandKeeper<ActionJobTestState>(

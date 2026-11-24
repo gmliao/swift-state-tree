@@ -136,10 +136,10 @@ private struct OrderedSendFixture {
         let definition = Land("ordered-send-test", using: OrderedSendTestState.self) {
             ServerEvents { Register(OrderedSendEvent.self) }
             Rules {
-                OnJoin { (state: inout OrderedSendTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.mine[ctx.playerID] = marker("pp", 0)
                 }
-                HandleAction(OrderedSendSetAction.self) { (state: inout OrderedSendTestState, action: OrderedSendSetAction, _: LandContext) in
+                HandleAction(OrderedSendSetAction.self) { state, action, _ in
                     state.stamp = marker("mk", action.stamp)
                     if action.mine >= 0 {
                         for playerID in Array(state.mine.keys) {
@@ -436,10 +436,10 @@ struct TransportAdapterOrderedSendTests {
         let definition = Land("ordered-send-mixed-blocked", using: OrderedSendTestState.self) {
             ServerEvents { Register(OrderedSendEvent.self) }
             Rules {
-                OnJoin { (state: inout OrderedSendTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.mine[ctx.playerID] = marker("pp", 0)
                 }
-                HandleAction(OrderedSendSetAction.self) { (state: inout OrderedSendTestState, action: OrderedSendSetAction, _: LandContext) in
+                HandleAction(OrderedSendSetAction.self) { state, action, _ in
                     state.stamp = marker("mk", action.stamp)
                     return OrderedSendSetResponse(echo: marker("rs", action.echo))
                 }
@@ -523,10 +523,10 @@ struct TransportAdapterOrderedSendTests {
         let transport = BlockingTransport()
         let definition = Land("ordered-send-blocking", using: OrderedSendTestState.self) {
             Rules {
-                OnJoin { (state: inout OrderedSendTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.mine[ctx.playerID] = marker("pp", 0)
                 }
-                HandleAction(OrderedSendSetAction.self) { (state: inout OrderedSendTestState, action: OrderedSendSetAction, _: LandContext) in
+                HandleAction(OrderedSendSetAction.self) { state, action, _ in
                     state.stamp = marker("mk", action.stamp)
                     if action.mine >= 0 {
                         for playerID in Array(state.mine.keys) {

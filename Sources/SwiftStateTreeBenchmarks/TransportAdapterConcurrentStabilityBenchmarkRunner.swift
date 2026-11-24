@@ -111,7 +111,7 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
         
         let definition = Land("benchmark-concurrent-stability", using: BenchmarkStateForSync.self) {
             Rules {
-                HandleAction(BenchmarkMutationAction.self) { (state: inout BenchmarkStateForSync, action: BenchmarkMutationAction, _: LandContext) in
+                HandleAction(BenchmarkMutationAction.self) { state, action, _ in
                     // Simple mutation: increment round
                     state.round += 1
                     return BenchmarkMutationResponse(applied: true)

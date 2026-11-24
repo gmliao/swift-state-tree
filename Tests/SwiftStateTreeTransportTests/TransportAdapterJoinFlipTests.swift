@@ -106,18 +106,18 @@ private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
         definition = Land("join-flip", using: JoinFlipTestState.self) {
             ServerEvents { Register(JoinFlipTestEvent.self) }
             Rules {
-                OnJoin { (state: inout JoinFlipTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.joins += 1
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout JoinFlipTestState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
     case (false, true):
         definition = Land("join-flip", using: JoinFlipTestState.self) {
             Rules {
-                OnJoin { (state: inout JoinFlipTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.joins += 1
                 }
             }
@@ -126,7 +126,7 @@ private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
         definition = Land("join-flip", using: JoinFlipTestState.self) {
             Rules {}
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout JoinFlipTestState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
     case (false, false):

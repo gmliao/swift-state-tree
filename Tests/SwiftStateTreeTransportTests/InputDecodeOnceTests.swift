@@ -51,12 +51,14 @@ struct DecodeOnceEvent: ClientEventPayload {
 @PlainData
 struct DecodeOnceJobOutput: ResolverOutput {}
 
-struct DecodeOnceJobResolver: ContextResolver {
+@PlainData
+struct DecodeOnceJobResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = DecodeOnceJobOutput
     /// When set, the resolver arrives at the gate and waits for it to open (the job's tasks
     /// inherit the binding).
     @TaskLocal static var hold: TestGate?
-    static func resolve(ctx: ResolverContext) async throws -> DecodeOnceJobOutput {
+    func resolve(_ deps: NoServices) async throws -> DecodeOnceJobOutput {
         await hold?.arrive()
         return DecodeOnceJobOutput()
     }
@@ -224,15 +226,15 @@ private struct DecodeOnceFixture {
 
 private func decodeOnceRules() -> LandRules<DecodeOnceState, NoServices> {
     Rules {
-        HandleAction(DecodeOnceAction.self) { (state: inout DecodeOnceState, action: DecodeOnceAction, _: LandContext) in
+        HandleAction(DecodeOnceAction.self) { state, action, _ in
             state.hits.append("action:\(action.tag)")
             return DecodeOnceResponse(count: state.hits.count)
         }
-        HandleAction(DecodeOnceJobAction.self, resolvers: DecodeOnceJobResolver.self) { (state: inout DecodeOnceState, action: DecodeOnceJobAction, _: LandContext) in
+        HandleAction(DecodeOnceJobAction.self, resolvers: { _, _, _ in DecodeOnceJobResolver() }) { state, action, _, _ in
             state.hits.append("job:\(action.tag)")
             return DecodeOnceResponse(count: state.hits.count)
         }
-        HandleEvent(DecodeOnceEvent.self) { (state: inout DecodeOnceState, event: DecodeOnceEvent, _: LandContext) in
+        HandleEvent(DecodeOnceEvent.self) { state, event, _ in
             state.hits.append("event:\(event.tag)")
         }
     }
@@ -251,7 +253,7 @@ private func makeFixture(_ choice: DecodeOnceCodec, legacyJoin: Bool = false, ti
         ? Land("decode-once", using: DecodeOnceState.self) {
             ClientEvents { Register(DecodeOnceEvent.self) }
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout DecodeOnceState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
             decodeOnceRules()
         }

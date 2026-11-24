@@ -73,22 +73,22 @@ private func makeDeliveryDefinition(tick: Bool) -> LandDefinition<DeliveryTestSt
             Rules {
                 // OnLeave makes a leave a lifecycle input; on the legacy tick path its tick
                 // awaits the broadcast sync before W2.
-                OnLeave { (_: inout DeliveryTestState, _: LandContext) in }
-                HandleAction(DeliveryGatedAction.self, resolvers: DeliveryGatedResolver.self) {
-                    (state: inout DeliveryTestState, action: DeliveryGatedAction, ctx: LandContext) in
+                OnLeave { _, _ in }
+                HandleAction(DeliveryGatedAction.self, resolvers: { _, action, _ in DeliveryGatedResolver(amount: action.amount) }) {
+                    state, action, _, ctx in
                     state.total += action.amount
                     ctx.emitEvent(DeliveryEvent(amount: action.amount), to: .all)
                     return DeliveryAck(ok: true)
                 }
                 HandleAction(DeliveryPlainAction.self) {
-                    (state: inout DeliveryTestState, action: DeliveryPlainAction, ctx: LandContext) in
+                    state, action, ctx in
                     state.total += action.amount
                     ctx.emitEvent(DeliveryEvent(amount: action.amount), to: .all)
                     return DeliveryAck(ok: true)
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (state: inout DeliveryTestState, _: LandContext) in
+                Tick(every: .seconds(3600)) { state, _ in
                     state.ticks += 1
                 }
             }
@@ -97,13 +97,13 @@ private func makeDeliveryDefinition(tick: Bool) -> LandDefinition<DeliveryTestSt
     return Land("delivery-test", using: DeliveryTestState.self) {
         ServerEvents { Register(DeliveryEvent.self) }
         Rules {
-            HandleAction(DeliveryGatedAction.self, resolvers: DeliveryGatedResolver.self) {
-                (state: inout DeliveryTestState, action: DeliveryGatedAction, _: LandContext) in
+            HandleAction(DeliveryGatedAction.self, resolvers: { _, action, _ in DeliveryGatedResolver(amount: action.amount) }) {
+                state, action, _, _ in
                 state.total += action.amount
                 return DeliveryAck(ok: true)
             }
             HandleAction(DeliveryPlainAction.self) {
-                (state: inout DeliveryTestState, action: DeliveryPlainAction, _: LandContext) in
+                state, action, _ in
                 state.total += action.amount
                 return DeliveryAck(ok: true)
             }

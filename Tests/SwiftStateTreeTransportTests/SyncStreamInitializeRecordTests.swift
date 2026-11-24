@@ -48,12 +48,12 @@ private func makeInitRecordLand() -> LandDefinition<InitRecordTestState> {
     Land("init-record-test", using: InitRecordTestState.self) {
         ServerEvents { Register(InitRecordEvent.self) }
         Lifetime {
-            OnInitialize(resolvers: GatedInitResolver.self) { (state: inout InitRecordTestState, ctx: LandContext) in
-                let resolved: InitRecordResolverOutput? = ctx.gatedInit
+            OnInitialize(resolvers: { _, ctx in GatedInitResolver(landID: ctx.landID) }) { state, gatedInit, ctx in
+                let resolved: InitRecordResolverOutput? = gatedInit
                 state.value = resolved?.value ?? -1
                 ctx.emitEvent(InitRecordEvent(message: "initialized"), to: .all)
             }
-            Tick(every: .seconds(3600)) { (state: inout InitRecordTestState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
         }

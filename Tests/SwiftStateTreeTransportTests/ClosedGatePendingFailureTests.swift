@@ -86,7 +86,7 @@ func makeClosedGateLand() -> LandDefinition<UntypedPayloadState> {
         Rules {
             untyped
             HandleAction(ClosedGateOkAction.self) {
-                (state: inout UntypedPayloadState, action: ClosedGateOkAction, ctx: LandContext) in
+                state, action, ctx in
                 state.round += action.amount
                 ctx.requestSyncNow()
                 return ClosedGateOkReply(ok: true)
@@ -104,13 +104,13 @@ let notedFailure = LandFailure(
 func makeClosedGatePendingLand() -> LandDefinition<UntypedPayloadState> {
     Land("closed-gate-pending", using: UntypedPayloadState.self) {
         Rules {
-            HandleAction(HooksPingAction.self, resolvers: HooksPingResolver.self) {
-                (_: inout UntypedPayloadState, action: HooksPingAction, _: LandContext) in
+            HandleAction(HooksPingAction.self, resolvers: { _, _, _ in HooksPingResolver() }) {
+                _, action, _, _ in
                 HooksPingResponse(tag: action.tag)
             }
         }
         Lifetime {
-            Tick(every: .seconds(3600)) { (_: inout UntypedPayloadState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
 }
@@ -122,7 +122,7 @@ func makeClosedGateTickLand() -> LandDefinition<UntypedPayloadState> {
         ServerEvents { Register(UntypedPayloadTypedEvent.self) }
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout UntypedPayloadState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.round += 1
                 ctx.emitEvent(UntypedPayloadTypedEvent(hp: 9), to: .all)
             }

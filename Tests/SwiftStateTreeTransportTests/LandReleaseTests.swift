@@ -35,13 +35,13 @@ struct LandReleaseAck: ResponsePayload {
 private func releaseTestLand(_ landID: LandID) -> LandDefinition<LandReleaseTestState> {
     Land(landID.landType, using: LandReleaseTestState.self) {
         Rules {
-            HandleAction(LandReleaseSetAction.self) { (state: inout LandReleaseTestState, action: LandReleaseSetAction, _: LandContext) in
+            HandleAction(LandReleaseSetAction.self) { state, action, _ in
                 state.value = action.value
                 return LandReleaseAck(ok: true)
             }
         }
         Lifetime {
-            DestroyWhenEmpty(after: .milliseconds(10)) { (_: inout LandReleaseTestState, _: LandContext) in }
+            DestroyWhenEmpty(after: .milliseconds(10)) { _, _ in }
         }
     }
 }
@@ -82,7 +82,7 @@ private func failingInitLand(_ landID: LandID) -> LandDefinition<LandReleaseTest
     Land(landID.landType, using: LandReleaseTestState.self) {
         Rules {}
         Lifetime {
-            OnInitialize(resolvers: LandReleaseStuckResolver.self) { (_: inout LandReleaseTestState, _: LandContext) in }
+            OnInitialize(resolvers: { _, ctx in LandReleaseStuckResolver(landID: ctx.landID) }) { _, _, _ in }
         }
     }
 }
@@ -112,8 +112,8 @@ struct LandReleaseHeldResolver: ContextResolver {
 private func ticklessJobLand(_ landID: LandID) -> LandDefinition<LandReleaseTestState> {
     Land(landID.landType, using: LandReleaseTestState.self) {
         Rules {
-            HandleAction(LandReleaseHeldAction.self, resolvers: LandReleaseHeldResolver.self) {
-                (state: inout LandReleaseTestState, action: LandReleaseHeldAction, _: LandContext) in
+            HandleAction(LandReleaseHeldAction.self, resolvers: { _, action, ctx in LandReleaseHeldResolver(value: action.value, landID: ctx.landID) }) {
+                state, action, _, _ in
                 state.value = action.value
                 return LandReleaseAck(ok: true)
             }
