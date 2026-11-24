@@ -1013,7 +1013,7 @@ public enum LandDSL<State: StateNodeProtocol, Services: Sendable> {
     @available(*, unavailable, message: "a helper or @Land body returns LandRules<State, Services>, so its State and Services are checked")
     public static func buildExpression(_ nodes: [LandNode]) -> [LandNode] { nodes }
 
-    /// A land's, a `Rules`' or a `Lifetime`'s own closure: its nodes.
+    /// A land's or a `Rules` block's own closure: its nodes.
     public static func buildFinalResult(_ nodes: [LandNode]) -> [LandNode] { nodes }
 
     /// A helper's or an `@Land` body's result: its nodes, typed by the builder's `State` and

@@ -7,8 +7,8 @@
 /// the land's builder, `@LandDSL<State, NoServices>`, so its handler closures get the land's
 /// types without annotations, as in `Land(_:using:)`, and the definition checks the body's
 /// `State` against the land's. A `body` with any attribute other than `@available` is left as
-/// written (a hand-written `@LandDSL<…>`, or an alias of it), and `body` must be a computed
-/// `static var`.
+/// written (a hand-written `@LandDSL<…>`, or an alias of it). The builder is attached only to a
+/// computed `static var body`; a stored `body` (`static let body = Rules { … }`) is used as it is.
 ///
 /// `@Land` makes a land without services. A land with services is written with
 /// `Land(_:using:services:)`.
