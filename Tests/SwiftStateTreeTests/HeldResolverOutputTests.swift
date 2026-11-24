@@ -40,7 +40,8 @@ struct HeldResolverOutputTests {
     @Test("The monitor's state text: a String passes through, any other value is JSON text with sorted keys")
     func stateText() {
         #expect(ReevaluationStateText.text(of: AnyCodable(#"{"b":1}"#)) == #"{"b":1}"#)
-        let object = AnyCodable(["b": AnyCodable(1), "a": AnyCodable("x")])
-        #expect(ReevaluationStateText.text(of: object) == #"{"a":"x","b":1}"#)
+        // Eight keys, so an unsorted encoding can't pass by chance.
+        let object = AnyCodable(["h": AnyCodable(0), "c": AnyCodable(1), "a": AnyCodable(2), "f": AnyCodable(3), "b": AnyCodable(4), "g": AnyCodable(5), "d": AnyCodable(6), "e": AnyCodable(7)])
+        #expect(ReevaluationStateText.text(of: object) == #"{"a":2,"b":4,"c":1,"d":6,"e":7,"f":3,"g":5,"h":0}"#)
     }
 }
