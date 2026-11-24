@@ -165,7 +165,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         public let deviceID: String?
         public let isGuest: Bool?
         public let metadata: [String: String]
-        /// The resolver outputs: produced live, or read from a record in replay (P3).
+        /// The resolver outputs: produced live, or read from a record in replay.
         package let heldResolverOutputs: [String: HeldResolverOutput]
         public let resolvedAtTick: Int64
 
@@ -188,7 +188,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
         }
 
-        /// An item whose outputs are held as they were produced or read (P3).
+        /// An item whose outputs are held as they were produced or read.
         package init(
             sequence: Int64,
             kind: LifecycleKind,
@@ -226,7 +226,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         public let playerID: PlayerID
         public let clientID: ClientID
         public let sessionID: SessionID
-        /// The resolver outputs: produced live, or read from a record in replay (P3).
+        /// The resolver outputs: produced live, or read from a record in replay.
         package let heldResolverOutputs: [String: HeldResolverOutput]
         public let resolvedAtTick: Int64
 
@@ -253,7 +253,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
         }
 
-        /// A recorded action in replay: its payload decoded at apply, its outputs as read (P3).
+        /// A recorded action in replay: its payload decoded at apply, its outputs as read.
         package init(
             sequence: Int64,
             action: AnyCodable,

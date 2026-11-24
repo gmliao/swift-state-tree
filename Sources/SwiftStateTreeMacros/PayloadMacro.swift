@@ -333,7 +333,7 @@ private struct PropertyInfo {
     var wireName: String { String(name.filter { $0 != "`" }) }
 }
 
-// MARK: - The extension role: the type is PlainData (P3)
+// MARK: - The extension role: the type is PlainData
 
 extension PayloadMacro: ExtensionMacro {
     /// The protocols a payload conforms through; each refines `PlainData`.

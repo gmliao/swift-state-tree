@@ -1,4 +1,4 @@
-// The extension `@PlainData` writes, shared with `@Payload` (P3): one builder, so the two
+// The extension `@PlainData` writes, shared with `@Payload`: one builder, so the two
 // macros check a type's stored values the same way and give the witness the same access.
 
 @preconcurrency import SwiftDiagnostics
