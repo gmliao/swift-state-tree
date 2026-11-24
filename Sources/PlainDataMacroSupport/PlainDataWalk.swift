@@ -1,6 +1,6 @@
 // The field walk `@PlainData` uses, shared with SwiftStateTree's macros: the members of a struct
 // or enum in, the statements of its `check(_ value: inout Self)` out, or a diagnostic for what a
-// syntactic macro can't check. `@Payload` and `@StateNodeBuilder` call it in P3 and P4.
+// syntactic macro can't check. `@Payload` calls it, and `@StateNodeBuilder` is to.
 
 @preconcurrency import SwiftDiagnostics
 import SwiftSyntax

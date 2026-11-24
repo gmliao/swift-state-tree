@@ -44,6 +44,7 @@ struct AdapterJobUnregisteredAction: ActionPayload {
     let amount: Int
 }
 
+@PlainData
 struct AdapterJobOutput: ResolverOutput {}
 
 /// A gate that code under test arrives at and waits on until it's opened; the test awaits the

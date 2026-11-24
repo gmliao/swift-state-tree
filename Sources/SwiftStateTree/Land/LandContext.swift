@@ -155,8 +155,9 @@ public struct LandContext: Sendable {
     /// Deterministic broadcast-only sync request handler (used from synchronous handlers).
     private let requestSyncBroadcastOnlyHandler: @Sendable () -> Void
 
-    /// Storage for resolver outputs (dynamically populated based on @Resolvers declaration)
-    private var resolverOutputs: [String: any ResolverOutput] = [:]
+    /// Storage for resolver outputs (dynamically populated based on @Resolvers declaration):
+    /// produced live, or read from a record in replay.
+    private var resolverOutputs: [String: HeldResolverOutput] = [:]
     
     /// Thread-safe deterministic random number generator.
     ///
@@ -201,7 +202,7 @@ public struct LandContext: Sendable {
         emitEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) -> Void,
         requestSyncNowHandler: @escaping @Sendable () -> Void,
         requestSyncBroadcastOnlyHandler: @escaping @Sendable () -> Void,
-        resolverOutputs: [String: any ResolverOutput] = [:],
+        resolverOutputs: [String: HeldResolverOutput] = [:],
         serverInputs: ServerInputSubmitter = .unavailable
     ) {
         self.landID = landID
@@ -261,7 +262,7 @@ public struct LandContext: Sendable {
         _ output: Output,
         forPropertyName propertyName: String
     ) {
-        resolverOutputs[propertyName] = output
+        resolverOutputs[propertyName] = .live(output)
     }
 
     /// Get a resolver output by property name (internal use)
@@ -273,8 +274,8 @@ public struct LandContext: Sendable {
         self[dynamicMember: propertyName]
     }
     
-    /// Get all resolver outputs (internal use for recording)
-    internal func getAllResolverOutputs() -> [String: any ResolverOutput] {
+    /// Get all resolver outputs (internal use for recording), in the form they are held
+    internal func getAllResolverOutputs() -> [String: HeldResolverOutput] {
         return resolverOutputs
     }
 
@@ -292,25 +293,20 @@ public struct LandContext: Sendable {
     /// - `ProductInfoResolver` -> `productInfo`
     /// - `UserProfileResolver` -> `userProfile`
     ///
-    /// **Replay:** a recorded output is held as `AnyCodableResolverOutput`, and this subscript decodes
+    /// **Replay:** a recorded output is held as `RecordedResolverOutput`, and this subscript decodes
     /// it into the requested type with the record's own codec (`RecordPayloadSource`, #707), as a
-    /// replayed server event is: a `Date`, `Data`, `URL` or `Decimal` field reads back in the form the
-    /// recorder wrote. An output that doesn't decode into the requested type reads as `nil`, with a
+    /// replayed server event is: a `Data` field reads back in the form the recorder wrote. An output that doesn't decode into the requested type reads as `nil`, with a
     /// warning naming the output and the error: in replay a `nil` the live handler didn't see is a
     /// divergence, and a silent one is how #707 went unnoticed.
     public subscript<T: ResolverOutput>(dynamicMember member: String) -> T? {
-        guard let output = resolverOutputs[member] else {
+        switch resolverOutputs[member] {
+        case nil:
             return nil
-        }
-        
-        // Direct cast if types match (live mode or already decoded)
-        if let direct = output as? T {
-            return direct
-        }
-        
-        // A recorded output, in replay: decoded with the codec that wrote the record. A JSON round
-        // trip can't read a `Date`, `Data` or `URL` field back (#707).
-        if let wrapped = output as? AnyCodableResolverOutput {
+        case .live(let output):
+            return output as? T
+        case .recorded(let wrapped):
+            // A recorded output, in replay: decoded with the codec that wrote the record. A JSON
+            // round trip can't read a `Data` field back (#707).
             do {
                 return try RecordPayloadSource(wrapped.value, integralFloats: wrapped.integralFloats).decode(T.self)
             } catch {
@@ -323,47 +319,47 @@ public struct LandContext: Sendable {
                 return nil
             }
         }
-        
-        return nil
     }
 }
 
 // MARK: - Replay Mode Helper
 
-/// Wrapper to convert AnyCodable to ResolverOutput for replay
-/// This allows storing resolver outputs as AnyCodable during recording,
-/// and decoding them back to concrete types when accessed in replay mode.
-internal struct AnyCodableResolverOutput: ResolverOutput {
-    /// Type identifier of the resolver output (e.g., "SlowDeterministicOutput")
-    let typeIdentifier: String
-    /// The actual resolver output value as AnyCodable
-    let value: AnyCodable
-    /// The JSON view's integer-to-float allowance (`RecordPayloadSource.integralFloats`): true when
-    /// the record was read from its JSON view, which doesn't keep the float/integer split. Not
-    /// encoded: a decoded wrapper reads strictly.
-    let integralFloats: Bool
+/// A resolver output as an item or a context holds it: produced live, or read from a record.
+/// Not `PlainData`: a recorded output is an `AnyCodable` tree until the handler reads it.
+package enum HeldResolverOutput: Sendable {
+    case live(any ResolverOutput)
+    case recorded(RecordedResolverOutput)
+}
 
-    init(typeIdentifier: String, value: AnyCodable, integralFloats: Bool = false) {
+/// Replay only: a recorded output's tree, decoded when the handler reads it, with the record's
+/// own codec (#707). Not a `ResolverOutput`, so nothing can mistake it for an output.
+package struct RecordedResolverOutput: Sendable {
+    /// Type identifier of the resolver output (e.g., "SlowDeterministicOutput")
+    package let typeIdentifier: String
+    /// The output's tree, as the record holds it
+    package let value: AnyCodable
+    /// The JSON view's integer-to-float allowance (`RecordPayloadSource.integralFloats`): true when
+    /// the record was read from its JSON view, which doesn't keep the float/integer split.
+    package let integralFloats: Bool
+
+    package init(typeIdentifier: String, value: AnyCodable, integralFloats: Bool = false) {
         self.typeIdentifier = typeIdentifier
         self.value = value
         self.integralFloats = integralFloats
     }
-    
-    enum CodingKeys: String, CodingKey {
-        case typeIdentifier
-        case value
-    }
-    
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.typeIdentifier = try container.decode(String.self, forKey: .typeIdentifier)
-        self.value = try container.decode(AnyCodable.self, forKey: .value)
-        self.integralFloats = false
-    }
-    
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(typeIdentifier, forKey: .typeIdentifier)
-        try container.encode(value, forKey: .value)
+}
+
+extension Dictionary where Key == String, Value == HeldResolverOutput {
+    /// The record's entries for these outputs: a live output's type and value, a recorded one's
+    /// type and tree as it was read. One projection for every record write site.
+    package var recordedEntries: [String: ReevaluationRecordedResolverOutput] {
+        mapValues { held in
+            switch held {
+            case .live(let output):
+                ReevaluationRecordedResolverOutput(typeIdentifier: String(describing: type(of: output)), value: AnyCodable(output))
+            case .recorded(let recorded):
+                ReevaluationRecordedResolverOutput(typeIdentifier: recorded.typeIdentifier, value: recorded.value)
+            }
+        }
     }
 }

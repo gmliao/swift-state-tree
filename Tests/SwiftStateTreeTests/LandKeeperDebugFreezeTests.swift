@@ -152,6 +152,7 @@ struct DebugFreezeStuckResolver: ContextResolver {
     }
 }
 
+@PlainData
 struct DebugFreezeGatedResolverOutput: ResolverOutput {
     let ok: Bool
 }

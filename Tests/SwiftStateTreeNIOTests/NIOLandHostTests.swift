@@ -383,6 +383,7 @@ private struct HostClassFieldState: StateNodeProtocol {
 }
 
 /// A server event without `@Payload`: no positional writer (#521 EV1).
+@PlainData
 private struct HostHandWrittenEvent: ServerEventPayload {
     let n: Int
 }

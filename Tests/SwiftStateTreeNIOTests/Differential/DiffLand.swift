@@ -54,6 +54,7 @@ struct DiffHeldResponse: ResponsePayload {
     let key: Int
 }
 
+@PlainData
 struct DiffHeldOutput: ResolverOutput {}
 
 struct DiffHeldResolver: ContextResolver {

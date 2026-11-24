@@ -12,6 +12,10 @@
 2. **生成 response type**：Action payload 會額外產生 `getResponseType()` 方法
 3. **Schema 生成支援**：提供 metadata 用於自動生成 JSON Schema
 
+`@Payload` 也會讓型別成為 [`PlainData`](../turns/README.zh-TW.md#什麼算純資料)，並在編譯期檢查每個欄位：欄位不能是 `Date`、`UUID`、`URL`、`Decimal`、`AnyCodable`、`Any`、class 或 closure。時間存成 `Int64` 毫秒（`timestampMillis: Int64`），ID 或 URL 存成 `String`，金額存成最小單位的整數（`priceCents: Int64`）。當作欄位的 struct 或 enum 需要 `@PlainData`（或 `@Payload`）。
+
+巨集是依拼寫判斷 `Date`、`UUID`、`URL` 和 `Decimal` 的，所以你自己定義、剛好同名的型別也會被拒絕。要拿它當欄位，請加上模組名稱（`Money.Decimal`）。
+
 ## 基本使用
 
 ### Action Payload
@@ -42,14 +46,14 @@ struct JoinResponse: ResponsePayload {
 struct PlayerJoinedEvent: ServerEventPayload {
     let playerID: PlayerID
     let name: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 
 @Payload
 struct ChatMessageEvent: ClientEventPayload {
     let playerID: PlayerID
     let message: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 ```
 
@@ -155,7 +159,7 @@ Server 發送給 Client 的事件：
 @Payload
 struct GameStartedEvent: ServerEventPayload {
     let gameID: String
-    let startTime: Date
+    let startTimeMillis: Int64
     let players: [PlayerID]
 }
 ```
@@ -172,7 +176,7 @@ Client 發送給 Server 的事件：
 ```swift
 @Payload
 struct HeartbeatEvent: ClientEventPayload {
-    let timestamp: Date
+    let timestampMillis: Int64
     let clientVersion: String
 }
 ```
@@ -226,9 +230,11 @@ struct JoinAction: ActionPayload {
 
 ### 限制
 
-1. **只支援 struct**：不支援 class 或 enum
+1. **只支援 struct**：不支援 class 或 enum。enum payload 改用 `@PlainData`
 2. **不支援可選型別**：欄位不能是可選型別（`String?`）
-3. **必須標記 @Payload**：未標記的 payload 在 runtime 會 trap
+3. **必須標記 @Payload**：未標記的 payload 無法編譯，因為每個 payload protocol 都 refine `PlainData`。手寫 `@Payload` 所產生內容的型別改用 `@PlainData`
+4. **不能宣告在函式內**：Swift 不會把 macro 套用到函式內宣告的型別。請把 payload 宣告在檔案層級，或巢狀於另一個型別內
+5. **泛型參數要加約束**：每個被儲存的泛型參數都必須是 `PlainData`：`struct Box<T: Codable & Sendable & PlainData>`
 
 ## 使用場景
 
@@ -293,8 +299,7 @@ struct JoinAction: ActionPayload {
     let playerID: PlayerID
 }
 
-// 在 runtime 會 trap
-let responseType = JoinAction.getResponseType()  // ❌ Runtime error
+// ❌ 無法編譯：JoinAction 不是 PlainData，而 PlainData 由 @Payload 加上
 ```
 
 **解決方案**：
@@ -379,7 +384,7 @@ struct PurchaseAction: ActionPayload {
 @Payload
 struct GenericAction: ActionPayload {
     typealias Response = GenericResponse
-    let data: [String: Any]  // 太泛型
+    let data: [String: Any]  // 太泛型；@Payload 會拒絕 Any
 }
 ```
 
@@ -400,7 +405,7 @@ struct JoinAction: ActionPayload {
 @Payload
 struct ComplexAction: ActionPayload {
     typealias Response = ComplexResponse
-    let nestedData: NestedStructure  // 確保 NestedStructure 也標記了 @Payload 或 @SnapshotConvertible
+    let nestedData: NestedStructure  // NestedStructure 要標記 @PlainData（或 @Payload）
 }
 ```
 

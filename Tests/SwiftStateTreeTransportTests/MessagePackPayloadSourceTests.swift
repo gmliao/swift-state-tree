@@ -9,12 +9,13 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeMessagePack
+import SwiftStateTreeTestSupport
 
 @Payload
 struct SourceProbeAction: ActionPayload {
     typealias Response = SourceProbeResponse
     let count: Int
-    let deep: AnyCodable
+    let deep: Nest
 }
 
 @Payload
@@ -73,7 +74,7 @@ struct MessagePackPayloadSourceTests {
     func oneWalk() async throws {
         let walks = PayloadNesting.WalkCounter()
         try PayloadNesting.$walks.withValue(walks) {
-            let source = try MessagePackPayloadSource(validating: .map([.string("count"): .int(3), .string("deep"): .array([.int(1)])]))
+            let source = try MessagePackPayloadSource(validating: .map([.string("count"): .int(3), .string("deep"): .array([.array([])])]))
             try source.validateRecordable()
             _ = try source.decode(SourceProbeAction.self)
             _ = source.boxedPayload
@@ -83,13 +84,14 @@ struct MessagePackPayloadSourceTests {
 
     @Test("It decodes into the type without JSON, and its tree is today's")
     func decodesAndBoxes() throws {
-        let value: MessagePackValue = .map([.string("count"): .int(3), .string("deep"): .array([.string("x"), .double(1.5)])])
+        let value: MessagePackValue = .map([.string("count"): .int(3), .string("deep"): .array([.array([]), .array([.array([])])])])
         let source = try MessagePackPayloadSource(validating: value)
         let action = try source.decode(SourceProbeAction.self)
         #expect(action.count == 3)
+        #expect(action.deep == .node([.leaf, .nested(2)]))
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         let boxed = String(decoding: try encoder.encode(source.boxedPayload), as: UTF8.self)
-        #expect(boxed == #"{"count":3,"deep":["x",1.5]}"#)
+        #expect(boxed == #"{"count":3,"deep":[[],[[]]]}"#)
     }
 }

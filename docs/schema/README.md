@@ -393,6 +393,7 @@ A: Ensure custom types implement necessary protocols:
 - `Codable`: For serialization
 - `Sendable`: For concurrency safety
 - Mark with `@Payload` or `@SnapshotConvertible` to provide metadata
+- A type used as a payload field also needs `@PlainData` (or `@Payload`)
 
 ### Q: What if the schema file is too large?
 

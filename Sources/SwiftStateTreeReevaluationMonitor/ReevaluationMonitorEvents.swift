@@ -1,3 +1,4 @@
+import Foundation
 import SwiftStateTree
 
 // MARK: - Server Events
@@ -32,44 +33,20 @@ public struct TickSummaryEvent: ServerEventPayload {
 }
 
 @Payload
-public struct TickProcessedPayload {
-    public let tickId: Int64
-    public let expectedState: AnyCodable
-    public let actualState: AnyCodable
-    public let isMatch: Bool
-    public let expectedHash: String
-    public let actualHash: String
-
-    public init(
-        tickId: Int64,
-        expectedState: AnyCodable,
-        actualState: AnyCodable,
-        isMatch: Bool,
-        expectedHash: String,
-        actualHash: String
-    ) {
-        self.tickId = tickId
-        self.expectedState = expectedState
-        self.actualState = actualState
-        self.isMatch = isMatch
-        self.expectedHash = expectedHash
-        self.actualHash = actualHash
-    }
-}
-
-@Payload
 public struct TickProcessedEvent: ServerEventPayload {
     public let tickId: Int64
-    public let expectedState: AnyCodable
-    public let actualState: AnyCodable
+    /// The state's JSON text, as the runner's snapshot (`ReevaluationStateText`).
+    public let expectedState: String
+    /// The state's JSON text, as the runner's snapshot (`ReevaluationStateText`).
+    public let actualState: String
     public let isMatch: Bool
     public let expectedHash: String
     public let actualHash: String
 
     public init(
         tickId: Int64,
-        expectedState: AnyCodable,
-        actualState: AnyCodable,
+        expectedState: String,
+        actualState: String,
         isMatch: Bool,
         expectedHash: String,
         actualHash: String
@@ -120,5 +97,19 @@ public struct VerificationFailedEvent: ServerEventPayload {
 
     public init(errorMessage: String) {
         self.errorMessage = errorMessage
+    }
+}
+
+/// A step result's state as the monitor sends it: JSON text. The built-in runner already puts
+/// the snapshot's JSON text in `ReevaluationStepResult.actualState`, which passes through; any
+/// other value, from another runner, is encoded as JSON text with sorted keys (a scalar is a
+/// JSON fragment: `42`, `true`, `null`). A value JSON can't hold (a non-finite float) throws:
+/// the caller reports it, never drops it silently.
+enum ReevaluationStateText {
+    static func text(of state: AnyCodable) throws -> String {
+        if let text = state.base as? String { return text }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(state), as: UTF8.self)
     }
 }

@@ -11,8 +11,6 @@ export { Angle }
 export { Position2 }
 export { FIXED_POINT_SCALE }
 
-export type Any = { [key: string]: any }
-export type AnyCodable = { base: { [key: string]: Any } }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type BaseState = { health: number; maxHealth: number; position: Position2; radius: number }
 export type CallServiceAction = { deadlineMs: number; delayMs: number; outcome: string; tag: string }
@@ -49,7 +47,7 @@ export type StartVerificationAction = { landType: string; recordFilePath: string
 export type StartVerificationResponse = { [key: string]: any }
 export type StateDiff = { patches: { op: string; path: string; value?: { [key: string]: any } }[] }
 export type TickMismatch = { [key: string]: any }
-export type TickProcessedEvent = { actualHash: string; actualState: AnyCodable; expectedHash: string; expectedState: AnyCodable; isMatch: boolean; tickId: number }
+export type TickProcessedEvent = { actualHash: string; actualState: string; expectedHash: string; expectedState: string; isMatch: boolean; tickId: number }
 export type TickSummaryEvent = { actualHash: string; expectedHash: string; isMatch: boolean; tickId: number }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type TurretFireEvent = { from: Position2; to: Position2; turretID: number }

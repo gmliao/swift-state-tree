@@ -62,11 +62,13 @@ struct FuzzMathAction: ActionPayload {
 }
 
 /// Optionals aren't allowed as payload fields; they appear inside a nested value.
+@PlainData
 struct FuzzOptionals: Codable, Sendable {
     let optional: Int?
     let optionalList: [String]?
 }
 
+@PlainData
 indirect enum FuzzTree: Codable, Sendable {
     case leaf(Int)
     case node([FuzzTree])
@@ -79,10 +81,7 @@ struct FuzzContainersEvent: ClientEventPayload {
     let byPlayer: [PlayerID: Int]
     let nested: PFNested
     let optionals: FuzzOptionals
-    let any: AnyCodable
-    let date: Date
     let data: Data
-    let uuid: UUID
     let kind: PFKind
     let tree: FuzzTree
 }
@@ -119,9 +118,7 @@ enum T5Seeds {
     static let containers = FuzzContainersEvent(
         ints: [1, -2, 3], byName: ["a": 1, "b": 2], byPlayer: [PlayerID("p1"): 5],
         nested: PFNested(a: 4, b: "x"), optionals: FuzzOptionals(optional: nil, optionalList: ["y"]),
-        any: AnyCodable(["k": AnyCodable([AnyCodable(1), AnyCodable("v")])]),
-        date: Date(timeIntervalSinceReferenceDate: 12), data: Data([1, 2, 3]),
-        uuid: UUID(uuidString: "00000000-0000-0000-0000-000000000528")!, kind: .second,
+        data: Data([1, 2, 3]), kind: .second,
         tree: .node([.leaf(1), .node([.leaf(2)])])
     )
 

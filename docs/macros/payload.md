@@ -12,6 +12,10 @@
 2. **Generate response type**: Action payloads additionally generate `getResponseType()` method
 3. **Schema generation support**: Provide metadata for automatic JSON Schema generation
 
+`@Payload` also makes the type [`PlainData`](../turns/README.md#what-counts-as-plain-data), and checks every field at compile time: a field can't be `Date`, `UUID`, `URL`, `Decimal`, `AnyCodable`, `Any`, a class or a closure. Store a time as `Int64` milliseconds (`timestampMillis: Int64`), an ID or a URL as `String`, and an amount of money as an integer in its smallest unit (`priceCents: Int64`). A struct or enum used as a field needs `@PlainData` (or `@Payload`).
+
+The macro reads `Date`, `UUID`, `URL` and `Decimal` by their spelling, so a type of your own with one of those names is refused too. Spell it with its module (`Money.Decimal`) to use it as a field.
+
 ## Basic Usage
 
 ### Action Payload
@@ -42,14 +46,14 @@ struct JoinResponse: ResponsePayload {
 struct PlayerJoinedEvent: ServerEventPayload {
     let playerID: PlayerID
     let name: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 
 @Payload
 struct ChatMessageEvent: ClientEventPayload {
     let playerID: PlayerID
     let message: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 ```
 
@@ -155,7 +159,7 @@ Events sent from Server to Client:
 @Payload
 struct GameStartedEvent: ServerEventPayload {
     let gameID: String
-    let startTime: Date
+    let startTimeMillis: Int64
     let players: [PlayerID]
 }
 ```
@@ -172,7 +176,7 @@ Events sent from Client to Server:
 ```swift
 @Payload
 struct HeartbeatEvent: ClientEventPayload {
-    let timestamp: Date
+    let timestampMillis: Int64
     let clientVersion: String
 }
 ```
@@ -226,9 +230,11 @@ struct JoinAction: ActionPayload {
 
 ### Limitations
 
-1. **Only supports struct**: Doesn't support class or enum
+1. **Only supports struct**: Doesn't support class or enum. An enum payload uses `@PlainData` instead
 2. **Doesn't support optional types**: Fields cannot be optional types (`String?`)
-3. **Must mark @Payload**: Unmarked payloads will trap at runtime
+3. **Must mark @Payload**: An unmarked payload doesn't compile, because every payload protocol refines `PlainData`. A type that writes by hand what `@Payload` generates uses `@PlainData`
+4. **Not inside a function**: Swift doesn't attach the macro to a type declared in a function. Declare the payload at file scope or nested in another type
+5. **Constrained generic parameters**: Each stored generic parameter must be `PlainData`: `struct Box<T: Codable & Sendable & PlainData>`
 
 ## Use Cases
 
@@ -293,8 +299,7 @@ struct JoinAction: ActionPayload {
     let playerID: PlayerID
 }
 
-// Will trap at runtime
-let responseType = JoinAction.getResponseType()  // ❌ Runtime error
+// ❌ Doesn't compile: JoinAction isn't PlainData, which @Payload adds
 ```
 
 **Solution**:
@@ -379,7 +384,7 @@ struct PurchaseAction: ActionPayload {
 @Payload
 struct GenericAction: ActionPayload {
     typealias Response = GenericResponse
-    let data: [String: Any]  // Too generic
+    let data: [String: Any]  // Too generic; @Payload refuses Any
 }
 ```
 
@@ -400,7 +405,7 @@ struct JoinAction: ActionPayload {
 @Payload
 struct ComplexAction: ActionPayload {
     typealias Response = ComplexResponse
-    let nestedData: NestedStructure  // Ensure NestedStructure is also marked with @Payload or @SnapshotConvertible
+    let nestedData: NestedStructure  // Mark NestedStructure with @PlainData (or @Payload)
 }
 ```
 

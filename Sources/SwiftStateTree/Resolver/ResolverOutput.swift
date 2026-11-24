@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTurns
 
 /// Protocol that marks a type as a ResolverOutput.
 ///
@@ -20,7 +21,7 @@ import Foundation
 ///     let stock: Int
 /// }
 /// ```
-public protocol ResolverOutput: Codable & Sendable {
+public protocol ResolverOutput: PlainData, Codable & Sendable {
     // Currently empty protocol, providing type marker and future extensibility
     // All Resolver output data types must conform to this protocol
 }

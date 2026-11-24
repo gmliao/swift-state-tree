@@ -26,6 +26,7 @@ struct RoomState: StateNodeProtocol {
     init() {}
 }
 
+@PlainData
 struct RoomConfigOutput: ResolverOutput {
     let maxPlayers: Int
 }
@@ -340,6 +341,7 @@ struct InitWaitAction: ActionPayload {
     let n: Int
 }
 
+@Payload
 struct InitWaitInput: ServerInputPayload {
     let n: Int
 }

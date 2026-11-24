@@ -16,6 +16,7 @@ private func hashedLand(_ landType: String) -> LandDefinition<RegistrationTestSt
 }
 
 /// Renamed from `EHTOldChime`; the hand-written wire name keeps the old one.
+@PlainData
 struct EHTChimeEvent: ServerEventPayload {
     static var _payloadWireName: String { "EHTOldChime" }
 }

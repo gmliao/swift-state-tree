@@ -266,7 +266,7 @@ Handler 不能拋出錯誤。可被拒絕的 action 拆成讀取狀態、可拋�
 
 Resolver 在 Swift 中實作為實作 `ContextResolver` protocol 的類型：
 
-* Resolver 的輸出必須實作 `ResolverOutput` protocol
+* Resolver 的輸出必須實作 `ResolverOutput` protocol，並在型別上標記 `@PlainData`
 * 在 handler 中透過 `LandContext` 的 `@dynamicMemberLookup` 特性存取 resolver 結果
 * Resolver 在 handler 執行前並行執行
 

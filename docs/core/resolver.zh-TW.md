@@ -55,9 +55,10 @@ struct ProductInfoResolver: ContextResolver {
 
 ### ResolverOutput
 
-Resolver 的輸出必須實作 `ResolverOutput` protocol：
+Resolver 的輸出必須實作 `ResolverOutput` protocol，並標記 `@PlainData`。`@PlainData` 會在編譯期檢查每個欄位：欄位不能是 `Date`、`UUID`、`URL`、`Decimal`、`AnyCodable`、`Any`、class 或 closure（[純資料](../turns/README.zh-TW.md#什麼算純資料)）。
 
 ```swift
+@PlainData
 struct ProductInfo: ResolverOutput, Codable, Sendable {
     let id: String
     let name: String

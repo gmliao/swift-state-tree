@@ -53,6 +53,7 @@ struct SlowDeterministicConsistencyResolver: ContextResolver {
     }
 }
 
+@PlainData
 struct SlowDeterministicConsistencyOutput: ResolverOutput {
     let stableInt: Int32
 }

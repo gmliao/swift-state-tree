@@ -567,33 +567,36 @@ func testManualSyncNowRequest() async throws {
     #expect(syncNowCount > 0, "Sync should be called when ctx.requestSyncNow() is invoked")
 }
 
-@Test("handleActionEnvelope correctly decodes action payload with different types")
-func testHandleActionEnvelopeDecodesPayloadTypes() async throws {
+/// Payload fixtures of `testHandleActionEnvelopeDecodesPayloadTypes`, at file scope: an extension macro can't attach to a local type.
+fileprivate enum TestHandleActionEnvelopeDecodesPayloadTypesFixtures {
     // Arrange
     @Payload
     struct TestActionWithTypes: ActionPayload {
         typealias Response = TestActionResponse
-        
+
         let intValue: Int
         let stringValue: String
         let boolValue: Bool
         let doubleValue: Double
     }
-    
+
     @Payload
     struct TestActionResponse: ResponsePayload {
         let success: Bool
     }
-    
+}
+
+@Test("handleActionEnvelope correctly decodes action payload with different types")
+func testHandleActionEnvelopeDecodesPayloadTypes() async throws {
     let definition = Land(
         "test-action-decode",
         using: ActionEventSyncTestState.self
     ) {
         Rules {
-            HandleAction(TestActionWithTypes.self) { (state: inout ActionEventSyncTestState, action: TestActionWithTypes, ctx: LandContext) in
+            HandleAction(TestHandleActionEnvelopeDecodesPayloadTypesFixtures.TestActionWithTypes.self) { (state: inout ActionEventSyncTestState, action: TestHandleActionEnvelopeDecodesPayloadTypesFixtures.TestActionWithTypes, ctx: LandContext) in
                 state.count = action.intValue
                 state.message = action.stringValue
-                return TestActionResponse(success: action.boolValue)
+                return TestHandleActionEnvelopeDecodesPayloadTypesFixtures.TestActionResponse(success: action.boolValue)
             }
         }
     }
@@ -610,7 +613,7 @@ func testHandleActionEnvelopeDecodesPayloadTypes() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Act: Create action envelope with properly typed JSON payload
-    let action = TestActionWithTypes(
+    let action = TestHandleActionEnvelopeDecodesPayloadTypesFixtures.TestActionWithTypes(
         intValue: 42,
         stringValue: "test",
         boolValue: true,
@@ -636,32 +639,35 @@ func testHandleActionEnvelopeDecodesPayloadTypes() async throws {
     #expect(state.message == "test", "String value should be decoded correctly")
     
     // Assert: Verify response
-    let actionResponse = response.base as? TestActionResponse
+    let actionResponse = response.base as? TestHandleActionEnvelopeDecodesPayloadTypesFixtures.TestActionResponse
     #expect(actionResponse?.success == true, "Bool value should be decoded correctly")
 }
 
-@Test("handleActionEnvelope throws error when payload type mismatches")
-func testHandleActionEnvelopeTypeMismatch() async throws {
+/// Payload fixtures of `testHandleActionEnvelopeTypeMismatch`, at file scope: an extension macro can't attach to a local type.
+fileprivate enum TestHandleActionEnvelopeTypeMismatchFixtures {
     // Arrange
     @Payload
     struct IntAction: ActionPayload {
         typealias Response = TestActionResponse
-        
+
         let value: Int
     }
-    
+
     @Payload
     struct TestActionResponse: ResponsePayload {
         let success: Bool
     }
-    
+}
+
+@Test("handleActionEnvelope throws error when payload type mismatches")
+func testHandleActionEnvelopeTypeMismatch() async throws {
     let definition = Land(
         "test-type-mismatch",
         using: ActionEventSyncTestState.self
     ) {
         Rules {
-            HandleAction(IntAction.self) { (state: inout ActionEventSyncTestState, action: IntAction, ctx: LandContext) in
-                return TestActionResponse(success: true)
+            HandleAction(TestHandleActionEnvelopeTypeMismatchFixtures.IntAction.self) { (state: inout ActionEventSyncTestState, action: TestHandleActionEnvelopeTypeMismatchFixtures.IntAction, ctx: LandContext) in
+                return TestHandleActionEnvelopeTypeMismatchFixtures.TestActionResponse(success: true)
             }
         }
     }

@@ -26,7 +26,7 @@ struct DecodeOnceState: StateNodeProtocol {
 struct DecodeOnceAction: ActionPayload {
     typealias Response = DecodeOnceResponse
     let tag: String
-    let deep: AnyCodable
+    let deep: Nest
 }
 
 /// The same, with a resolver: it runs as an action job (`startActionJob`).
@@ -34,7 +34,7 @@ struct DecodeOnceAction: ActionPayload {
 struct DecodeOnceJobAction: ActionPayload {
     typealias Response = DecodeOnceResponse
     let tag: String
-    let deep: AnyCodable
+    let deep: Nest
 }
 
 @Payload
@@ -45,9 +45,10 @@ struct DecodeOnceResponse: ResponsePayload {
 @Payload
 struct DecodeOnceEvent: ClientEventPayload {
     let tag: String
-    let deep: AnyCodable
+    let deep: Nest
 }
 
+@PlainData
 struct DecodeOnceJobOutput: ResolverOutput {}
 
 struct DecodeOnceJobResolver: ContextResolver {
@@ -301,8 +302,8 @@ struct InputDecodeOnceTests {
     func walkedOncePerInput(choice: DecodeOnceCodec, legacyJoin: Bool) async throws {
         try await countingWalks { walks in
             let fixture = try await makeFixture(choice, legacyJoin: legacyJoin)
-            await fixture.adapter.onMessage(try fixture.eventFrame("e", deep: [[1]]), from: fixture.session)
-            await fixture.adapter.onMessage(try fixture.actionFrame("a", deep: [[1]]), from: fixture.session)
+            await fixture.adapter.onMessage(try fixture.eventFrame("e", deep: [[Any]()]), from: fixture.session)
+            await fixture.adapter.onMessage(try fixture.actionFrame("a", deep: [[Any]()]), from: fixture.session)
             #expect(await fixture.keeper.currentState().hits == ["event:e", "action:a"])
             // One walk for the event and one for the action. A decode at apply, as before, would
             // add one for the action.
@@ -319,7 +320,7 @@ struct InputDecodeOnceTests {
             // after they did.
             await fixture.adapter.waitForOutboundIdleForTesting()
             let before = await fixture.sent.frames.count
-            await fixture.adapter.onMessage(try fixture.actionFrame("j", deep: [[1]], job: true), from: fixture.session)
+            await fixture.adapter.onMessage(try fixture.actionFrame("j", deep: [[Any]()], job: true), from: fixture.session)
             // The job's answer, found by its requestID: the action was applied.
             _ = await fixture.answerIndex(to: "a-j", from: before)
             #expect(await fixture.keeper.currentState().hits == ["job:j"])

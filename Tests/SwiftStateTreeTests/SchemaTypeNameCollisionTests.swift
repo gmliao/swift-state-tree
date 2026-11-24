@@ -16,11 +16,13 @@ enum SchemaNameA {
         let damage: Int
     }
 
+    @PlainData
     struct Item: Codable, Equatable, Sendable {
         var hp: Int = 0
     }
 
     /// Declared atomic: sent positionally as its leaves.
+    @PlainData
     @SnapshotConvertible(atomic: true)
     struct Spot: Codable, Equatable, Sendable {
         var x: Int32
@@ -52,12 +54,14 @@ enum SchemaNameB {
         let critical: Bool
     }
 
+    @PlainData
     struct Item: Codable, Hashable, Sendable {
         var name: String = ""
         var level: Int = 0
     }
 
     /// Not atomic, with other fields than `SchemaNameA.Spot`.
+    @PlainData
     struct Spot: Codable, Equatable, Sendable {
         var label: String = ""
     }

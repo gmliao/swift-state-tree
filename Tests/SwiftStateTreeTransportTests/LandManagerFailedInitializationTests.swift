@@ -18,6 +18,7 @@ struct FailedInitTestState: StateNodeProtocol {
     public init() {}
 }
 
+@PlainData
 struct FailedInitOutput: ResolverOutput {
     let value: Int
 }

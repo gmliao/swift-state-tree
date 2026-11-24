@@ -451,32 +451,35 @@ func testOnTickSynchronous() async throws {
 
 // MARK: - Event Registration Tests
 
-@Test("ClientEvents Register collects event types")
-func testClientEventsRegister() {
+/// Payload fixtures of `testClientEventsRegister`, at file scope: an extension macro can't attach to a local type.
+fileprivate enum TestClientEventsRegisterFixtures {
     @Payload
     struct TestEvent1: ClientEventPayload {
         let value: Int
         public init(value: Int) { self.value = value }
     }
-    
+
     @Payload
     struct TestEvent2: ClientEventPayload {
         let message: String
         public init(message: String) { self.message = message }
     }
-    
+}
+
+@Test("ClientEvents Register collects event types")
+func testClientEventsRegister() {
     let definition = Land(
         "test-register",
         using: DemoLandState.self
     ) {
         ClientEvents {
-            Register(TestEvent1.self)
-            Register(TestEvent2.self)
+            Register(TestClientEventsRegisterFixtures.TestEvent1.self)
+            Register(TestClientEventsRegisterFixtures.TestEvent2.self)
         }
         Rules {
             // Registered for the schema only; a registered client event needs a handler (#771).
-            HandleEvent(TestEvent1.self) { _, _, _ in }
-            HandleEvent(TestEvent2.self) { _, _, _ in }
+            HandleEvent(TestClientEventsRegisterFixtures.TestEvent1.self) { _, _, _ in }
+            HandleEvent(TestClientEventsRegisterFixtures.TestEvent2.self) { _, _, _ in }
         }
     }
     
@@ -493,27 +496,30 @@ func testClientEventsRegister() {
     }
 }
 
-@Test("ServerEvents Register collects event types")
-func testServerEventsRegister() {
+/// Payload fixtures of `testServerEventsRegister`, at file scope: an extension macro can't attach to a local type.
+fileprivate enum TestServerEventsRegisterFixtures {
     @Payload
     struct TestServerEvent1: ServerEventPayload {
         let value: Int
         public init(value: Int) { self.value = value }
     }
-    
+
     @Payload
     struct TestServerEvent2: ServerEventPayload {
         let message: String
         public init(message: String) { self.message = message }
     }
-    
+}
+
+@Test("ServerEvents Register collects event types")
+func testServerEventsRegister() {
     let definition = Land(
         "test-server-register",
         using: DemoLandState.self
     ) {
         ServerEvents {
-            Register(TestServerEvent1.self)
-            Register(TestServerEvent2.self)
+            Register(TestServerEventsRegisterFixtures.TestServerEvent1.self)
+            Register(TestServerEventsRegisterFixtures.TestServerEvent2.self)
         }
         Rules { }
     }
@@ -531,20 +537,23 @@ func testServerEventsRegister() {
     }
 }
 
-@Test("EventRegistry findDescriptor works correctly")
-func testEventRegistryFindDescriptor() {
+/// Payload fixtures of `testEventRegistryFindDescriptor`, at file scope: an extension macro can't attach to a local type.
+fileprivate enum TestEventRegistryFindDescriptorFixtures {
     @Payload
     struct TestFindEvent: ServerEventPayload {
         let id: String
         public init(id: String) { self.id = id }
     }
-    
+}
+
+@Test("EventRegistry findDescriptor works correctly")
+func testEventRegistryFindDescriptor() {
     let definition = Land(
         "test-find",
         using: DemoLandState.self
     ) {
         ServerEvents {
-            Register(TestFindEvent.self)
+            Register(TestEventRegistryFindDescriptorFixtures.TestFindEvent.self)
         }
         Rules { }
     }
@@ -560,63 +569,69 @@ func testEventRegistryFindDescriptor() {
     #expect(notFound == nil)
 }
 
-@Test("EventRegistry isRegistered works correctly")
-func testEventRegistryIsRegistered() {
+/// Payload fixtures of `testEventRegistryIsRegistered`, at file scope: an extension macro can't attach to a local type.
+fileprivate enum TestEventRegistryIsRegisteredFixtures {
     @Payload
     struct TestRegisteredEvent: ClientEventPayload {
         public init() {}
     }
-    
+
     @Payload
     struct TestUnregisteredEvent: ClientEventPayload {
         public init() {}
     }
-    
+}
+
+@Test("EventRegistry isRegistered works correctly")
+func testEventRegistryIsRegistered() {
     let definition = Land(
         "test-is-registered",
         using: DemoLandState.self
     ) {
         ClientEvents {
-            Register(TestRegisteredEvent.self)
+            Register(TestEventRegistryIsRegisteredFixtures.TestRegisteredEvent.self)
         }
         Rules {
             // Registered for the schema only; a registered client event needs a handler (#771).
-            HandleEvent(TestRegisteredEvent.self) { _, _, _ in }
+            HandleEvent(TestEventRegistryIsRegisteredFixtures.TestRegisteredEvent.self) { _, _, _ in }
         }
     }
     
     // Test registered event
-    #expect(definition.clientEventRegistry.isRegistered(TestRegisteredEvent.self))
+    #expect(definition.clientEventRegistry.isRegistered(TestEventRegistryIsRegisteredFixtures.TestRegisteredEvent.self))
     
     // Test unregistered event
-    #expect(definition.clientEventRegistry.isRegistered(TestUnregisteredEvent.self) == false)
+    #expect(definition.clientEventRegistry.isRegistered(TestEventRegistryIsRegisteredFixtures.TestUnregisteredEvent.self) == false)
 }
 
-@Test("ClientEvents and ServerEvents can be registered together")
-func testBothClientAndServerEvents() {
+/// Payload fixtures of `testBothClientAndServerEvents`, at file scope: an extension macro can't attach to a local type.
+fileprivate enum TestBothClientAndServerEventsFixtures {
     @Payload
     struct ClientEvent: ClientEventPayload {
         public init() {}
     }
-    
+
     @Payload
     struct ServerEvent: ServerEventPayload {
         public init() {}
     }
-    
+}
+
+@Test("ClientEvents and ServerEvents can be registered together")
+func testBothClientAndServerEvents() {
     let definition = Land(
         "test-both",
         using: DemoLandState.self
     ) {
         ClientEvents {
-            Register(ClientEvent.self)
+            Register(TestBothClientAndServerEventsFixtures.ClientEvent.self)
         }
         ServerEvents {
-            Register(ServerEvent.self)
+            Register(TestBothClientAndServerEventsFixtures.ServerEvent.self)
         }
         Rules {
             // Registered for the schema only; a registered client event needs a handler (#771).
-            HandleEvent(ClientEvent.self) { _, _, _ in }
+            HandleEvent(TestBothClientAndServerEventsFixtures.ClientEvent.self) { _, _, _ in }
         }
     }
     
@@ -658,30 +673,34 @@ func testOnInitialize() async throws {
     #expect(state.spawnedTaskCount == 1, "OnInitialize should be called once")
 }
 
-@Test("OnInitialize with resolver loads data before handler executes")
-func testOnInitializeWithResolver() async throws {
+/// Payload fixtures of `testOnInitializeWithResolver`, at file scope: an extension macro can't attach to a local type.
+fileprivate enum TestOnInitializeWithResolverFixtures {
+    @PlainData
     struct ConfigInfo: ResolverOutput {
         let maxPlayers: Int
         let gameMode: String
     }
-    
+
     struct ConfigResolver: ContextResolver {
         typealias Output = ConfigInfo
-        
+
         static func resolve(ctx: ResolverContext) async throws -> ConfigInfo {
             try await Task.sleep(nanoseconds: 10_000_000) // 10ms
             return ConfigInfo(maxPlayers: 8, gameMode: "battle-royale")
         }
     }
-    
+}
+
+@Test("OnInitialize with resolver loads data before handler executes")
+func testOnInitializeWithResolver() async throws {
     let definition = Land(
         "init-resolver-test",
         using: DemoLandState.self
     ) {
         Lifetime {
-            OnInitialize(resolvers: ConfigResolver.self) { (state: inout DemoLandState, ctx: LandContext) in
+            OnInitialize(resolvers: TestOnInitializeWithResolverFixtures.ConfigResolver.self) { (state: inout DemoLandState, ctx: LandContext) in
                 // Access resolver output (ConfigResolver -> config)
-                if let config: ConfigInfo = ctx.config {
+                if let config: TestOnInitializeWithResolverFixtures.ConfigInfo = ctx.config {
                     state.ticks = config.maxPlayers
                 }
             }
@@ -988,16 +1007,17 @@ func testDestroyWhenEmptyDoesNotDestroyWithPlayers() async throws {
     #expect(state.players[playerID] != nil, "Player should still be in the land")
 }
 
-@Test("CanJoin with resolver loads data before validation")
-func testCanJoinWithResolver() async throws {
+/// Payload fixtures of `testCanJoinWithResolver`, at file scope: an extension macro can't attach to a local type.
+fileprivate enum TestCanJoinWithResolverFixtures {
+    @PlainData
     struct UserLevelInfo: ResolverOutput {
         let userID: String
         let level: Int
     }
-    
+
     struct UserLevelResolver: ContextResolver {
         typealias Output = UserLevelInfo
-        
+
         static func resolve(ctx: ResolverContext) async throws -> UserLevelInfo {
             // Extract userID from session via actionPayload (in this case, we'll use playerID from context)
             let userID = ctx.playerID.rawValue
@@ -1006,15 +1026,18 @@ func testCanJoinWithResolver() async throws {
             return UserLevelInfo(userID: userID, level: 5)
         }
     }
-    
+}
+
+@Test("CanJoin with resolver loads data before validation")
+func testCanJoinWithResolver() async throws {
     let definition = Land(
         "can-join-resolver-test",
         using: DemoLandState.self
     ) {
         Rules {
-            CanJoin(resolvers: UserLevelResolver.self) { (state: DemoLandState, session: PlayerSession, ctx: LandContext) in
+            CanJoin(resolvers: TestCanJoinWithResolverFixtures.UserLevelResolver.self) { (state: DemoLandState, session: PlayerSession, ctx: LandContext) in
                 // Check resolver output (UserLevelResolver -> userLevel)
-                guard let userLevel: UserLevelInfo = ctx.userLevel else {
+                guard let userLevel: TestCanJoinWithResolverFixtures.UserLevelInfo = ctx.userLevel else {
                     throw JoinError.custom("Failed to load user level")
                 }
                 
@@ -1071,6 +1094,7 @@ private func leaveAndCaptureDestroyTimer<State: StateNodeProtocol>(
     return try #require(await keeper.destroyTimerForTesting(), "leaving the last player arms the timer")
 }
 
+@PlainData
 private struct InitOrderOutput: ResolverOutput {
     let value: Int
 }

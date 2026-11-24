@@ -60,6 +60,7 @@ private final class LineSink: @unchecked Sendable {
     }
 }
 
+@PlainData
 struct LifecycleLogInitOutput: ResolverOutput {
     let value: Int
 }

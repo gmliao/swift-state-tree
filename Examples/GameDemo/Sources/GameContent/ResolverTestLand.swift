@@ -286,6 +286,7 @@ public struct CallServiceResponse: ResponsePayload {
 
 // MARK: - Resolver
 
+@PlainData
 public struct ServiceCall: ResolverOutput {
     public let tag: String
     public let callIndex: Int
@@ -302,6 +303,7 @@ public struct ServiceCall: ResolverOutput {
 }
 
 /// The output of a join or leave check: its index among the land's checks of that kind.
+@PlainData
 public struct MembershipCheck: ResolverOutput {
     public let index: Int
 

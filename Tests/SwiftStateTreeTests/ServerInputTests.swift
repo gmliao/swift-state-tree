@@ -32,11 +32,30 @@ struct SIUndeclared: ServerInputPayload {
     let tag: String
 }
 
+/// A string whose decode lowercases what its encode wrote verbatim: a value whose record form
+/// decodes to another value. `@SnapshotConvertible` so the record schema fingerprint can list it.
+@SnapshotConvertible
+@PlainData
+struct SILowered: Codable, Sendable {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    init(from decoder: any Decoder) throws {
+        text = try decoder.singleValueContainer().decode(String.self).lowercased()
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(text)
+    }
+}
+
 /// A payload whose live value differs from its record form unless live applies the record
-/// form: a fractional `Date` (the record holds whole seconds) and a whole `Double`.
+/// form: a normalizing field, and a whole `Double`.
 @Payload
 struct SIDated: ServerInputPayload {
-    let at: Date
+    let label: SILowered
     let ratio: Double
     let count: Int
 }
@@ -128,7 +147,7 @@ private func makeDefinition(ticking: Bool, box: SISubmitterBox? = nil) -> LandDe
                     appendEntry("failing:\(input.tag)", to: &state, ctx: ctx)
                 })
                 HandleServerInput(SIDated.self) { (state: inout ServerInputTestState, input: SIDated, ctx: LandContext) in
-                    appendEntry("dated:\(input.at.timeIntervalSince1970):\(input.ratio):\(input.count)", to: &state, ctx: ctx)
+                    appendEntry("dated:\(input.label.text):\(input.ratio):\(input.count)", to: &state, ctx: ctx)
                 }
                 HandleServerInput(SIUnencodable.self) { (_: inout ServerInputTestState, _: SIUnencodable, _: LandContext) in }
                 HandleServerInput(SIDeep.self) { (state: inout ServerInputTestState, input: SIDeep, ctx: LandContext) in
@@ -368,15 +387,13 @@ struct ServerInputTests {
         #expect(result.recordedPassMismatches.isEmpty, "replay refuses it again, as the frame's rejected list says")
     }
 
-    @Test("Live applies the record form: a Date and a Double decode the same live and in replay")
+    @Test("Live applies the record form: a normalizing field and a Double decode the same live and in replay")
     func payloadAppliesInItsRecordForm() async throws {
         let keeper = try await makeKeeper(ticking: true)
-        _ = try accepted(await keeper.submitServerInput(SIDated(
-            at: Date(timeIntervalSince1970: 1_700_000_000.75), ratio: 2.0, count: 3
-        )))
+        _ = try accepted(await keeper.submitServerInput(SIDated(label: SILowered("ABC"), ratio: 2.0, count: 3)))
         await keeper.stepTickOnce()
-        // The record holds whole seconds; live applies that, not the fractional value.
-        #expect(await keeper.currentState().log == ["dated:1700000000.0:2.0:3"])
+        // The record holds "ABC", which decodes as "abc"; live applies that, not the submitted value.
+        #expect(await keeper.currentState().log == ["dated:abc:2.0:3"])
 
         let path = try await saveRecord(keeper, name: "server-input-dated")
         defer { try? FileManager.default.removeItem(atPath: path) }

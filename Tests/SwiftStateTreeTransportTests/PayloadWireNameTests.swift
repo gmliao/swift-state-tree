@@ -12,7 +12,7 @@ struct WNPlayerShotEvent: ServerEventPayload {
     let a: Int
     let b: [Int]
     let c: Position2
-    let d: Date
+    let d: Int64
 }
 
 @Payload
@@ -34,7 +34,7 @@ struct WNOpenDoorAction: ActionPayload {
 /// A payload with its own generic parameter named `W`: the macro's writer parameter must not
 /// shadow it (#559).
 @Payload
-struct WNGenericEvent<W: Codable & Sendable>: ServerEventPayload {
+struct WNGenericEvent<W: Codable & Sendable & PlainData>: ServerEventPayload {
     let w: W
 }
 
@@ -56,7 +56,7 @@ struct PayloadWireNameTests {
         #expect(WNOpenDoorAction._payloadWireName == "WNOpenDoor")
         #expect(WNOpenDoorAction._payloadWireName == payloadActionName(for: WNOpenDoorAction.self))
         #expect(WNBox<Int>.InnerEvent._payloadWireName == payloadEventName(for: WNBox<Int>.InnerEvent.self))
-        #expect(AnyServerEvent(WNPlayerShotEvent(a: 1, b: [], c: Position2(x: 0, y: 0), d: Date(timeIntervalSinceReferenceDate: 0))).type == "WNPlayerShot")
+        #expect(AnyServerEvent(WNPlayerShotEvent(a: 1, b: [], c: Position2(x: 0, y: 0), d: 0)).type == "WNPlayerShot")
     }
 
     @Test("A payload with a generic parameter named W writes its field through Codable")
@@ -73,7 +73,7 @@ struct PayloadWireNameTests {
             _PayloadFieldFormEntry("a", .typed),
             _PayloadFieldFormEntry("b", .codable),
             _PayloadFieldFormEntry("c", .typed),
-            _PayloadFieldFormEntry("d", .codable),
+            _PayloadFieldFormEntry("d", .typed),
         ])
         #expect(WNPlayerShotEvent._payloadHasTypedWriter)
     }

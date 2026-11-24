@@ -48,6 +48,7 @@ struct PendingGatedAction: ActionPayload {
     let tag: String
 }
 
+@PlainData
 struct PendingGateOutput: ResolverOutput {}
 
 /// The gate `PendingGateResolver` waits at (one test sets it; the suite's tests don't share it).

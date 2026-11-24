@@ -56,17 +56,28 @@ public enum ReevaluationMonitor {
                         )
                         ctx.emitEvent(event, to: .all)
 
-                        if let actualState = result.actualState {
-                            let processedEvent = TickProcessedEvent(
-                                tickId: result.tickId,
-                                expectedState: actualState,
-                                actualState: actualState,
-                                isMatch: result.isMatch,
-                                expectedHash: result.recordedHash ?? "?",
-                                actualHash: result.stateHash
-                            )
-                            ctx.emitEvent(processedEvent, to: .all)
+                        guard let state = result.actualState else { continue }
+                        let actualState: String
+                        do {
+                            actualState = try ReevaluationStateText.text(of: state)
+                        } catch {
+                            // A runner's state JSON can't hold: reported, not dropped silently.
+                            // The tick's summary above is sent; its state isn't.
+                            ctx.logger.error("Reevaluation monitor: a step's state can't be sent as JSON text; its TickProcessedEvent is skipped", metadata: [
+                                "tickId": .stringConvertible(result.tickId),
+                                "error": .string(String(describing: error)),
+                            ])
+                            continue
                         }
+                        let processedEvent = TickProcessedEvent(
+                            tickId: result.tickId,
+                            expectedState: actualState,
+                            actualState: actualState,
+                            isMatch: result.isMatch,
+                            expectedHash: result.recordedHash ?? "?",
+                            actualHash: result.stateHash
+                        )
+                        ctx.emitEvent(processedEvent, to: .all)
                     }
                 }
             }

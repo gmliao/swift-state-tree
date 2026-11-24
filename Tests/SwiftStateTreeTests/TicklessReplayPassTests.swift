@@ -55,6 +55,7 @@ struct PassLogged: ServerEventPayload {
     let length: Int
 }
 
+@PlainData
 struct PassResolverOutput: ResolverOutput {
     let key: Int
 }

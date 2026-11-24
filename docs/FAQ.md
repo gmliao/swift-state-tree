@@ -125,6 +125,7 @@ Use a Resolver to load async data *before* the handler executes, then emit deter
 
 ```swift
 struct LoadSomethingResolver: ContextResolver {
+    @PlainData
     struct Output: ResolverOutput { let value: Int }
     static func resolve(ctx: ResolverContext) async throws -> Output {
         let value = try await someAsyncOperation()

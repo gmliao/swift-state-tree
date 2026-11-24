@@ -2,9 +2,8 @@
 //
 // The offline verifier (`ReevaluationEngine.run`) compares each recorded server event with the
 // one the replay emitted (#633). The recorded payload is a tree in the record's form, as
-// `CanonicalMessagePack` wrote it: a `Date` as an ISO string at whole seconds, `Data` as an array
-// of bytes, a `URL` in its keyed `Codable` form. The emitted payload is the typed value. (A
-// `Decimal` can't be a server event field: the macros and registration refuse it, #597.) The
+// `CanonicalMessagePack` wrote it: `Data` as an array of bytes. The emitted payload is the typed
+// value. (A `Date`, `URL` or `Decimal` can't be a server event field: none is plain data.) The
 // comparison puts the emitted payload in the record's form first, so an event with such fields
 // matches on both record forms (a saved record and its JSON view).
 
@@ -18,22 +17,19 @@ struct VerifierCodecState: StateNodeProtocol {
     var ticks: Int = 0
 }
 
-/// `at`, `blob` and `link` are the fields a JSON comparison of the typed value and the recorded
-/// tree tells apart; `ratio` (an integral `Double`) and `count` are controls that compare equal
-/// either way.
+/// `blob` is the field a JSON comparison of the typed value and the recorded tree tells apart;
+/// `ratio` (an integral `Double`) and `count` are controls that compare equal either way.
 @Payload
 struct VerifierCodecEvent: ServerEventPayload {
-    let at: Date
     let blob: Data
-    let link: URL
     let ratio: Double
     let count: Int
 }
 
-/// A `Date` alone, so a test of its fractional second fails for that field only.
+/// A `Data` alone, for the public classifier.
 @Payload
-struct VerifierDateEvent: ServerEventPayload {
-    let at: Date
+struct VerifierBlobEvent: ServerEventPayload {
+    let blob: Data
 }
 
 /// A `Double` alone, for the sign of zero: a saved record keeps it, the JSON view writes `-0`,
@@ -44,9 +40,7 @@ struct VerifierZeroEvent: ServerEventPayload {
 }
 
 let verifierCodecEvent = VerifierCodecEvent(
-    at: Date(timeIntervalSince1970: 1_800_000_000),
     blob: Data([0, 1, 254, 255]),
-    link: URL(string: "https://example.com/a?b=c")!,
     ratio: 2.0,
     count: 7
 )
@@ -66,7 +60,7 @@ private func makeVerifierCodecLand(emitting events: [any ServerEventPayload]) ->
         }
         ServerEvents {
             Register(VerifierCodecEvent.self)
-            Register(VerifierDateEvent.self)
+            Register(VerifierBlobEvent.self)
             Register(VerifierZeroEvent.self)
         }
     }
@@ -143,21 +137,13 @@ private func initializeFailed(_ result: ReevaluationEngine.RunResult) -> Bool {
 
 @Suite("The offline verifier compares server events in the record's form (#633)")
 struct VerifierRecordCodecTests {
-    @Test("A replayed event with Date, Data, URL and integral Double fields matches its record, from each record form",
+    @Test("A replayed event with Data and integral Double fields matches its record, from each record form",
           arguments: VerifierRecordForm.allCases)
     func eventsMatchTheirRecord(form: VerifierRecordForm) async throws {
         let result = try await verify(live: [verifierCodecEvent], form: form)
         #expect(result.serverEventMismatches.isEmpty, "\(form): \(result.serverEventMismatches.map(\.tickId))")
         #expect(result.serverEventVerification == .passed, "\(form)")
         #expect(result.initialize == .passed, "\(form): OnInitialize's events")
-    }
-
-    @Test("A Date with a fractional second: the record keeps whole seconds, and the comparison puts the replayed value in the same form, so it matches",
-          arguments: VerifierRecordForm.allCases)
-    func fractionalDateMatches(form: VerifierRecordForm) async throws {
-        let result = try await verify(live: [VerifierDateEvent(at: Date(timeIntervalSince1970: 1_800_000_000.75))], form: form)
-        #expect(result.serverEventMismatches.isEmpty, "\(form)")
-        #expect(result.initialize == .passed, "\(form)")
     }
 
     @Test("A -0.0: a saved record matches; the JSON view, which lost the sign, reports the tick (the stated JSON view limit)",
@@ -182,13 +168,13 @@ struct VerifierRecordCodecTests {
 
     @Test("The public classifier: a recorded tree against a typed replayed payload that differs only in sequence passes ignoring sequence; a payload difference fails")
     func classifierTakesARecordTreeAndTypedValues() throws {
-        let typed = AnyCodable(VerifierDateEvent(at: Date(timeIntervalSince1970: 1_800_000_000)))
+        let typed = AnyCodable(VerifierBlobEvent(blob: Data([0, 1, 254, 255])))
         // The record reader's form: `CanonicalMessagePack` written and read back as a tree.
         let tree = try CanonicalMessagePack.decode(AnyCodable.self, from: CanonicalMessagePack.encode(typed))
-        let other = AnyCodable(VerifierDateEvent(at: Date(timeIntervalSince1970: 1_800_000_001)))
+        let other = AnyCodable(VerifierBlobEvent(blob: Data([0, 1, 254])))
         func event(_ payload: AnyCodable, sequence: Int64) -> ReevaluationRecordedServerEvent {
             ReevaluationRecordedServerEvent(
-                kind: "serverEvent", sequence: sequence, tickId: 0, typeIdentifier: "VerifierDate",
+                kind: "serverEvent", sequence: sequence, tickId: 0, typeIdentifier: "VerifierBlob",
                 payload: payload, target: ReevaluationEventTargetRecord(kind: "all", ids: [])
             )
         }

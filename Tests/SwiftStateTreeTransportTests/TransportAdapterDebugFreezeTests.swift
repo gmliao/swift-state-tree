@@ -73,6 +73,7 @@ struct DebugFreezeStuckResolver: ContextResolver {
     }
 }
 
+@PlainData
 struct DebugFreezeStuckOutput: ResolverOutput {
     let ok: Bool
 }

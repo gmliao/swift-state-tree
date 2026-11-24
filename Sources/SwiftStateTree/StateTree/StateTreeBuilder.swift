@@ -1,5 +1,7 @@
 // Sources/SwiftStateTree/StateTree/StateTreeBuilder.swift
 
+import SwiftStateTurns
+
 /// Macro that validates and generates code for StateNode types.
 ///
 /// This macro:
@@ -101,6 +103,7 @@ public macro SnapshotConvertible(atomic: Bool = false) = #externalMacro(
 /// }
 /// ```
 @attached(member, names: named(getFieldMetadata), named(getResponseType), named(_writePayloadFields), named(_payloadHasTypedWriter), named(_payloadFieldForms), named(_payloadWireName), named(_payloadWireKeys))
+@attached(extension, conformances: PlainData, names: named(_plainDataCheck))
 public macro Payload() = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "PayloadMacro"

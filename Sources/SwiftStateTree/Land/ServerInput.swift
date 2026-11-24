@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTurns
 
 // MARK: - Server-originated turn inputs (#387)
 
@@ -24,7 +25,7 @@ import Foundation
 /// Give it `@Payload` when it has fields: the record schema fingerprint (#521 D15) lists a
 /// server input's fields from `@Payload`, and refuses a land whose server input has fields it
 /// can't list, when the land records.
-public protocol ServerInputPayload: Codable, Sendable, SchemaMetadataProvider {}
+public protocol ServerInputPayload: PlainData, Codable, Sendable, SchemaMetadataProvider {}
 
 // A server input without `@Payload` lists no fields; see `ServerInputPayload`.
 extension ServerInputPayload {

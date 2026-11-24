@@ -35,6 +35,7 @@ struct ActionJobAck: ResponsePayload {
     let ok: Bool
 }
 
+@PlainData
 struct ActionJobResolverOutput: ResolverOutput {
     let value: Int
 }

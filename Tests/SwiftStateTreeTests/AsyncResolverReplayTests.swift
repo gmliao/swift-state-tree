@@ -55,6 +55,7 @@ struct TestAsyncResolver: ContextResolver {
     }
 }
 
+@PlainData
 struct TestResolverOutput: ResolverOutput {
     let value: String
 }
