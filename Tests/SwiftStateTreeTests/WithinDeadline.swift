@@ -23,6 +23,20 @@ func withinDeadline<Value: Sendable>(
     }
 }
 
+/// Waits until `keeper`'s abandonment count for `kind` reaches `count`, within a deadline:
+/// a missing transition fails the test instead of hanging it.
+func expectAbandoned<S: StateNodeProtocol>(
+    _ keeper: LandKeeper<S>,
+    _ kind: ResolverAbandonment.Kind,
+    _ count: Int,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async throws {
+    _ = try await withinDeadline("\(kind) abandoned count \(count)", sourceLocation: sourceLocation) {
+        await keeper.abandonmentCounter.waitForCount(kind, count)
+    }
+    #expect(keeper.abandonmentCounter.count(kind) == count, sourceLocation: sourceLocation)
+}
+
 @Suite("raceDeadline")
 struct RaceDeadlineTests {
     @Test("Work that finishes first wins, with its value or its error")
