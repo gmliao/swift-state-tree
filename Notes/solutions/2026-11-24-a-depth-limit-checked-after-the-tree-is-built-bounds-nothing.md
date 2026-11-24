@@ -48,13 +48,15 @@ Two things combine:
    - `Array.encode(to:)` or `Dictionary.encode(to:)`;
    - an unkeyed or keyed container;
    - the next `AnyCodable`.
-   
+
    In a debug build, each of those frames is large. A limit that looks generous in levels can still overflow the stack.
 
 ## Fix
 
 **The bound is checked on the way down** (serde_json's `recursion_limit` and Go's `encoding/json` work the same way):
 - `CanonicalNodeEncoder.encode` refuses a value under more than `maxDepth` coding-path keys before it recurses. That value would sit inside more than `maxDepth` containers, which the writer refuses anyway, so no accepted value changes.
+- `nestedContainer`, `nestedUnkeyedContainer` and `superEncoder` check the same bound. They can't throw, so past it they record the error for the end of the encode and hand out a container over a detached slot. A value that descends through nested containers alone, never through `encode(_:)`, can't build a tree past the bound either.
+- An `AnyCodable` holding an `AnyCodable` is unwrapped in one loop: such a chain recursed at one coding path, where no depth count sees it.
 - A 1000-level value now stops at level 129 and never reaches its bottom.
 
 **`AnyCodable` takes direct paths:**
@@ -66,9 +68,10 @@ Two things combine:
 ## Prevention
 
 - **A depth limit must be checked by every stage that recurses**, at the point where it descends. When a review sees a limit, it asks: which stages run before the check, and do they recurse?
+- **Every way down passes the same counter**, as a recursive-descent parser counts on every descent. In a `Codable` encoder, the ways down are `encode(_:)` and also the nested-container and super-encoder calls, which don't throw. A check on `encode(_:)` alone left a value that descends by nested containers unbounded.
 - **Measure the stack per level for every recursive stage at the limit,** on the smallest supported stack: Darwin, debug, a 544 KiB pool thread. Measure on an 8 MiB thread, with a probe that notes the deepest stack address (`CanonicalMessagePack.stackProbeForTesting`). Never measure by letting the pool thread overflow.
 - **Pin the result with a stack-budget test** (`CanonicalAnyCodablePathTests.stackBudgetAtTheLimit`), plus a relative check against the generic path, so that a regression fails a test instead of crashing the process.
 - **A fast path that replaces a generic `Codable` path needs a differential test against it**, over fixtures that reach every case and its order: `NSNumber` kinds, `Bool` before `Int`, `Int` before `Double`, the `Encodable` fallback, and errors. Keep a debug-only switch to the generic path for that test (`anyCodableGenericForTesting`).
 - **On the Mac, run deep cases only on an 8 MiB Foundation thread or a task executor on one**, behind a check that the work runs there. Hand-made stacks and unbounded recursion probes go to a Linux worker first.
 - **A test helper that hands work to a `Thread` must be `Sendable`-clean for Linux.** In swift-corelibs-foundation the thread's block is `@Sendable`, but the Mac's Foundation doesn't mark it. So capturing a non-`Sendable` closure compiles on the Mac and fails in every Linux CI job. Capture a box (`@unchecked Sendable`) that holds the work and its result, and let the caller wait on a semaphore, so nothing is shared at once. Neither the Mac test run nor pre-push catches this; only a Linux build does.
-- The decode differential found an older nondeterminism. A map holding two keys that `String` equates (an NFC and an NFD spelling) decodes into a dictionary with either value, depending on the map's iteration order. Neither path fixes that order.
+- The decode differential found an older nondeterminism. A map holding two keys that `String` equates (an NFC and an NFD spelling) decodes into a dictionary with either value, depending on the map's iteration order. Neither path fixes that order (#805). Such a map has no place in a differential, which compares two decodes, so it has its own test. A related replay divergence on payload keys is #806.

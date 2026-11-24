@@ -350,8 +350,8 @@ private final class CanonicalSlot {
     }
 }
 
-/// Errors from non-throwing container calls (`nestedContainer(forKey:)` with a repeated key),
-/// thrown when the encode finishes.
+/// Errors from non-throwing container calls (`nestedContainer(forKey:)` with a repeated key, or
+/// past the depth bound), thrown when the encode finishes.
 private final class CanonicalEncodingState {
     var deferredError: Error?
 }
@@ -364,10 +364,17 @@ private enum AnyCodableShape {
     case array([Any])
     case map([String: Any])
     case encodable(any Encodable)
-    case invalid
+    /// The base that doesn't encode: the innermost one, as the generic path reports it.
+    case invalid(Any)
 
     @inline(never)
     init(_ base: Any) {
+        // An `AnyCodable` holding an `AnyCodable` encodes its base at the same coding path, one
+        // `encode(to:)` inside the other. Unwrapping them here keeps a chain of them from
+        // recursing at one path, which the depth bound can't see, and a tree of nested
+        // `AnyCodable` values to one frame per level.
+        var base = base
+        while let inner = base as? AnyCodable { base = inner.base }
         if let number = JSONSerializationNumber(base) {
             switch number {
             case .bool(let value): self = .node(.bool(value))
@@ -380,13 +387,15 @@ private enum AnyCodableShape {
         switch base {
         case is Void: self = .node(.null)
         case let value as Bool: self = .node(.bool(value))
+        // `Int` before `Double` matters only on decode: here an `NSNumber` was taken above, and
+        // a native `Int` doesn't cast to `Double`, so the two cases never compete.
         case let value as Int: self = .node(.int(Int64(value)))
         case let value as Double: self = .node(.double(value))
         case let value as String: self = .node(.string(value))
         case let value as [Any]: self = .array(value)
         case let value as [String: Any]: self = .map(value)
         case let value as any Encodable: self = .encodable(value)
-        default: self = .invalid
+        default: self = .invalid(base)
         }
     }
 }
@@ -396,6 +405,16 @@ private struct CanonicalNodeEncoder: Encoder {
     let state: CanonicalEncodingState
     let codingPath: [CodingKey]
     var userInfo: [CodingUserInfoKey: Any] { [:] }
+
+    /// Whether a value or a container at `codingPath` is within the depth bound. A non-throwing
+    /// call (`nestedContainer`, `superEncoder`) past it records the error for the end of the
+    /// encode and writes into a detached slot, so the tree never grows past the bound, however
+    /// the value descends (#802): every way down passes this check.
+    static func withinDepth(_ codingPath: [CodingKey], state: CanonicalEncodingState) -> Bool {
+        if codingPath.count <= CanonicalMessagePack.maxDepth { return true }
+        if state.deferredError == nil { state.deferredError = CanonicalMessagePackError.nestingTooDeep }
+        return false
+    }
 
     /// Encodes `value` into a finished node.
     static func box<T: Encodable>(_ value: T, codingPath: [CodingKey]) throws -> CanonicalNode {
@@ -450,11 +469,12 @@ private struct CanonicalNodeEncoder: Encoder {
     /// `AnyCodable`'s single-value container and `Array` / `Dictionary`'s own `encode(to:)`, about
     /// 4 KB of stack per level in a debug build: a tree at the depth limit overflows a 544 KiB
     /// thread. This takes the same cases in the same order (`AnyCodableShape`) and writes the same
-    /// nodes at the same coding paths, so the bytes and the errors' text are the same; only the
-    /// type of a dictionary entry's key in `codingPath` differs (`CanonicalCodingKey`, not the
-    /// standard library's). Anything else `Encodable` takes the generic path, as `AnyCodable`
-    /// does. The recursive part holds containers only: the casts happen in `AnyCodableShape`,
-    /// whose frame is gone before the next level starts.
+    /// nodes at the same coding paths, with the same key types (`Int` positions as
+    /// `CanonicalCodingKey`, as the unkeyed container names them; dictionary keys as `String`'s own
+    /// `codingKey`, as `Dictionary.encode(to:)` names them), so the bytes and the errors are the
+    /// same. Anything else `Encodable` takes the generic path, as `AnyCodable` does. The recursive
+    /// part holds containers only: the casts happen in `AnyCodableShape`, whose frame is gone
+    /// before the next level starts.
     static func encodeAnyCodable(
         _ base: Any, into slot: CanonicalSlot, state: CanonicalEncodingState, codingPath: [CodingKey]
     ) throws {
@@ -484,13 +504,13 @@ private struct CanonicalNodeEncoder: Encoder {
                 }
                 try encodeAnyCodable(
                     element, into: child, state: state,
-                    codingPath: codingPath + [CanonicalCodingKey(stringValue: key)]
+                    codingPath: codingPath + [key.codingKey]
                 )
             }
         case .encodable(let value):
             try encode(value, into: slot, state: state, codingPath: codingPath)
-        case .invalid:
-            throw EncodingError.invalidValue(base, EncodingError.Context(
+        case .invalid(let invalid):
+            throw EncodingError.invalidValue(invalid, EncodingError.Context(
                 codingPath: codingPath,
                 debugDescription: "AnyCodable value cannot be encoded"
             ))
@@ -560,27 +580,34 @@ private struct CanonicalKeyedEncoder<Key: CodingKey>: KeyedEncodingContainerProt
         try CanonicalNodeEncoder.encode(value, into: child, state: state, codingPath: codingPath + [key])
     }
 
+    /// The slot a nested container or super encoder under `key` writes into: detached past the
+    /// depth bound.
+    private func nestedChild(for key: CodingKey) -> CanonicalSlot {
+        guard CanonicalNodeEncoder.withinDepth(codingPath + [key], state: state) else { return CanonicalSlot() }
+        return deferredChild(for: key)
+    }
+
     mutating func nestedContainer<NestedKey: CodingKey>(
         keyedBy keyType: NestedKey.Type, forKey key: Key
     ) -> KeyedEncodingContainer<NestedKey> {
-        let child = deferredChild(for: key)
+        let child = nestedChild(for: key)
         child.becomeMap()
         return KeyedEncodingContainer(CanonicalKeyedEncoder<NestedKey>(slot: child, state: state, codingPath: codingPath + [key]))
     }
 
     mutating func nestedUnkeyedContainer(forKey key: Key) -> UnkeyedEncodingContainer {
-        let child = deferredChild(for: key)
+        let child = nestedChild(for: key)
         child.becomeArray()
         return CanonicalUnkeyedEncoder(slot: child, state: state, codingPath: codingPath + [key])
     }
 
     mutating func superEncoder() -> Encoder {
         let key = CanonicalCodingKey(stringValue: "super")
-        return CanonicalNodeEncoder(slot: deferredChild(for: key), state: state, codingPath: codingPath + [key])
+        return CanonicalNodeEncoder(slot: nestedChild(for: key), state: state, codingPath: codingPath + [key])
     }
 
     mutating func superEncoder(forKey key: Key) -> Encoder {
-        CanonicalNodeEncoder(slot: deferredChild(for: key), state: state, codingPath: codingPath + [key])
+        CanonicalNodeEncoder(slot: nestedChild(for: key), state: state, codingPath: codingPath + [key])
     }
 }
 
@@ -592,6 +619,13 @@ private struct CanonicalUnkeyedEncoder: UnkeyedEncodingContainer {
     var count: Int { slot.elementCount }
 
     private func append() -> CanonicalSlot { slot.appendChild() }
+
+    /// The slot a nested container or super encoder at the next position writes into: detached
+    /// past the depth bound.
+    private func appendNested(at key: CodingKey) -> CanonicalSlot {
+        guard CanonicalNodeEncoder.withinDepth(codingPath + [key], state: state) else { return CanonicalSlot() }
+        return append()
+    }
 
     private func append(_ node: CanonicalNode) { append().setValue(node) }
 
@@ -620,21 +654,21 @@ private struct CanonicalUnkeyedEncoder: UnkeyedEncodingContainer {
 
     mutating func nestedContainer<NestedKey: CodingKey>(keyedBy keyType: NestedKey.Type) -> KeyedEncodingContainer<NestedKey> {
         let key = nextKey
-        let child = append()
+        let child = appendNested(at: key)
         child.becomeMap()
         return KeyedEncodingContainer(CanonicalKeyedEncoder<NestedKey>(slot: child, state: state, codingPath: codingPath + [key]))
     }
 
     mutating func nestedUnkeyedContainer() -> UnkeyedEncodingContainer {
         let key = nextKey
-        let child = append()
+        let child = appendNested(at: key)
         child.becomeArray()
         return CanonicalUnkeyedEncoder(slot: child, state: state, codingPath: codingPath + [key])
     }
 
     mutating func superEncoder() -> Encoder {
         let key = nextKey
-        return CanonicalNodeEncoder(slot: append(), state: state, codingPath: codingPath + [key])
+        return CanonicalNodeEncoder(slot: appendNested(at: key), state: state, codingPath: codingPath + [key])
     }
 }
 

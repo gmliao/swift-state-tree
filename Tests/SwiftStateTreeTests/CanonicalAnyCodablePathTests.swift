@@ -9,7 +9,11 @@
 // Everything that recurses deep runs on a Foundation thread with an 8 MiB stack: the generic
 // path at the limit doesn't fit Darwin's 544 KiB cooperative-pool thread in a debug build, and a
 // regression must fail a test, not crash the test process.
+//
+// The suite uses the codec's debug-only hooks (`stackProbeForTesting`,
+// `anyCodableGenericForTesting`), so it builds in debug only.
 
+#if DEBUG
 import Foundation
 import Testing
 @testable import SwiftStateTree
@@ -245,26 +249,34 @@ struct CanonicalAnyCodablePathTests {
         #expect(results.contains { if case .error(let text) = $0.1 { return text.contains("no deterministic order") } else { return false } })
     }
 
-    @Test("A value that fails under a dictionary key reports the same error, with the key's path")
+    @Test("A value that fails under dictionary keys and array positions reports the same error, with the same coding path and key types")
     func errorUnderDictionaryKey() throws {
-        let base: Any = ["outer": ["inner": NSNull()] as [String: Any]] as [String: Any]
+        let base: Any = ["outer": [1, ["inner": NSNull()] as [String: Any]] as [Any]] as [String: Any]
+        /// The error's coding path, each key as its type, string and integer.
+        func path(_ body: () throws -> [UInt8]) -> [String]? {
+            do {
+                _ = try body()
+                return nil
+            } catch EncodingError.invalidValue(_, let context) {
+                return context.codingPath.map { "\(type(of: $0)) \($0.stringValue) \($0.intValue.map(String.init) ?? "-")" }
+            } catch {
+                return ["\(error)"]
+            }
+        }
         let (direct, reference) = onLargeThread {
-            (Outcome { try CanonicalMessagePack.encode(AnyCodable(base)) },
-             generic { Outcome { try CanonicalMessagePack.encode(AnyCodable(base)) } })
+            (path { try CanonicalMessagePack.encode(AnyCodable(base)) },
+             generic { path { try CanonicalMessagePack.encode(AnyCodable(base)) } })
         }
-        // The path names the keys by their strings, so the text is the same although the key
-        // types differ (`CanonicalCodingKey` here, the standard library's dictionary key there).
-        #expect("\(direct)" == "\(reference)")
-        guard case .error(let text) = direct else {
-            Issue.record("NSNull encoded")
-            return
-        }
-        #expect(text.contains("Path: outer.inner"))
+        let directPath = try #require(direct)
+        #expect(directPath == reference)
+        #expect(directPath.map { $0.split(separator: " ")[1] } == ["outer", "1", "inner"])
     }
 
     /// Canonical bytes to decode as `AnyCodable`, including values its `init(from:)` refuses.
     static func decodeFixtures() throws -> [(String, [UInt8])] {
-        var fixtures = try encodeFixtures().compactMap { name, base -> (String, [UInt8])? in
+        // The two spellings of one key decode to whichever value each map's iteration order
+        // gives last, so two decodes needn't agree: `twoSpellingsOfOneKey` covers that map.
+        var fixtures = try encodeFixtures().filter { $0.0 != "two spellings of one key" }.compactMap { name, base -> (String, [UInt8])? in
             guard let bytes = onLargeThread({ try? CanonicalMessagePack.encode(AnyCodable(base)) }) else { return nil }
             return (name, bytes)
         }
@@ -281,24 +293,26 @@ struct CanonicalAnyCodablePathTests {
     @Test("Decoding an AnyCodable directly gives the value and errors its own init(from:) gives", arguments: [false, true])
     func decodeMatchesGeneric(integralFloats: Bool) throws {
         let fixtures = try Self.decodeFixtures()
+        // The decoded trees are compared and released on the large thread: the deepest are 128
+        // levels, and releasing them recurses through their deinits.
         let results = onLargeThread {
-            fixtures.map { name, bytes in
-                (name,
-                 Outcome { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes, integralFloats: integralFloats).base },
-                 generic { Outcome { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes, integralFloats: integralFloats).base } })
+            fixtures.map { name, bytes -> (name: String, mismatch: String?, refused: Bool) in
+                let direct = Outcome { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes, integralFloats: integralFloats).base }
+                let reference = generic { Outcome { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes, integralFloats: integralFloats).base } }
+                switch (direct, reference) {
+                case let (.value(a), .value(b)):
+                    return (name, sameBase(a, b) ? nil : "\(a) vs \(b)", false)
+                case let (.error(a), .error(b)):
+                    return (name, a == b ? nil : "\(a) vs \(b)", true)
+                default:
+                    return (name, "\(direct) vs \(reference)", false)
+                }
             }
         }
-        for (name, direct, reference) in results {
-            switch (direct, reference) {
-            case let (.value(a), .value(b)):
-                #expect(sameBase(a, b), "\(name): \(a) vs \(b)")
-            case let (.error(a), .error(b)):
-                #expect(a == b, "\(name)")
-            default:
-                Issue.record("\(name): \(direct) vs \(reference)")
-            }
+        for result in results {
+            #expect(result.mismatch == nil, "\(result.name): \(result.mismatch ?? "")")
         }
-        #expect(results.contains { if case .error = $0.1 { return true } else { return false } })
+        #expect(results.contains { $0.refused })
     }
 
     @Test("A map with two spellings of one key decodes to one entry holding one of the two values, on both paths")
@@ -345,9 +359,11 @@ struct CanonicalAnyCodablePathTests {
     @Test("An AnyCodable tree nested past the limit is refused on the way down")
     func anyCodableRefusedOnTheWayDown() {
         let visits = VisitCount()
-        let tree = AnyCodable(mapChain(1000))
+        // Built and released on the large thread: releasing 1000 nested dictionaries recurses
+        // through their deinits.
         let outcome = onLargeThread {
-            CanonicalMessagePack.$stackProbeForTesting.withValue({ visits.count += 1 }) {
+            let tree = AnyCodable(mapChain(1000))
+            return CanonicalMessagePack.$stackProbeForTesting.withValue({ visits.count += 1 }) {
                 Outcome { try CanonicalMessagePack.encode(tree) }
             }
         }
@@ -355,6 +371,49 @@ struct CanonicalAnyCodablePathTests {
         // The encoder's entry for the root, then one visit per value from the root to `maxDepth`
         // keys down; the next is refused before it is visited.
         #expect(visits.count == CanonicalMessagePack.maxDepth + 2)
+    }
+
+    @Test("A value that descends through nested containers is refused past the limit, and the tree it builds stays within it")
+    func nestedContainersAreBounded() throws {
+        // `SIDeep` descends by `nestedUnkeyedContainer()` alone, never through `encode(_:)`.
+        // Past the bound the containers write into detached slots and the encode throws before
+        // the tree is finished: the only visit is the encoder's entry for the root. Checked first at a depth an unbounded encoder
+        // still finishes on 8 MiB, so a regression fails here instead of crashing below.
+        let visits = VisitCount()
+        let shallow = onLargeThread {
+            CanonicalMessagePack.$stackProbeForTesting.withValue({ visits.count += 1 }) {
+                Outcome { try CanonicalMessagePack.encode(SIDeep(depth: CanonicalMessagePack.maxDepth + 2)) }
+            }
+        }
+        #expect("\(shallow)" == "error CanonicalMessagePackError: \(CanonicalMessagePackError.nestingTooDeep)")
+        try #require(visits.count == 1, "the tree past the bound was finished: \(visits.count) visits")
+        let deep = onLargeThread { Outcome { try CanonicalMessagePack.encode(SIDeep(depth: 10_000)) } }
+        #expect("\(deep)" == "error CanonicalMessagePackError: \(CanonicalMessagePackError.nestingTooDeep)")
+        // At the limit the writer decides, as before: a container at `maxDepth` keys is the 129th.
+        let atLimit = onLargeThread { Outcome { try CanonicalMessagePack.encode(SIDeep(depth: CanonicalMessagePack.maxDepth + 1)) } }
+        #expect("\(atLimit)" == "error CanonicalMessagePackError: \(CanonicalMessagePackError.nestingTooDeep)")
+        let within = onLargeThread { Outcome { try CanonicalMessagePack.encode(SIDeep(depth: CanonicalMessagePack.maxDepth)) } }
+        guard case .value = within else {
+            Issue.record("\(within)")
+            return
+        }
+    }
+
+    @Test("A chain of AnyCodable values inside one another encodes their innermost base, at one path")
+    func nestedAnyCodableChain() throws {
+        let invalid = AnyCodable(AnyCodable(AnyCodable(NSNull())))
+        // Built and released on the large thread, as the 1000 levels release recursively.
+        let (good, goodGeneric, bad, badGeneric) = onLargeThread {
+            var chain = AnyCodable(1)
+            for _ in 0..<1000 { chain = AnyCodable(chain) }
+            return (Outcome { try CanonicalMessagePack.encode(chain) },
+             generic { Outcome { try CanonicalMessagePack.encode(AnyCodable(AnyCodable(1))) } },
+             Outcome { try CanonicalMessagePack.encode(invalid) },
+             generic { Outcome { try CanonicalMessagePack.encode(invalid) } })
+        }
+        #expect("\(good)" == "\(goodGeneric)")
+        #expect("\(bad)" == "\(badGeneric)")
+        #expect("\(bad)".contains("NSNull"))
     }
 
     /// The stack a whole encode and a whole decode of an `AnyCodable` tree at the limit take
@@ -368,28 +427,41 @@ struct CanonicalAnyCodablePathTests {
     ///   reader (about 2.2 KB per level), which both paths share.
     /// Budgets: encode 256 KiB, decode 320 KiB, leaving at least 224 KiB of a 544 KiB thread to the
     /// frames above. Release builds take far less.
+    /// The same chain with an `AnyCodable` at every level, as a tree built from `AnyCodable`
+    /// values holds them.
+    static func wrappedChain(_ levels: Int) -> AnyCodable {
+        var value = AnyCodable(1)
+        for _ in 0..<levels { value = AnyCodable(["k": value]) }
+        return value
+    }
+
     @Test("At the depth limit, a whole encode and decode stay within fixed stack budgets")
     func stackBudgetAtTheLimit() throws {
-        let tree = AnyCodable(mapChain(CanonicalMessagePack.maxDepth))
-        let (encoded, encodeReach, decodeReach, genericEncodeReach, genericDecodeReach) = onLargeThread { () -> ([UInt8]?, Int, Int, Int, Int) in
-            var bytes: [UInt8]?
-            let encodeReach = StackReach.measure { bytes = try? CanonicalMessagePack.encode(tree) }
-            let decodeReach = StackReach.measure {
-                _ = try? CanonicalMessagePack.decode(AnyCodable.self, from: bytes ?? [])
+        struct Reach { var encode = 0, decode = 0, genericEncode = 0, genericDecode = 0, wrappedEncode = 0 }
+        let reach = try onLargeThread { () -> Result<Reach, Error> in
+            Result {
+                let tree = AnyCodable(mapChain(CanonicalMessagePack.maxDepth))
+                let wrapped = Self.wrappedChain(CanonicalMessagePack.maxDepth)
+                var reach = Reach()
+                var bytes: [UInt8] = []
+                reach.encode = try StackReach.measure { bytes = try CanonicalMessagePack.encode(tree) }
+                reach.decode = try StackReach.measure { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) }
+                reach.genericEncode = try StackReach.measure { try generic { _ = try CanonicalMessagePack.encode(tree) } }
+                reach.genericDecode = try StackReach.measure {
+                    try generic { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) }
+                }
+                reach.wrappedEncode = try StackReach.measure { _ = try CanonicalMessagePack.encode(wrapped) }
+                return reach
             }
-            let genericEncodeReach = StackReach.measure { generic { _ = try? CanonicalMessagePack.encode(tree) } }
-            let genericDecodeReach = StackReach.measure {
-                generic { _ = try? CanonicalMessagePack.decode(AnyCodable.self, from: bytes ?? []) }
-            }
-            return (bytes, encodeReach, decodeReach, genericEncodeReach, genericDecodeReach)
-        }
-        try #require(encoded != nil, "the tree at the limit encodes")
-        print("CanonicalAnyCodablePathTests: \(CanonicalMessagePack.maxDepth) levels: encode \(encodeReach) B (generic \(genericEncodeReach) B), decode \(decodeReach) B (generic \(genericDecodeReach) B)")
-        #expect(encodeReach > 0 && encodeReach < 256 << 10, "encode reached \(encodeReach) bytes")
-        #expect(decodeReach > 0 && decodeReach < 320 << 10, "decode reached \(decodeReach) bytes")
+        }.get()
+        print("CanonicalAnyCodablePathTests: \(CanonicalMessagePack.maxDepth) levels: encode \(reach.encode) B (generic \(reach.genericEncode) B, AnyCodable at every level \(reach.wrappedEncode) B), decode \(reach.decode) B (generic \(reach.genericDecode) B)")
+        #expect(reach.encode > 0 && reach.encode < 256 << 10, "encode reached \(reach.encode) bytes")
+        #expect(reach.wrappedEncode > 0 && reach.wrappedEncode < 256 << 10, "AnyCodable-wrapped encode reached \(reach.wrappedEncode) bytes")
+        #expect(reach.decode > 0 && reach.decode < 320 << 10, "decode reached \(reach.decode) bytes")
         // The direct paths take well under the generic ones, on any platform and build. A decode
         // reads the tree first, which both paths share.
-        #expect(encodeReach * 2 < genericEncodeReach, "encode \(encodeReach) vs generic \(genericEncodeReach)")
-        #expect(decodeReach < genericDecodeReach, "decode \(decodeReach) vs generic \(genericDecodeReach)")
+        #expect(reach.encode * 2 < reach.genericEncode, "encode \(reach.encode) vs generic \(reach.genericEncode)")
+        #expect(reach.decode < reach.genericDecode, "decode \(reach.decode) vs generic \(reach.genericDecode)")
     }
 }
+#endif

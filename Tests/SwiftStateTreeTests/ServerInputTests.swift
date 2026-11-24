@@ -78,19 +78,23 @@ struct SIDeep: ServerInputPayload {
     }
 }
 
-/// Nested `depth` levels through its own `encode(to:)`, one encoder call per level, as a
-/// recursive value encodes: the stack grows with the depth unless the encoder stops it (#802).
 /// The large-stack executor's marker on the current thread, nil off it.
 private func largeStackMarker() -> String? {
     Thread.current.threadDictionary["LargeStackTaskExecutor"] as? String
 }
 
-/// Counts encodes of `SIRecursive`'s bottom level in this task.
+/// What `SIRecursive`'s encodes saw in this task: how often the bottom level was reached, and the
+/// large-stack executor's marker on each thread the top level was encoded on.
 enum SIRecursiveBottom {
-    final class Count: @unchecked Sendable { var reached = 0 }
+    final class Count: @unchecked Sendable {
+        var reached = 0
+        var encodedOn: [String?] = []
+    }
     @TaskLocal static var count: Count?
 }
 
+/// Nested `depth` levels through its own `encode(to:)`, one encoder call per level, as a
+/// recursive value encodes: the stack grows with the depth unless the encoder stops it (#802).
 @Payload
 struct SIRecursive: ServerInputPayload {
     let depth: Int
@@ -110,6 +114,7 @@ struct SIRecursive: ServerInputPayload {
     }
 
     func encode(to encoder: Encoder) throws {
+        SIRecursiveBottom.count?.encodedOn.append(largeStackMarker())
         try Level(remaining: depth).encode(to: encoder)
     }
 
@@ -491,6 +496,9 @@ struct ServerInputTests {
             }
             #expect(outcome == .refused(.unencodable))
             #expect(bottom.reached == 0)
+            // The deep encode ran on the keeper, and the keeper on the 8 MiB thread.
+            #expect(!bottom.encodedOn.isEmpty)
+            #expect(bottom.encodedOn.allSatisfy { $0 == executor.marker }, "\(bottom.encodedOn)")
         }
     }
 
