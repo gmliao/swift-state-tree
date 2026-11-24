@@ -17,6 +17,13 @@ mkdir -p "$noshellcheck"
 printf '#!/bin/sh\nexit 127\n' > "$noshellcheck/shellcheck"
 chmod +x "$noshellcheck/shellcheck"
 
+# A PATH where `swift` is a stub that isn't found-like (exit 127), as on a host without a Swift
+# toolchain.
+noswift="$tmp/noswift-bin"
+mkdir -p "$noswift"
+printf '#!/bin/sh\nexit 127\n' > "$noswift/swift"
+chmod +x "$noswift/swift"
+
 case_() {  # name, expected exit, required output line (grep -E), setup command (run in the clone),
            # [PATH prefix]
   local name=$1 want=$2 pattern=$3 setup=$4 prefix=${5:-} dir="$tmp/$1" out rc=0
@@ -57,5 +64,11 @@ case_ turns-doc-block-untested 1 'README.md: a Swift block in no tested file, st
 # Test ignores .devcontainer/**, so the Image pin workflow and this check are what see it).
 case_ image-pin-runs 0 '^ok    image-pin' ':'
 case_ devcontainer-digest-drift 1 '^FAIL  image-pin' 'sed -i "1s/sha256:4ed5/sha256:0000/" .devcontainer/Dockerfile'
+# The variant test-selection check runs on every push, a TransportAdapter built without
+# transportEnvConfig in a test target the variant run leaves out (rule R1; #790 slipped it past
+# pre-push) fails it, and a host without Swift fails the topic instead of skipping it.
+case_ variant-selection-runs 0 '^ok    variant-selection' ':'
+case_ variant-selection-r1-violation 1 '^FAIL  variant-selection' 'printf "import Testing\n@testable import SwiftStateTreeTransport\n@Suite struct VariantProbe {\n    func make(_ keeper: LandKeeper<S>, _ transport: T) { _ = TransportAdapter<S>(keeper: keeper, transport: transport, landID: \"x\") }\n}\n" > Tests/SwiftStateTreeTests/VariantSelectionProbe.swift'
+case_ variant-selection-without-swift 1 'swift not found on PATH' ':' "$noswift"
 case_ gitignore-change-runs-ignore-readers 0 '^ok    multiroom-ignored' 'echo "# probe" >> .gitignore'
 exit $fail
