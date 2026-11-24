@@ -1,8 +1,8 @@
 # PlainData P3: payloads, server inputs, responses and resolver outputs are PlainData
 
-**Status:** rev 1.1, plan only, no code. Rev 1.1 records P3-Q1 as decided (#616 closed). Slice P3 of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§3.3, §4), on [P3/4-0](2026-11-24-plaindata-p34-0-shared-walk.md) (GO at a31edbb8), which lands the shared field walk, the re-export of `SwiftStateTurns` and Q3's diagnostic first. It takes in F2 of the #700 plan's census (Appendix A.6, agreed 2026-11-24): `ResponsePayload` refines `PlainData`, and an input's success is a plain `InputOutcome`. It leaves for #700 K1a what that plan's §3.11 lists under "What P3 must leave for K1a".
+**Status:** rev 2, plan only, no code. Rev 2 answers Review's NOT GO on rev 1.1 (3 must-fix, 6 should, 3 nits; §9). P3-Q1 is decided (#616 closed); P3-Q2 is with the maintainer. Slice P3 of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§3.3, §4), on [P3/4-0](2026-11-24-plaindata-p34-0-shared-walk.md) (GO at a31edbb8), which lands the shared field walk, the re-export of `SwiftStateTurns` and Q3's diagnostic first. It takes in F2 of the #700 plan's census (Appendix A.6, agreed 2026-11-24): `ResponsePayload` refines `PlainData`, and an input's success is a plain `InputOutcome`. It leaves for #700 K1a what that plan's §3.11 lists under "What P3 must leave for K1a".
 
-Code pointers are at main c3d416d9. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. Counts are from a scan of `Sources/`, `Tests/` and `Examples/` at that commit: a declaration's own inheritance clause, attributes on the lines above it.
+Code pointers are at main c3d416d9. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. Counts are from a scan of `Sources/`, `Tests/` and `Examples/` at that commit, outside the macro tests: a declaration's or extension's own inheritance clause, attributes on the lines above it. Rev 2's counts were redone and agree with Review's Codex track.
 
 ## 1. What changes
 
@@ -10,14 +10,16 @@ Six public protocols refine `PlainData`: `ActionPayload`, `ClientEventPayload`, 
 
 | Protocol | Conformers | With `@Payload` | Without |
 |---|---|---|---|
-| `ActionPayload` | 145 | 143 | 2 (a macro-test fixture; `ENDoorAction`) |
-| `ClientEventPayload` | 55 | 48 | 7 (5 enums in `SchemaGenTests`; `ENKnockEvent`, `FPPlainNote`) |
-| `ServerEventPayload` | 128 | 121 | 7 (5 enums in `SchemaGenTests`; three bell/chime fixtures) |
-| `ServerInputPayload` | 20 | 17 | 3 (`InitWaitInput`, two `Nudge`s) |
-| `ResponsePayload` | 98 | 97 | 1 (`QueueIncrementResponse`) |
+| `ActionPayload` | 143 | 141 | 2: `ENDoorAction`, `RTHandWrittenAction` (LandRegistrationPayloadTests.swift:25) |
+| `ClientEventPayload` | 55 | 48 | 7: 5 enums in `SchemaGenTests`; `ENKnockEvent`, `FPPlainNote` |
+| `ServerEventPayload` | 126 | 115 | 11: 5 enums in `SchemaGenTests`; `FPPlainEvent`, `ENPlainEvent`, `ENBellEvent`, `EHBellEvent`, `EHTChimeEvent`, `HostHandWrittenEvent` (NIOLandHostTests.swift:386), `PWHandWrittenEvent` (PayloadWithoutWriterTests.swift:12) |
+| `ServerInputPayload` | 20 | 16 | 4: `FPPlainInput`, `InitWaitInput`, two `Nudge`s |
+| `ResponsePayload` | 98 | 96 | 2: `QueueIncrementResponse`, `RTHandWrittenResponse` |
 | `ResolverOutput` | 39 | 0 | 39 |
 
-No conformer is a class or an actor. Three are generic: `ENGenericEvent<T: Codable & Sendable>`, `ENGenericAction<T>` (EventNameRegistrationTests.swift:66, 71) and `WNGenericEvent<W>` (PayloadWireNameTests.swift:37).
+Outside `Tests/` and `Examples/`, `scripts/must-not-compile/Prelude.swift:30` declares `SnippetInput: ServerInputPayload` without `@Payload`. Every snippet imports the prelude, so it gets `@Payload` in P3a, or every snippet would fail for the wrong reason.
+
+No conformer is a class or an actor. Three are generic: `ENGenericEvent<T: Codable & Sendable>`, `ENGenericAction<T>` (EventNameRegistrationTests.swift:66, 71) and `WNGenericEvent<W>` (PayloadWireNameTests.swift:37). One is nested in a generic type: `WNBox<T>.InnerEvent` (PayloadWireNameTests.swift:41), which stores no `T`.
 
 ## 2. Design
 
@@ -27,24 +29,52 @@ No conformer is a class or an actor. Three are generic: `ENGenericEvent<T: Codab
 - When the type already conforms through one of the six protocols, the compiler passes no protocol, and the extension holds the witness only. That is `@PlainData`'s `protocols.isEmpty` branch (PlainDataMacro.swift:38).
 - When it doesn't (a `@Payload` struct used only as a payload's field, or `TestPayload` in the macro tests), the extension also declares the conformance. So a nested type that already carries `@Payload` becomes `PlainData` with no second attribute.
 - Field checks come from the shared walk, so `@Payload` refuses what `@PlainData` refuses: a class, closure, `Any`/`AnyObject`/`AnyHashable`/`AnyCodable` field, `Date`/`UUID`/`URL`/`Decimal` with Q2's replacement named, an existential outside the forms P1 accepts. Today `@Payload` refuses only `Decimal` (#597).
-- A generic type gets `where T: SwiftStateTurns.PlainData` as `@PlainData` does. A generic payload conforms unconditionally through its primary declaration, so a constrained witness doesn't satisfy it: such a type declares `T: PlainData` itself. Q3's message names the field. The three generic fixtures change.
+- **Generic payloads.** A payload conforms unconditionally, through its primary declaration's inheritance clause. A conditional witness (`where T: PlainData`) can't satisfy that conformance, so a payload that stores a generic parameter declares the constraint itself. The macro sees the declaration, so it diagnoses the case instead of leaving the compiler's message:
+  - **the rule:** for a type whose inheritance clause names one of the six protocols, each generic parameter that stored content names (#769 §3.1.1's "named" test) must have `PlainData`, or one of the six protocols, among its constraints. That means its own inheritance or a `where` requirement on it, as spelled;
+  - **if not, a diagnostic** at the parameter: "generic parameter 'T' is stored in 'value'; a payload must declare 'T: PlainData'";
+  - **a spelling the macro can't read** passes the macro, for example a typealias or a protocol that refines `PlainData` under another name. The compiler then refuses it with its own message. The must-not-compile snippet for that case pins the fragment `does not conform to protocol 'PlainData'`, which is stable across 6.4.x;
+  - **the extension** writes no `where` for such a type, since the parameters already carry it;
+  - `WNBox<T>.InnerEvent` stores no `T` and gets an unconditional extension. It is a compiling fixture as it is;
+  - **the three generic fixtures** add `T: PlainData`;
+  - **the builder** is the one #772 merges: round 5's value-form builder, in `PlainDataMacroSupport`. P3a follows its final shape and doesn't fork it.
 
 **Beside other attributes.**
 - `@Payload` with `@PlainData` on the same type: `@Payload` refuses it with a diagnostic ("`@Payload` already makes this type PlainData; remove `@PlainData`"), as P4's `@StateNodeBuilder` does.
-- `@Payload` with `@SnapshotConvertible` (P4-Q1 makes that macro write the conformance and witness): `@Payload` writes no extension and leaves the witness to `@SnapshotConvertible`. Whichever of P3 and P4 lands second adds its half, with a compile test of a type carrying both. No type in the repository carries both today, nor `@Payload` with `@StateNodeBuilder`.
+- `@Payload` with `@SnapshotConvertible`, `atomic:` or not: both write `getFieldMetadata()`, so the pair doesn't compile today (a redeclaration). `@Payload` refuses it with a diagnostic naming the other attribute. No type in the repository carries both, nor `@Payload` with `@StateNodeBuilder`.
+- **Who writes `_plainDataCheck`, in either landing order.** A type has one writer:
+  - with `@Payload` only, `@Payload` writes it;
+  - with `@SnapshotConvertible` only, P4-Q1 makes that macro write it;
+  - the pair is refused (above).
+  
+  If P3 lands first, a `@SnapshotConvertible` type isn't a payload and gets its witness in P4. If P4 lands first, `@Payload` is unchanged until P3. Neither order leaves a type with two witnesses or none.
 
-**The lint.** `@Payload`'s `@attached(extension, …, names: named(_plainDataCheck))` names the member in code. Since #772 round 3, `PlainDataLintTests` refuses any `_plainDataCheck` or `PlainDataCheck` identifier token outside `Sources/SwiftStateTurns/`. P3, or P4 if it lands first (agreed with P4's owner), adds one exemption to the visitor: an identifier inside `named(…)` in the arguments of an `@attached(…)` attribute of a macro declaration. Fixtures: allowed in that position; refused in a `func`, and in `named(…)` of an attribute that isn't `@attached`.
+**The lint.** `@Payload`'s `@attached(extension, …, names: named(_plainDataCheck))` names the member in code. Since #772 round 3, `PlainDataLintTests` refuses any `_plainDataCheck` or `PlainDataCheck` identifier token outside `Sources/SwiftStateTurns/`. P3, or P4 if it lands first (agreed with P4's owner), adds one exemption to the visitor, as narrow as the use:
+- **Exempt:** the identifier `_plainDataCheck`, and only it (`PlainDataCheck` stays refused everywhere), inside `named(…)` in the `names:` argument of an `@attached(…)` attribute on a macro declaration.
+- **Fixtures, allowed:** that position.
+- **Fixtures, refused:**
+  - `_plainDataCheck` in a `func`;
+  - `_plainDataCheck` in `named(…)` of an attribute that isn't `@attached`;
+  - `_plainDataCheck` in another argument of `@attached` (`conformances:`);
+  - `PlainDataCheck` inside `names: named(…)`.
 
 ### 2.2 The call sites that change
 
 The compiler finds them; this is what the scan expects. Registration doesn't change: a land still lists its types (`ClientEvents { Register(…) }` and the other blocks, kept by #771 rev 2.2), and nothing here assumes a payload registers itself.
-- **Payloads without `@Payload`** get `@Payload`, or `@PlainData` where the test is about a payload without `@Payload` (`FPPlainNote`, the server-input fingerprint tests: a type that lists no fields keeps that path, #521 D15) and for the `SchemaGenTests` enums (`@Payload` handles structs only).
+- **Payloads without `@Payload`** (the table in §1):
+  - **`@PlainData`, not `@Payload`,** where the test is about a payload without `@Payload`, so that path stays tested. These are the hand-written ones (`RTHandWrittenAction`, `RTHandWrittenResponse`, `HostHandWrittenEvent`, `PWHandWrittenEvent`), the plain ones (`FPPlainNote`, `FPPlainEvent`, `FPPlainInput`, `ENPlainEvent`: a type that lists no fields keeps that path, #521 D15), and the bell and chime fixtures;
+  - **`@PlainData`** also for the `SchemaGenTests` enums (`@Payload` handles structs only);
+  - **`@Payload`** for the rest: `ENDoorAction`, `ENKnockEvent`, `InitWaitInput`, the `Nudge`s, `QueueIncrementResponse`, and the prelude's `SnippetInput`.
+- **Each replaced fixture keeps its assertion.** A test whose fixture stops compiling either keeps the assertion with a fixture that still reaches it, or moves it to a must-not-compile snippet that fails for that reason. The PR lists each, old assertion to new. One case is `DecimalAlias` (DecimalRegistrationTests.swift:16):
+  - `DecimalRegistrationTests`' payload cases (an event, an action, a response and a server input holding `DecimalAlias`, refused at registration naming each path) stop compiling, since `Decimal` isn't `PlainData`;
+  - the macro sees only the spelling, so the refusal is the compiler's, not Q2's message;
+  - the assertion moves to one must-not-compile snippet per payload kind, pinning `does not conform to protocol 'PlainData'`;
+  - the synced cases stay P4's.
 - **Resolver outputs** get `@PlainData`: 39 types, 4 in GameDemo, 1 in Sources (see `AnyCodableResolverOutput` below).
 - **Fields that stop compiling** (Q2 decided: refuse, with the replacement named):
 
 | Where | Field | Change |
 |---|---|---|
-| `TickProcessedEvent`, `TickProcessedPayload` (ReevaluationMonitorEvents.swift:35, 61) | `expectedState`, `actualState: AnyCodable` | `String`. Production already puts the snapshot's JSON text in them (`AnyCodable(String(…))`, ReevaluationRunnerImpl.swift:433), so live frames don't change. The fixture in PayloadFrameGoldenTests.swift:247 builds them from object trees, so that fixture's expected bytes change. The GameDemo schema and generated TS types go from `AnyCodable` to `string`, regenerated. `TickProcessedPayload` has no user: it is deleted |
+| `TickProcessedEvent`, `TickProcessedPayload` (ReevaluationMonitorEvents.swift:35, 61) | `expectedState`, `actualState: AnyCodable` | `String`. Production already puts the snapshot's JSON text in them (`AnyCodable(String(…))`, ReevaluationRunnerImpl.swift:433), so live frames don't change. The fixture in PayloadFrameGoldenTests.swift:247 builds them from object trees, so that fixture's expected bytes change. The GameDemo schema and generated TS types go from `AnyCodable` to `string`, regenerated. `TickProcessedPayload` has no user: it is deleted. **The bridge:** the monitor land builds the event from the public `ReevaluationStepResult.actualState: AnyCodable?` (ReevaluationInterfaces.swift:30, ReevaluationMonitorLand.swift:59), which stays as it is. A `String` inside passes through. Any other value, from a runner that isn't the built-in one, is encoded as JSON text with sorted keys, and the projector (ReevaluationReplayProjector.swift:42) reads it the same way. **Pinned on main first:** one `TickProcessedEvent` frame from the built-in runner in `json`, `opcodeJsonArray` and `messagepack`, unchanged after P3a |
 | `AnyCodableResolverOutput` (LandContext.swift:336, internal) | `value: AnyCodable` | §2.5 |
 | GameDemo `AsyncTestOutput.resolvedAt: Date` | | `resolvedAtMillis: Int64`. No land declares the resolver, and no record holds the output (the records' `resolvedAt` matches are `resolvedAtTick`) |
 | `ResolverOutputReplayTests` `ResolverReplayStamp` (`Date`, `URL`, `Decimal`); `ReplayTypedEventDecodeTests`, `VerifierRecordCodecTests` (`Date`, `URL`) | | #707's subject is a field that a JSON round trip can't read back. `Data` stays plain and still has that property, so each test keeps its `Data` field and drops the refused ones |
@@ -58,18 +88,53 @@ The compiler finds them; this is what the scan expects. Registration doesn't cha
 | `SchemaFingerprintTests` `FPAnyEvent`, `RefusedFieldTypeDiagnosticTests` `ReportEvent` | | the fingerprint case goes; the macro test's expectations flip to the refusal |
 
 - **Nested types without `@Payload`** used as payload fields need `@PlainData` (Q3, decided), for example the monitor's `TickMismatch` (ReevaluationMonitorState.swift:44, plain `Codable`), which a state also holds: whichever of P3 and P4 lands first adds it. Their number is what the build reports, each with Q3's message naming the field. The PR lists them.
-- **`LandID`** gets `@PlainData` if a payload or server input holds one (agreed with P4: whichever lands first).
+- **`LandID`** gets `@PlainData` in P3a. A payload holds one (`PayloadFrameGoldenTests.swift:43`, `let land: LandID`), so it is a P3a dependency, not a whichever-lands-first item. P4 finds it done.
 
 ### 2.3 Server inputs held typed (#387 kept)
 
-Today live applies a server input in its record form: `submitServerInputErased` builds `ServerInputCodec.recordedForm(of:)` (a canonical MessagePack round trip, checked against the record's depth) and queues that tree. The handler decodes it at apply (ServerInput.swift:105), live and in replay alike. That is how #387 makes a live apply and its replay decode the same value.
+Today live applies a server input in its record form. `submitServerInputErased` builds `ServerInputCodec.recordedForm(of:)` (a canonical MessagePack round trip, checked against the record's depth) and queues that tree. The handler decodes it at apply (ServerInput.swift:105), live and in replay alike. That is how #387 makes a live apply and its replay decode the same value.
 
-P3 moves the decode, not the rule:
-- **Live, at submit:** after `recordedForm`, decode it as the declared type (`ServerInputCodec.decode`, the handler's `I`), in the same segment. The item holds the result, `input: any ServerInputPayload`, instead of `payload: AnyCodable`. So live still applies the record form's value.
-- **A form that doesn't decode back** (an asymmetric `Codable`) is refused at submit as `.unencodable`, and nothing is queued. Today it is accepted, recorded, and fails alone in its turn. This is a behavior change: P3-Q2.
-- **Replay, at build** (LK:4405): decode the recorded tree as the declared type when the item is built. A tree that doesn't decode is still queued, with the failure held as K1a's plain `RecordedPayloadDecodeFailure` (`.tooDeep(limit:)` / `.undecodable(String)`), which P3 introduces and K1a reuses. At apply it throws as today: the same type for `.tooDeep`, a `RecordedPayloadDecodeError` carrying the text for `.undecodable`, at the same point, so the input fails alone with the same report. That covers records written before P3 and hand-edited ones.
-- **The record keeps today's tree.** The recorder writes `AnyCodable(item.input)`. Canonically encoded, that equals today's `recordedForm` tree for a `Codable` that round-trips, which every server input type in the repository does. A unit test compares the two per `ServerInputTests` fixture, and the record goldens don't move. No format bump (#700 §3.11).
-- **The handler** takes the typed value: `AnyServerInputHandler` gains `decode: (AnyCodable) throws -> any ServerInputPayload` for the two decode points, and its invoke casts to `I` (the submit's identity check and the build's decode guarantee it).
+P3 moves the decode, not the rule. **The item keeps the tree, and adds the typed value decoded from it:**
+
+```swift
+package struct PendingServerInputItem: Sendable {
+    package let sequence: Int64
+    package let typeIdentifier: String
+    package let payload: AnyCodable                     // the record form: what the record writes
+    package let decoded: Result<any ServerInputPayload, RecordedPayloadDecodeFailure>
+    package let resolvedAtTick: Int64
+}
+```
+
+- **The record writes `payload`, the tree, as today.** It doesn't re-encode the typed value. A re-encode differs from the tree whenever decode-then-encode isn't the identity, for example:
+  - an `Int??` field holding `.some(nil)` is in the tree as an explicit nil; it decodes to `.none` and re-encodes with the key absent;
+  - a hand-written `Codable` that reads a legacy key and writes the current one.
+  
+  So "record unchanged" holds by construction, not by a property of every type, and the record goldens can't move.
+- **Live applies `decoded`**, the value decoded from that same tree: the value replay decodes. The tree and the value come from one decode, at submit.
+- **Live, at submit, in order** (P3-Q2 (a), §7):
+  1. the identity check;
+  2. the drain check;
+  3. `recordedForm`: today's `.unencodable` for a tree that can't be built or exceeds the record's depth;
+  4. the in-flight cap;
+  5. **the decode** (`ServerInputCodec.decode`, the handler's `I`). A tree that doesn't decode back is refused `.unencodable`;
+  6. the sequence and the queue.
+  
+  The decode comes after the cap check, so an input refused for the cap costs no decode. It comes before the sequence is taken, so a refused input leaves no gap in the sequence. **Two inputs pin the combined case:** one that is over the cap and doesn't decode back is refused `.overCap` (the cap comes first), and one under the cap that doesn't decode back is refused `.unencodable` with the sequence unchanged.
+- **Under a debug freeze** the decode happens at submit too: the held item (`serverInputsHeldWhileFrozen`) has `decoded` set before it waits. A resume only queues it, so a freeze changes no refusal.
+- **Replay, at build** (LK:4405): `decoded` is the decode of the recorded tree. A tree that doesn't decode is still queued, with `.failure(RecordedPayloadDecodeFailure)`. At apply it throws at the same point as today, so the input fails alone with the same report. That covers records written before P3 and hand-edited ones.
+- **The failure, per source.** Today a too-deep recorded server input throws `CanonicalMessagePackError.nestingTooDeep` from the record codec (ServerInput.swift:201), not `PayloadNesting.TooDeep`. So the failure record gets a case per source, and each rebuilds its source's error type:
+
+  ```swift
+  @PlainData enum RecordedPayloadDecodeFailure {
+      case tooDeep(limit: Int)        // rebuilt as PayloadNesting.TooDeep(limit:) (K1a: actions, events)
+      case recordTooDeep              // rebuilt as CanonicalMessagePackError.nestingTooDeep (server inputs)
+      case undecodable(String)        // rebuilt as RecordedPayloadDecodeError, the decode error's text
+  }
+  ```
+
+  `recordTooDeep` is the case K1a's shape (#700 §3.11) doesn't have. K1a reuses the enum as it is. A test pins the rebuilt error's type and value for both server-input cases (§4).
+- **The handler** takes the typed value. `AnyServerInputHandler` gains `decode: (AnyCodable) throws -> any ServerInputPayload` for the two decode points. Its invoke casts to `I`: the submit's identity check and the build's decode guarantee the cast.
 
 `ServerInputRefusal.unencodable`'s doc drops "a `Date` outside the years 0001–9999" (a `Date` can't be a server input field any more) and adds "or its record form doesn't decode back to its type".
 
@@ -84,29 +149,76 @@ P3 moves the decode, not the rule:
 }
 ```
 
-- `LandDefinition`'s package init: `invoke` returns `any ResponsePayload` instead of `AnyCodable(apply(…))` (LandDefinition.swift:305).
-- `actionSlots` (LK:2251), `inputTurnResults` (LK:5652), `AppliedItem.action(response:)` (LK:3487), the slot and input-turn waiters, and the outcomes map (LK:3900–3944) hold `Result<InputOutcome, any Error>`. `AnyCodable(())` becomes `.none` (LK:2372, 2920, 3052, 3938, 3944, 5608, 5730).
+- **`AnyActionHandler`.** Its stored handler returns `any ResponsePayload` instead of `AnyCodable`. That covers the public init's closure (LandDefinition.swift:305) and the DSL's box (LandDSL.swift:1024), which stop wrapping in `AnyCodable`.
+  - **The public methods keep their signatures.** `invoke(_:action:ctx:)` and `invokeErased(_:action:ctx:)` (LandDefinition.swift:348, 357) are public and return `AnyCodable`. They stay, and wrap: `AnyCodable(try handler(…))`, the same concrete value inside as today. `MonitorTicketTests.swift:242` calls `invoke` and is unchanged.
+  - **A package `invokeTyped(_:action:ctx:) -> any ResponsePayload`** is what the keeper calls (LK:3609, today `invokeErased`).
+  - **The package init** (`invoke: … -> AnyCodable`) takes `… -> any ResponsePayload`.
+- **Two tests use the package init to answer with a dictionary**, which can't be a `ResponsePayload` any more: `UntypedEventPayloadTests` (`makeUntypedResponseLand`, line 174) and `ClosedGatePendingFailureTests` (`makeClosedGateLand`, line 74). They test what happens when an action's answer fails to encode at the adapter. **The new seam keeps that failure at the adapter's encode:**
+  - a test response type, `@Payload struct UnencodableReply: ResponsePayload`, whose hand-written `encode(to:)` throws a test error;
+  - the handler is the public `HandleAction` form, so the package init has no dictionary user left;
+  - the keeper never encodes a response (it converts to `AnyCodable` at the exit, below, without encoding), so the first encode is the adapter's, on every encoding. The tests' holds (`.failureSubmit`) and their expectations stay;
+  - the PR shows each test reaching the same hold, with the same outcome, as on main. A mutant, the reply's `encode(to:)` succeeding, makes both tests fail.
+- **The keeper's inventory**, every place that holds an input's success as `AnyCodable` today. Each holds `Result<InputOutcome, any Error>` after P3c:
+  - the action slots (`actionSlots`, LK:2251) and `fillActionSlot` (LK:2447);
+  - the job's completion (LK:2350–2372) and its cancellation (`cancelActionJob`, LK:2519);
+  - `AppliedItem.action(response:)` (LK:3487);
+  - the outcomes map (LK:3900–3944);
+  - `inputTurnResults` (LK:5652, 5730);
+  - the slot and input-turn waiters (LK:5608).
+
+  `AnyCodable(())` becomes `.none` at LK:2372, 2920, 3052, 3938, 3944, 5608 and 5730.
+- **What stays `AnyCodable`, at the boundary:** the transport adapter's `Result<AnyCodable, any Error>` (TransportAdapter.swift:5448, 5476), which `awaitActionResult` feeds.
 - **The encode path stays K1a's** (F2's condition). The keeper's exits convert at the boundary, as today's values:
   - `ActionSubmission.completed` (package);
   - `awaitActionResult` (package);
   - `handleActionEnvelope` (public).
   
-  `.none` becomes `AnyCodable(())`; `.response(r)` becomes `AnyCodable(r)`, the same concrete value inside, so the transport and its frames don't change. K1a moves the encode to the transport's reply and removes the conversion. The record holds no response and replay compares none, unchanged (F2's second condition).
+  `.none` becomes `AnyCodable(())`; `.response(r)` becomes `AnyCodable(r)`, the same concrete value inside, so the transport and its frames don't change. One conversion function does it, used at the three exits. K1a moves the encode to the transport's reply and removes the conversion. The record holds no response and replay compares none, unchanged (F2's second condition).
 - `FailureID` (F1) stays K1b's: P3 keeps `any Error` on the failure side.
 
 ### 2.5 Resolver outputs, `AnyCodableResolverOutput`, and randomness
 
 `ResolverOutput` refines `PlainData`, and each output type carries `@PlainData`. The 39 conformers hold strings, numbers and nested values. The Foundation fields in §2.2 are the only ones that change.
 
-**The replay wrapper.** In replay, a recorded output is held as `AnyCodableResolverOutput` (an `AnyCodable` tree), and `LandContext`'s subscript decodes it on read with the record's codec (#707). An `AnyCodable` can't be `PlainData`, so the wrapper stops conforming to `ResolverOutput`. `LandContext`'s private storage becomes an internal enum, `HeldResolverOutput { case live(any ResolverOutput); case recorded(RecordedResolverOutput) }`. `RecordedResolverOutput` is today's wrapper under a new name, not a `ResolverOutput`.
-- The public `LandContext.init(resolverOutputs: [String: any ResolverOutput])` keeps its type and wraps `.live`. `replayedResolverOutputs` (LK:1183) builds `.recorded`.
-- The subscript reads `.live` by cast and `.recorded` by the record codec, as today.
-- `getAllResolverOutputs` (recording) writes `.live` as `AnyCodable(output)` and `.recorded` as its tree. Today it wraps the wrapper; a replaying keeper doesn't record, and that stays true.
-- So the `.recorded` case isn't plain. #769 R1 maps recorded names to the declaration's positions, and R2 decodes at build (eager decode). The wrapper ends there, before K1b needs the context's outputs in the model.
+**The replay carrier.** Today a recorded output in replay is an `AnyCodableResolverOutput`, an `AnyCodable` tree that conforms to `ResolverOutput`. `LandContext`'s subscript decodes it on read with the record's codec (#707). An `AnyCodable` can't be `PlainData`, so the wrapper stops conforming to `ResolverOutput`, and everything that stores outputs as `[String: any ResolverOutput]` needs another type for replay. P3 names it:
 
-**Randomness** (the same sentence as #769 §3.6, #773 and L-Q2): handlers draw `ctx.random` (the land's RNG, whose state moves into the model if L-Q2 (a) is decided); builders get none until admission is a recorded turn (K2/K5); resolvers use their own source, recorded. P3 changes no source: `AsyncTestOutput`'s wall-clock read stays in its resolver, and only its field's type changes.
+```swift
+/// A resolver output as an item holds it: produced live, or read from a record.
+package enum HeldResolverOutput: Sendable {
+    case live(any ResolverOutput)
+    case recorded(RecordedResolverOutput)
+}
 
-**With #769.** #769 rev 2.1 (GO, 659cd242) runs R1 after P3. It relies on `ResolverOutput: PlainData` (§3.1) and on the outputs in §2.2 holding no Foundation types. P3 touches no resolver *declaration* and no `ContextResolver`, so R1's codemod sees the same call sites. #769's generic-parameter finding (§3.1.1, `@PlainData` constrains every generic parameter) applies to `@Payload`'s extension too, since it shares the builder; R1's macro change fixes both.
+/// Replay only: a recorded output's tree, decoded when the handler reads it (#707).
+package struct RecordedResolverOutput: Sendable {
+    let typeIdentifier: String
+    let value: AnyCodable
+    let integralFloats: Bool       // the JSON view's integer-to-float allowance
+}
+```
+
+**The path, end to end:**
+- **Build.** `replayedResolverOutputs` (LK:1183) returns `[String: HeldResolverOutput]` of `.recorded`, with `integralFloats` set as today, for a `JSONReevaluationSource`. Live resolution (LK:2324, 1783, 2008, 2705) produces `.live`.
+- **Pending storage.** `PendingActionItem`, `PendingLifecycleItem` and `PendingAction` hold `package let heldResolverOutputs: [String: HeldResolverOutput]`. **Their public `resolverOutputs: [String: any ResolverOutput]` property** (LK:168, 208, 331) can't hold a `.recorded` output, so it goes. That is a public break (§6). Their public initializers keep taking `[String: any ResolverOutput]` and wrap each in `.live`. `with(resolverOutputs:resolvedAtTick:)` (package) takes the held form. The one test that reads the property (TicklessReplayPassTests.swift:661) reads the package one.
+- **`makeContext`** (LK:3326) and `LandContext`'s private storage take `[String: HeldResolverOutput]`:
+  - the internal init takes the held form;
+  - `setResolverOutput` (a live resolver writing its output) stores `.live`;
+  - **the subscript** reads `.live` by cast, and `.recorded` lazily with `RecordPayloadSource(value, integralFloats:)`, as today (#707). A failed decode still logs today's warning ("A recorded resolver output doesn't decode in replay; the handler reads nil", with the output's name and the error) and returns nil.
+- **The record: one projection for all three write sites.** The sites are the initialize record (LK:1376), the action (LK:3586) and the lifecycle item (LK:3753). A single `recordedResolverOutputs(_ held: [String: HeldResolverOutput]) -> [String: ReevaluationRecordedResolverOutput]` replaces the three copies:
+  - `.live(o)` writes `typeIdentifier: String(describing: type(of: o))` and `value: AnyCodable(o)`, as today;
+  - `.recorded(r)` writes `r.typeIdentifier` and `r.value`, the tree it was read as.
+
+  A replaying keeper doesn't record today, and still doesn't. The `.recorded` branch exists so that the projection is total, not because a record is written from replay.
+- **`AnyCodableResolverOutput`** becomes `RecordedResolverOutput`, internal to the keeper and the context. It isn't a `ResolverOutput`, so nothing outside can mistake it for an output.
+
+**Where the raw trees live, after P3 and after K1b:**
+- **After P3:** in `.recorded`, in the items and the context, replay only. `HeldResolverOutput` is `Sendable` and not `PlainData`, since `AnyCodable` isn't.
+- **K1b** moves the pending queue into `KeeperModel`, which is `@PlainData` (#700 §3.1). So K1b stores `.recorded`'s tree as its canonical MessagePack bytes, `Data` (as `recordedForm` already encodes a tree, ServerInput.swift:190). With the type identifier and `integralFloats` beside them, that makes `RecordedResolverOutput` `@PlainData`. The subscript decodes the bytes on read, still lazily, still with the warning on failure. This is K1b's change, named here so K1b's census finds the field (#700 Appendix A's `pendingItems` row).
+- **R2, with K5,** decodes every output when the item is built (#769 §3.3, eager decode). `.recorded` and its bytes go, and items hold typed outputs only.
+
+**Randomness** (the same sentence as #769 §3.6, #773 and L-Q2): handlers draw `ctx.random` (the land's RNG, whose state moves into the model in #700 K1b (L-Q2 (a))); builders get none until admission is a recorded turn (K2/K5); resolvers use their own source, recorded. P3 changes no source: `AsyncTestOutput`'s wall-clock read stays in its resolver, and only its field's type changes.
+
+**With #769.** #769 rev 2.2 (GO, 48fcabcf) runs R1 after P3. It relies on `ResolverOutput: PlainData` (§3.1) and on the outputs in §2.2 holding no Foundation types. P3 touches no resolver *declaration* and no `ContextResolver`, so R1's codemod sees the same call sites. #769's generic-parameter rule (§3.1.1: constrain only the parameters stored content names, probed in its R0) shares the builder with `@Payload`'s extension. A payload, unlike a resolver, conforms unconditionally, so §2.1's diagnostic applies to it on top of that rule.
 
 ### 2.6 #616: closed, not in P3
 
@@ -116,9 +228,9 @@ P3 moves the decode, not the rule:
 
 | PR | Content | A/B |
 |---|---|---|
-| **P3a** | §2.1, §2.2, §2.5: the six protocols refine `PlainData`, `@Payload`'s extension role, the call-site changes, the replay wrapper split, the lint exemption, docs | none: compile time, and the wrapper split is a storage enum read once per output |
-| **P3b** | §2.3: server inputs held typed, `RecordedPayloadDecodeFailure` | none: server inputs aren't on the client path, and the decode moves from apply to submit (one per input either way) |
-| **P3c** | §2.4: `InputOutcome` in the keeper | small: `vis-act-mp` and `vis-act-json`. The response moves from an `AnyCodable` box to an existential, then into an `AnyCodable` at the exit. That can add an allocation for a response larger than an existential's inline buffer |
+| **P3a** | §2.1, §2.2, §2.5: the six protocols refine `PlainData`, `@Payload`'s extension role, the call-site changes, the replay carrier, the lint exemption, docs | none on the measurement host: compile time, and the carrier is a storage enum read once per output. **A Mac output check:** `vis-act-mp` and the record/replay E2E produce the same frames and the same record bytes as main (a diff, not a timing) |
+| **P3b** | §2.3: server inputs held typed, `RecordedPayloadDecodeFailure` | **a focused cost check, not an A/B cell:** server inputs aren't on the client path, and the decode moves from apply to submit (one per input either way). A micro-benchmark of submit plus apply for one server input, main against P3b, release build, reports both medians. The item now holds the tree and the value, so the check also reports the item's size |
+| **P3c** | §2.4: `InputOutcome` in the keeper | **two cells, each with an out-of-line response:** one tick land and one tickless, each answering an action with a response larger than an existential's three-word inline buffer (a struct of four `Int`s and a `String`), on `messagepack`. The response moves from an `AnyCodable` box to an existential, then into an `AnyCodable` at the exit, and that can add an allocation exactly when it doesn't fit inline. `vis-act-mp` and `vis-act-json` as before, beside them |
 
 P3a goes first; P3b and P3c touch different keeper paths and can go in either order. Each is its own PR with its own Public API list.
 
@@ -132,12 +244,15 @@ Holds and events, never timing.
   - a payload conformed without `@Payload` or `@PlainData` ("does not conform to protocol 'PlainData'");
   - a server input holding `AnyCodable`;
   - a resolver output with a closure;
-  - a generic payload without `T: PlainData` (Q3's message naming the field);
-  - `@Payload` beside `@PlainData` (the new diagnostic).
+  - a generic payload that stores `T` without `T: PlainData` (§2.1's diagnostic naming the parameter and the field), and one whose constraint the macro can't read (the compiler's `does not conform to protocol 'PlainData'`);
+  - `@Payload` beside `@PlainData`, and beside `@SnapshotConvertible` (the new diagnostics);
+  - one per payload kind holding `DecimalAlias` (§2.2: the moved `DecimalRegistrationTests` assertion).
 - Compiling snippets:
   - a payload holding a nested `@Payload` struct with no `@PlainData`;
   - an enum payload with `@PlainData`;
-  - a resolver output with `@PlainData`.
+  - a resolver output with `@PlainData`;
+  - `WNBox<T>.InnerEvent` (a payload nested in a generic type);
+  - the prelude's `SnippetInput` with `@Payload`: every existing snippet still fails for its own reason (the script's expect-error lines are unchanged).
 - Macro tests:
   - `@Payload`'s extension with and without conformance (`protocols` empty or not);
   - a generic type's `where`;
@@ -146,18 +261,31 @@ Holds and events, never timing.
 - Mutants:
   - (a) `@Payload` writes no extension: the compiling snippets fail;
   - (b) the shared walk skips the class check: the class-field snippet compiles;
-  - (c) the exemption also accepts `named(…)` outside `@attached`: its `refuses` case fails.
-- `LandContext`: replay reads a `.recorded` output with the codec, and a live one by cast (the existing #707 tests, kept green). Recording a land's outputs writes the same tree as before: a golden or a unit test on `getAllResolverOutputs`.
+  - (c) the exemption also accepts `named(…)` outside `@attached`: its `refuses` case fails;
+  - (d) the exemption also accepts `PlainDataCheck`: its `refuses` case fails;
+  - (e) the generic-parameter diagnostic skipped: its snippet fails with the compiler's text, not the diagnostic's;
+  - (f) the record projection writes `.recorded` as `AnyCodable(r)` (the carrier, not its tree): the projection's unit test fails.
+- `LandContext`: replay reads a `.recorded` output with the codec, and a live one by cast (the existing #707 tests, kept green, including the JSON view's `integralFloats` case and the warning on a failed decode, which a test captures by its log text).
+- The record projection: a unit test feeds one `.live` and one `.recorded` output and checks both entries. The record goldens with resolver outputs don't move.
+- The monitor: the three `TickProcessedEvent` frames pinned on main (§2.2) are unchanged, and a step result whose `actualState` isn't a `String` reaches the event as JSON text.
 - E2E in three encodings and the record/replay E2E (0 mismatch). Frames unchanged except the monitor fixture in `PayloadFrameGoldenTests` and the removed `PFFallbacksEvent` entries. Record goldens unchanged.
 
 **P3b.**
-- `replayServerInputDecodeFailureIsReportedAsBefore`, pinned on main first, as K1a's `replayPayloadDecodeFailureIsReportedAsBefore` is (#778): a recorded server input whose tree has a field of the wrong type fails alone, with today's log text and outcome. It stays green after P3b.
-- A server input whose form doesn't decode back is refused `.unencodable` at submit, and nothing is queued or recorded. Mutant: skip the submit-time decode, and it is accepted.
-- `serverInputRecordFormUnchanged`: per `ServerInputTests` fixture, canonical MessagePack of `AnyCodable(item.input)` equals that of today's `recordedForm`. Mutant: the recorder writes the input's JSON round trip (`InboundPayloadDecoding`'s form) instead of `AnyCodable(item.input)`; a fixture with a `Data` field (base64 text in JSON, `bin` in MessagePack) fails.
+- `replayServerInputDecodeFailureIsReportedAsBefore`, pinned on main first, as K1a's `replayPayloadDecodeFailureIsReportedAsBefore` is (#778). It has three recorded server inputs: a field of the wrong type, a tree nested past the record codec's depth, and a good one. The first two fail alone, with today's log text and outcome, and **with today's error types**, checked by `#expect(throws:)`: `CanonicalMessagePackError.nestingTooDeep` for the deep one. The third applies. It stays green after P3b.
+- **Refused at submit, nothing queued or recorded:** a server input whose form doesn't decode back (a hand-written `Codable` whose `init(from:)` requires a key its `encode(to:)` doesn't write) is refused `.unencodable`. The sequence counter is unchanged. Mutant: skip the submit-time decode, and it is accepted.
+- **The combined case:** the same input with the land at its in-flight cap is refused `.overCap`. Mutant: decode before the cap check, and it is refused `.unencodable`.
+- **Under a freeze:** the same input submitted while frozen is refused at submit. An input that decodes is held with `decoded` set, and applied at the resume.
+- **`serverInputRecordFormUnchanged`:** per `ServerInputTests` fixture, the record's tree is today's `recordedForm`, byte for byte in canonical MessagePack. Two fixtures where a re-encode would differ:
+  - an `Int??` field holding `.some(nil)`;
+  - a hand-written `Codable` that reads a legacy key and writes the current one.
+  
+  Mutant: the recorder writes `AnyCodable(decoded)`, the typed value re-encoded, instead of the tree. Both fixtures fail. (Rev 1's mutant leaned on `Data` being `bin` in MessagePack and base64 in JSON. In the record codec, `Data` is an array of bytes, since the codec doesn't use `bin` (CanonicalMessagePack.swift:139), so that premise was wrong.)
 - The existing server-input record/replay tests and goldens unchanged.
 
 **P3c.**
-- A tickless land's action reply and a tick land's ACK reach the adapter with today's values: frame goldens unchanged, and a unit test on the conversion (`.none` → `AnyCodable(())`).
+- A tickless land's action reply and a tick land's ACK reach the adapter with today's values: frame goldens unchanged, and a unit test on the conversion (`.none` → `AnyCodable(())`, `.response(r)` → `AnyCodable(r)`).
+- The public `invoke` and `invokeErased` return the same `AnyCodable` as on main for one action (a unit test).
+- `UntypedEventPayloadTests` and `ClosedGatePendingFailureTests` on the new seam (§2.4): the same holds and outcomes as on main. Mutant: the reply encodes, and both fail.
 - Mutant: `.response` converted as `.none`: the action reply tests fail.
 
 ## 5. Verification
@@ -174,24 +302,55 @@ Every break is a source break with no deprecation step, as for #593: there are n
   - `ActionPayload`, `ClientEventPayload`, `ServerEventPayload`, `ServerInputPayload`, `ResponsePayload` and `ResolverOutput` refine `PlainData`. A conformer needs `@Payload` or `@PlainData`. A field that isn't `PlainData` stops compiling: a class, a closure, `Any`, `AnyCodable`, `Date`, `UUID`, `URL`, `Decimal`, or a nested type without `@PlainData`. A generic conformer constrains its stored parameters to `PlainData`.
   - `TickProcessedEvent.expectedState`, `actualState` and its initializer take `String` (were `AnyCodable`). The live wire form is unchanged.
   - `TickProcessedPayload` is removed.
-- **Additive (P3a):** `@Payload` declares an extension role (`conformances: PlainData`, `names: named(_plainDataCheck)`). It makes a type `PlainData` and refuses `@PlainData` beside it.
+  - `PendingActionItem.resolverOutputs`, `PendingLifecycleItem.resolverOutputs` and `PendingAction.resolverOutputs` (public, `[String: any ResolverOutput]`, LK:208, 168, 331) are removed. A replayed item's outputs aren't `ResolverOutput` values any more (§2.5). Their public initializers keep their parameters.
+  - `@Payload` refuses `@PlainData` and `@SnapshotConvertible` beside it, and a generic payload that stores a parameter without `T: PlainData`.
+- **Additive (P3a):** `@Payload` declares an extension role (`conformances: PlainData`, `names: named(_plainDataCheck)`). It makes a type `PlainData`. `LandID` is `PlainData`.
+- **Unchanged (P3a):** `ReevaluationStepResult.actualState: AnyCodable?` (the monitor bridges it, §2.2). `LandContext`'s public API.
 - **Behavior (P3b):** a server input whose record form doesn't decode back to its type is refused at submit (`.unencodable`), where today it was accepted and failed in its turn. `ServerInputRefusal.unencodable`'s doc changes to match (§2.3).
-- **None public (P3c):** `InputOutcome`, `ActionSubmission`, `awaitActionResult` and the slots are internal or package. `handleActionEnvelope` keeps `-> AnyCodable`.
+- **None public (P3c):** `InputOutcome`, `ActionSubmission`, `awaitActionResult`, `invokeTyped` and the slots are internal or package. `handleActionEnvelope`, `AnyActionHandler.invoke` and `invokeErased` keep `-> AnyCodable`. The package init's closure type changes (`-> any ResponsePayload`).
 
-`AnyCodableResolverOutput`/`RecordedResolverOutput` and `HeldResolverOutput` are internal. `PendingServerInputItem` is package. `RecordedPayloadDecodeFailure` is package (K1a decides whether its record view exposes it).
+`RecordedResolverOutput` (was `AnyCodableResolverOutput`) and `HeldResolverOutput` are package. `PendingServerInputItem` is package. `RecordedPayloadDecodeFailure` is package (K1a decides whether its record view exposes it).
 
 ## 7. Questions
 
 | Q | Question | Options | Recommended |
 |---|---|---|---|
 | P3-Q1 | #616 | **Decided 2026-11-24:** closed by the maintainer; the remaining JSON walk goes with #606 | — |
-| P3-Q2 | A server input whose record form doesn't decode back to its type | (a) refused at submit (`.unencodable`): it is a broken `Codable` that no apply could run. (b) Accepted, recorded and failed in its turn, as today: the item then has to hold the failure live too | **(a)**: the caller learns at once, and a live keeper never queues an input it can't apply |
+| P3-Q2 | A server input whose record form doesn't decode back to its type | (a) refused at submit (`.unencodable`), after the cap check and before the sequence is taken (§2.3): it is a broken `Codable` that no apply could run. (b) Accepted, recorded and failed in its turn, as today: the item then has to hold the failure live too | **(a)**, with Review: the caller learns at once, and a live keeper never queues an input it can't apply. **With the maintainer** |
 
 ## 8. What P3 leaves for K1a (cross-check with #700 §3.11)
 
 - `PendingActionItem`, `PendingClientEventItem` and `PayloadDecodingSource`: unchanged.
-- The record's entry types, `ReevaluationRecordMetadata`, `ReevaluationRecordVersion` and the log's payload form: unchanged. A server input is recorded as `AnyCodable` of its typed value (§2.3).
+- The record's entry types, `ReevaluationRecordMetadata`, `ReevaluationRecordVersion` and the log's payload form: unchanged. A server input is recorded as the tree the item kept (§2.3), not as a re-encode of its typed value.
 - `InboundPayloadDecoding`'s JSON round trip: unchanged, in one place.
 - `_payloadWireName`: still on every payload type. `@Payload` keeps writing it, and an `@PlainData` enum payload gets the protocol's runtime rule, as today without `@Payload`.
 - The response's encode path and the record/replay of responses: K1a's (§2.4).
-- `RecordedPayloadDecodeFailure`: introduced here for server inputs, with the shape §3.11 gives it, for K1a to use for actions and events.
+- `RecordedPayloadDecodeFailure`: introduced here for server inputs, with §3.11's shape plus `recordTooDeep` (§2.3), for K1a to use for actions and events.
+- `HeldResolverOutput.recorded`: a tree in P3; K1b stores it as bytes (§2.5).
+
+## 9. Revisions
+
+**Rev 2** answers Review's NOT GO on rev 1.1. That review had 3 must-fix, 6 should and 3 nits, with a Codex track.
+- **MF1** (record unchanged only by a property of types): the item keeps the `recordedForm` tree, and the record writes it. Live applies the value decoded from that tree (§2.3). The mutant's premise is fixed: `Data` is a byte array in the record codec, so the new fixtures are `Int?? = .some(nil)` and a legacy-key `Codable` (§4).
+- **MF2** (the replay wrapper had no carrier past `LandContext`):
+  - `HeldResolverOutput` and `RecordedResolverOutput` are named, with the path through build, the pending items (whose public `resolverOutputs` goes, §6) and `makeContext`;
+  - one record projection replaces the three write sites;
+  - #707's lazy read, `integralFloats` and the failed-decode warning are kept;
+  - where the raw trees live after K1b (bytes) and after R2 with K5 (gone) is stated (§2.5).
+- **MF3** (public `invoke`/`invokeErased` return `AnyCodable`; the DSL boxes too): the public wrappers stay, and a package `invokeTyped` is added. The two tests that answered with a dictionary move to a response whose `encode(to:)` throws, which still fails at the adapter's encode (§2.4).
+- **Shoulds:**
+  1. A too-deep server input throws `CanonicalMessagePackError.nestingTooDeep`. It gets its own case, `recordTooDeep`, and the test pins the type (§2.3, §4).
+  2. P3-Q2's decode comes after the cap check and before the sequence. The combined case and the frozen path are pinned (§2.3, §4).
+  3. The census is redone (143/141, 55/48, 126/115, 20/16, 98/96, 39/0) and agrees with Codex. Also:
+     - the hand-written and plain fixtures, `RTHandWrittenAction`/`Response`, `FPPlainEvent`, `FPPlainInput`, `ENPlainEvent`, `HostHandWrittenEvent` and `PWHandWrittenEvent`, get `@PlainData`;
+     - the prelude's `SnippetInput` gets `@Payload`;
+     - `LandID` is a P3a dependency;
+     - `DecimalAlias`'s assertion moves to snippets;
+     - every replaced fixture keeps its assertion (§1, §2.2).
+  4. Generic payloads: the macro diagnoses a stored parameter without the constraint, and the compiler's text is pinned for what it can't read. `WNBox<T>.InnerEvent` is a fixture. P3a follows #772 round 5's builder (§2.1).
+  5. The monitor: a bridge from `ReevaluationStepResult.actualState`, and one frame pinned in three encodings. `@Payload` with `@SnapshotConvertible` is refused, and who writes `_plainDataCheck` in each landing order is stated (§2.1, §2.2).
+  6. The A/B: P3c has a tick and a tickless cell with an out-of-line response. P3a gets a Mac output check, and P3b a focused submit cost check (§3).
+- **Nits:**
+  - the randomness sentence names K1b and L-Q2 (a), decided;
+  - the lint exemption covers `_plainDataCheck` only, in `names: named(…)` of `@attached` only;
+  - §2.4's inventory adds the job's completion and cancellation, `fillActionSlot` and the adapter's `Result<AnyCodable, any Error>`.
