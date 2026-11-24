@@ -58,6 +58,30 @@ public struct ReevaluationFeatureConfiguration: Sendable {
 // MARK: - Generic Replay Registration
 
 public extension NIOLandHost {
+    /// `registerWithGenericReplay` for a live land that declares services (#769 §3.4): `services`
+    /// builds its services value per land instance. The replay land never calls `resolve`, so it
+    /// needs none.
+    func registerWithGenericReplay<State: StateFromSnapshotDecodable, Services: Sendable>(
+        landType: String,
+        liveLand: TypedLand<State, Services>,
+        services: @escaping @Sendable (LandID, [String: String]) -> Services,
+        liveInitialState: @autoclosure @escaping @Sendable () -> State,
+        liveWebSocketPath: String,
+        configuration: NIOLandServerConfiguration,
+        reevaluation: ReevaluationFeatureConfiguration
+    ) async throws {
+        var configuration = configuration
+        configuration.resolverServicesFactory = { landID, metadata in services(landID, metadata) }
+        try await registerWithGenericReplay(
+            landType: landType,
+            liveLand: liveLand.definition,
+            liveInitialState: liveInitialState(),
+            liveWebSocketPath: liveWebSocketPath,
+            configuration: configuration,
+            reevaluation: reevaluation
+        )
+    }
+
     /// Registers a live land and a corresponding generic replay land.
     ///
     /// The replay land is `GenericReplayLand<State>.makeLand(basedOn:)`, a live land.

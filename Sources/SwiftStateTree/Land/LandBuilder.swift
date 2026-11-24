@@ -170,6 +170,36 @@ enum LandBuilder {
             clientEventMismatches.append("\(String(reflecting: handler.handledType)): handled, not in ClientEvents")
         }
 
+        // #769: each declaration's resolvers depend on the land's services, and no two in one
+        // declaration share a base type (the record names an output by it until R2 keys them by
+        // position).
+        let landServices = servicesType ?? NoServices.self
+        var resolverDeclarationProblems: [String] = []
+        func check(_ entry: String, _ names: [String], _ services: Any.Type, _ site: String) {
+            if ObjectIdentifier(services) != ObjectIdentifier(landServices) {
+                resolverDeclarationProblems.append(
+                    "\(entry) at \(site): its resolvers depend on \(String(reflecting: services)), the land's services are \(String(reflecting: landServices))"
+                )
+            }
+            var seen: Set<String> = []
+            for name in names where !seen.insert(name).inserted {
+                resolverDeclarationProblems.append(
+                    "\(entry) at \(site): two resolvers of type \(name); one declaration resolves each type once"
+                )
+            }
+        }
+        for handler in actionHandlers {
+            if let declaration = handler.resolvers {
+                check("HandleAction(\(String(describing: handler.handledType)))", declaration.names, declaration.servicesType, declaration.site)
+            }
+        }
+        if let declaration = lifetimeConfig.onInitializeResolvers {
+            check("OnInitialize", declaration.names, declaration.servicesType, declaration.site)
+        }
+        if let declaration = lifetimeConfig.onFinalizeResolvers {
+            check("OnFinalize", declaration.names, declaration.servicesType, declaration.site)
+        }
+
         let landConfig = LandConfig(
             allowPublic: accessControl.allowPublic,
             maxPlayers: accessControl.maxPlayers,
@@ -179,7 +209,7 @@ enum LandBuilder {
             persistInterval: hasLifetimeConfig ? lifetimeConfig.persistInterval : nil
         )
 
-        let lifetimeHandlers = LifetimeHandlers<State>(
+        var lifetimeHandlers = LifetimeHandlers<State>(
             canJoin: canJoin,
             canJoinResolverExecutors: canJoinResolverExecutors,
             onJoin: onJoin,
@@ -195,12 +225,12 @@ enum LandBuilder {
             onDestroyWhenEmptyResolverExecutors: lifetimeConfig.onDestroyWhenEmptyResolverExecutors,
             persistInterval: lifetimeConfig.persistInterval,
             onInitialize: lifetimeConfig.onInitialize,
-            onInitializeResolverExecutors: lifetimeConfig.onInitializeResolverExecutors,
             onInitializeResolverFailure: lifetimeConfig.onInitializeResolverFailure,
             onFinalize: lifetimeConfig.onFinalize,
-            onFinalizeResolverExecutors: lifetimeConfig.onFinalizeResolverExecutors,
             afterFinalize: lifetimeConfig.afterFinalize
         )
+        lifetimeHandlers.onInitializeResolvers = lifetimeConfig.onInitializeResolvers
+        lifetimeHandlers.onFinalizeResolvers = lifetimeConfig.onFinalizeResolvers
 
         // The registries are keyed by event name: two registered types with one name would leave
         // one of them unreachable, so they are refused (#599). A type registered twice is kept once.
@@ -233,6 +263,7 @@ enum LandBuilder {
             duplicateHandlers: duplicateHandlers,
             clientEventMismatches: clientEventMismatches,
             unrecognizedNodes: unrecognizedNodes,
+            resolverDeclarationProblems: resolverDeclarationProblems,
             lifetimeHandlers: lifetimeHandlers,
             servicesType: servicesType
         )

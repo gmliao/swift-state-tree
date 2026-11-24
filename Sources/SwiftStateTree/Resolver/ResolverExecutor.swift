@@ -5,6 +5,20 @@ import Foundation
 /// This allows storing resolver execution closures in a type-safe way.
 public protocol AnyResolverExecutor: Sendable {
     func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput)
+    /// The name errors use: the resolver's base type name, without generic arguments.
+    var resolverName: String { get }
+}
+
+extension AnyResolverExecutor {
+    public var resolverName: String {
+        // ResolverExecutorWrapper<SomeResolver> -> SomeResolver
+        let typeName = String(describing: type(of: self))
+        if let genericStart = typeName.range(of: "<"),
+           let genericEnd = typeName.range(of: ">", options: .backwards, range: genericStart.upperBound..<typeName.endIndex) {
+            return ResolverExecutor.baseTypeName(String(typeName[genericStart.upperBound..<genericEnd.lowerBound]))
+        }
+        return typeName
+    }
 }
 
 /// Type-erased wrapper for a specific resolver type
@@ -258,17 +272,6 @@ public enum ResolverExecutor {
     
     /// Extract resolver name from executor for error reporting
     private static func extractResolverName(from executor: any AnyResolverExecutor) -> String {
-        // Try to extract from type name
-        let typeName = String(describing: type(of: executor))
-        
-        // ResolverExecutorWrapper<SomeResolver> -> SomeResolver
-        if let genericStart = typeName.range(of: "<"),
-           let genericEnd = typeName.range(of: ">", range: genericStart.upperBound..<typeName.endIndex) {
-            let resolverTypeName = String(typeName[genericStart.upperBound..<genericEnd.lowerBound])
-            return resolverTypeName
-        }
-        
-        // Fallback to full type name
-        return typeName
+        executor.resolverName
     }
 }

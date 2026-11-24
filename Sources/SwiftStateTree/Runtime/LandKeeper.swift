@@ -405,6 +405,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     public let definition: LandDefinition<State>
+    /// The land's services value, which its `Resolver` values get (#769 §3.4): the one the typed
+    /// entry point gave, `NoServices()` for a land without services, or nil for a land that
+    /// declares services and was given none (its initialization fails).
+    private let resolverServices: (any Sendable)?
 
     private var state: State
     private var players: [PlayerID: InternalPlayerSession] = [:]
@@ -1048,7 +1052,83 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
+        self.init(
+            definition: definition,
+            resolverServices: nil,
+            initialState: initialState,
+            mode: mode,
+            reevaluationSource: reevaluationSource,
+            reevaluationSink: reevaluationSink,
+            reevaluationOutputMode: reevaluationOutputMode,
+            services: services,
+            enableLiveStateHashRecording: enableLiveStateHashRecording,
+            autoStartLoops: autoStartLoops,
+            enableLoopPhaseOffset: enableLoopPhaseOffset,
+            landID: landID,
+            transport: transport,
+            logger: logger
+        )
+    }
+
+    /// A live keeper for a land that declares services (`Land(_:using:services:)`, #769 §3.4):
+    /// its resolvers get `resolverServices`. A keeper built from such a land's `.definition` with
+    /// `init(definition:…)` has no services value, and fails its initialization with the
+    /// registration error.
+    public init<Services: Sendable>(
+        land: TypedLand<State, Services>,
+        resolverServices: Services,
+        initialState: State,
+        mode: LandMode = .live,
+        reevaluationSource: (any ReevaluationSource)? = nil,
+        reevaluationSink: (any ReevaluationSink)? = nil,
+        reevaluationOutputMode: ReevaluationOutputMode = .sinkOnly,
+        services: LandServices = LandServices(),
+        enableLiveStateHashRecording: Bool = false,
+        autoStartLoops: Bool = true,
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
+        landID: String? = nil,
+        transport: LandKeeperTransport? = nil,
+        logger: Logger? = nil
+    ) {
+        self.init(
+            definition: land.definition,
+            resolverServices: resolverServices,
+            initialState: initialState,
+            mode: mode,
+            reevaluationSource: reevaluationSource,
+            reevaluationSink: reevaluationSink,
+            reevaluationOutputMode: reevaluationOutputMode,
+            services: services,
+            enableLiveStateHashRecording: enableLiveStateHashRecording,
+            autoStartLoops: autoStartLoops,
+            enableLoopPhaseOffset: enableLoopPhaseOffset,
+            landID: landID,
+            transport: transport,
+            logger: logger
+        )
+    }
+
+    /// The designated init: `resolverServices` is the land's services value, or nil when the
+    /// entry point brought none.
+    package init(
+        definition: LandDefinition<State>,
+        resolverServices: (any Sendable)?,
+        initialState: State,
+        mode: LandMode = .live,
+        reevaluationSource: (any ReevaluationSource)? = nil,
+        reevaluationSink: (any ReevaluationSink)? = nil,
+        reevaluationOutputMode: ReevaluationOutputMode = .sinkOnly,
+        services: LandServices = LandServices(),
+        enableLiveStateHashRecording: Bool = false,
+        autoStartLoops: Bool = true,
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
+        landID: String? = nil,
+        transport: LandKeeperTransport? = nil,
+        logger: Logger? = nil
+    ) {
         self.definition = definition
+        // A land without services gets `NoServices()`: its resolvers depend on it (#769).
+        self.resolverServices = resolverServices ?? (definition.servicesType == nil ? NoServices() : nil)
         self.actualLandID = landID
         state = initialState
         self.mode = mode
@@ -1309,15 +1389,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // (#771), or one holding a node its builder doesn't recognize (#794), fails initialization, as an OnInitialize resolver timeout does, before
         // any handler runs. One cached lookup per state type.
         let problems = SyncRegistration.cachedProblems(State.self)
+        // #769 §3.4: a live keeper for a land that declares services needs its services value; a
+        // replay never calls `resolve`.
+        let missingServices = mode == .live && resolverServices == nil
+            ? definition.servicesType.map { String(reflecting: $0) } : nil
         if !problems.isEmpty || !definition.duplicateHandlers.isEmpty || !definition.clientEventMismatches.isEmpty
-            || !definition.unrecognizedNodes.isEmpty {
+            || !definition.unrecognizedNodes.isEmpty || !definition.resolverDeclarationProblems.isEmpty
+            || missingServices != nil {
             let error = LandRegistrationError(
                 landType: definition.id,
                 payload: nil,
                 sync: problems.isEmpty ? nil : SyncRegistrationError(problems: problems),
                 duplicateHandlers: definition.duplicateHandlers,
                 clientEventMismatches: definition.clientEventMismatches,
-                unrecognizedNodes: definition.unrecognizedNodes
+                unrecognizedNodes: definition.unrecognizedNodes,
+                missingServices: missingServices,
+                resolverDeclarations: definition.resolverDeclarationProblems
             )
             logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
                 "error": .string(error.description),
@@ -1342,17 +1429,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 tickId: lastCommittedTickId
             )
 
-            // Execute resolvers in parallel if any are declared
-            if !definition.lifetimeHandlers.onInitializeResolverExecutors.isEmpty {
-                let resolverContext = ResolverContext(
-                    landContext: ctx,
-                    actionPayload: nil,
-                    eventPayload: nil,
-                    currentState: state
-                )
+            // Execute resolvers in parallel if any are declared: the values are built from the
+            // initial State, here, before the group runs (#769).
+            if let declaration = definition.lifetimeHandlers.onInitializeResolvers {
+                let executors = declaration.build(state, ValidateContext(ctx))
+                let resolverContext = makeResolverContext(ctx)
                 do {
                     ctx = try await ResolverExecutor.executeInitializeResolvers(
-                        executors: definition.lifetimeHandlers.onInitializeResolverExecutors,
+                        executors: executors,
                         resolverContext: resolverContext,
                         landContext: ctx,
                         abandonment: resolverAbandonment(.onInitialize)
@@ -2341,7 +2425,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func startActionJob(
         _ item: PendingActionItem,
         decodedAction: any ActionPayload,
-        executors: [any AnyResolverExecutor],
+        resolvers: ResolverDeclaration<(State, Any)>,
         ticket: ActionTicket,
         input: String
     ) {
@@ -2352,12 +2436,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             sessionID: item.sessionID,
             tickId: lastCommittedTickId
         )
-        let resolverContext = ResolverContext(
-            landContext: ctx,
-            actionPayload: decodedAction as (any Sendable),
-            eventPayload: nil,
-            currentState: state
-        )
+        // The values are built here, in the intake segment, from the State the action is admitted
+        // against (#769 §3.2): the closure reads it and mutates nothing.
+        let executors = resolvers.build((state, decodedAction), ValidateContext(ctx))
+        let resolverContext = makeResolverContext(ctx)
         let abandonment = resolverAbandonment(.action) { [weak self] in
             Task { await self?.releaseCompletedActionJob(sequence) }
         }
@@ -3036,7 +3118,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // validates the ticket against the current state and appends the input.
         try rejectIfLandClosed()
         try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
-        let becomesJob = !handler.resolverExecutors.isEmpty
+        let becomesJob = handler.resolvers != nil
         if becomesJob, enforcingLimits {
             try rejectIfOverActionJobLimits(sessionID: sessionID, input: typeIdentifier)
         }
@@ -3068,7 +3150,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     resolvedAtTick: lastCommittedTickId
                 ),
                 decodedAction: decodedAction,
-                executors: handler.resolverExecutors,
+                resolvers: handler.resolvers!,
                 ticket: ticket,
                 input: typeIdentifier
             )
@@ -3382,6 +3464,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     // MARK: - Helpers
+
+    /// The context a resolver group runs with: the land's services value for `Resolver` values
+    /// (#769), and today's fields for the `ContextResolver`s of CanJoin, OnJoin and OnLeave.
+    private func makeResolverContext(_ ctx: LandContext) -> ResolverContext {
+        var resolverContext = ResolverContext(landContext: ctx, currentState: state)
+        resolverContext.resolverServices = resolverServices
+        return resolverContext
+    }
 
     private func makeContext(
         playerID: PlayerID,
@@ -5997,7 +6087,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "onDestroyWhenEmpty",
-                resolvers: handlers.onDestroyWhenEmptyResolverExecutors,
+                resolvers: { _, _ in handlers.onDestroyWhenEmptyResolverExecutors },
                 handler: onDestroyWhenEmptyHandler
             )
         }
@@ -6005,7 +6095,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "OnFinalize",
-                resolvers: handlers.onFinalizeResolverExecutors,
+                resolvers: { state, ctx in handlers.onFinalizeResolvers?.build(state, ctx) ?? [] },
                 handler: onFinalizeHandler
             )
         }
@@ -6049,7 +6139,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// else can change the state before the handler's segment.
     private func runDestroyHandler(
         _ name: String,
-        resolvers: [any AnyResolverExecutor],
+        resolvers buildResolvers: (State, ValidateContext) -> [any AnyResolverExecutor],
         handler: @Sendable (inout State, LandContext) -> Void
     ) async {
         let ctx = makeContext(
@@ -6058,13 +6148,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             sessionID: systemSessionID
         )
         var updatedCtx = ctx
+        // Built from the State the handler will see: nothing changes it before the handler's
+        // segment (see the caller).
+        let resolvers = buildResolvers(state, ValidateContext(ctx))
         if !resolvers.isEmpty {
-            let resolverContext = ResolverContext(
-                landContext: ctx,
-                actionPayload: nil,
-                eventPayload: nil,
-                currentState: state
-            )
+            let resolverContext = makeResolverContext(ctx)
             do {
                 updatedCtx = try await ResolverExecutor.executeResolversWithoutDeadline(
                     executors: resolvers,

@@ -72,6 +72,10 @@ public struct ResolverContext: Sendable {
     /// Provides access to external services in a protocol-agnostic way.
     public let services: LandServices
 
+    /// The land's services value, for the `Resolver` values the keeper runs (#769): the one
+    /// `register(_:services:)` or `LandKeeper(land:resolverServices:)` gave, or `NoServices()`.
+    package var resolverServices: (any Sendable)?
+
     /// Create a ResolverContext from a LandContext and additional information.
     ///
     /// - Parameters:

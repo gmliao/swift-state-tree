@@ -156,59 +156,6 @@ public func OnJoin<State: StateNodeProtocol>(
     OnJoinNode(handler: body, site: "\(fileID):\(line)")  // Single-expression: omit return
 }
 
-/// Registers a handler called when a player joins the Land with resolvers.
-///
-/// This handler is executed after the player is added to the state.
-/// Resolvers are executed in parallel before the handler runs.
-///
-/// - Parameters:
-///   - resolvers: One or more resolver types to execute before the handler.
-///   - body: The synchronous closure to execute with resolved data available via `ctx`.
-public func OnJoin<State: StateNodeProtocol, R1: ContextResolver>(
-    resolvers: R1.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> OnJoinNode<State> {
-    OnJoinNode(
-        handler: body,
-        site: "\(fileID):\(line)",
-        resolverExecutors: [ResolverExecutorWrapper<R1>()]
-    )  // Single-expression: omit return
-}
-
-/// Registers a handler called when a player joins the Land with multiple resolvers.
-public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
-    resolvers: (R1.Type, R2.Type),
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> OnJoinNode<State> {
-    OnJoinNode(
-        handler: body,
-        site: "\(fileID):\(line)",
-        resolverExecutors: [ResolverExecutorWrapper<R1>(), ResolverExecutorWrapper<R2>()]
-    )  // Single-expression: omit return
-}
-
-/// Registers a handler called when a player joins the Land with multiple resolvers.
-public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
-    resolvers: (R1.Type, R2.Type, R3.Type),
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> OnJoinNode<State> {
-    OnJoinNode(
-        handler: body,
-        site: "\(fileID):\(line)",
-        resolverExecutors: [
-            ResolverExecutorWrapper<R1>(),
-            ResolverExecutorWrapper<R2>(),
-            ResolverExecutorWrapper<R3>()
-        ]
-    )  // Single-expression: omit return
-}
-
 public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
     public let handler: @Sendable (inout State, LandContext) -> Void
     public let resolverExecutors: [any AnyResolverExecutor]
@@ -246,59 +193,6 @@ public func OnLeave<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnLeaveNode<State> {
     OnLeaveNode(handler: body, site: "\(fileID):\(line)")  // Single-expression: omit return
-}
-
-/// Registers a handler called when a player leaves the Land with resolvers.
-///
-/// This handler is executed just before the player is removed from the state.
-/// Resolvers are executed in parallel before the handler runs.
-///
-/// - Parameters:
-///   - resolvers: One or more resolver types to execute before the handler.
-///   - body: The synchronous closure to execute with resolved data available via `ctx`.
-public func OnLeave<State: StateNodeProtocol, R1: ContextResolver>(
-    resolvers: R1.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> OnLeaveNode<State> {
-    OnLeaveNode(
-        handler: body,
-        site: "\(fileID):\(line)",
-        resolverExecutors: [ResolverExecutorWrapper<R1>()]
-    )  // Single-expression: omit return
-}
-
-/// Registers a handler called when a player leaves the Land with multiple resolvers.
-public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
-    resolvers: (R1.Type, R2.Type),
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> OnLeaveNode<State> {
-    OnLeaveNode(
-        handler: body,
-        site: "\(fileID):\(line)",
-        resolverExecutors: [ResolverExecutorWrapper<R1>(), ResolverExecutorWrapper<R2>()]
-    )  // Single-expression: omit return
-}
-
-/// Registers a handler called when a player leaves the Land with multiple resolvers.
-public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
-    resolvers: (R1.Type, R2.Type, R3.Type),
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> OnLeaveNode<State> {
-    OnLeaveNode(
-        handler: body,
-        site: "\(fileID):\(line)",
-        resolverExecutors: [
-            ResolverExecutorWrapper<R1>(),
-            ResolverExecutorWrapper<R2>(),
-            ResolverExecutorWrapper<R3>()
-        ]
-    )  // Single-expression: omit return
 }
 
 public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
@@ -360,59 +254,6 @@ public func CanJoin<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
 ) -> CanJoinNode<State> {
     CanJoinNode(handler: body, site: "\(fileID):\(line)")  // Single-expression: omit return
-}
-
-/// Registers a handler called before a player joins with resolvers.
-///
-/// - Parameters:
-///   - resolvers: One or more resolver types to execute before the handler.
-///   - body: The synchronous closure that validates the join request with resolved data available via `ctx`.
-public func CanJoin<State: StateNodeProtocol, R1: ContextResolver>(
-    resolvers: R1.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
-) -> CanJoinNode<State> {
-    CanJoinNode(
-        handler: body,
-        site: "\(fileID):\(line)",
-        resolverExecutors: [ResolverExecutor.createExecutor(for: resolvers)]
-    )  // Single-expression: omit return
-}
-
-/// Registers a handler called before a player joins with multiple resolvers.
-public func CanJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
-    resolvers: (R1.Type, R2.Type),
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
-) -> CanJoinNode<State> {
-    CanJoinNode(
-        handler: body,
-        site: "\(fileID):\(line)",
-        resolverExecutors: [
-            ResolverExecutor.createExecutor(for: resolvers.0),
-            ResolverExecutor.createExecutor(for: resolvers.1)
-        ]
-    )  // Single-expression: omit return
-}
-
-/// Registers a handler called before a player joins with multiple resolvers.
-public func CanJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
-    resolvers: (R1.Type, R2.Type, R3.Type),
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
-) -> CanJoinNode<State> {
-    CanJoinNode(
-        handler: body,
-        site: "\(fileID):\(line)",
-        resolverExecutors: [
-            ResolverExecutor.createExecutor(for: resolvers.0),
-            ResolverExecutor.createExecutor(for: resolvers.1),
-            ResolverExecutor.createExecutor(for: resolvers.2)
-        ]
-    )  // Single-expression: omit return
 }
 
 public struct AllowedClientEventsNode: LandNode {
@@ -494,15 +335,15 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     /// Handler called when the Land is initialized (on creation): a body that can't fail, or
     /// `validate` and `apply` (#593).
     public var onInitialize: InitializeHandler<State>?
-    /// Resolver executors for the onInitialize handler.
-    public var onInitializeResolverExecutors: [any AnyResolverExecutor] = []
+    /// The onInitialize handler's resolvers (#769), built when the land initializes.
+    package var onInitializeResolvers: ResolverDeclaration<State>?
     /// What a throwing OnInitialize resolver does (#238).
     public var onInitializeResolverFailure: InitializeResolverFailure = .failLand
     
     /// Handler called when the Land is finalizing (before shutdown).
     public var onFinalize: (@Sendable (inout State, LandContext) -> Void)?
-    /// Resolver executors for the onFinalize handler.
-    public var onFinalizeResolverExecutors: [any AnyResolverExecutor] = []
+    /// The onFinalize handler's resolvers (#769), built when the land finalizes.
+    package var onFinalizeResolvers: ResolverDeclaration<State>?
     
     /// Handler called after the Land is completely finalized (async cleanup).
     public var afterFinalize: (@Sendable (State, LandContext) async -> Void)?
@@ -552,11 +393,11 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
             persistInterval = other.persistInterval
         case .onInitialize:
             onInitialize = other.onInitialize
-            onInitializeResolverExecutors = other.onInitializeResolverExecutors
+            onInitializeResolvers = other.onInitializeResolvers
             onInitializeResolverFailure = other.onInitializeResolverFailure
         case .onFinalize:
             onFinalize = other.onFinalize
-            onFinalizeResolverExecutors = other.onFinalizeResolverExecutors
+            onFinalizeResolvers = other.onFinalizeResolvers
         case .afterFinalize:
             afterFinalize = other.afterFinalize
         }
@@ -572,8 +413,8 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
             destroyWhenEmptyAfter != nil || onDestroyWhenEmpty != nil || !onDestroyWhenEmptyResolverExecutors.isEmpty
         case .persistSnapshot: persistInterval != nil
         case .onInitialize:
-            onInitialize != nil || !onInitializeResolverExecutors.isEmpty || onInitializeResolverFailure != .failLand
-        case .onFinalize: onFinalize != nil || !onFinalizeResolverExecutors.isEmpty
+            onInitialize != nil || onInitializeResolvers != nil || onInitializeResolverFailure != .failLand
+        case .onFinalize: onFinalize != nil || onFinalizeResolvers != nil
         case .afterFinalize: afterFinalize != nil
         }
     }
@@ -612,11 +453,17 @@ public typealias LifetimeDirective<State: StateNodeProtocol> =
     @Sendable (inout LifetimeConfig<State>) -> Void
 
 @resultBuilder
-public enum LifetimeBuilder<State: StateNodeProtocol> {
+public enum LifetimeBuilder<State: StateNodeProtocol, Services: Sendable> {
     /// Typed, so a directive's closures (`Tick(every:) { state, ctx in }`) get the land's State
     /// without annotations (#771 D0 result 2).
     public static func buildExpression(_ directive: @escaping LifetimeDirective<State>) -> [LifetimeDirective<State>] {
         [directive]
+    }
+
+    /// An entry with resolvers (OnInitialize, OnFinalize), only where its services are the
+    /// land's (#769).
+    public static func buildExpression(_ directive: ResolvingNode<LifetimeDirective<State>, Services>) -> [LifetimeDirective<State>] {
+        [directive.node]
     }
 
     public static func buildBlock(_ components: [LifetimeDirective<State>]...) -> [LifetimeDirective<State>] {
@@ -648,14 +495,17 @@ public func Lifetime<State: StateNodeProtocol>(
 }
 
 /// Defines the lifetime and periodic behaviors of the Land using a result builder.
-public func Lifetime<State: StateNodeProtocol>(
+///
+/// The block is typed by the land's `Services` too, so an OnInitialize or OnFinalize with
+/// resolvers inside it checks their dependencies against the land's (#769).
+public func Lifetime<State: StateNodeProtocol, Services: Sendable>(
     fileID: String = #fileID,
     line: Int = #line,
-    @LifetimeBuilder<State> _ directives: @escaping @Sendable () -> [LifetimeDirective<State>]
-) -> LifetimeNode<State> {
-    LifetimeNode(site: "\(fileID):\(line)") { config in
+    @LifetimeBuilder<State, Services> _ directives: @escaping @Sendable () -> [LifetimeDirective<State>]
+) -> ResolvingNode<LifetimeNode<State>, Services> {
+    ResolvingNode(LifetimeNode(site: "\(fileID):\(line)") { config in
         directives().forEach { $0(&config) }
-    }  // Single-expression: omit return
+    })
 }
 
 /// Configures a periodic tick handler for game gameplay logic.
@@ -836,16 +686,16 @@ public func PersistSnapshot<State: StateNodeProtocol>(
 }
 
 /// Installs OnInitialize's handler and its resolvers in the config: every form goes through here.
-private func initializeDirective<State: StateNodeProtocol>(
+func initializeDirective<State: StateNodeProtocol>(
     site: String,
     _ handler: InitializeHandler<State>,
-    executors: [any AnyResolverExecutor],
+    resolvers: ResolverDeclaration<State>?,
     onResolverFailure: InitializeResolverFailure
 ) -> LifetimeDirective<State> {
     return { config in
         guard config.claim(.onInitialize, at: site) else { return }
         config.onInitialize = handler
-        config.onInitializeResolverExecutors = executors
+        config.onInitializeResolvers = resolvers
         config.onInitializeResolverFailure = onResolverFailure
     }
 }
@@ -865,7 +715,7 @@ public func OnInitialize<State: StateNodeProtocol>(
     line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    initializeDirective(site: "\(fileID):\(line)", InitializeHandler(body), executors: [], onResolverFailure: .failLand)
+    initializeDirective(site: "\(fileID):\(line)", InitializeHandler(body), resolvers: nil, onResolverFailure: .failLand)
 }
 
 /// What a land does when one of its OnInitialize resolvers throws (#238). A timeout
@@ -879,68 +729,6 @@ public enum InitializeResolverFailure: Sendable, Equatable {
     /// failing resolver's (the behaviour before #238). The handler must check every output it
     /// reads.
     case `continue`
-}
-
-/// Registers a handler called when the Land is initialized with resolvers.
-///
-/// - Parameters:
-///   - resolvers: One or more resolver types to execute before the handler.
-///   - onResolverFailure: What a throwing resolver does (`.failLand` by default).
-///   - body: The synchronous closure to execute with resolved data available via `ctx`. It
-///     can't throw (#593); with `.continue`, a check of the outputs that may refuse belongs in
-///     `OnInitialize(resolvers:onResolverFailure:validate:apply:)`'s `validate`.
-public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
-    resolvers: R1.Type,
-    onResolverFailure: InitializeResolverFailure = .failLand,
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    initializeDirective(
-        site: "\(fileID):\(line)",
-        InitializeHandler(body),
-        executors: [ResolverExecutor.createExecutor(for: resolvers)],
-        onResolverFailure: onResolverFailure
-    )
-}
-
-/// Registers a handler called when the Land is initialized with multiple resolvers.
-public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
-    resolvers: (R1.Type, R2.Type),
-    onResolverFailure: InitializeResolverFailure = .failLand,
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    initializeDirective(
-        site: "\(fileID):\(line)",
-        InitializeHandler(body),
-        executors: [
-        ResolverExecutor.createExecutor(for: resolvers.0),
-        ResolverExecutor.createExecutor(for: resolvers.1)
-    ],
-        onResolverFailure: onResolverFailure
-    )
-}
-
-/// Registers a handler called when the Land is initialized with multiple resolvers.
-public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
-    resolvers: (R1.Type, R2.Type, R3.Type),
-    onResolverFailure: InitializeResolverFailure = .failLand,
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    initializeDirective(
-        site: "\(fileID):\(line)",
-        InitializeHandler(body),
-        executors: [
-        ResolverExecutor.createExecutor(for: resolvers.0),
-        ResolverExecutor.createExecutor(for: resolvers.1),
-        ResolverExecutor.createExecutor(for: resolvers.2)
-    ],
-        onResolverFailure: onResolverFailure
-    )
 }
 
 /// Registers OnInitialize in two stages (#593): `validate` reads the state and may throw;
@@ -967,7 +755,7 @@ public func OnInitialize<State: StateNodeProtocol, Plan>(
     validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
     apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    initializeDirective(site: "\(fileID):\(line)", InitializeHandler(validate: validate, apply: apply), executors: [], onResolverFailure: .failLand)
+    initializeDirective(site: "\(fileID):\(line)", InitializeHandler(validate: validate, apply: apply), resolvers: nil, onResolverFailure: .failLand)
 }
 
 /// OnInitialize in two stages with nothing to pass from `validate` to `apply` (#593).
@@ -977,124 +765,7 @@ public func OnInitialize<State: StateNodeProtocol>(
     validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
     apply: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    initializeDirective(site: "\(fileID):\(line)", InitializeHandler(validate: validate, apply: apply), executors: [], onResolverFailure: .failLand)
-}
-
-/// OnInitialize in two stages with a resolver (#593): `validate` reads its output from the
-/// context. With `.continue`, `validate` runs without the group's outputs and may refuse.
-public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, Plan>(
-    resolvers: R1.Type,
-    onResolverFailure: InitializeResolverFailure = .failLand,
-    fileID: String = #fileID,
-    line: Int = #line,
-    validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
-    apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    initializeDirective(
-        site: "\(fileID):\(line)",
-        InitializeHandler(validate: validate, apply: apply),
-        executors: [ResolverExecutor.createExecutor(for: resolvers)],
-        onResolverFailure: onResolverFailure
-    )
-}
-
-/// The two-stage form with a resolver and nothing to pass from `validate` to `apply` (#593).
-public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
-    resolvers: R1.Type,
-    onResolverFailure: InitializeResolverFailure = .failLand,
-    fileID: String = #fileID,
-    line: Int = #line,
-    validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
-    apply: @escaping @Sendable (inout State, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    initializeDirective(
-        site: "\(fileID):\(line)",
-        InitializeHandler(validate: validate, apply: apply),
-        executors: [ResolverExecutor.createExecutor(for: resolvers)],
-        onResolverFailure: onResolverFailure
-    )
-}
-
-/// OnInitialize in two stages with two resolvers (#593).
-public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, Plan>(
-    resolvers: (R1.Type, R2.Type),
-    onResolverFailure: InitializeResolverFailure = .failLand,
-    fileID: String = #fileID,
-    line: Int = #line,
-    validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
-    apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    initializeDirective(
-        site: "\(fileID):\(line)",
-        InitializeHandler(validate: validate, apply: apply),
-        executors: [
-        ResolverExecutor.createExecutor(for: resolvers.0),
-        ResolverExecutor.createExecutor(for: resolvers.1)
-    ],
-        onResolverFailure: onResolverFailure
-    )
-}
-
-/// The two-stage form with two resolvers and nothing to pass from `validate` to `apply` (#593).
-public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
-    resolvers: (R1.Type, R2.Type),
-    onResolverFailure: InitializeResolverFailure = .failLand,
-    fileID: String = #fileID,
-    line: Int = #line,
-    validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
-    apply: @escaping @Sendable (inout State, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    initializeDirective(
-        site: "\(fileID):\(line)",
-        InitializeHandler(validate: validate, apply: apply),
-        executors: [
-        ResolverExecutor.createExecutor(for: resolvers.0),
-        ResolverExecutor.createExecutor(for: resolvers.1)
-    ],
-        onResolverFailure: onResolverFailure
-    )
-}
-
-/// OnInitialize in two stages with three resolvers (#593).
-public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver, Plan>(
-    resolvers: (R1.Type, R2.Type, R3.Type),
-    onResolverFailure: InitializeResolverFailure = .failLand,
-    fileID: String = #fileID,
-    line: Int = #line,
-    validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
-    apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    initializeDirective(
-        site: "\(fileID):\(line)",
-        InitializeHandler(validate: validate, apply: apply),
-        executors: [
-        ResolverExecutor.createExecutor(for: resolvers.0),
-        ResolverExecutor.createExecutor(for: resolvers.1),
-        ResolverExecutor.createExecutor(for: resolvers.2)
-    ],
-        onResolverFailure: onResolverFailure
-    )
-}
-
-/// The two-stage form with three resolvers and nothing to pass from `validate` to `apply` (#593).
-public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
-    resolvers: (R1.Type, R2.Type, R3.Type),
-    onResolverFailure: InitializeResolverFailure = .failLand,
-    fileID: String = #fileID,
-    line: Int = #line,
-    validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
-    apply: @escaping @Sendable (inout State, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    initializeDirective(
-        site: "\(fileID):\(line)",
-        InitializeHandler(validate: validate, apply: apply),
-        executors: [
-        ResolverExecutor.createExecutor(for: resolvers.0),
-        ResolverExecutor.createExecutor(for: resolvers.1),
-        ResolverExecutor.createExecutor(for: resolvers.2)
-    ],
-        onResolverFailure: onResolverFailure
-    )
+    initializeDirective(site: "\(fileID):\(line)", InitializeHandler(validate: validate, apply: apply), resolvers: nil, onResolverFailure: .failLand)
 }
 
 /// Registers a handler called when the Land is finalizing (before shutdown).
@@ -1115,62 +786,6 @@ public func OnFinalize<State: StateNodeProtocol>(
     return { config in
         guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
         config.onFinalize = body
-    }
-}
-
-/// Registers a handler called when the Land is finalizing with resolvers.
-///
-/// - Parameters:
-///   - resolvers: One or more resolver types to execute before the handler.
-///   - body: The synchronous closure to execute with resolved data available via `ctx`.
-public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver>(
-    resolvers: R1.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    let executors = [ResolverExecutor.createExecutor(for: resolvers)]
-    return { config in
-        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
-        config.onFinalize = body
-        config.onFinalizeResolverExecutors = executors
-    }
-}
-
-/// Registers a handler called when the Land is finalizing with multiple resolvers.
-public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
-    resolvers: (R1.Type, R2.Type),
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    let executors = [
-        ResolverExecutor.createExecutor(for: resolvers.0),
-        ResolverExecutor.createExecutor(for: resolvers.1)
-    ]
-    return { config in
-        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
-        config.onFinalize = body
-        config.onFinalizeResolverExecutors = executors
-    }
-}
-
-/// Registers a handler called when the Land is finalizing with multiple resolvers.
-public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
-    resolvers: (R1.Type, R2.Type, R3.Type),
-    fileID: String = #fileID,
-    line: Int = #line,
-    _ body: @escaping @Sendable (inout State, LandContext) -> Void
-) -> LifetimeDirective<State> {
-    let executors = [
-        ResolverExecutor.createExecutor(for: resolvers.0),
-        ResolverExecutor.createExecutor(for: resolvers.1),
-        ResolverExecutor.createExecutor(for: resolvers.2)
-    ]
-    return { config in
-        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
-        config.onFinalize = body
-        config.onFinalizeResolverExecutors = executors
     }
 }
 
@@ -1220,6 +835,10 @@ public enum LandDSL<State: StateNodeProtocol, Services: Sendable> {
     public static func buildExpression(_ node: OnJoinNode<State>) -> [LandNode] { [node] }
     public static func buildExpression(_ node: OnLeaveNode<State>) -> [LandNode] { [node] }
     public static func buildExpression(_ node: LifetimeNode<State>) -> [LandNode] { [node] }
+    /// A `Lifetime` block, typed by the land's services (#769).
+    public static func buildExpression(_ node: ResolvingNode<LifetimeNode<State>, Services>) -> [LandNode] { [node.node] }
+    /// An action handler with resolvers, only where their services are the land's (#769).
+    public static func buildExpression(_ node: ResolvingNode<AnyActionHandler<State>, Services>) -> [LandNode] { [node.node] }
     /// Flattened here: a `Rules` block's nodes become the enclosing block's.
     public static func buildExpression(_ node: LandRules<State, Services>) -> [LandNode] { node.nodes }
     public static func buildExpression(_ node: AccessControlNode) -> [LandNode] { [node] }
@@ -1273,10 +892,10 @@ public enum LandDSL<State: StateNodeProtocol, Services: Sendable> {
 
 /// The type-erased action handler both forms build: `invoke` throws only from the payload type
 /// check or `validate`, before anything is written.
-private func makeActionHandler<State: StateNodeProtocol, A: ActionPayload>(
+func makeActionHandler<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
     site: String,
-    executors: [any AnyResolverExecutor],
+    resolvers: ResolverDeclaration<(State, Any)>?,
     invoke: @escaping @Sendable (inout State, A, LandContext) throws -> A.Response
 ) -> AnyActionHandler<State> {
     // The associated type, which every conformance has: `getResponseType()`'s default ends the
@@ -1291,7 +910,7 @@ private func makeActionHandler<State: StateNodeProtocol, A: ActionPayload>(
             }
             return AnyCodable(try invoke(&state, action, ctx))
         },
-        resolverExecutors: executors
+        resolvers: resolvers
     )
 }
 
@@ -1312,46 +931,7 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
     line: Int = #line,
     _ body: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    makeActionHandler(type, site: "\(fileID):\(line)", executors: [], invoke: body)
-}
-
-/// Registers an action handler with resolvers for a specific Action type.
-///
-/// This version allows declaring resolvers that will be executed in parallel before
-/// the action handler runs. Resolver outputs are available synchronously in the handler
-/// via `ctx.resolverOutputName`.
-///
-/// Example:
-/// ```swift
-/// HandleAction(UpdateCart.self, resolvers: ProductInfoResolver.self) { state, action, ctx in
-///     let productInfo = ctx.productInfo  // Available synchronously
-///     // Use resolver outputs...
-/// }
-/// ```
-public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver>(
-    _ type: A.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    resolvers: R1.Type,
-    _ body: @escaping @Sendable (inout State, A, LandContext) -> A.Response
-) -> AnyActionHandler<State> {
-    makeActionHandler(type, site: "\(fileID):\(line)", executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: body)
-}
-
-/// Registers an action handler with multiple resolvers.
-public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver>(
-    _ type: A.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    resolvers: (R1.Type, R2.Type),
-    _ body: @escaping @Sendable (inout State, A, LandContext) -> A.Response
-) -> AnyActionHandler<State> {
-    makeActionHandler(
-        type,
-        site: "\(fileID):\(line)",
-        executors: [ResolverExecutor.createExecutor(for: resolvers.0), ResolverExecutor.createExecutor(for: resolvers.1)],
-        invoke: body
-    )
+    makeActionHandler(type, site: "\(fileID):\(line)", resolvers: nil, invoke: body)
 }
 
 /// Registers an action handler in two stages (#586).
@@ -1377,7 +957,7 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload, Plan>(
     validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
     apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    makeActionHandler(type, site: "\(fileID):\(line)", executors: [], invoke: twoStage(validate, apply))
+    makeActionHandler(type, site: "\(fileID):\(line)", resolvers: nil, invoke: twoStage(validate, apply))
 }
 
 /// The two-stage form with nothing to pass from `validate` to `apply` (#586).
@@ -1388,65 +968,7 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
     validate: @escaping @Sendable (State, A, ValidateContext) throws -> Void,
     apply: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    makeActionHandler(type, site: "\(fileID):\(line)", executors: [], invoke: twoStage(validate, apply))
-}
-
-/// The two-stage form with a resolver (#586): `validate` reads its output from the context.
-public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, Plan>(
-    _ type: A.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    resolvers: R1.Type,
-    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
-    apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response
-) -> AnyActionHandler<State> {
-    makeActionHandler(type, site: "\(fileID):\(line)", executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: twoStage(validate, apply))
-}
-
-/// The two-stage form with a resolver and nothing to pass from `validate` to `apply` (#586).
-public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver>(
-    _ type: A.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    resolvers: R1.Type,
-    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Void,
-    apply: @escaping @Sendable (inout State, A, LandContext) -> A.Response
-) -> AnyActionHandler<State> {
-    makeActionHandler(type, site: "\(fileID):\(line)", executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: twoStage(validate, apply))
-}
-
-/// The two-stage form with two resolvers (#586).
-public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver, Plan>(
-    _ type: A.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    resolvers: (R1.Type, R2.Type),
-    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
-    apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response
-) -> AnyActionHandler<State> {
-    makeActionHandler(
-        type,
-        site: "\(fileID):\(line)",
-        executors: [ResolverExecutor.createExecutor(for: resolvers.0), ResolverExecutor.createExecutor(for: resolvers.1)],
-        invoke: twoStage(validate, apply)
-    )
-}
-
-/// The two-stage form with two resolvers and nothing to pass from `validate` to `apply` (#586).
-public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver>(
-    _ type: A.Type,
-    fileID: String = #fileID,
-    line: Int = #line,
-    resolvers: (R1.Type, R2.Type),
-    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Void,
-    apply: @escaping @Sendable (inout State, A, LandContext) -> A.Response
-) -> AnyActionHandler<State> {
-    makeActionHandler(
-        type,
-        site: "\(fileID):\(line)",
-        executors: [ResolverExecutor.createExecutor(for: resolvers.0), ResolverExecutor.createExecutor(for: resolvers.1)],
-        invoke: twoStage(validate, apply)
-    )
+    makeActionHandler(type, site: "\(fileID):\(line)", resolvers: nil, invoke: twoStage(validate, apply))
 }
 
 /// `validate` then `apply`, as one call that throws only from `validate`.
@@ -1659,10 +1181,14 @@ public func Land<State: StateNodeProtocol>(
     )  // Single-expression: omit return
 }
 
-/// A land that declares the services its handlers use (#769 §3.4, #771 §3.1). Its body's builder
-/// is `LandDSL<State, Services>`, and `definition` records the services type.
+/// A land that declares the services its resolvers use (#769 §3.4, #771 §3.1). Its body's
+/// builder is `LandDSL<State, Services>`, so each resolver's `Dependencies` is checked against
+/// `Services` at its declaration, and `definition` records the services type.
 ///
-/// Until #769 R1 nothing reads the services type: register `definition` as any other land's.
+/// Register it with `NIOLandHost.register(landType:land:services:…)`, which builds the services
+/// value per land instance, or build a live keeper with `LandKeeper(land:resolverServices:…)`. Its
+/// `definition` alone is for what never calls `resolve`: the schema and a replay. A live entry
+/// point given only the definition refuses the land.
 public struct TypedLand<State: StateNodeProtocol, Services: Sendable>: Sendable {
     public let definition: LandDefinition<State>
 }

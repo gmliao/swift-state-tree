@@ -31,13 +31,12 @@ public struct ReadOnlyLandServices: Sendable {
     }
 }
 
-/// What a handler's `validate` step can see: the input's identity, tick and resolver outputs, and
-/// the read-only services (#586).
+/// What a handler's `validate` step can see: the input's identity and tick, and the read-only
+/// services (#586). Resolver outputs come as `validate`'s typed parameter (#769).
 ///
 /// `validate` decides whether the input may happen and returns the plan `apply` acts on. It can't
 /// write the state (it gets it as a constant), emit events, submit server inputs, draw random
 /// numbers or request a sync: none of those are on this type.
-@dynamicMemberLookup
 public struct ValidateContext: Sendable {
     private let base: LandContext
 
@@ -67,10 +66,4 @@ public struct ValidateContext: Sendable {
     public var logger: Logger { base.logger }
     /// The land's services, restricted to `ReadOnlyLandService` types.
     public var services: ReadOnlyLandServices { ReadOnlyLandServices(base.services) }
-
-    /// A resolver's output, by the name `LandContext` gives it (`ProductInfoResolver` ->
-    /// `productInfo`).
-    public subscript<T: ResolverOutput>(dynamicMember member: String) -> T? {
-        base[dynamicMember: member]
-    }
 }

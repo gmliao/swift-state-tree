@@ -6,10 +6,8 @@ import Logging
 /// LandContext is created for each request (action, client event, join, leave) and released after processing.
 /// It follows the Request-scoped Context pattern.
 ///
-/// Supports dynamic resolver outputs via @dynamicMemberLookup.
-/// Resolver outputs are populated before a handler that declares resolvers runs (actions, CanJoin,
-/// OnJoin, OnLeave, OnInitialize, OnFinalize); client event handlers take no resolvers.
-@dynamicMemberLookup
+/// A handler that declares resolvers gets their outputs as typed parameters (#769); the context
+/// holds them only for the runtime and the record.
 public struct LandContext: Sendable {
     // MARK: - System IDs
     
@@ -265,40 +263,23 @@ public struct LandContext: Sendable {
         resolverOutputs[propertyName] = .live(output)
     }
 
-    /// Get a resolver output by property name (internal use)
-    internal func getResolverOutput<Output: ResolverOutput>(
-        _ type: Output.Type,
-        forPropertyName propertyName: String
-    ) -> Output? {
-        // The subscript's read, so a recorded output in replay decodes here too.
-        self[dynamicMember: propertyName]
-    }
-    
     /// Get all resolver outputs (internal use for recording), in the form they are held
     internal func getAllResolverOutputs() -> [String: HeldResolverOutput] {
         return resolverOutputs
     }
 
-    // MARK: - Dynamic Member Lookup
+    // MARK: - Typed outputs
 
-    /// Dynamic member lookup for resolver outputs
+    /// The output held under `member` (`ProductInfoResolver` -> `productInfo`), as `T`. The
+    /// entries' typed parameters read through here (#769).
     ///
-    /// Allows accessing resolver outputs using dot notation:
-    /// ```swift
-    /// let productInfo = ctx.productInfo  // Returns ProductInfo?
-    /// let userProfile = ctx.userProfile  // Returns UserProfileInfo?
-    /// ```
-    ///
-    /// Property names are derived from resolver type names:
-    /// - `ProductInfoResolver` -> `productInfo`
-    /// - `UserProfileResolver` -> `userProfile`
-    ///
-    /// **Replay:** a recorded output is held as `RecordedResolverOutput`, and this subscript decodes
+    /// **Replay:** a recorded output is held as `RecordedResolverOutput`, and this read decodes
     /// it into the requested type with the record's own codec (`RecordPayloadSource`, #707), as a
-    /// replayed server event is: a `Data` field reads back in the form the recorder wrote. An output that doesn't decode into the requested type reads as `nil`, with a
-    /// warning naming the output and the error: in replay a `nil` the live handler didn't see is a
-    /// divergence, and a silent one is how #707 went unnoticed.
-    public subscript<T: ResolverOutput>(dynamicMember member: String) -> T? {
+    /// replayed server event is: a `Data` field reads back in the form the recorder wrote. An
+    /// output that doesn't decode into the requested type reads as `nil`, with a warning naming
+    /// the output and the error: in replay a `nil` the live handler didn't see is a divergence,
+    /// and a silent one is how #707 went unnoticed.
+    func resolverOutput<T: ResolverOutput>(_ type: T.Type, named member: String) -> T? {
         switch resolverOutputs[member] {
         case nil:
             return nil
