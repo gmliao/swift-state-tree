@@ -1,6 +1,6 @@
 # #771: handler closures infer their types; the payload type is written once
 
-**Status:** rev 2.1, plan only, no code. D0's probes and build baseline are done (§5); D-Q1 to D-Q3 are decided, D-Q4 is open. It follows the maintainer's 2026-11-22 decision on #771, and it is aligned with the #769 plan (`2026-11-24-resolvers-as-values.md`, rev 2): the builders are generic over `<State, Services>` from the start, and `Land(_:using:services:)` returns #769's `TypedLand` (R-Q1 (c), decided 2026-11-24). Review gave rev 1 a GO (1ee8b88f) with 5 shoulds and 2 nits; rev 2 folds them in (§9). Open questions are in §8.
+**Status:** rev 2.2, plan only, no code. D0's probes and build baseline are done (§5); D-Q1 to D-Q4 are decided (§8). Rev 2.2 drops client-event self-registration for D-Q4 (e) (§9). It follows the maintainer's 2026-11-22 decision on #771, and it is aligned with the #769 plan (`2026-11-24-resolvers-as-values.md`, rev 2): the builders are generic over `<State, Services>` from the start, and `Land(_:using:services:)` returns #769's `TypedLand` (R-Q1 (c), decided 2026-11-24). Review gave rev 1 a GO (1ee8b88f) with 5 shoulds and 2 nits; rev 2 folds them in (§9). Open questions are in §8.
 
 Code pointers are at main 13390afb. `DSL` is `Sources/SwiftStateTree/Land/LandDSL.swift`; `LB` is `Sources/SwiftStateTree/Land/LandBuilder.swift`. The issue's probe ran on Swift 6.4.2. The pin is moving to 6.4.3 (a bump PR is in flight), so D0 probes on 6.4.3, and on 6.2.4 too if the bump hasn't landed when D1 starts.
 
@@ -16,13 +16,14 @@ HandleEvent(Chat.self) { (state: inout CookieGameState, event: Chat, ctx: LandCo
 // After
 HandleAction(BuyUpgradeAction.self) { state, action, ctx in … }
 CanJoin { state, session, ctx in … }
-HandleEvent(Chat.self) { state, event, ctx in … }        // registers Chat itself
+ClientEvents { Register(Chat.self) }                     // unchanged: the land's contract with its clients
+HandleEvent(Chat.self) { state, event, ctx in … }
 ```
 
 - **Root cause:** `LandDSL` isn't generic (DSL:974). `buildBlock(_ components: LandNode...)` gives a closure no contextual State, so each closure annotates State and, with it, every other parameter.
 - **The fix:** the builders become generic over the land's State (and, for #769, its Services) and take each node through a typed `buildExpression`. The entry's return type then fixes `State`, and the closure infers the rest.
 - **The payload metatype stays,** as the one place the payload type is written.
-- **Client events register themselves:** `HandleEvent(X.self)` registers `X`. A client event registered without a handler is refused at every intake today (§3.3), so D-Q4 decides whether `ClientEvents { Register(X.self) }` without a handler stays legal. Server events keep `ServerEvents { Register(…) }`, since they have no handler.
+- **Client events stay explicitly registered** (D-Q4 (e)): `ClientEvents { Register(X.self) }` and `ServerEvents { Register(…) }` both stay, as the land's declared contract with its clients. `HandleEvent` doesn't register its event. What changes is that registration checks the two against each other: a registered client event with no handler, and a handled one that isn't registered, each refuse the land at registration (§3.3).
 - **Annotated closures keep compiling.** The migration only removes annotations; a closure it can't match stays as it is.
 
 ## 2. Inputs and order
@@ -83,13 +84,41 @@ The entries' signatures don't change. Their generic `State` is now inferred from
 - **The same for** `HandleEvent`, `HandleServerInput` (ServerInput.swift:140–166), `CanJoin`, `OnJoin`, `OnLeave`, `OnInitialize`, `OnFinalize`, `AfterFinalize`, `Tick`, `StateSync`, `DestroyWhenEmpty`, `PersistSnapshot`.
 - **Overload pressure.** `HandleAction` has 9 overloads (DSL:1041–1168): plain or two-stage, with or without `Plan`, and with 0–2 resolvers. Without annotations, the type checker picks among them inside a result builder. D0 measures this (§5) before D1 commits to it. #769 replaces the resolver overloads with one builder-closure form per arity, which shrinks the set.
 
-### 3.3 Client events register themselves
+### 3.3 Client events: registered, and checked against their handlers (D-Q4 (e))
 
-- `LandBuilder.ingest` appends a handler's `eventType` to `clientEventRegistrations` when it meets an `AnyClientEventHandler` (LB:96). A type listed twice is kept once (LB:182–184), so an explicit `Register` beside a handler is harmless. The codemod removes it as redundant.
-- **The behavior change:** today a land with `HandleEvent(X.self)` and no `Register(X.self)` refuses every `X`. The keeper throws `LandError.eventNotRegistered` (LK:3102–3110), and `X` is missing from the schema (SchemaExtractor.swift:130). After D1, `X` is accepted and in the schema. No test expects `eventNotRegistered` today (0 matches in `Tests/`). The codemod lists every land in this case, so its schema change is seen.
-- **An event registered without a handler is refused at every intake.** The keeper finds its descriptor, then finds no handler and throws `eventNotRegistered` (LK:3115). So a `Register(X.self)` with no `HandleEvent(X.self)` only puts `X` in the schema, for a client that can never send it. No land in Examples does this. About 15 test lands do (a file-level match, `Register(X.self)` in `ClientEvents` with no `HandleEvent(X.self)` in the file), for schema, fingerprint and registration tests. **D-Q4** decides between refusing it at registration (those tests add a no-op handler) and documenting it.
+`ClientEvents { Register(X.self) }` stays the land's declaration of what its clients may send, as `ServerEvents` is for what it sends. Server events can't register themselves, since they have no handler. Client events don't either, so the two directions read the same. `HandleEvent(X.self)` handles `X` and registers nothing.
+
+**Today the two lists can disagree silently, and each mismatch fails per event, at intake:**
+- **a handled event that isn't registered.** The keeper finds no descriptor and throws `LandError.eventNotRegistered` for every `X` (LK:3102–3111), and `X` is missing from the schema (SchemaExtractor.swift:130);
+- **a registered event with no handler.** The keeper finds the descriptor, then no handler, and throws `eventNotRegistered` (LK:3114–3124). `X` is in the schema, for a client that can never send it.
+
+**After D1 both are refused at registration**, as #599's shared names are:
+- `LandBuilder` compares the two once it has every node. For each registered client event type, it looks for a handler with the predicate the intake uses (`canHandle`, LK:3114). For each handler, it looks for its `eventType` among the registrations, by type identity.
+- It keeps the mismatches on the definition, as it keeps `duplicateHandlers`. `validateForRegistration` (LandRegistration.swift:141) puts them in `LandRegistrationError`. Its new field, `clientEventMismatches: [String]`, holds one line per type: its name and which side is missing ("registered, no HandleEvent" / "handled, not in ClientEvents").
+- A keeper built directly runs the same registration check and holds the error as its `LandInitializationError` (#535), as for every other registration problem.
+- **The intake checks stay** (LK:3102–3124). The first still refuses an event type a client sends that the land doesn't know. The second becomes unreachable for a registered land, and stays as the guard for a definition built by hand.
+- **Tested in-process**, no exit test (§5).
+
+**Who this refuses today** (counted 2026-11-24 at main 3a1c470e, land by land: a land body's `Register` lines inside `ClientEvents` against its `HandleEvent` lines, and against every `HandleEvent` in the file when the body splices handlers from a variable or helper, which 28 of 437 lands do):
+- **registered, no handler: 16 registrations in 15 lands, 6 files, all in `Tests/`.** They are schema, fingerprint, name-collision and DSL tests that need the event only in the schema or the registry:
+  - `DecimalRegistrationTests`;
+  - `SchemaFingerprintTests` (4);
+  - `LandDSLTests` (6 registrations in 5 lands);
+  - `EventNameRegistrationTests` (3);
+  - `SchemaTypeNameCollisionTests`;
+  - `TransportTests`.
+  
+  None is in `Sources/` or Examples.
+- **handled, not registered: 0.** No test expects `eventNotRegistered` today either (0 matches in `Tests/`).
+
+**What D1 does with them:**
+- each of the 15 lands gets a no-op handler, `HandleEvent(X.self) { _, _, _ in }`, by hand in D1, in its own commit. The refusal lands in D1, so D1 can't wait for D2's codemod. The commit lists each land with file and line;
+- the codemod in D2 re-runs the same land-by-land check over its output, and lists any mismatch instead of editing it (§4);
+- the new refusal is grepped for before D1 (this count), as a new refusal must be: a land a grep misses fails its test at registration, which the full `swift test` shows.
+
+**The schema doesn't change** for any land: nothing registers itself, so every registry keeps its order. The codegen diff over `Examples/*/schema.json` must be empty.
+
 - **`AllowedClientEvents`** is unchanged: it lists events the transport may reject early, which is a separate thing.
-- **The schema of a land whose events are all handled** is unchanged. The registry is ordered by registration, so self-registration has to keep each land's order. Rule: explicit `Register`s first, in their order, then handled events not already listed, in declaration order. That keeps every current land's schema byte-identical. A codegen diff over `Examples/*/schema.json` checks it.
 
 ## 4. The codemod (shared with #769)
 
@@ -98,7 +127,7 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
 - **Where it lives:** in its own package under `Tools/Codemods/DSL/`, committed in D2's PR so Review can read it, and deleted in that PR's last commit (D-Q1, decided (a)).
 - **#771's rewrites:**
   - strip parameter and return-type annotations from closures passed to the entries in §3.2. A parameter named `_` stays `_`;
-  - remove a `Register(X.self)` that duplicates a `HandleEvent(X.self)` in the same land, and a `ClientEvents { }` left empty by that.
+  - no `Register` rewrite: client events stay registered (§3.3, D-Q4 (e)). The tool re-runs §3.3's land-by-land check on its output and lists any mismatch.
 - **#769's rewrites, mechanical part only:**
   - `resolvers: X.self` whose resolver reads none of `actionPayload`, `currentState` and `services` (checked on its declaration) becomes `resolvers: { _, _, _ in X() }`. This form needs #769's macro slice: `X` is `PlainData` only once `@PlainData` stops constraining a dependency parameter it doesn't store;
   - the handler gains an output parameter named after the old dynamic member, and `ctx.<name>` reads in its body become that parameter.
@@ -151,13 +180,15 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
 - an action closure whose body assigns to a `let` `action` field: the inferred types are the real ones.
 
 **Runtime:**
-- `selfRegistersHandledClientEvent`: a land with `HandleEvent(X.self)` and no `ClientEvents` accepts `X` and lists it in the schema;
-- `explicitRegisterOrderIsKept`: a land with `Register(B)`, `Register(A)` and a handler for `C` lists B, A, C;
+- `refusesRegisteredClientEventWithoutHandler`: a land with `Register(X.self)` and no `HandleEvent(X.self)` throws `LandRegistrationError` at registration, with one `clientEventMismatches` line naming `X`. A keeper built directly from it holds the same error as its `LandInitializationError` and refuses its first join;
+- `refusesHandledClientEventNotRegistered`: the same for `HandleEvent(Y.self)` with no `Register(Y.self)`;
+- the control: a land whose registrations and handlers match registers, and its schema lists the events in registration order;
 - `nestedRulesHandlersAreKept`: a handler declared inside `Rules` (and inside `Rules` inside `Rules`) is in the definition and handles its input (§3.1);
 - every existing test, unchanged in what it asserts, after the codemod.
 
 **Mutants:**
-- self-registration skipped. Caught by `selfRegistersHandledClientEvent`;
+- the registered-without-handler check removed. Caught by `refusesRegisteredClientEventWithoutHandler`;
+- the handled-not-registered check removed. Caught by `refusesHandledClientEventNotRegistered`;
 - `Rules` not flattened in `buildExpression`. Caught by `nestedRulesHandlersAreKept`.
 
 **Build time** (the cost a user feels): the test module's rebuild, on the same machine and toolchain as D0's baseline (median 70 s), three runs each, before and after D1 and D2. The gate is a median no more than 10% slower, and no expression over 200 ms other than the baseline's two. If it is slower, the codemod keeps annotations in the files that cost the most, and those files are listed.
@@ -169,7 +200,7 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
 | Slice | Content | After | Measurement |
 |---|---|---|---|
 | **D0** | The probes (§5), in a scratch package; results in this plan | now | type-check times only |
-| **D1** | The generic builders and typed `buildExpression`s (§3.1), `Rules` flattened in the builder, `Land(_:using:services:)` returning `TypedLand` and `NoServices` (inert until R1), client-event self-registration (§3.3) and D-Q4's answer, the wrong-State refusal. **Required by D0:** `LifetimeBuilder` gains a typed `buildExpression(LifetimeDirective<State>)`, with a test that `Tick(every:) { state, ctx in }` inside `Lifetime` compiles unannotated (D0 result 2). No call site is edited: annotated closures keep compiling. Docs show the inferred form | D0 | build time of `SwiftStateTreeTests`, before and after (no call-site change, so it isolates the builder's own cost) |
+| **D1** | The generic builders and typed `buildExpression`s (§3.1), `Rules` flattened in the builder, `Land(_:using:services:)` returning `TypedLand` and `NoServices` (inert until R1), the two client-event registration refusals (§3.3, D-Q4 (e)) with the no-op handlers for the 15 test lands they refuse (own commit), the wrong-State refusal. **Required by D0:** `LifetimeBuilder` gains a typed `buildExpression(LifetimeDirective<State>)`, with a test that `Tick(every:) { state, ctx in }` inside `Lifetime` compiles unannotated (D0 result 2). No call site is edited: annotated closures keep compiling. Docs show the inferred form | D0 | build time of `SwiftStateTreeTests`, before and after (no call-site change, so it isolates the builder's own cost) |
 | **D2** | The codemod run over Sources, Tests and Examples, with #769 R1 in the same PR, as commits (a) to (e) (§4). The listed sites are fixed by hand | D1, #769 R1, #769's macro slice | §5's build-time gate |
 
 Examples go in their own commit in D2. `docs/` pages that show handler closures (`quickstart`, `programming-model`, `core/*`) move to the inferred form in D1, both languages in the same commit.
@@ -185,9 +216,8 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
 - **Removed (D-Q2):** `ServerEvent(_:)`, `ServerEventNode`, `OnShutdown`, and `onShutdown` on `LifetimeConfig` and the land's lifetime handlers. None is called in the repository. A user's `OnShutdown` moves to `AfterFinalize`, which also runs after the last turn and gets the context.
 - **Added:** `Land(_:using:services:)`, returning `TypedLand<State, Services>`, and `NoServices`, which #769 also needs. Both are inert until #769's R1: nothing reads `Services`, and nothing takes a `TypedLand` except through `.definition`.
 - **Behavior:**
-  - a handled client event is registered (§3.3);
-  - **self-registration can newly surface #599's shared-name refusal.** The registry is keyed by event name, and two registered types with one name refuse the land at registration (LB:182–184, `sharedEventNames`). Today a handled but unregistered type isn't in the registry, so it can share a name with a registered one unnoticed (its events are refused at intake instead). After D1 it is registered, and the land is refused at registration. The codemod's run lists any land this hits;
-  - D-Q4's answer for a client event registered without a handler.
+  - **a land whose client-event registrations and handlers disagree is refused at registration** (§3.3), where today each such event is refused at intake. `LandRegistrationError` gains `clientEventMismatches` (additive). In the repository this refuses 15 test lands, which D1 gives a no-op handler;
+  - registration is unchanged otherwise: `HandleEvent` registers nothing, so #599's shared-name refusal sees the same registry as today.
 - **Unchanged:** every entry's name and parameter labels, the handler types, and `LandDefinition<State>`.
 
 ## 8. Questions for the maintainer
@@ -197,7 +227,7 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
 | D-Q1 | Where the codemod lives | **Decided 2026-11-24: (a).** Committed under `Tools/Codemods/DSL/` in D2's PR, as commit (a) of §4, and deleted in its last commit (e). Option (b), never committed and only described in the PR body, was declined | — |
 | D-Q2 | The deprecated `ServerEventNode` and `OnShutdown` | **Decided 2026-11-24: (a).** Removed in D1, with no `buildExpression` (§3.1, §7). Option (b), an overload each in the generic builder, was declined | — |
 | D-Q3 | A helper that returns handlers outside a `Land` (a function returning `[LandNode]` under `@LandDSL`) | **Decided 2026-11-24: (a).** The docs use the full generic `@LandDSL<MyState, NoServices>` as the standard spelling, and show a per-land typealias (`typealias MyDSL = LandDSL<MyState, AppServices>`) as the optional shorter form. The codemod lists every such helper. D0 probe 1 compiles one | — |
-| D-Q4 | A client event registered without a handler, which every intake refuses (LK:3115) | (a) refused at registration, like #599's shared names; the test lands that do it (about 15, schema and registration tests) add a no-op handler; (b) a registration warning; (c) documented only | **(a):** a land that declares an event its clients can never send has a bug, and it should show at startup, not as a refusal per event. The tests that need the event only in the schema get a one-line handler |
+| D-Q4 | A client event registered without a handler, which every intake refuses (LK:3124) | **Decided 2026-11-24: (e), a new option.** Both directions stay explicitly registered, as the land's contract with its clients (symmetry with `ServerEvents`, which can't self-register). Self-registration is dropped. Registration refuses both mismatches: a registered client event with no `HandleEvent`, and a `HandleEvent` whose event isn't in `ClientEvents` (§3.3). Options (a) refuse only the first, with self-registration, (b) a warning, and (c) documented only were declined | — |
 
 ## 9. Revisions
 
@@ -213,3 +243,8 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
 **Rev 2.1** records D0 and the maintainer's decisions:
 - **D0** (§5): every probe passes on 6.4.2 and 6.2.4. One finding is now a D1 requirement: `LifetimeBuilder` needs a typed `buildExpression` (result 2). The pressure numbers and the build baseline are D1's and D2's gate.
 - **D-Q1 (a), D-Q2 (a), D-Q3 (a)**, decided 2026-11-24 (§3.1, §4, §7, §8).
+
+**Rev 2.2** records D-Q4 (e), decided 2026-11-24:
+- client-event self-registration is dropped (§1, §3.3, §7). With it go the schema-order rule, the codemod's `Register` removal (§4), and #599's newly surfaced refusal (§7);
+- registration refuses both mismatches between `ClientEvents` and `HandleEvent`, in `LandRegistrationError.clientEventMismatches`, tested in-process with two tests and two mutants (§3.3, §5);
+- the new refusal is counted before D1: 16 registrations without a handler in 15 test lands (6 files) and 0 handlers without a registration. D1 gives those lands a no-op handler in its own commit (§3.3, §6).
