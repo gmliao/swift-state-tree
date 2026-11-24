@@ -22,57 +22,53 @@ struct PlainDataFinding: Equatable, CustomStringConvertible {
 
 enum PlainDataLint {
     static let witness = "a hand-written _plainDataCheck; only @PlainData writes it"
+    static let helper = "PlainDataCheck is for @PlainData's expansion only: an alias or extension of it can add an overload that lets any type pass the checks"
     static let implements = "@_implements naming PlainData writes its requirement by hand; only @PlainData writes it"
     static let conformance = "a hand-written PlainData conformance; use @PlainData"
     static let alias = "a typealias for PlainData lets a type conform without @PlainData"
-    static let helperExtension = "an extension of PlainDataCheck can add an overload that lets any type pass the checks"
     static func reserved(_ name: String) -> String {
-        "a declaration named \(name) shadows the name @PlainData's expansion relies on"
+        "a declaration named \(name) shadows a name @PlainData's expansion relies on"
     }
 
-    /// Names the expansion uses or the standard library's types are pinned through.
-    static let reservedNames: Set<String> = ["PlainDataCheck", "SwiftStateTurns", "Swift"]
+    /// Names the expansion qualifies with, and the standard library's wrappers it pins through
+    /// `PlainDataCheck`'s helpers. `PlainDataCheck` itself is refused as any token.
+    static let reservedNames: Set<String> = ["SwiftStateTurns", "Swift", "Optional", "Array", "ContiguousArray", "Dictionary"]
 
-    /// Paths the rule doesn't apply to: the turn core and its macro write the requirement.
+    /// The turn core: it declares the requirement and its built-in conformances. The macro target
+    /// names them only inside string literals, which the rule doesn't read.
     static func isCore(_ path: String) -> Bool {
-        path.hasPrefix("Sources/SwiftStateTurns/") || path.hasPrefix("Sources/SwiftStateTurnsMacros/")
-    }
-
-    /// Whether a file can hold a finding at all. Every finding needs one of these words in the
-    /// raw text, so a file without any is skipped unparsed.
-    static func mayHold(_ text: String) -> Bool {
-        if text.contains("PlainData") || text.contains("_implements") || text.contains("SwiftStateTurns") { return true }
-        return text.range(of: #"(^|[^A-Za-z0-9_.])Swift([^A-Za-z0-9_]|$)"#, options: .regularExpression) != nil
+        path.hasPrefix("Sources/SwiftStateTurns/")
     }
 
     static func findings(in source: String) -> [PlainDataFinding] {
         let tree = Parser.parse(source: source)
         let visitor = PlainDataVisitor(converter: SourceLocationConverter(fileName: "", tree: tree))
         visitor.walk(tree)
-        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
         var seen: Set<Int> = []
         return visitor.found.filter { finding in
             // One finding per line, the first; a line marked for this rule is allowed.
             guard seen.insert(finding.line).inserted else { return false }
-            let text = finding.line <= lines.count ? String(lines[finding.line - 1]) : ""
-            return !isMarked(text)
+            return !visitor.markedLines.contains(finding.line)
         }
     }
 
-    /// The allow marker for this rule, followed on its line by a reason of at least ten
-    /// characters. Where a marker may appear and how many a file may hold is
-    /// scripts/lint-turns.sh's check. Built in two parts, so this file holds no marker itself.
+    /// The allow marker for this rule. A `//` comment that starts with it, followed by a reason
+    /// of at least ten characters, allows its line. A marker later in another comment isn't one:
+    /// scripts/lint-turns.sh, which counts markers per file, refuses two on a line. Built in two
+    /// parts, so this file holds no marker itself.
     static let marker = "// lint-" + "allow: turns-plain-data:"
 
-    static func isMarked(_ line: String) -> Bool {
-        guard let range = line.range(of: marker) else { return false }
-        return line[range.upperBound...].trimmingCharacters(in: .whitespaces).count >= 10
+    static func isMarker(_ comment: String) -> Bool {
+        guard comment.hasPrefix(marker) else { return false }
+        return comment.dropFirst(marker.count).trimmingCharacters(in: .whitespaces).count >= 10
     }
 }
 
 private final class PlainDataVisitor: SyntaxVisitor {
     let converter: SourceLocationConverter
     var found: [PlainDataFinding] = []
+    /// Lines holding a `//` comment that is this rule's marker, from the tree's trivia.
+    var markedLines: Set<Int> = []
 
     init(converter: SourceLocationConverter) {
         self.converter = converter
@@ -102,13 +98,31 @@ private final class PlainDataVisitor: SyntaxVisitor {
         }
     }
 
+    private func markers(in trivia: Trivia, from start: AbsolutePosition) {
+        var position = start
+        for piece in trivia {
+            if case .lineComment(let text) = piece, PlainDataLint.isMarker(text) {
+                markedLines.insert(converter.location(for: position).line)
+            }
+            position += piece.sourceLength
+        }
+    }
+
     override func visit(_ token: TokenSyntax) -> SyntaxVisitorContinueKind {
-        if identifier(token) == "_plainDataCheck" { note(token, PlainDataLint.witness) }
+        markers(in: token.leadingTrivia, from: token.position)
+        markers(in: token.trailingTrivia, from: token.endPositionBeforeTrailingTrivia)
+        // A string literal's text is a segment token, never an identifier: only code is read.
+        switch identifier(token) {
+        case "_plainDataCheck": note(token, PlainDataLint.witness)
+        case "PlainDataCheck": note(token, PlainDataLint.helper)
+        default: break
+        }
         return .visitChildren
     }
 
     override func visit(_ node: AttributeSyntax) -> SyntaxVisitorContinueKind {
-        if node.attributeName.trimmedDescription == "_implements", let arguments = node.arguments, namesPlainData(arguments) {
+        let name = node.attributeName.tokens(viewMode: .sourceAccurate).compactMap { identifier($0) }.last
+        if name == "_implements", let arguments = node.arguments, namesPlainData(arguments) {
             note(node, PlainDataLint.implements)
         }
         return .visitChildren
@@ -133,12 +147,6 @@ private final class PlainDataVisitor: SyntaxVisitor {
         return .visitChildren
     }
 
-    override func visit(_ node: ExtensionDeclSyntax) -> SyntaxVisitorContinueKind {
-        let extended = node.extendedType.tokens(viewMode: .sourceAccurate).compactMap { identifier($0) }.last
-        if extended == "PlainDataCheck" { note(node.extendedType, PlainDataLint.helperExtension) }
-        return .visitChildren
-    }
-
     override func visit(_ node: StructDeclSyntax) -> SyntaxVisitorContinueKind { reserved(node.name); return .visitChildren }
     override func visit(_ node: ClassDeclSyntax) -> SyntaxVisitorContinueKind { reserved(node.name); return .visitChildren }
     override func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind { reserved(node.name); return .visitChildren }
@@ -154,42 +162,62 @@ private final class PlainDataVisitor: SyntaxVisitor {
 private let repositoryRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-/// The Swift files the rule reads, relative to the root, sorted.
-private func repositorySwiftFiles() -> [String] {
+/// The Swift files under `tops` of `root`, relative to `root`, sorted: what SwiftPM can compile.
+/// A symlinked directory is followed (each real directory once, so a cycle ends). A `.build` or
+/// `node_modules` directory is skipped only at a package's root (beside a `Package.swift` or a
+/// `package.json`); anywhere else it may hold a target's sources.
+func swiftFiles(under root: URL, in tops: [String]) -> [String] {
+    let files = FileManager.default
     var paths: [String] = []
-    for top in ["Sources", "Tests", "Examples"] {
-        let base = repositoryRoot.appendingPathComponent(top)
-        guard let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: nil) else { continue }
-        for case let url as URL in walker {
-            let name = url.lastPathComponent
-            if name == ".build" || name == "node_modules" { walker.skipDescendants(); continue }
-            guard url.pathExtension == "swift" else { continue }
-            paths.append(String(url.standardizedFileURL.path.dropFirst(repositoryRoot.standardizedFileURL.path.count + 1)))
+    var visited: Set<String> = []
+    func walk(_ relative: String) {
+        let url = root.appendingPathComponent(relative)
+        guard visited.insert(url.resolvingSymlinksInPath().path).inserted,
+              let names = try? files.contentsOfDirectory(atPath: url.path) else { return }
+        let packageRoot = names.contains("Package.swift") || names.contains("package.json")
+        for name in names.sorted() {
+            let child = relative + "/" + name
+            var isDirectory: ObjCBool = false
+            guard files.fileExists(atPath: root.appendingPathComponent(child).path, isDirectory: &isDirectory) else { continue }
+            if isDirectory.boolValue {
+                if packageRoot, name == ".build" || name == "node_modules" { continue }
+                walk(child)
+            } else if name.hasSuffix(".swift") {
+                paths.append(child)
+            }
         }
     }
+    for top in tops { walk(top) }
     return paths.sorted()
+}
+
+/// The findings in `paths` under `root`, outside the core, as `path:line: message`, sorted.
+/// Every file is parsed, in parallel: a prefilter on the raw text would have to know every
+/// spelling the visitor finds.
+func scan(_ paths: [String], under root: URL) async throws -> [String] {
+    try await withThrowingTaskGroup(of: [String].self) { group in
+        for path in paths where !PlainDataLint.isCore(path) {
+            group.addTask {
+                let text = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+                return PlainDataLint.findings(in: text).map { "\(path):\($0)" }
+            }
+        }
+        return try await group.reduce(into: []) { $0 += $1 }.sorted()
+    }
 }
 
 @Suite("Plain-data rule (lint on SwiftSyntax)")
 struct PlainDataLintTests {
     @Test("The repository: no hand-written witness, conformance or reserved name outside the core")
-    func repository() throws {
-        let files = repositorySwiftFiles()
+    func repository() async throws {
+        let files = swiftFiles(under: repositoryRoot, in: ["Sources", "Tests", "Examples"])
         // A path change that finds nothing would pass vacuously; these must be read.
         #expect(files.count > 300, "found \(files.count) Swift files under \(repositoryRoot.path)")
         let marked = "Tests/SwiftStateTurnsTests/Support/DemoActor.swift"
         try #require(files.contains(marked), "\(marked) not found under \(repositoryRoot.path)")
 
-        var report: [String] = []
-        var parsed = 0
-        for path in files where !PlainDataLint.isCore(path) {
-            let text = try String(contentsOf: repositoryRoot.appendingPathComponent(path), encoding: .utf8)
-            guard PlainDataLint.mayHold(text) else { continue }
-            parsed += 1
-            report += PlainDataLint.findings(in: text).map { "\(path):\($0)" }
-        }
+        let report = try await scan(files, under: repositoryRoot)
         #expect(report.isEmpty, "\(report.joined(separator: "\n"))")
-        #expect(parsed > 20, "parsed only \(parsed) files")
 
         // The marked file holds a hand-written witness under its marker: it was read, and the
         // marker is what lets it pass.
@@ -216,11 +244,21 @@ struct PlainDataLintTests {
         ("extension Other: Hashable & PlainData {}", 1, PlainDataLint.conformance),
         ("typealias Alias = PlainData", 1, PlainDataLint.alias),
         ("typealias Joined = Sendable &\n    PlainData", 1, PlainDataLint.alias),
-        ("extension PlainDataCheck { static func field(_: Ref.Type) {} }", 1, PlainDataLint.helperExtension),
-        ("extension SwiftStateTurns.PlainDataCheck {}", 1, PlainDataLint.helperExtension),
+        ("struct H { @`_implements`(PlainData, other()) static func anything() {} }", 1, PlainDataLint.implements),
+        ("extension PlainDataCheck { static func field(_: Ref.Type) {} }", 1, PlainDataLint.helper),
+        ("extension SwiftStateTurns.PlainDataCheck {}", 1, PlainDataLint.helper),
+        ("typealias Helper = SwiftStateTurns.PlainDataCheck\nextension Helper {}", 1, PlainDataLint.helper),
+        ("enum Box { typealias H = PlainDataCheck }", 1, PlainDataLint.helper),
+        ("protocol Hook {}\ntypealias Check = PlainDataCheck\nextension Check: Hook {}", 2, PlainDataLint.helper),
+        ("let call: () = PlainDataCheck.field(Int.self)", 1, PlainDataLint.helper),
+        ("struct X {}\r_ = 0; static func _plainDataCheck() {}", 2, PlainDataLint.witness),
         ("enum SwiftStateTurns {}", 1, PlainDataLint.reserved("SwiftStateTurns")),
         ("enum Swift { struct Array<E> {} }", 1, PlainDataLint.reserved("Swift")),
-        ("typealias PlainDataCheck = Int", 1, PlainDataLint.reserved("PlainDataCheck")),
+        ("typealias PlainDataCheck = Int", 1, PlainDataLint.helper),
+        ("typealias Array<E> = Swift.Array<Ref>", 1, PlainDataLint.reserved("Array")),
+        ("struct Optional<W> {}", 1, PlainDataLint.reserved("Optional")),
+        ("enum Dictionary {}", 1, PlainDataLint.reserved("Dictionary")),
+        ("final class ContiguousArray {}", 1, PlainDataLint.reserved("ContiguousArray")),
         ("struct Wrap<SwiftStateTurns> {}", 1, PlainDataLint.reserved("SwiftStateTurns")),
         ("struct K {\n    static let SwiftStateTurns = 0\n}", 2, PlainDataLint.reserved("SwiftStateTurns")),
     ])
@@ -243,15 +281,67 @@ struct PlainDataLintTests {
         "typealias Pair = PlainPair<Int, Int>",
         "import SwiftStateTurns\nlet pair = SwiftStateTurns.PlainPair<Int, Int>(1, 2)",
         "let version = \"Swift 6\"; let swift = 6",
+        "let text = \"SwiftStateTurns.PlainDataCheck.field((Int).self)\"",
+        "let names: Swift.Array<Int> = []; let d: Dictionary<String, Int> = [:]",
     ])
     func allows(source: String) {
         #expect(PlainDataLint.findings(in: source).isEmpty, "\(source)")
     }
 
-    @Test("A line with the marker and a reason is allowed; without a reason it isn't")
+    @Test("A line whose // comment starts with the marker and a reason is allowed; a reason too short, a marker inside another comment or a string, isn't")
     func marker() {
         let witness = "extension ClassMachine { static func _plainDataCheck() {} } "
+        let refused = [PlainDataFinding(line: 1, message: PlainDataLint.witness)]
         #expect(PlainDataLint.findings(in: witness + PlainDataLint.marker + " the class-machine stop").isEmpty)
-        #expect(PlainDataLint.findings(in: witness + PlainDataLint.marker + " short") == [PlainDataFinding(line: 1, message: PlainDataLint.witness)])
+        #expect(PlainDataLint.findings(in: witness + PlainDataLint.marker + " short") == refused)
+        #expect(PlainDataLint.findings(in: witness + "// lint-" + "allow: turns-isolated: another rule " + PlainDataLint.marker + " hidden behind it") == refused)
+        #expect(PlainDataLint.findings(in: witness + "/* " + PlainDataLint.marker + " in a block comment */") == refused)
+        #expect(PlainDataLint.findings(in: "let s = \"" + PlainDataLint.marker + " in a string\"; " + witness) == refused)
+        // The marker allows its own line only, \r-separated lines included.
+        #expect(PlainDataLint.findings(in: PlainDataLint.marker + " the line above\r" + witness) == [PlainDataFinding(line: 2, message: PlainDataLint.witness)])
+    }
+
+    @Test("Discovery follows a symlinked directory, once, and skips .build and node_modules only at a package's root")
+    func discovery() throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("plain-data-lint-\(UUID().uuidString)")
+        defer { try? files.removeItem(at: root) }
+        func write(_ path: String) throws {
+            let url = root.appendingPathComponent(path)
+            try files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: url)
+        }
+        try write("Sources/A/a.swift")
+        try write("Sources/A/.build/nested.swift")
+        try write("Sources/A/node_modules/vendored.swift")
+        try write("Elsewhere/linked.swift")
+        try write("Examples/P/Package.swift")
+        try write("Examples/P/.build/built.swift")
+        try write("Examples/P/Sources/p.swift")
+        try write("Examples/W/package.json")
+        try write("Examples/W/node_modules/dep.swift")
+        try files.createSymbolicLink(atPath: root.appendingPathComponent("Sources/Link").path, withDestinationPath: "../Elsewhere")
+        try files.createSymbolicLink(atPath: root.appendingPathComponent("Sources/A/loop").path, withDestinationPath: "..")
+        #expect(swiftFiles(under: root, in: ["Sources", "Examples"]) == [
+            "Examples/P/Package.swift",
+            "Examples/P/Sources/p.swift",
+            "Sources/A/.build/nested.swift",
+            "Sources/A/a.swift",
+            "Sources/A/node_modules/vendored.swift",
+            "Sources/Link/linked.swift",
+        ])
+    }
+
+    @Test("The scan reads every file: one whose only finding is a witness, with no other trigger word, is reported")
+    func scanReadsEveryFile() async throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("plain-data-scan-\(UUID().uuidString)")
+        defer { try? files.removeItem(at: root) }
+        try files.createDirectory(at: root.appendingPathComponent("Sources/App"), withIntermediateDirectories: true)
+        try Data("extension AppState { static func _plainDataCheck() {} }\n".utf8)
+            .write(to: root.appendingPathComponent("Sources/App/Evil.swift"))
+        try Data("let n = 0\n".utf8).write(to: root.appendingPathComponent("Sources/App/Fine.swift"))
+        let report = try await scan(swiftFiles(under: root, in: ["Sources"]), under: root)
+        #expect(report == ["Sources/App/Evil.swift:1: \(PlainDataLint.witness)"])
     }
 }

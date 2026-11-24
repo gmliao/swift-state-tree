@@ -31,8 +31,9 @@
 #               server env list against Sources (#513), the pipefail-reader check against every
 #               tracked shell script, the sync-lag defaults against Sources and ws-loadtest, the
 #               state-shape fixtures, and the ignore rules the record paths rely on
-# Not covered (the build-slot verification and the push's own CI): swift build and test, E2E,
-# generated schemas and codegen, the TypeScript SDK and ws-loadtest tests.
+# Not covered (the build-slot verification and the push's own CI): swift build and test (with
+# them the plain-data lint, a test), E2E, generated schemas and codegen, the TypeScript SDK and
+# ws-loadtest tests.
 #
 # Usage: scripts/pre-push-checks.sh [base]   (default origin/main; run `git fetch` first)
 # Tests: scripts/test-pre-push-checks.sh
@@ -145,7 +146,7 @@ else
   done <<<"$readers"
   [ $ran_reader -eq 1 ] || echo "skip  deep-research and its readers (nothing they read changed)"
 fi
-echo "not covered: swift build/test, E2E, generated schemas/codegen, TypeScript SDK and ws-loadtest tests (build-slot verification and CI)"
+echo "not covered: swift build/test (incl. the plain-data lint test), E2E, generated schemas/codegen, TypeScript SDK and ws-loadtest tests (build-slot verification and CI)"
 if [ ${#failed[@]} -ne 0 ]; then
   echo "pre-push-checks: FAILED: ${failed[*]}"
   exit 1

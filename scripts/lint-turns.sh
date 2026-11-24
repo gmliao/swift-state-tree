@@ -5,9 +5,9 @@
 #
 #   plain-data   moved to a test on SwiftSyntax's tokens: Tests/SwiftStateTurnsMacrosTests/
 #                PlainDataLintTests.swift (no hand-written `_plainDataCheck` or PlainData
-#                conformance outside the core, no extension of PlainDataCheck, no declaration
-#                named PlainDataCheck, SwiftStateTurns or Swift). Its `lint-allow` markers are
-#                still validated and counted here.
+#                conformance outside Sources/SwiftStateTurns, no PlainDataCheck in code, no
+#                declaration named SwiftStateTurns, Swift or a standard wrapper). Its `lint-allow`
+#                markers are still validated and counted here, one per line.
 #   let-core     a type that conforms to TurnActor (in its declaration or in an extension, in any
 #                file) declares `let core` as a member of its declaration, and no `var core`
 #                member anywhere (the protocol can't require a stored `let`).
@@ -75,6 +75,9 @@ strip() {  # path
         rule = marker; sub(/:.*/, "", rule)
         reason = marker; if (index(reason, ":") > 0) { sub(/^[^:]*:[ \t]*/, "", reason) } else { reason = "" }
         if (rule ~ ("^(" rules ")$") && length(reason) >= 10) { allow = rule } else { allow = "!bad" }
+        # One marker per line: a second would be honored by PlainDataLintTests unseen by the count.
+        tail = substr(line, RSTART + 14)
+        if (index(tail, "// lint-allow:") > 0) allow = "!two"
       }
       if (inblock) {
         if (index(line, "\"\"\"") > 0) { inblock = 0 }
@@ -211,6 +214,8 @@ lint() {  # root
       if (path != lastPath) { depth = 0; body = 0; pendingName = ""; lastPath = path }
       if (allow == "!bad") {
         print path ":" n ": [allow] a lint-allow marker names a rule (" RULES ") and a reason of at least ten characters"
+      } else if (allow == "!two") {
+        print path ":" n ": [allow] one lint-allow marker per line"
       } else if (allow != "") {
         if (path !~ /^Tests\//) print path ":" n ": [allow] lint-allow markers are accepted only under Tests/"
         else markers[path]++
@@ -564,6 +569,7 @@ EOF
   cat > "$dir/Tests/Marked.swift" <<'EOF'
 let y = 0 // lint-allow: turns-isolated:
 let z = 0 // lint-allow: turns-isolated: unlisted file, but a reason
+let w = 0 // lint-allow: turns-isolated: the first reason // lint-allow: turns-plain-data: a hidden second
 EOF
   echo 'y.assumeIsolated { _ in }' > "$dir/Sources/App/Calls.swift"
   cp "$dir/Sources/SwiftStateTurns/TurnCore.swift" "$dir/GoodTurnCore.swift"
@@ -630,6 +636,7 @@ BadMachine.swift:7: [machine-file]
 BadMachine.swift:9: [machine-file]
 BadMachine.swift:12: [machine-file]
 Marked.swift:1: [allow] a lint-allow marker names a rule
+Marked.swift:3: [allow] one lint-allow marker per line
 Tests/Marked.swift: [allow] 1 marker(s), 0 listed
 Calls.swift: [isolated]
 TurnCore.swift:2: [unchecked-state] a stored var
