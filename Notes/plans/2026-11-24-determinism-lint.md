@@ -35,7 +35,7 @@ Each of these would otherwise need a lint rule; after those plans the compiler r
 
 **What stays lint-only:** a call inside code that runs in a turn (§3.1) and a reference held by a behavior (§3.2). #771 still helps the first rule: every handler is a closure passed to a closed set of entries inside a `LandDSL` block, so the entry names are a complete list of where handler code starts.
 
-**Randomness, the same sentence in this plan, #769's and L-Q2:** handlers draw `ctx.random` (the land's RNG, whose state moves into the model if L-Q2 (a) is decided); builders get none until admission is a recorded turn (K2/K5); resolvers use their own source, recorded.
+**Randomness, the same sentence in this plan, #769's and L-Q2:** handlers draw `ctx.random` (the land's RNG, whose state moves into the model in #700 K1b (L-Q2 (a))); builders get none until admission is a recorded turn (K2/K5); resolvers use their own source, recorded.
 
 ## 3. The rules
 

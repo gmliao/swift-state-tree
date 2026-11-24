@@ -197,7 +197,7 @@ HandleAction(A.self,
 
 ### 3.6 Randomness, and #765
 
-**The rule, the same sentence in this plan, #773's and L-Q2:** handlers draw `ctx.random` (the land's RNG, whose state moves into the model if L-Q2 (a) is decided); builders get none until admission is a recorded turn (K2/K5); resolvers use their own source, recorded.
+**The rule, the same sentence in this plan, #773's and L-Q2:** handlers draw `ctx.random` (the land's RNG, whose state moves into the model in #700 K1b (L-Q2 (a))); builders get none until admission is a recorded turn (K2/K5); resolvers use their own source, recorded.
 
 - **Resolvers can't reach the land's RNG.** The keeper creates it (LK:1012) and registers it in `LandServices`, which handlers reach as `ctx.random`. Under §3.4 a resolver gets the land's `Services` value. The land's factory makes it, and the keeper never puts its RNG into it. That is how #765 closes by construction: the only way a resolver gets randomness is its own source, part of the outside world. Its output is recorded, and replay doesn't call `resolve`.
 - **Builders draw nothing.** `ValidateContext` has no `random`, and the builder mutates nothing (§3.2). Before K2, admission isn't a turn: drawing from the land's RNG there would advance it outside turn order, which is #765 again. Once admission is a step with a recorded position (§3.5), a builder that draws could replay. Whether to allow it is a later decision, not part of this plan.
