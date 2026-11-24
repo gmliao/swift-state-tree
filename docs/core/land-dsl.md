@@ -105,7 +105,7 @@ HandleAction(BuyAction.self,
 | `apply` | sync, in the same turn, right after `validate` | writes the state, emits events, returns the response | throw |
 
 - With nothing to pass, `validate` returns `Void` and `apply` takes `(inout State, Action, LandContext)`.
-- `HandleEvent(_:validate:apply:)` and `HandleServerInput(_:validate:apply:)` take the same two forms; their `apply` returns `Void`. `HandleAction` takes `resolvers:` in both forms, and `validate` reads their outputs from its context.
+- `HandleEvent(_:validate:apply:)` and `HandleServerInput(_:validate:apply:)` take the same two forms; their `apply` returns `Void`. `HandleAction` takes `resolvers:` in both forms; both stages then get the outputs after the action: `validate: { state, action, outputs, ctx in … }`, `apply: { state, action, outputs, plan, ctx in … }`.
 - `validate` borrows the state: no copy is made. It runs right before `apply` in the same turn, so what it checked still holds when `apply` writes.
 - A `validate` throw fails that input alone, with nothing written and nothing emitted. The action's caller gets the error (`ACTION_HANDLER_ERROR`; on a tick land the caller already got its ACK at intake), an event's error goes to the client as an error payload (only on a tickless land, where the event waits for its input turn; on a tick land the event is applied in the next tick, so there the refusal is only logged), and a server input's is logged ([Runtime: Inputs and Turns](runtime.md#inputs-and-turns)).
 - An action body and `apply` return the action's declared `Response` (#561). Returning another type doesn't compile.
@@ -114,7 +114,7 @@ HandleAction(BuyAction.self,
 
 `validate` gets a `ValidateContext`, not a `LandContext`:
 
-- **Available:** `landID`, `playerID`, `clientID`, `sessionID`, `deviceID`, `isGuest`, `metadata`, `tickId`, `playerSlot`, `logger`, resolver outputs by name (`ctx.productInfo`), and `services`, restricted to `ReadOnlyLandService` types.
+- **Available:** `landID`, `playerID`, `clientID`, `sessionID`, `deviceID`, `isGuest`, `metadata`, `tickId`, `playerSlot`, `logger`, and `services`, restricted to `ReadOnlyLandService` types.
 - **Not available:** `emitEvent`, `requestSyncNow()` / `requestSyncBroadcastOnly()`, server inputs, random numbers, scheduling.
 
 `ReadOnlyLandService` is a marker protocol and a contract the compiler can't check: the service only reads, and answers the same for the same inputs, because replay runs `validate` again. Data that isn't deterministic (a clock, a remote call, a random source) belongs in a resolver, whose output is recorded. A service registered under an existential type (`register(x, as: (any P).self)`) can't be fetched through the marker; register it under its concrete type.
@@ -273,8 +273,16 @@ LandContext is request-scoped, avoid saving references.
 
 ## Resolver
 
-`HandleAction`, `OnJoin`, `OnInitialize` etc. can declare resolvers.
-Resolvers execute in parallel first, then synchronously enter handler after success.
+`HandleAction`, `CanJoin`, `OnJoin`, `OnLeave`, `OnInitialize` and `OnFinalize` can declare resolvers. They run in parallel before the handler, and the handler gets their outputs as parameters:
+
+```swift
+HandleAction(AddToCartAction.self, resolvers: { _, action, _ in ProductInfo(productID: action.productID) }) {
+    state, action, product, ctx in
+    ...
+}
+```
+
+The `resolvers:` closure builds the resolver values from the State and the input, in the turn that admits the input. See [Resolver](resolver.md).
 
 ## Lifetime
 
@@ -319,17 +327,17 @@ A land may need data it can't start without: a room's configuration, loaded by a
 ```swift
 Lifetime {
     OnInitialize(
-        resolvers: RoomConfigResolver.self,
+        resolvers: { _, ctx in RoomConfig(roomID: ctx.landID) },
         onResolverFailure: .continue,
-        validate: { _, ctx in
-            guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
-            return config
+        validate: { _, roomConfig, _ in
+            guard let roomConfig else { throw RoomSetupError.noConfig }
+            return roomConfig
         },
-        apply: { state, config, _ in
+        apply: { state, _, config, _ in
             state.maxPlayers = config.maxPlayers
         }
     )
 }
 ```
 
-With `.continue`, a resolver that throws leaves `ctx.roomConfig` empty, and `validate` refuses. A refusal fails the initialization, as `.failLand` does for the resolver: the land is torn down without its destroy handlers, and a join that was waiting gets the retryable `JOIN_DENIED`. A retried join creates a new land.
+With `.continue`, a resolver that throws leaves `roomConfig` `nil`, and `validate` refuses. A refusal fails the initialization, as `.failLand` does for the resolver: the land is torn down without its destroy handlers, and a join that was waiting gets the retryable `JOIN_DENIED`. A retried join creates a new land.

@@ -264,20 +264,23 @@ Handler 不能拋出錯誤。可被拒絕的 action 拆成讀取狀態、可拋�
 
 ### A.3 Resolver 的 Swift 實作
 
-Resolver 在 Swift 中實作為實作 `ContextResolver` protocol 的類型：
+Resolver 在 Swift 中實作為符合 `Resolver` protocol 的 `@PlainData` 值，其欄位就是它的參數：
 
+* entry 的 `resolvers:` closure 在 input 被接納時，依 State 與 input 建出這個值
 * Resolver 的輸出必須實作 `ResolverOutput` protocol，並在型別上標記 `@PlainData`
-* 在 handler 中透過 `LandContext` 的 `@dynamicMemberLookup` 特性存取 resolver 結果
+* handler 在 input 之後，以具型別的參數收到輸出
 * Resolver 在 handler 執行前並行執行
 
 **使用範例**：
 
 ```swift
 Rules {
-    HandleAction(UpdateCartAction.self, resolvers: (ProductInfoResolver.self, UserBalanceResolver.self)) { state, action, ctx in
-        // Resolver 已經並行執行完成，結果可直接使用
-        let productInfo = ctx.productInfo  // ProductInfo?
-        let userBalance = ctx.userBalance  // UserBalance?
+    HandleAction(UpdateCartAction.self, resolvers: { _, action, ctx in
+        (ProductInfo(productID: action.productID), UserBalance(playerID: ctx.playerID))
+    }) { state, action, resolved, ctx in
+        // Resolver 已經並行執行完成
+        let productInfo = resolved.0  // ProductInfoOutput?
+        let userBalance = resolved.1  // UserBalanceOutput?
         // ...
     }
 }

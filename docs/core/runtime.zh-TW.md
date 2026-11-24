@@ -115,7 +115,7 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
 - **服務存取**：`services` - 外部服務抽象（資料庫、日誌等）
 - **Deterministic 事件**：`emitEvent(_:to:)` - 將事件排入佇列，於 tick 結尾以 deterministic 順序 flush
 - **Deterministic 同步**：`requestSyncNow()` / `requestSyncBroadcastOnly()` - 請求同步，於 tick 結尾以 deterministic 順序 flush
-- **Resolver 輸出**：透過 `@dynamicMemberLookup` 存取 resolver 結果
+- **Resolver 輸出**：handler 在 input 之後，以具型別的參數收到每個 resolver 的輸出（[Resolver](resolver.zh-TW.md)）
 
 ## Handler 執行流程
 

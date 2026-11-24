@@ -115,7 +115,7 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
 - **Service access**: `services` - External service abstraction (database, logging, etc.)
 - **Deterministic events**: `emitEvent(_:to:)` - Enqueue an event to be flushed deterministically at end of tick
 - **Deterministic sync**: `requestSyncNow()` / `requestSyncBroadcastOnly()` - Request sync to be flushed deterministically at end of tick
-- **Resolver output**: Access resolver results through `@dynamicMemberLookup`
+- **Resolver output**: The handler gets each resolver's output as a typed parameter, after the input ([Resolver](resolver.md))
 
 ## Handler Execution Flow
 

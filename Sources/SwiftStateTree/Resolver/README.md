@@ -1,150 +1,89 @@
-# Resolver 機制使用指南
+# Resolver: error handling
 
-## 錯誤處理
+This folder holds the resolver machinery: the `Resolver` protocol (values, #769), `ContextResolver` (still used by `CanJoin`, `OnJoin` and `OnLeave`), and the executor that runs an entry's resolvers in parallel. The user guide is [docs/core/resolver.md](../../../docs/core/resolver.md). This page covers what happens when a resolver fails.
 
-當 resolver 執行時遇到錯誤（例如找不到物品、資料載入失敗等），應該拋出 `ResolverError` 或自定義錯誤。錯誤會被自動包裝在 `ResolverExecutionError` 中，包含失敗的 resolver 名稱，方便除錯。
+## A resolver that fails
 
-### 範例：處理找不到物品的情況
+A resolver that can't load its data throws: a `ResolverError` or its own error.
 
 ```swift
-struct ProductInfoResolver: ContextResolver {
-    typealias Output = ProductInfo
-    
-    static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-        // 從 Action payload 取得 productID
-        let action = ctx.actionPayload as? UpdateCartAction
-        guard let productID = action?.productID else {
-            throw ResolverError.missingParameter("productID")
-        }
-        
-        // 檢查快取
-        let state = ctx.currentState as? GameState
-        if let cachedProduct = state?.productCache[productID] {
-            return cachedProduct
-        }
-        
-        // 從資料庫載入
+@PlainData
+struct ProductInfo<D: HasProductDatabase>: Resolver {
+    typealias Dependencies = D
+    let productID: String
+
+    func resolve(_ deps: D) async throws -> ProductInfoOutput {
         do {
-            let data = try await ctx.services.database.fetchProduct(by: productID)
-            return ProductInfo(
-                id: data.id,
-                name: data.name,
-                price: data.price,
-                stock: data.stock
-            )
+            let data = try await deps.productDatabase.fetchProduct(by: productID)
+            return ProductInfoOutput(id: data.id, name: data.name, price: data.price, stock: data.stock)
         } catch DatabaseError.notFound {
-            // 物品不存在
             throw ResolverError.dataLoadFailed("Product not found: \(productID)")
         } catch {
-            // 其他資料庫錯誤
             throw ResolverError.dataLoadFailed("Failed to load product: \(error.localizedDescription)")
         }
     }
 }
 ```
 
-### 錯誤處理流程
+A cache check belongs in the entry's `resolvers:` closure, which sees the State: it returns `nil` when the State already has the data, and nothing is loaded.
 
-1. **Resolver 拋出錯誤**：當 resolver 遇到問題時（如找不到物品），拋出 `ResolverError` 或自定義錯誤
-2. **自動包裝**：錯誤會被自動包裝在 `ResolverExecutionError.resolverFailed` 中，包含：
-   - `name`: 失敗的 resolver 名稱（如 "ProductInfoResolver"）
-   - `underlyingError`: 原始的錯誤
-3. **並行執行處理**：如果多個 resolver 並行執行，當其中一個失敗時：
-   - 所有剩餘的 resolver 會被自動取消
-   - 錯誤會立即傳播，導致整個 action 處理失敗
-4. **Action Handler 接收錯誤**：Action handler 不會執行，錯誤會傳播到調用者
+## What the runtime does with the error
 
-### 錯誤類型
+1. **Wrap.** The error is wrapped in `ResolverExecutionError.resolverFailed(name:underlyingError:)`. `name` is the resolver's base type name, without generic arguments (`"ProductInfo"`, not `"ProductInfo<ShopServices>"`).
+2. **Cancel the rest.** The entry's other resolvers, running in parallel, are cancelled.
+3. **Skip the handler.** The handler doesn't run. The exception is `OnInitialize` with `onResolverFailure: .continue`, which runs without the outputs.
+4. **Tell the caller.** For an action, the transport sends an `ErrorPayload` to the client.
 
-#### ResolverError
+The handler needs no error handling for its resolvers: it runs only after they succeeded, or, with `.continue`, gets `nil` outputs.
 
-預定義的 resolver 錯誤類型：
+```swift
+HandleAction(UpdateCart.self, resolvers: { _, action, _ in ProductInfo(productID: action.productID) }) {
+    state, action, productInfo, ctx in
+    // Reached only after the resolver succeeded; productInfo is nil only when the closure built no value.
+    ...
+}
+```
+
+## Error types
 
 ```swift
 public enum ResolverError: Error, Sendable {
-    case missingParameter(String)      // 缺少必要參數
-    case dataLoadFailed(String)        // 資料載入失敗
-    case cancelled                     // 執行被取消
-    case custom(String)                // 自定義錯誤
+    case missingParameter(String)
+    case dataLoadFailed(String)
+    case cancelled
+    case custom(String)
 }
-```
 
-#### ResolverExecutionError
-
-執行器層級的錯誤，包含 resolver 名稱：
-
-```swift
 public enum ResolverExecutionError: Error, Sendable {
     case resolverFailed(name: String, underlyingError: Error)
+    case multipleResolversFailed([(name: String, error: Error)])
+    case timedOut(names: [String], after: Duration)
 }
 ```
 
-### 在 Action Handler 中處理錯誤
+`ResolverServicesError.servicesMismatch` is thrown when a keeper's services value isn't the resolver's `Dependencies`. Registration refuses such a land, so only a keeper built by hand can see it.
 
-Action handler 不需要特別處理 resolver 錯誤，因為如果 resolver 失敗，handler 根本不會執行。錯誤會自動傳送到客戶端：
+## Events
 
-```swift
-// ✅ 正確：如果 ProductInfoResolver 失敗，這個 handler 不會執行
-// 錯誤會自動發送 ErrorPayload 到客戶端
-HandleAction(UpdateCart.self, resolvers: ProductInfoResolver.self) { state, action, ctx in
-    // 只有在所有 resolvers 成功後才會執行到這裡
-    let productInfo = ctx.productInfo  // 保證有值
-    // ...
-}
-```
-
-**Action 錯誤處理流程**：
-1. Resolver 失敗 → 錯誤被包裝在 `ResolverExecutionError` 中
-2. Action handler 不會執行
-3. TransportAdapter 捕獲錯誤並發送 `ErrorPayload` 到客戶端
-4. 客戶端收到錯誤訊息，包含錯誤碼和詳細資訊
-
-### 在 Event Handler 中處理錯誤
-
-Event handler 不帶 resolver（`HandleEvent` 沒有 `resolvers:` 參數）。Handler body 不能拋出錯誤；可被拒絕的 event 分兩段宣告：`validate` 可以拋出錯誤表示拒絕（什麼都不寫入），`apply` 寫入狀態且不能拋出錯誤（見 [Land DSL：兩段式 Handler](../../../docs/core/land-dsl.zh-TW.md#兩段式-handler)）：
+Client events take no resolvers (`HandleEvent` has no `resolvers:` parameter). An event that can be refused is declared in two stages: `validate` throws to refuse, with nothing written, and `apply` writes and can't throw ([Land DSL: Two-Phase Handlers](../../../docs/core/land-dsl.md#two-phase-handlers)).
 
 ```swift
-// ✅ 正確：拒絕放在 validate，寫入放在 apply
 enum ChatError: Error { case emptyMessage }
 
 HandleEvent(ChatEvent.self,
-    validate: { (state: ChatState, event: ChatEvent, ctx: ValidateContext) throws -> String in
-        // 拒絕此 event；什麼都不寫入
-        guard let message = event.message, !message.isEmpty else {
-            throw ChatError.emptyMessage
-        }
+    validate: { state, event, ctx in
+        guard let message = event.message, !message.isEmpty else { throw ChatError.emptyMessage }
         return message
     },
-    apply: { (state: inout ChatState, event: ChatEvent, message: String, ctx: LandContext) in
+    apply: { state, event, message, ctx in
         state.messages.append(message)
     })
 ```
 
-**Event 錯誤處理流程**：
-1. `validate` 拋出錯誤 → event 被拒絕
-2. `apply` 不會執行（狀態不會被修改，也不會發出 event）
-3. 在 tickless land 上，TransportAdapter 等待該 event 的 input turn，並將 `ErrorPayload` 送到客戶端
-4. 在 tick land 上（event 於下一個 tick 套用），拒絕只記錄在 log
+On a tickless land the client gets an `ErrorPayload` for a refused event. On a tick land the event is applied in the next tick, so its refusal is only logged.
 
-### 錯誤處理最佳實踐
+## Practices
 
-1. **提供清晰的錯誤訊息**：使用描述性的錯誤訊息，方便除錯
-   ```swift
-   throw ResolverError.dataLoadFailed("Product not found: \(productID)")
-   ```
-
-2. **利用快取避免不必要的錯誤**：在 resolver 中先檢查快取
-   ```swift
-   if let cached = state?.cache[key] {
-       return cached
-   }
-   ```
-
-3. **區分不同類型的錯誤**：使用不同的 `ResolverError` case 來區分錯誤類型
-   ```swift
-   guard let productID = action?.productID else {
-       throw ResolverError.missingParameter("productID")
-   }
-   ```
-
-4. **記錄錯誤詳情**：錯誤訊息會自動包含 resolver 名稱，方便追蹤問題
+1. **Say what failed.** `ResolverError.dataLoadFailed("Product not found: \(productID)")`. The runtime adds the resolver's name.
+2. **Check the State in the closure, not in `resolve`.** `resolve` can't read the State.
+3. **Use the `ResolverError` case that fits**: `missingParameter` for a value built without what it needs, `dataLoadFailed` for a load that failed.
