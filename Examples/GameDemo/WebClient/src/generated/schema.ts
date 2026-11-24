@@ -12,8 +12,8 @@ export const ACTION_IDS = {
   "reevaluation-monitor": ["PauseVerification","ResumeVerification","StartVerification"] as const,
   "resolver-test": ["CallService"] as const,
   "resolver-test-replay": ["CallService"] as const,
-  "visibility-test": ["ParkEntities","PlaceEntity","SetMotion"] as const,
-  "visibility-test-replay": ["ParkEntities","PlaceEntity","SetMotion"] as const,
+  "visibility-test": ["ParkEntities","PlaceEntity","SetMotion","SetMotionWide"] as const,
+  "visibility-test-replay": ["ParkEntities","PlaceEntity","SetMotion","SetMotionWide"] as const,
 } as const
 export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
 export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
@@ -1015,6 +1015,20 @@ export const SCHEMA = {
         "nodeKind": "leaf"
       }
     },
+    "SetMotionWideAction": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
     "ShootEvent": {
       "properties": {},
       "required": [],
@@ -1536,6 +1550,36 @@ export const SCHEMA = {
       "x-stateTree": {
         "nodeKind": "object"
       }
+    },
+    "WideVisibilityResponse": {
+      "properties": {
+        "entityCount": {
+          "type": "integer"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "tickCount": {
+          "type": "integer"
+        },
+        "viewEntries": {
+          "type": "integer"
+        },
+        "viewExits": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "entityCount",
+        "tag",
+        "tickCount",
+        "viewEntries",
+        "viewExits"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
     }
   },
   "lands": {
@@ -1893,6 +1937,9 @@ export const SCHEMA = {
         },
         "SetMotion": {
           "$ref": "#/defs/SetMotionAction"
+        },
+        "SetMotionWide": {
+          "$ref": "#/defs/SetMotionWideAction"
         }
       },
       "clientEventHashes": {
@@ -1950,6 +1997,9 @@ export const SCHEMA = {
         },
         "SetMotion": {
           "$ref": "#/defs/SetMotionAction"
+        },
+        "SetMotionWide": {
+          "$ref": "#/defs/SetMotionWideAction"
         }
       },
       "clientEventHashes": {
@@ -1998,7 +2048,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "a2ba85577a8816de",
+  "schemaHash": "8e7825f3b64cf258",
   "version": "0.1.0",
   "x-stateTree": {
     "atomicEncoding": "positional"
