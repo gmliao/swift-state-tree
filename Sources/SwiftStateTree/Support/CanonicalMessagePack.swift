@@ -26,9 +26,11 @@ import Foundation
 public enum CanonicalMessagePack {
     /// The deepest nesting of arrays and maps the decoder reads, so input from a file can't
     /// overflow the stack; the encoder refuses deeper values too, so it never writes what the
-    /// decoder refuses. Records nest a few levels; the limit also leaves room for the
-    /// `Decodable` types that recurse over the value (`AnyCodable` at 512 levels overflows a
-    /// test thread's stack in a debug build).
+    /// decoder refuses. The encoder checks the depth on the way down, before a value recurses
+    /// further, not after the tree is built (#802). Records nest a few levels; the limit also
+    /// leaves room for the `Codable` types that recurse over the value. `AnyCodable` takes
+    /// direct paths for that reason: through its own `Codable`, 128 levels took more than a
+    /// 544 KiB thread's stack in a debug build.
     public static let maxDepth = 128
 
     /// Encodes `value` canonically.
@@ -122,9 +124,8 @@ extension CanonicalMessagePack {
     /// Tests (debug builds): counts the encoder's buffer moves in this task.
     @TaskLocal package static var bufferMovesForTesting: CanonicalBufferMoves?
 
-    /// Tests (debug builds): called for each value the encoder's `AnyCodable` path, the tree's
-    /// finish, the writer, the reader and the decoder's `AnyCodable` path visit, so a test can
-    /// note how deep the stack gets (#802).
+    /// Tests (debug builds): called for each value the encoder, the tree's finish, the writer, the
+    /// reader and the decoder visit, so a test can note how deep the stack gets (#802).
     @TaskLocal package static var stackProbeForTesting: (@Sendable () -> Void)?
 
     /// Tests (debug builds): `AnyCodable` takes its own `encode(to:)` / `init(from:)` instead of
@@ -417,6 +418,9 @@ private struct CanonicalNodeEncoder: Encoder {
         guard codingPath.count <= CanonicalMessagePack.maxDepth else {
             throw CanonicalMessagePackError.nestingTooDeep
         }
+        #if DEBUG
+        CanonicalMessagePack.stackProbeForTesting?()
+        #endif
         if T.self == AnyCodable.self, anyCodableDirect, let any = value as? AnyCodable {
             try encodeAnyCodable(any.base, into: slot, state: state, codingPath: codingPath)
             return
@@ -916,6 +920,9 @@ private struct CanonicalNodeDecoder: Decoder {
     var userInfo: [CodingUserInfoKey: Any] { [:] }
 
     static func unbox<T: Decodable>(_ node: CanonicalNode, as type: T.Type, codingPath: [CodingKey], integralFloats: Bool) throws -> T {
+        #if DEBUG
+        CanonicalMessagePack.stackProbeForTesting?()
+        #endif
         if type == Date.self {
             guard case .string(let text) = node else {
                 throw CanonicalMessagePackError.typeMismatch(expected: "date string", path: pathString(codingPath))

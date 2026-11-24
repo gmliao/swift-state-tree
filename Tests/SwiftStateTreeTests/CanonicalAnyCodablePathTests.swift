@@ -347,9 +347,9 @@ struct CanonicalAnyCodablePathTests {
             }
         }
         #expect("\(outcome)" == "error CanonicalMessagePackError: \(CanonicalMessagePackError.nestingTooDeep)")
-        // One visit per value from the root to `maxDepth` keys down; the next is refused before
-        // it is visited.
-        #expect(visits.count == CanonicalMessagePack.maxDepth + 1)
+        // The encoder's entry for the root, then one visit per value from the root to `maxDepth`
+        // keys down; the next is refused before it is visited.
+        #expect(visits.count == CanonicalMessagePack.maxDepth + 2)
     }
 
     /// The stack a whole encode and a whole decode of an `AnyCodable` tree at the limit take
@@ -357,29 +357,34 @@ struct CanonicalAnyCodablePathTests {
     /// budgets, so a regression fails here instead of overflowing a pool thread.
     ///
     /// Measured on macOS, Swift 6.4, debug, `maxDepth` (128) nested maps:
-    /// - the generic `AnyCodable` path: encode about 4.3 KB per level (538 KB for 125 levels,
-    ///   all of a 544 KiB Darwin pool thread);
-    /// - the direct paths: encode 194 KB in all (about 1.5 KB per level), decode 285 KB, most of
-    ///   it the reader (about 2.2 KB per level), which both paths share.
+    /// - the generic `AnyCodable` paths: encode 601 KB, decode 551 KB, each more than a whole
+    ///   544 KiB Darwin pool thread;
+    /// - the direct paths: encode 194 KB (about 1.5 KB per level), decode 285 KB, most of it the
+    ///   reader (about 2.2 KB per level), which both paths share.
     /// Budgets: encode 256 KiB, decode 320 KiB, leaving at least 224 KiB of a 544 KiB thread to the
     /// frames above. Release builds take far less.
     @Test("At the depth limit, a whole encode and decode stay within fixed stack budgets")
     func stackBudgetAtTheLimit() throws {
         let tree = AnyCodable(mapChain(CanonicalMessagePack.maxDepth))
-        let (encoded, encodeReach, decodeReach, genericEncodeReach) = onLargeThread { () -> ([UInt8]?, Int, Int, Int) in
+        let (encoded, encodeReach, decodeReach, genericEncodeReach, genericDecodeReach) = onLargeThread { () -> ([UInt8]?, Int, Int, Int, Int) in
             var bytes: [UInt8]?
             let encodeReach = StackReach.measure { bytes = try? CanonicalMessagePack.encode(tree) }
             let decodeReach = StackReach.measure {
                 _ = try? CanonicalMessagePack.decode(AnyCodable.self, from: bytes ?? [])
             }
             let genericEncodeReach = StackReach.measure { generic { _ = try? CanonicalMessagePack.encode(tree) } }
-            return (bytes, encodeReach, decodeReach, genericEncodeReach)
+            let genericDecodeReach = StackReach.measure {
+                generic { _ = try? CanonicalMessagePack.decode(AnyCodable.self, from: bytes ?? []) }
+            }
+            return (bytes, encodeReach, decodeReach, genericEncodeReach, genericDecodeReach)
         }
         try #require(encoded != nil, "the tree at the limit encodes")
-        print("CanonicalAnyCodablePathTests: \(CanonicalMessagePack.maxDepth) levels: encode \(encodeReach) B (generic \(genericEncodeReach) B), decode \(decodeReach) B")
+        print("CanonicalAnyCodablePathTests: \(CanonicalMessagePack.maxDepth) levels: encode \(encodeReach) B (generic \(genericEncodeReach) B), decode \(decodeReach) B (generic \(genericDecodeReach) B)")
         #expect(encodeReach > 0 && encodeReach < 256 << 10, "encode reached \(encodeReach) bytes")
         #expect(decodeReach > 0 && decodeReach < 320 << 10, "decode reached \(decodeReach) bytes")
-        // The direct encode takes well under the generic one, on any platform and build.
+        // The direct paths take well under the generic ones, on any platform and build. A decode
+        // reads the tree first, which both paths share.
         #expect(encodeReach * 2 < genericEncodeReach, "encode \(encodeReach) vs generic \(genericEncodeReach)")
+        #expect(decodeReach < genericDecodeReach, "decode \(decodeReach) vs generic \(genericDecodeReach)")
     }
 }
