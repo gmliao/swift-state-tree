@@ -4,9 +4,9 @@ import SwiftStateTurns
 /// or nothing (every other input, and an action acknowledged before its tick).
 ///
 /// The keeper holds a success as this, not as `AnyCodable`, from the handler to its exits.
-/// The exits (`handleActionEnvelope`, `awaitActionResult`, `ActionSubmission.completed`) convert
-/// it with `boundaryValue`, to the value they returned before, so the transport and its frames
-/// don't change.
+/// The exits (`awaitActionResult` and `ActionSubmission.completed`) convert it with
+/// `boundaryValue`, to the value they returned before; `handleActionEnvelope` forwards what
+/// they return. So the transport and its frames don't change.
 @PlainData
 enum InputOutcome: Sendable {
     case none

@@ -171,7 +171,7 @@ func releaseAndDrain(_ land: UntypedPayloadLand, _ submit: TestGate, _ failing: 
 
 @Suite("A closed gate stops every frame, and the keeper sees a failure noted outside a turn (#696, #704)", .serialized, .timeLimit(.minutes(1)))
 struct ClosedGatePendingFailureTests {
-    @Test("an answer completed after another answer's failure closed the gate doesn't reach the transport (#696)", arguments: UntypedPayloadEncoding.compressed)
+    @Test("an answer completed after another answer's failure closed the gate doesn't reach the transport (#696)", arguments: UntypedPayloadEncoding.allCases)
     func replyAfterAdapterCloseIsDropped(encoding: UntypedPayloadEncoding) async throws {
         let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: encoding)
         await land.adapter.waitForOutboundIdleForTesting()
@@ -208,7 +208,7 @@ struct ClosedGatePendingFailureTests {
         #expect(await land.transport.closes == [SessionClose.Code.landFailed], "the 4016 close still goes out")
     }
 
-    @Test("a turn after a noted answer failure ends the land with it: its caller gets landClosed and no sync phase runs (#704)", arguments: UntypedPayloadEncoding.compressed)
+    @Test("a turn after a noted answer failure ends the land with it: its caller gets landClosed and no sync phase runs (#704)", arguments: UntypedPayloadEncoding.allCases)
     func turnAfterTheNoteEndsTheLand(encoding: UntypedPayloadEncoding) async throws {
         let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: encoding)
         await land.adapter.waitForOutboundIdleForTesting()

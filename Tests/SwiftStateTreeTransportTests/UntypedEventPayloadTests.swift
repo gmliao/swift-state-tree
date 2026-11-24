@@ -397,7 +397,7 @@ struct UntypedEventPayloadTests {
     }
 
     @Test("an action response that doesn't encode closes the output gate before the keeper's failure turn",
-          arguments: UntypedPayloadEncoding.compressed)
+          arguments: UntypedPayloadEncoding.allCases)
     func untypedResponseClosesTheGateFirst(encoding: UntypedPayloadEncoding) async throws {
         let land = try await UntypedPayloadLand.make(makeUntypedResponseLand(), encoding: encoding)
         await land.adapter.waitForOutboundIdleForTesting()
