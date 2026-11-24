@@ -257,6 +257,19 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
 
 If the probe holds, (a) goes into D1's builder commit. If probe 4's medians move by more than 5%, or a refused case starts compiling, the recommendation becomes (b).
 
+**D-Q5's probe results (2026-11-24, Apple Swift 6.4.2; 6.4.3 pending, with #769's R0 re-run).** D0's harness, with `buildExpression(_ nodes: [LandNode]) -> [LandNode]` added:
+
+| Probe | Result |
+|---|---|
+| D0 1, 2, 3 | compile unannotated, with no expression over 200 ms: the nesting, every entry, `Plan` inferred |
+| D0 5, 5b | the wrong-State node is still refused, inside `Rules` and at the land's top level, with D0's text: "cannot convert value of type 'OnJoinNode<OtherState>' to expected argument type 'OnJoinNode<GameState>'" |
+| D0 4 | 30 handlers, 7 runs of each DSL, alternating. Median: D0's DSL 0.473 s, with the overload 0.474 s (+0.2%). No expression over 200 ms |
+| new: helper spliced | a `@LandDSL<GameState, NoServices>` helper called as `q5Helper()` in a land and in a `Rules` compiles unannotated. A run shows its handlers in the definition |
+| new: `@Land`'s expansion | `Land("game-land", using: GameState.self) { Self.body }`, with `@LandDSL<GameState, NoServices> static var body: [LandNode]`, compiles. A run shows the body's `OnJoin` in the definition |
+| new: helper with another State's node | refused at the helper, with the same text |
+
+The decision is the maintainer's (§8, D-Q5).
+
 ## 9. Revisions
 
 **Rev 2** folds in Review's GO notes on rev 1 (1ee8b88f: 5 should, 2 nits), and #769's R-Q1 (c):
