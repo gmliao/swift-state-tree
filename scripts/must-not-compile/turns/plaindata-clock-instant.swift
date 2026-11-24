@@ -1,4 +1,4 @@
-// expect-error: 'ContinuousClock.Instant' conform to 'PlainData'
+// expect-error: this field's type isn't PlainData: add @PlainData to your struct or enum
 import SwiftStateTurns
 
 // A clock instant in the state: it isn't plain data (TurnInstant is). docs/turns/README.md,

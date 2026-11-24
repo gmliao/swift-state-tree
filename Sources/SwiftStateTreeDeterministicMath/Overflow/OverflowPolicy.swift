@@ -4,11 +4,13 @@
 // Provides centralized overflow handling strategies.
 
 import Foundation
+import SwiftStateTurns
 
 /// Overflow handling policy for deterministic math operations.
 ///
 /// This enum defines how overflow should be handled in arithmetic operations
 /// to ensure deterministic behavior across platforms and replays.
+@PlainData
 public enum OverflowPolicy: Sendable {
     /// Wrapping overflow (default for deterministic behavior).
     ///

@@ -122,7 +122,7 @@ struct RefusedFieldTypeDiagnosticTests {
     @Test("A synced Decimal is refused at compile time, at any depth", arguments: decimalSpellings)
     func syncedDecimal(field: String, spelling: String) {
         let messages = diagnostics(stateNode(field))
-        #expect(messages.first?.hasPrefix("property 'value' can't have '\(spelling)' in its type: Decimal has no wire form") == true, "\(messages)")
+        #expect(messages.first?.hasPrefix("property 'value' can't have '\(spelling)' in its type: Decimal isn't plain data") == true, "\(messages)")
     }
 
     @Test("A @Payload Decimal field is refused at compile time, at any depth", arguments: decimalSpellings)
@@ -133,7 +133,7 @@ struct RefusedFieldTypeDiagnosticTests {
                 let value: \(field)
             }
             """)
-        #expect(messages.contains { $0.hasPrefix("property 'value' can't have '\(spelling)' in its type: Decimal has no wire form") }, "\(messages)")
+        #expect(messages.contains { $0.hasPrefix("property 'value' can't have '\(spelling)' in its type: Decimal isn't plain data") }, "\(messages)")
         // `Decimal?` also gets @Payload's Optional diagnostic: both are reported.
         if field.hasSuffix("?") {
             #expect(messages.contains { $0.hasPrefix("Payload field 'value' cannot be Optional") }, "\(messages)")

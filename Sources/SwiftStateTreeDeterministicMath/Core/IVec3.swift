@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftStateTree
+import SwiftStateTurns
 
 /// A 3D vector using Int32 coordinates for deterministic math.
 ///
@@ -18,6 +19,7 @@ import SwiftStateTree
 /// let v2 = IVec3(x: 500, y: 300, z: 100)
 /// let sum = v1 + v2  // IVec3(x: 1500, y: 2300, z: 3100)
 /// ```
+@PlainData
 public struct IVec3: Codable, Equatable, Hashable, Sendable, CustomStringConvertible {
     /// The x coordinate.
     public let x: Int32

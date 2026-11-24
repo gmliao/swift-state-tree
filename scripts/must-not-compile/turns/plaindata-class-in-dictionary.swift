@@ -1,4 +1,4 @@
-// expect-error: 'Collaborator' conform to 'PlainData'
+// expect-error: this field's type isn't PlainData: add @PlainData to your struct or enum
 import SwiftStateTurns
 
 // A class reached through a collection.
