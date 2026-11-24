@@ -78,11 +78,21 @@ struct ReevaluationMonitorStateTextTests {
             autoStartLoops: false,
             landID: "reevaluation-monitor:state-text"
         )
+        // Pinned, so no environment flag reaches this test (scripts/check-variant-test-selection.sh).
+        var config = TransportEnvConfig(
+            enableDirtyTracking: true,
+            useSnapshotForSync: true,
+            syncStrategy: .delta,
+            profilingConfig: nil
+        )
+        config.syncTablesEnabled = true
+        config.typedLeafValuesEnabled = true
         let transport = StateTextTransport()
         let adapter = TransportAdapter<ReevaluationMonitorState>(
             keeper: keeper,
             transport: transport,
             landID: "reevaluation-monitor:state-text",
+            transportEnvConfig: config,
             encodingConfig: .json,
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true
