@@ -1,0 +1,23 @@
+{
+ "ActionJobGatedResolver": "ActionJobGatedResolver(amount: action.amount)",
+ "AdapterJobHeldResolver": "AdapterJobHeldResolver(key: action.key)",
+ "DeadlineInitResolver": "DeadlineInitResolver(landID: ctx.landID)",
+ "DeliveryGatedResolver": "DeliveryGatedResolver(amount: action.amount)",
+ "DiffHeldResolver": "DiffHeldResolver(key: action.key)",
+ "DrainActionResolver": "DrainActionResolver(amount: action.amount)",
+ "DrainFinalizeResolver": "DrainFinalizeResolver(landID: ctx.landID)",
+ "GatedInitResolver": "GatedInitResolver(landID: ctx.landID)",
+ "GatedRoomConfigResolver": "GatedRoomConfigResolver(landID: ctx.landID)",
+ "InitFailureResolver": "InitFailureResolver(landID: ctx.landID)",
+ "LandFailureResolver": "LandFailureResolver(amount: action.amount)",
+ "LandReleaseHeldResolver": "LandReleaseHeldResolver(value: action.value, landID: ctx.landID)",
+ "LandReleaseStuckResolver": "LandReleaseStuckResolver(landID: ctx.landID)",
+ "NewestWinsActionResolver": "NewestWinsActionResolver(clientID: ctx.clientID)",
+ "PassGatedResolver": "PassGatedResolver(key: action.key)",
+ "PerSequenceGatedResolver": "PerSequenceGatedResolver(amount: action.amount)",
+ "ReplayOrderHeldResolver": "ReplayOrderHeldResolver(key: action.key)",
+ "RoomConfigResolver": "RoomConfigResolver(landID: ctx.landID)",
+ "TestAsyncResolver": "TestAsyncResolver(playerID: ctx.playerID)",
+ "TicklessJobFailingResolver": "TicklessJobFailingResolver(key: action.key)",
+ "TicklessJobGatedResolver": "TicklessJobGatedResolver(key: action.key)"
+}
