@@ -848,7 +848,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tickless lands: callers waiting for their input's turn, by input sequence. Actions get
     /// their own response; other inputs get an empty one (or the handler's error).
-    private var inputTurnWaiters: [Int64: CheckedContinuation<AnyCodable, any Error>] = [:]
+    private var inputTurnWaiters: [Int64: CheckedContinuation<InputOutcome, any Error>] = [:]
 
     /// Maximum inputs applied in one tickless input turn, so continuous input cannot starve the
     /// sync loop (other jobs run between turns).
@@ -2301,8 +2301,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The outcome of a job, kept from `submitAction` until `awaitActionResult` reads it. It's
     /// created in the intake's segment, so a reader that arrives after the completion still finds it.
     private struct ActionSlot {
-        var result: Result<AnyCodable, any Error>?
-        var waiter: CheckedContinuation<AnyCodable, any Error>?
+        var result: Result<InputOutcome, any Error>?
+        var waiter: CheckedContinuation<InputOutcome, any Error>?
     }
 
     private var actionJobs: [Int64: ActionJob] = [:]
@@ -2399,7 +2399,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             removeActionJob(sequence)
         }
         guard !job.cancelledByKeeper else { return }
-        let outcome: Result<AnyCodable, any Error>
+        let outcome: Result<InputOutcome, any Error>
         switch resolved {
         case .failure(let error):
             outcome = .failure(error)
@@ -2421,7 +2421,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     return
                 }
                 // Tick land: acknowledged now; the handler runs in a tick.
-                outcome = .success(AnyCodable(()))
+                outcome = .success(.none)
             } catch {
                 outcome = .failure(error)
             }
@@ -2496,7 +2496,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Fills the job's slot with its one outcome. A tickless job's in-flight work ends here, on
     /// every path: the applying turn, a rejection or failure at completion, a cancellation, the drain.
-    private func fillActionSlot(_ sequence: Int64, with outcome: Result<AnyCodable, any Error>) {
+    private func fillActionSlot(_ sequence: Int64, with outcome: Result<InputOutcome, any Error>) {
         if ticklessJobWork.remove(sequence) != nil {
             debugEndWork()
         }
@@ -2518,10 +2518,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Cancelling the caller cancels the job's task directly (no actor hop) and marks the job,
     /// so a completion that hasn't run yet fails with `CancellationError` instead of delivering.
     package func awaitActionResult(sequence: Int64) async throws -> AnyCodable {
+        try await awaitActionOutcome(sequence: sequence).boundaryValue
+    }
+
+    /// `awaitActionResult`'s outcome, before the exit converts it.
+    private func awaitActionOutcome(sequence: Int64) async throws -> InputOutcome {
         let task = actionJobs[sequence]?.task
         let callerCancelled = actionJobs[sequence]?.callerCancelled
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AnyCodable, any Error>) in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<InputOutcome, any Error>) in
                 guard var slot = actionSlots[sequence], slot.waiter == nil else {
                     continuation.resume(throwing: ActionResultUnavailable(sequence: sequence))
                     return
@@ -2568,7 +2573,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A completed job (kept only while its abandoned resolvers run) already has its outcome.
         guard let job = actionJobs[sequence], !job.cancelledByKeeper, !job.completed else { return }
         actionJobs[sequence]?.cancelledByKeeper = true
-        let outcome: Result<AnyCodable, any Error>
+        let outcome: Result<InputOutcome, any Error>
         do {
             try validateDelivery(of: job.item, ticket: job.ticket, input: job.input)
             // Unreachable from the two callers (a leave ended the entry, or the land drains).
@@ -2969,7 +2974,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // In re-evaluation mode, actions come from ReevaluationSource, not from transport.
         guard mode == .live else {
             // Return empty response in re-evaluation mode.
-            return .completed(AnyCodable(()))
+            return .completed(InputOutcome.none.boundaryValue)
         }
 
         // Tickless lands apply actions immediately: hold them while frozen and count them as
@@ -3096,12 +3101,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // This maintains backward compatibility for tests and simple use cases
         if definition.lifetimeHandlers.tickHandler == nil {
             // An input turn applies it (with the other ready inputs) and returns its response.
-            return .completed(try await awaitInputTurn(sequence: sequence))
+            return .completed(try await awaitInputTurn(sequence: sequence).boundaryValue)
         }
 
         // Return immediate ACK (handler will execute in tick)
         // Return empty response - actual response will be available after tick execution
-        return .completed(AnyCodable(()))
+        return .completed(InputOutcome.none.boundaryValue)
     }
 
     /// Generate action ID for matching (same format as schema generation).
@@ -3553,7 +3558,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private enum AppliedItem {
-        case action(response: AnyCodable)
+        case action(response: any ResponsePayload)
         case other
         case skipped
     }
@@ -3670,7 +3675,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Execute handler and capture response
             // Throws only from the type check or `validate`, before anything is written (#586).
             let response = try withMutableStateSync { state in
-                try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
+                try handler.invokeTyped(&state, action: decodedAction, ctx: ctx)
             }
             return .action(response: response)
 
@@ -3962,7 +3967,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private struct InputApplication {
         var applied: AppliedInputs
         /// Every input's outcome, by sequence: its response (empty for non-actions) or its error.
-        var outcomes: [Int64: Result<AnyCodable, any Error>]
+        var outcomes: [Int64: Result<InputOutcome, any Error>]
         var failureCount: Int
         /// How many of the batch's items were consumed: the batch ends at a shutdown or a land
         /// failure (#535), and the items after it were dropped by the settle, not applied.
@@ -3981,7 +3986,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// it is refused the same way. Lifecycle inputs can't fail: OnJoin and OnLeave don't throw.
     private func applyInputs(_ items: [PendingItem], executingTickId: Int64, removingFromQueue: Bool = true) -> InputApplication {
         var applied = AppliedInputs(executingTickId: executingTickId)
-        var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
+        var outcomes: [Int64: Result<InputOutcome, any Error>] = [:]
         var failureCount = 0
         var joinResults: [JoinInputResult] = []
         // The shutdown is the last input a land applies (#382): the batch ends at it.
@@ -4000,13 +4005,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if case let .lifecycle(lifecycle) = item {
                 applyLifecycleItem(lifecycle, executingTickId: executingTickId, into: &applied)
                 if lifecycle.kind == .join { joinResults.append(JoinInputResult(sequence: item.sequence)) }
-                outcomes[item.sequence] = .success(AnyCodable(()))
+                outcomes[item.sequence] = .success(.none)
                 continue
             }
             do {
                 switch try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
-                case .action(let response): outcomes[item.sequence] = .success(response)
-                case .other, .skipped: outcomes[item.sequence] = .success(AnyCodable(()))
+                case .action(let response): outcomes[item.sequence] = .success(.response(response))
+                case .other, .skipped: outcomes[item.sequence] = .success(.none)
                 }
             } catch {
                 // Thrown by `validate` (or a payload check) before anything was written (#586).
@@ -5645,7 +5650,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if dropped.contains(where: \.isShutdown) { resumeShutdownTurnWaiters() }
         let droppedServerInputs = dropped.filter { if case .serverInput = $0 { true } else { false } }.count
         serverInputsInFlight = max(0, serverInputsInFlight - droppedServerInputs)
-        var failed: [CheckedContinuation<AnyCodable, any Error>] = []
+        var failed: [CheckedContinuation<InputOutcome, any Error>] = []
         for item in dropped {
             if let waiter = inputTurnWaiters.removeValue(forKey: item.sequence) {
                 failed.append(waiter)
@@ -5670,12 +5675,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// input's task registers late (its outcome is empty); actions, client events, joins and
     /// leaves register in the same synchronous segment as their append, so their caller always
     /// gets its own outcome, an error included.
-    private func awaitInputTurn(sequence: Int64) async throws -> AnyCodable {
+    private func awaitInputTurn(sequence: Int64) async throws -> InputOutcome {
         try await withCheckedThrowingContinuation { continuation in
             guard inputTurnResults[sequence] != nil
                 || pendingItems.contains(where: { $0.sequence == sequence })
             else {
-                continuation.resume(returning: AnyCodable(()))
+                continuation.resume(returning: .none)
                 return
             }
             inputTurnWaiters[sequence] = continuation
@@ -5719,7 +5724,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The input-turn outcome of each waiting caller, kept until the turn's record is submitted.
-    private var inputTurnResults: [Int64: Result<AnyCodable, any Error>] = [:]
+    private var inputTurnResults: [Int64: Result<InputOutcome, any Error>] = [:]
 
     /// What an input turn did: its record and the inputs it applied (a failed one included).
     private struct InputTurnOutcome {
@@ -5797,7 +5802,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// response never leaves before its input is recorded.
     private func resumeInputTurnWaiters(for batch: [PendingItem]) {
         for item in batch {
-            let result = inputTurnResults.removeValue(forKey: item.sequence) ?? .success(AnyCodable(()))
+            let result = inputTurnResults.removeValue(forKey: item.sequence) ?? .success(.none)
             if ticklessJobTurns.remove(item.sequence) != nil {
                 fillActionSlot(item.sequence, with: result)
             } else {

@@ -69,22 +69,13 @@ struct ClosedGateOkReply: ResponsePayload {
     let ok: Bool
 }
 
-/// A tickless land with two actions: `UntypedResponseAction`, whose answer doesn't encode on a
-/// compressed encoding, and `ClosedGateOkAction`, which answers normally and requests a sync.
+/// A tickless land with two actions: `UnencodableResponseAction`, whose answer doesn't encode,
+/// and `ClosedGateOkAction`, which answers normally and requests a sync.
 func makeClosedGateLand() -> LandDefinition<UntypedPayloadState> {
-    let untyped = AnyActionHandler<UntypedPayloadState>(
-        type: UntypedResponseAction.self,
-        responseType: UntypedResponseReply.self,
-        invoke: { state, _, _ in
-            state.round += 1
-            return AnyCodable(["hp": 3] as [String: Int])
-        },
-        resolverExecutors: []
-    )
-    return Land("closed-gate", using: UntypedPayloadState.self) {
+    Land("closed-gate", using: UntypedPayloadState.self) {
         ServerEvents { Register(UntypedPayloadTypedEvent.self) }
         Rules {
-            untyped
+            unencodableResponseHandler()
             HandleAction(ClosedGateOkAction.self) {
                 (state: inout UntypedPayloadState, action: ClosedGateOkAction, ctx: LandContext) in
                 state.round += action.amount
@@ -185,7 +176,7 @@ struct ClosedGatePendingFailureTests {
         let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: encoding)
         await land.adapter.waitForOutboundIdleForTesting()
         let (submit, failing) = try await holdAtFailureSubmit(land, "\(encoding)") {
-            try await land.sendAction(requestID: "a")
+            try await land.sendUnencodableAction(requestID: "a")
         }
         let sentBefore = await land.transport.sends
         let droppedBefore = await land.adapter.framesDroppedLandFailed
@@ -224,7 +215,7 @@ struct ClosedGatePendingFailureTests {
         // A sync phase that ran would throw, and report `syncPlan` as the first cause.
         await land.adapter.setSyncPlanFaultForTesting { throw ClosedGatePhaseRan() }
         let (submit, failing) = try await holdAtFailureSubmit(land, "\(encoding)") {
-            try await land.sendAction(requestID: "a")
+            try await land.sendUnencodableAction(requestID: "a")
         }
         // B's handler returns its reply, but its turn ends the land with A's noted failure.
         await #expect(throws: LandInputRejection.landClosed) { _ = try await land.okActionThroughKeeper() }
@@ -254,7 +245,7 @@ struct ClosedGatePendingFailureTests {
         let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)
         await land.adapter.waitForOutboundIdleForTesting()
         let (submit, failing) = try await holdAtFailureSubmit(land, "no turn") {
-            try await land.sendAction(requestID: "a")
+            try await land.sendUnencodableAction(requestID: "a")
         }
         #expect(land.keeper.failure == nil, "no keeper step ran during the hold")
         try await releaseAndDrain(land, submit, failing)
@@ -309,7 +300,7 @@ struct ClosedGatePendingFailureTests {
         let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)
         await land.adapter.waitForOutboundIdleForTesting()
         let (submit, failing) = try await holdAtFailureSubmit(land, "join") {
-            try await land.sendAction(requestID: "a")
+            try await land.sendUnencodableAction(requestID: "a")
         }
         let sentBefore = await land.transport.sends
         let droppedBefore = await land.adapter.framesDroppedLandFailed
@@ -336,7 +327,7 @@ struct ClosedGatePendingFailureTests {
         let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)
         await land.adapter.waitForOutboundIdleForTesting()
         let (submit, failing) = try await holdAtFailureSubmit(land, "final frame") {
-            try await land.sendAction(requestID: "a")
+            try await land.sendUnencodableAction(requestID: "a")
         }
         let sentBefore = await land.transport.sends
         // The door a join ended before its admission, an inbound overflow after the join and the
@@ -356,7 +347,7 @@ struct ClosedGatePendingFailureTests {
         // and submits at once, so B's failure item reaches the keeper first.
         let submit = TestGate(), first = FirstArrivalOnly()
         await land.adapter.installHolds(HoldRegistry.at(.failureSubmit) { if first.isFirst() { await submit.arrive() } })
-        let a = Task { try await land.sendAction(requestID: "a") }
+        let a = Task { try await land.sendUnencodableAction(requestID: "a") }
         try #require(await submit.waitForArrivals(1), "A holds before its submit")
         let b = LandFailure(kind: .eventEncode, detail: "the second closer", position: LandFailurePosition(stage: .eventFlush))
         await land.adapter.failOutsideTurn(b)
@@ -406,7 +397,7 @@ struct ClosedGatePendingFailureTests {
         let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)
         await land.adapter.waitForOutboundIdleForTesting()
         let (submit, failing) = try await holdAtFailureSubmit(land, "settle") {
-            try await land.sendAction(requestID: "a")
+            try await land.sendUnencodableAction(requestID: "a")
         }
         // The settle's keeper turn reads the mailbox first: the land ends with A's failure while
         // A's submit is still held, and the settle doesn't freeze.

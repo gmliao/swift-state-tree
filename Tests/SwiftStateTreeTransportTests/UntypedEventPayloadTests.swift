@@ -1,8 +1,9 @@
 // An untyped payload (a dictionary, an array, a primitive) on a compressed message encoding
 // (#544). The positional encoders write only payload types; any other value used to reach a
 // `fatalError` and end the process. It now throws `UntypedPayloadError`: an event that throws it is
-// lost and the land that emitted it ends with `.eventEncode` (#535 row 17); an action response
-// that throws it ends its land with `.responseEncode`. Never the process. The replay land
+// lost and the land that emitted it ends with `.eventEncode` (#535 row 17). An action's
+// response is a `ResponsePayload` now; one that doesn't encode (`UnencodableReply`, on every
+// encoding) ends its land with `.responseEncode`. Never the process. The replay land
 // re-emits typed since #521 PR 1b (#538); its tests are `ReplayTypedReEmitTests`.
 //
 // The exit tests are the regression on the process: a trap ends the child, so each fails on a
@@ -117,6 +118,17 @@ struct UntypedPayloadLand {
         return UntypedPayloadLand(keeper: keeper, adapter: adapter, transport: transport, encoding: encoding)
     }
 
+    /// Sends one `UnencodableResponseAction` from the session, as a client frame; returns once
+    /// the adapter has handled it (answered it or ended the land).
+    func sendUnencodableAction(requestID: String) async throws {
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: UnencodableResponseAction.self),
+            payload: AnyCodable(UnencodableResponseAction(tag: requestID))
+        )
+        let frame = try encoding.config.makeCodec().encode(TransportMessage.action(requestID: requestID, action: envelope))
+        await adapter.onMessage(frame, from: Self.session)
+    }
+
     /// Sends one `UntypedResponseAction` from the session, as a client frame; returns once the
     /// adapter has handled it (answered it or ended the land).
     func sendAction(requestID: String) async throws {
@@ -168,22 +180,51 @@ struct UntypedResponseReply: ResponsePayload {
     let count: Int
 }
 
-/// A tickless land whose action handler answers with a dictionary, not its declared response type.
-/// Every public way to declare a handler returns the action's `Response` (#561, #586), so only the
-/// package-level type-erased init can build one.
+struct UnencodableMarkerError: Error {}
+
+/// A field whose encode always throws. Every message encoder writes it through `Codable`, the
+/// compressed ones too (their field writers fall back to `Codable` for a type they don't know),
+/// so an answer holding it fails at the adapter's encode on every encoding.
+@PlainData
+struct UnencodableMarker: Codable, Sendable {
+    let value: Int
+
+    init(value: Int = 0) { self.value = value }
+
+    init(from decoder: any Decoder) throws {
+        value = try decoder.singleValueContainer().decode(Int.self)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        throw UnencodableMarkerError()
+    }
+}
+
+@Payload
+struct UnencodableReply: ResponsePayload {
+    let marker: UnencodableMarker
+}
+
+@Payload
+struct UnencodableResponseAction: ActionPayload {
+    typealias Response = UnencodableReply
+    let tag: String
+}
+
+/// The handler that answers `UnencodableResponseAction` with a reply that doesn't encode.
+func unencodableResponseHandler() -> AnyActionHandler<UntypedPayloadState> {
+    HandleAction(UnencodableResponseAction.self) {
+        (state: inout UntypedPayloadState, _: UnencodableResponseAction, _: LandContext) in
+        state.round += 1
+        return UnencodableReply(marker: UnencodableMarker())
+    }
+}
+
+/// A tickless land whose action's answer doesn't encode at the adapter.
 func makeUntypedResponseLand() -> LandDefinition<UntypedPayloadState> {
-    let untyped = AnyActionHandler<UntypedPayloadState>(
-        type: UntypedResponseAction.self,
-        responseType: UntypedResponseReply.self,
-        invoke: { state, _, _ in
-            state.round += 1
-            return AnyCodable(["hp": 3] as [String: Int])
-        },
-        resolverExecutors: []
-    )
-    return Land("untyped-response", using: UntypedPayloadState.self) {
+    Land("untyped-response", using: UntypedPayloadState.self) {
         ServerEvents { Register(UntypedPayloadTypedEvent.self) }
-        Rules { untyped }
+        Rules { unencodableResponseHandler() }
     }
 }
 
@@ -263,14 +304,14 @@ struct UntypedEventPayloadTests {
         }
     }
 
-    @Test("the process survives an action response that isn't a payload type on each compressed encoding (exit test)")
+    @Test("the process survives an action response that doesn't encode on each compressed encoding (exit test)")
     func untypedResponseDoesNotTrap() async {
         await #expect(processExitsWith: .success) {
             var n = 0
             for encoding in UntypedPayloadEncoding.compressed {
                 n += 1
                 guard let land = try? await UntypedPayloadLand.make(makeUntypedResponseLand(), encoding: encoding),
-                      (try? await land.sendAction(requestID: "r1")) != nil
+                      (try? await land.sendUnencodableAction(requestID: "r1")) != nil
                 else { exit(Int32(30 + n)) }
                 guard await land.keeper.waitForFailureForTesting(), land.keeper.failure?.kind == .responseEncode
                 else { exit(Int32(50 + n)) }
@@ -325,26 +366,30 @@ struct UntypedEventPayloadTests {
         #expect(await healthy.transport.closes.isEmpty, "\(encoding)")
     }
 
-    @Test("an action response that isn't a payload type ends the land with .responseEncode and 4016, and its client gets no answer; on JSON it is sent",
+    @Test("each message encoder throws the marker's error for a reply holding it")
+    func unencodableReplyThrowsOnEveryEncoder() {
+        for encoding in UntypedPayloadEncoding.allCases {
+            let message = TransportMessage.actionResponse(requestID: "r1", response: AnyCodable(UnencodableReply(marker: UnencodableMarker())))
+            #expect(throws: UnencodableMarkerError.self, "\(encoding)") {
+                try encoding.config.makeMessageEncoder().encode(message)
+            }
+        }
+    }
+
+    @Test("an action response that doesn't encode ends the land with .responseEncode and 4016, and its client gets no answer",
           arguments: UntypedPayloadEncoding.allCases)
     func untypedResponseEndsTheLand(encoding: UntypedPayloadEncoding) async throws {
         let land = try await UntypedPayloadLand.make(makeUntypedResponseLand(), encoding: encoding)
         await land.adapter.waitForOutboundIdleForTesting()
         let sentBefore = await land.transport.sends
-        try await land.sendAction(requestID: "r1")
+        try await land.sendUnencodableAction(requestID: "r1")
         await land.adapter.waitForOutboundIdleForTesting()
-        if encoding == .json {
-            #expect(land.keeper.failure == nil, "JSON writes a dictionary response")
-            let answers = await land.transport.sent.dropFirst(sentBefore).filter { String(decoding: $0, as: UTF8.self).contains("r1") }
-            #expect(answers.count == 1, "the response reached the client")
-            return
-        }
         try #require(await land.keeper.waitForFailureForTesting(), "\(encoding): the land failed")
         await land.keeper.waitUntilDrained()
         #expect(land.keeper.failure?.kind == .responseEncode, "\(encoding)")
         #expect(land.keeper.failure?.position.stage == .actionResponse, "\(encoding)")
-        #expect(land.keeper.failure?.detail.contains("UntypedResponseAction") == true, "\(encoding): \(String(describing: land.keeper.failure))")
-        #expect(land.keeper.failure?.detail.contains("UntypedPayloadError") == true || land.keeper.failure?.detail.contains("isn't a payload type") == true,
+        #expect(land.keeper.failure?.detail.contains("UnencodableResponseAction") == true, "\(encoding): \(String(describing: land.keeper.failure))")
+        #expect(land.keeper.failure?.detail.contains("UnencodableMarkerError") == true,
                 "\(encoding): \(String(describing: land.keeper.failure))")
         #expect(land.adapter.outputGate.isClosed, "\(encoding)")
         #expect(await land.transport.sends == sentBefore, "\(encoding): no answer and no frame after the failure")
@@ -357,7 +402,7 @@ struct UntypedEventPayloadTests {
         let land = try await UntypedPayloadLand.make(makeUntypedResponseLand(), encoding: encoding)
         await land.adapter.waitForOutboundIdleForTesting()
         try await expectGateClosedBeforeTheFailureTurn(land, "\(encoding)") {
-            try await land.sendAction(requestID: "r1")
+            try await land.sendUnencodableAction(requestID: "r1")
         }
     }
 }
