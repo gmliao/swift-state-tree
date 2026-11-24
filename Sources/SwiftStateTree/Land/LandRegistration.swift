@@ -54,6 +54,10 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// Client-event or server-input types declared with more than one handler (#586): an input
     /// runs exactly one `validate` and one `apply`. Empty when there are none.
     public let duplicateHandlers: [DuplicateHandlerDeclaration]
+    /// Client event types the land registers without handling, or handles without registering
+    /// (#771 §3.3), one line per type: its name and the missing side (`registered, no
+    /// HandleEvent`, `handled, not in ClientEvents`). Empty when there are none.
+    public let clientEventMismatches: [String]
     /// Why a land whose records will be replayed has no record schema fingerprint (#521 D15).
     /// Checked only under `LandRegistrationContext.recordsForReplay`, and only when `sync` is nil.
     public let schemaFingerprint: SchemaFingerprintError?
@@ -89,6 +93,7 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         payload: PayloadRegistrationError?,
         sync: SyncRegistrationError? = nil,
         duplicateHandlers: [DuplicateHandlerDeclaration] = [],
+        clientEventMismatches: [String] = [],
         schemaFingerprint: SchemaFingerprintError? = nil,
         serverEventsWithoutDecoder: [String] = [],
         wireNameMismatches: [String] = [],
@@ -100,6 +105,7 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         self.payload = payload
         self.sync = sync
         self.duplicateHandlers = duplicateHandlers
+        self.clientEventMismatches = clientEventMismatches
         self.schemaFingerprint = schemaFingerprint
         self.serverEventsWithoutDecoder = serverEventsWithoutDecoder
         self.wireNameMismatches = wireNameMismatches
@@ -124,9 +130,13 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         let decimals = decimalFields.isEmpty ? nil
             : "these payload fields hold a Decimal: " + decimalFields.joined(separator: ", ")
                 + "; " + DecimalFields.advice
+        let unmatchedEvents = clientEventMismatches.isEmpty ? nil
+            : "its client event registrations and handlers disagree; register each handled event in "
+                + "ClientEvents { Register(E.self) } and handle each registered one with HandleEvent(E.self): "
+                + clientEventMismatches.joined(separator: ", ")
         return "land type '\(landType)' can't be registered: "
             + ([payload?.description, sync?.description, decimals].compactMap { $0 } + duplicateHandlers.map(\.description)
-                + [mismatched, unhashed, schemaFingerprint?.description, collided, undecodable].compactMap { $0 })
+                + [unmatchedEvents, mismatched, unhashed, schemaFingerprint?.description, collided, undecodable].compactMap { $0 })
             .joined(separator: "; ")
     }
 }
@@ -154,7 +164,7 @@ extension LandDefinition {
         var fingerprint: SchemaFingerprintError?
         var typeNameCollisions: [SchemaTypeNameCollision] = []
         if context.recordsForReplay == true, payload == nil, sync == nil, duplicateHandlers.isEmpty,
-           mismatched.isEmpty, unhashed.isEmpty, decimals.isEmpty {
+           clientEventMismatches.isEmpty, mismatched.isEmpty, unhashed.isEmpty, decimals.isEmpty {
             do {
                 _ = try ReevaluationSchemaFingerprint.cached(for: self)
             } catch let error as SchemaFingerprintError {
@@ -167,11 +177,13 @@ extension LandDefinition {
         // EV8 (#521 PR 1b): a replay decodes every recorded server event through its
         // descriptor, so a descriptor without a decoder can't replay.
         let undecodable = context.recordsForReplay == true ? serverEventsWithoutDecoder() : []
-        if payload != nil || sync != nil || !duplicateHandlers.isEmpty || fingerprint != nil || !undecodable.isEmpty
+        if payload != nil || sync != nil || !duplicateHandlers.isEmpty || !clientEventMismatches.isEmpty
+            || fingerprint != nil || !undecodable.isEmpty
             || !mismatched.isEmpty || !unhashed.isEmpty || !typeNameCollisions.isEmpty || !decimals.isEmpty {
             throw LandRegistrationError(
                 landType: id, payload: payload, sync: sync,
-                duplicateHandlers: duplicateHandlers, schemaFingerprint: fingerprint,
+                duplicateHandlers: duplicateHandlers, clientEventMismatches: clientEventMismatches,
+                schemaFingerprint: fingerprint,
                 serverEventsWithoutDecoder: undecodable,
                 wireNameMismatches: mismatched, serverEventsWithoutHash: unhashed,
                 typeNameCollisions: typeNameCollisions, decimalFields: decimals

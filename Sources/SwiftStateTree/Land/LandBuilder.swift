@@ -143,6 +143,21 @@ enum LandBuilder {
 
         ingest(nodes: nodes)
 
+        // #771 §3.3: the land's client event registrations and its HandleEvent handlers agree.
+        // A registered event without a handler, or a handled one that isn't registered, would
+        // otherwise fail per event at intake; registration refuses the land instead. A type
+        // registered twice is named once.
+        var clientEventMismatches: [String] = []
+        var seenRegistrations: Set<ObjectIdentifier> = []
+        for type in clientEventRegistrations where seenRegistrations.insert(ObjectIdentifier(type)).inserted {
+            if !eventHandlers.contains(where: { $0.canHandle(type) }) {
+                clientEventMismatches.append("\(String(reflecting: type)): registered, no HandleEvent")
+            }
+        }
+        for handler in eventHandlers where !seenRegistrations.contains(ObjectIdentifier(handler.handledType)) {
+            clientEventMismatches.append("\(String(reflecting: handler.handledType)): handled, not in ClientEvents")
+        }
+
         let landConfig = LandConfig(
             allowPublic: accessControl.allowPublic,
             maxPlayers: accessControl.maxPlayers,
@@ -204,6 +219,7 @@ enum LandBuilder {
             eventHandlers: eventHandlers,
             serverInputHandlers: serverInputHandlers,
             duplicateHandlers: duplicateHandlers,
+            clientEventMismatches: clientEventMismatches,
             lifetimeHandlers: lifetimeHandlers,
             servicesType: servicesType
         )

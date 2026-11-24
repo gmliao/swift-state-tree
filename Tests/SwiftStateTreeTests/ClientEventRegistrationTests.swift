@@ -94,8 +94,8 @@ private func registrationError(
     }
 }
 
-/// The registration error a directly built keeper holds as its initialization failure. Its
-/// first join is refused with it.
+/// The registration error a directly built keeper holds as its initialization failure. A leave
+/// throws it (a join is only denied: the failed land is shutting down).
 private func keeperFailure(
     _ definition: LandDefinition<ClientEventRegistrationState>
 ) async throws -> LandRegistrationError {
@@ -105,7 +105,7 @@ private func keeperFailure(
         autoStartLoops: false
     )
     let failure = try await #require(throws: LandInitializationError.self) {
-        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
     }
     return try #require(failure.underlying as? LandRegistrationError)
 }
@@ -119,11 +119,13 @@ struct ClientEventRegistrationTests {
 
         let error = try registrationError(registeredWithoutHandlerLand())
         #expect(error.landType == "cer-registered-no-handler")
+        #expect(error.clientEventMismatches == expected)
         #expect(error.description.contains(expected[0]))
         #expect(!error.description.contains(String(reflecting: CERHandledEvent.self)), "the handled event isn't named")
 
         let held = try await keeperFailure(registeredWithoutHandlerLand())
         #expect(held.landType == "cer-registered-no-handler")
+        #expect(held.clientEventMismatches == expected)
         #expect(held.description.contains(expected[0]))
     }
 
@@ -134,10 +136,12 @@ struct ClientEventRegistrationTests {
 
         let error = try registrationError(handledNotRegisteredLand())
         #expect(error.landType == "cer-handled-not-registered")
+        #expect(error.clientEventMismatches == expected)
         #expect(error.description.contains(expected[0]))
         #expect(!error.description.contains(String(reflecting: CERHandledEvent.self)), "the registered event isn't named")
 
         let held = try await keeperFailure(handledNotRegisteredLand())
+        #expect(held.clientEventMismatches == expected)
         #expect(held.description.contains(expected[0]))
     }
 

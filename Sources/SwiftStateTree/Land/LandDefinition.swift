@@ -40,6 +40,11 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// Registration refuses such a land (`LandRegistrationError.duplicateHandlers`), and so does
     /// a keeper built without registration, at initialization.
     package let duplicateHandlers: [DuplicateHandlerDeclaration]
+    /// Client event types registered without a `HandleEvent`, or handled without a registration
+    /// (#771 §3.3), one line per type. Registration refuses such a land
+    /// (`LandRegistrationError.clientEventMismatches`), and so does a keeper built without
+    /// registration, at initialization.
+    package let clientEventMismatches: [String]
     /// Lifecycle handlers (join, leave, tick, shutdown).
     public let lifetimeHandlers: LifetimeHandlers<State>
     /// The services type the land declares (`Land(_:using:services:)`), nil for a land without
@@ -63,6 +68,7 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
             eventHandlers: eventHandlers,
             serverInputHandlers: serverInputHandlers,
             duplicateHandlers: duplicateHandlers,
+            clientEventMismatches: clientEventMismatches,
             lifetimeHandlers: lifetimeHandlers,
             servicesType: servicesType
         )
