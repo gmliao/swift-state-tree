@@ -34,17 +34,23 @@ struct ReplaySIDecodeInput: ServerInputPayload {
     let n: Int
 }
 
-/// A task executor that runs every job on one thread with a large stack.
+/// A task executor that runs every job on one thread with a large stack. The thread carries
+/// `marker` in its thread dictionary under `markerKey`, so a job can tell it runs there.
 @available(macOS 15.0, *)
 final class LargeStackTaskExecutor: TaskExecutor, @unchecked Sendable {
     static let stackSize = 8 << 20
+    static let markerKey = "LargeStackTaskExecutor"
 
+    let marker = UUID().uuidString
     private let condition = NSCondition()
     private var jobs: [UnownedJob] = []
     private var stopped = false
 
     init() {
-        let thread = Thread { [self] in run() }
+        let thread = Thread { [self] in
+            Thread.current.threadDictionary[Self.markerKey] = marker
+            run()
+        }
         thread.stackSize = Self.stackSize
         thread.start()
     }
@@ -77,17 +83,17 @@ final class LargeStackTaskExecutor: TaskExecutor, @unchecked Sendable {
     }
 }
 
-/// The stack size of each thread the input handler ran on.
+/// The large-stack executor's marker on each thread the input handler ran on (nil off it).
 final class ReplaySIStackProbe: @unchecked Sendable {
     private let lock = NSLock()
-    private var sizes: [Int] = []
+    private var markers: [String?] = []
 
     func note() {
-        let size = Thread.current.stackSize
-        lock.withLock { sizes.append(size) }
+        let marker = Thread.current.threadDictionary["LargeStackTaskExecutor"] as? String
+        lock.withLock { markers.append(marker) }
     }
 
-    var all: [Int] { lock.withLock { sizes } }
+    var all: [String?] { lock.withLock { markers } }
 }
 
 @Suite("Replay reports a recorded server input that doesn't decode")
@@ -178,22 +184,24 @@ struct ReplayServerInputDecodeFailureTests {
     }
 
     /// Runs `body` on the large-stack executor, after a shallow replay proves the handler runs
-    /// there: the deep tree is never decoded on a pool thread.
+    /// on that executor's thread: the deep tree is never decoded on a pool thread.
+    @available(macOS 15.0, *)
     static func onLargeStack(_ body: () async throws -> Void) async throws {
-        guard #available(macOS 15.0, *) else { return }
         let executor = LargeStackTaskExecutor()
         defer { executor.stop() }
         try await withTaskExecutorPreference(executor) {
             let probe = ReplaySIStackProbe()
             let shallow = try await replay([good], rejected: [], probe: probe)
             #expect(shallow.hits == ["server:ok:2"])
-            try #require(probe.all == [LargeStackTaskExecutor.stackSize])
+            try #require(probe.all == [executor.marker])
             try await body()
         }
     }
 
     static let inputs = [wrongType, tooDeep, good]
 
+    // Task executors need macOS 15: below it, the tests are skipped, not passed.
+    @available(macOS 15.0, *)
     @Test("A wrong-type and a too-deep server input each fail alone, are listed as refused and logged with the codec's error text; the good one applies")
     func replayServerInputDecodeFailureIsReportedAsBefore() async throws {
         try await Self.onLargeStack {
@@ -204,7 +212,9 @@ struct ReplayServerInputDecodeFailureTests {
             #expect(replayed.mismatch == nil, "\(replayed.mismatch ?? "")")
             #expect(replayed.refusals.map { $0.metadata["sequence"] } == [.stringConvertible(0), .stringConvertible(1)])
             // Today's errors: the record codec's, a type mismatch and its own depth refusal
-            // (`CanonicalMessagePackError.nestingTooDeep`, not `PayloadNesting.TooDeep`).
+            // (`CanonicalMessagePackError.nestingTooDeep`, not `PayloadNesting.TooDeep`). The deep
+            // tree and the text follow `maxDepth` on purpose: the pin is "refused by the record
+            // codec's own limit", whatever that limit is; a change to the limit is its own change.
             #expect(replayed.refusals.map { $0.metadata["error"] } == [
                 .string("canonical MessagePack: expected Int at n"),
                 .string("canonical MessagePack: nested deeper than \(CanonicalMessagePack.maxDepth)"),
@@ -212,12 +222,13 @@ struct ReplayServerInputDecodeFailureTests {
         }
     }
 
+    @available(macOS 15.0, *)
     @Test("Control: a frame that lists neither bad input as refused reports a divergence for tick 0")
     func frameListingNoRefusalDiverges() async throws {
         try await Self.onLargeStack {
             let replayed = try await Self.replay(Self.inputs, rejected: [])
             // The comparison runs on this land: the `mismatch == nil` above can fail.
-            #expect(replayed.mismatch != nil)
+            #expect(replayed.mismatch == "tick 0: input 0 was applied live and rejected in replay")
             #expect(replayed.hits == ["server:ok:2"])
         }
     }
