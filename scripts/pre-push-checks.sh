@@ -16,6 +16,8 @@
 #   text-encoding  scripts/lint-text-encoding.py --self-test, then deep-research/ and scripts/:
 #               Python text I/O without encoding= (a non-UTF-8 locale, such as cp950 on Windows,
 #               breaks it). Not in CI yet.
+#   classify    scripts/classify-golden-changes.py --self-test: the golden-change classes, the
+#               recordPayload class for #700 K1a included, on fixtures. Not in CI yet.
 #   ShellCheck  every tracked script, plus new untracked ones, outside CI's exclusion; an excluded
 #               script with no findings fails (CI: shellcheck). The exclusion is read from the
 #               workflow, so it can't drift. Needs ShellCheck 0.11.0, the version CI pins. Skipped
@@ -107,6 +109,7 @@ run gate-close bash -c 'scripts/gate-close-census.sh --self-test && scripts/gate
 run turns-doc-blocks bash -c 'python3 scripts/check-turns-doc-blocks.py --self-test && python3 scripts/check-turns-doc-blocks.py'
 run plan-index bash -c 'scripts/check-plan-index.sh --self-test && scripts/check-plan-index.sh'
 run text-encoding bash -c 'python3 scripts/lint-text-encoding.py --self-test && python3 scripts/lint-text-encoding.py'
+run classify python3 scripts/classify-golden-changes.py --self-test
 if touches '\.(sh|bash)$' || touches "^${workflow//./\\.}$"; then
   run shellcheck shell_check
 else
