@@ -410,6 +410,11 @@ private struct CanonicalNodeEncoder: Encoder {
     /// call (`nestedContainer`, `superEncoder`) past it records the error for the end of the
     /// encode and writes into a detached slot, so the tree never grows past the bound, however
     /// the value descends (#802): every way down passes this check.
+    ///
+    /// `deferredError` keeps the first error recorded, so a depth refusal recorded first is the
+    /// one thrown even when a later call records a `duplicateKey`, and it stands even if the
+    /// value's `encode(to:)` drops that container and writes something else. Either way the
+    /// encode is refused; only which error names it depends on the order.
     static func withinDepth(_ codingPath: [CodingKey], state: CanonicalEncodingState) -> Bool {
         if codingPath.count <= CanonicalMessagePack.maxDepth { return true }
         if state.deferredError == nil { state.deferredError = CanonicalMessagePackError.nestingTooDeep }
@@ -616,14 +621,22 @@ private struct CanonicalUnkeyedEncoder: UnkeyedEncodingContainer {
     let state: CanonicalEncodingState
     let codingPath: [CodingKey]
 
-    var count: Int { slot.elementCount }
+    /// Children refused past the depth bound. They are detached, but each still takes a
+    /// position: a refusal can't throw, so `count` must advance as an append does, or an
+    /// `encode(to:)` that fills the container until `count` reaches a target never ends (#809).
+    private var refused = 0
+
+    var count: Int { slot.elementCount + refused }
 
     private func append() -> CanonicalSlot { slot.appendChild() }
 
     /// The slot a nested container or super encoder at the next position writes into: detached
-    /// past the depth bound.
-    private func appendNested(at key: CodingKey) -> CanonicalSlot {
-        guard CanonicalNodeEncoder.withinDepth(codingPath + [key], state: state) else { return CanonicalSlot() }
+    /// past the depth bound, counted all the same.
+    private mutating func appendNested(at key: CodingKey) -> CanonicalSlot {
+        guard CanonicalNodeEncoder.withinDepth(codingPath + [key], state: state) else {
+            refused += 1
+            return CanonicalSlot()
+        }
         return append()
     }
 
