@@ -160,12 +160,14 @@ public enum HardwareInfoCollector {
         #endif
         
         // Swift Version
-        // This project requires Swift 6.4+ (the swift-tools-version in Package.swift), so 6.4 is
-        // the lowest version this can report; a newer compiler reports its minor version.
+        // The field reports the compiler (toolchain) version, so it checks `compiler(>=...)`,
+        // not `swift(>=...)`, which follows the language mode. This project requires Swift 6.4+
+        // (the swift-tools-version in Package.swift), so 6.4 is the lowest version this can
+        // report; a newer compiler reports its minor version.
         var swiftVersion: String? = nil
-        #if swift(>=6.6)
+        #if compiler(>=6.6)
         swiftVersion = "6.6+"
-        #elseif swift(>=6.5)
+        #elseif compiler(>=6.5)
         swiftVersion = "6.5"
         #else
         swiftVersion = "6.4"
