@@ -1,7 +1,7 @@
-// expect-error: to expected argument type '(Ref) -> Void'
+// expect-error: 'Ref' conform to 'PlainData'
 import SwiftStateTurns
 
-// An `Optional` alias that drops its argument: the closure binds the wrapped type.
+// An `Optional` alias that drops its argument: the checks read the wrapped value.
 protocol Payload: PlainData, Sendable {}
 
 final class Ref: Sendable {}

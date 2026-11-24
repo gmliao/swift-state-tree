@@ -1,7 +1,7 @@
-// expect-error: to expected argument type 'Swift.Array<
+// expect-error: cannot convert value of type 'Array<any Payload>'
 import SwiftStateTurns
 
-// A typealias named `Array` that names the module's own type: the bare spelling is pinned too.
+// A typealias named `Array` that names the module's own type: the bare spelling is refused too.
 protocol Payload: PlainData, Sendable {}
 final class Ref {}
 struct Mine<Element> {

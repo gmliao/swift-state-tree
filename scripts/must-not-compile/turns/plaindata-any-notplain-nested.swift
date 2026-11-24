@@ -1,4 +1,4 @@
-// expect-error: to closure result type 'any PlainData'
+// expect-error: 'any Loose'
 import SwiftStateTurns
 
 // The same as a dictionary's value: the macro checks the element.

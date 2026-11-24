@@ -52,7 +52,7 @@ The refusals are compile errors, pinned by the must-not-compile cases in `script
 
 ### Your own types
 
-Mark a struct or an enum with `@PlainData` where it is defined. The macro writes the conformance and adds one check per stored property or associated value, which fails to compile unless that type is plain data.
+Mark a struct or an enum with `@PlainData` where it is defined. The macro writes the conformance and adds one check per stored property or associated value, which reads the stored value and fails to compile unless its type is plain data. Reading the value, not the spelled type, means a field's type resolves as it does in the declaration, a sibling nested in the same outer type included.
 - Every stored property needs a type annotation, so that the macro can check it.
 - A generic type needs `where T: PlainData`.
 - `@PlainData` on a class or an actor is refused, and so is a field whose type is a class, an actor, a closure or an existential of a protocol that doesn't refine `PlainData`.
@@ -61,6 +61,7 @@ Mark a struct or an enum with `@PlainData` where it is defined. The macro writes
 - A hand-written `: PlainData` or `_plainDataCheck` outside `SwiftStateTurns`, `@retroactive` included, is refused by the plain-data lint (`Tests/SwiftStateTurnsMacrosTests/PlainDataLintTests.swift`, run with `swift test`): it would conform without checking anything. So is any use of `PlainDataCheck` in code (an alias or extension of it could add an overload), and a declaration named `SwiftStateTurns`, `Swift`, `Optional`, `Array`, `ContiguousArray` or `Dictionary`, which could change what the macro's checks resolve to.
 - A type from the standard library or Foundation can't take the macro. Store the turn core's value type in its place, for example `TurnInstant` instead of `ContinuousClock.Instant`.
 - A type from another module of this repository takes `@PlainData` at its definition, in its own module, never through an extension elsewhere. The IDs and values a land's state and its transport keep are marked this way: `SessionID`, `PlayerID`, `ClientID`, `EventTarget`, `StateSnapshot`, `SnapshotValue` and `MessagePackValue`. A machine can store them as they are.
+- **Limit.** The macro and the lint catch mistakes; they aren't a security boundary. Swift has no sealed protocols, so code written on purpose to get around them (a hand-written witness, an alias or extension trick, a symlinked source directory the lint reads as core) can make a type conform that isn't plain data, at the cost of replay fidelity. Such a bypass is a known limitation, not a hole the checks promise to close.
 
 In the example below, marking the first `Room` with `@PlainData` is refused: the macro names its fields that aren't plain data. The second one compiles.
 

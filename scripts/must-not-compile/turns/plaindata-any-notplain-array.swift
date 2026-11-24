@@ -1,4 +1,4 @@
-// expect-error: to closure result type 'any PlainData'
+// expect-error: 'any Loose'
 import SwiftStateTurns
 
 // An array of an existential whose protocol doesn't refine PlainData: the element is checked.

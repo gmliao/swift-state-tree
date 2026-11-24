@@ -1,5 +1,8 @@
 // `@PlainData`: the conformance, and one compile-time check per stored property or associated
 // value. A syntactic macro can't see types, so what it can't check it refuses with a diagnostic.
+// The checks read the stored values, never a spelled type: the extension is at file scope, where
+// a type name can resolve to something else than in the declaration's own scope (a namesake at
+// file scope, or a sibling nested in the same outer type that isn't visible there at all).
 
 import SwiftCompilerPlugin
 @preconcurrency import SwiftDiagnostics
@@ -37,11 +40,15 @@ public struct PlainDataMacro: ExtensionMacro {
         let whereClause = constraints.isEmpty ? "" : " where " + constraints.joined(separator: ", ")
         let conformance = protocols.isEmpty ? "" : ": SwiftStateTurns.PlainData"
         let access = witnessAccess(of: declaration, in: context)
+        // A local function, not a closure: the compiler checks each statement of a function on
+        // its own, so every field that isn't plain data gets its error, where a closure's body
+        // stops at the first. `inout`, so a `lazy` property's mutating getter can be read.
+        let body = checks.isEmpty ? "" : "func check(_ value: inout Self) {\n\(checks)\n}"
         let decl: DeclSyntax = """
             extension \(type.trimmed)\(raw: conformance)\(raw: whereClause) {
-                /// Compiled, never called: each line fails to compile unless its type is PlainData.
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
                 \(raw: access)static func _plainDataCheck() {
-                    \(raw: checks)
+                    \(raw: body)
                 }
             }
             """
@@ -109,10 +116,15 @@ public struct PlainDataMacro: ExtensionMacro {
             if isEnum {
                 guard let cases = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
                 for element in cases.elements {
-                    for parameter in element.parameterClause?.parameters ?? [] {
-                        guard let found = checks(parameter.type, context) else { failed = true; continue }
-                        lines.append(contentsOf: found)
+                    let parameters = Array(element.parameterClause?.parameters ?? [])
+                    if parameters.isEmpty { continue }
+                    var inner: [String] = []
+                    for (index, parameter) in parameters.enumerated() {
+                        guard let found = checks(parameter.type, "v\(index)", context) else { failed = true; continue }
+                        inner.append(contentsOf: found)
                     }
+                    let bindings = parameters.indices.map { "v\($0)" }.joined(separator: ", ")
+                    lines.append("if case let .\(element.name.trimmed)(\(bindings)) = value {\n\(inner.joined(separator: "\n"))\n}")
                 }
                 continue
             }
@@ -125,7 +137,10 @@ public struct PlainDataMacro: ExtensionMacro {
                 failed = true
                 continue
             }
-            if let wrapper = variable.attributes.first {
+            // A computed property has no storage, whatever its attributes (`@inlinable`).
+            if variable.bindings.allSatisfy(isComputed) { continue }
+            // Any other attribute (a property wrapper, an attached macro) can change the storage.
+            if let wrapper = variable.attributes.first(where: { !isStorageNeutral($0) }) {
                 context.diagnose(Diagnostic(node: wrapper, message: PlainDataDiagnostic.wrapper))
                 failed = true
                 continue
@@ -142,27 +157,39 @@ public struct PlainDataMacro: ExtensionMacro {
                     failed = true
                     continue
                 }
-                guard let found = checks(annotation, context) else { failed = true; continue }
+                guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self),
+                      let found = checks(annotation, "value.\(pattern.identifier.trimmed)", context)
+                else { failed = true; continue }
                 lines.append(contentsOf: found)
             }
         }
         return lines.joined(separator: "\n")
     }
 
-    private static func check(_ type: TypeSyntax) -> String {
-        "SwiftStateTurns.PlainDataCheck.field((\(type.trimmed)).self)"
+    /// Built-in attributes that leave a stored property's storage as declared.
+    private static let storageNeutralAttributes: Set<String> = ["usableFromInline", "available", "_spi", "_documentation"]
+
+    private static func isStorageNeutral(_ element: AttributeListSyntax.Element) -> Bool {
+        guard case .attribute(let attribute) = element else { return false }
+        return storageNeutralAttributes.contains(attribute.attributeName.trimmedDescription)
     }
 
-    /// The checks for one field's type, or nil after a diagnostic. A type with no `any` gets one
-    /// `field` check. An `any P` gets an `existential` check, which compiles only when `P`
-    /// refines `PlainData`; inside `Optional`, `Array`, `ContiguousArray` or a `Dictionary`'s
-    /// value the element is checked instead of the wrapper, which can't conform. Anywhere else,
-    /// the macro can't see what holds it, so it is refused.
-    private static func checks(_ type: TypeSyntax, _ context: some MacroExpansionContext) -> [String]? {
-        guard containsAny(type) else { return accept(type, context) ? [check(type)] : nil }
+    private static func check(_ value: String) -> String {
+        "SwiftStateTurns.PlainDataCheck.field(\(value))"
+    }
+
+    /// The checks for one stored value, read by the expression `value`, or nil after a
+    /// diagnostic. The spelled type only chooses the checks; each check reads the value, so the
+    /// compiler checks the type the value really has. A type with no `any` gets one `field` check.
+    /// An `any P` gets an `existential` check, which compiles only when `P` refines `PlainData`;
+    /// inside `Optional`, `Array`, `ContiguousArray` or a `Dictionary`'s value the elements are
+    /// checked instead of the wrapper, which can't conform. Anywhere else, the macro can't see
+    /// what holds it, so it is refused.
+    private static func checks(_ type: TypeSyntax, _ value: String, _ context: some MacroExpansionContext) -> [String]? {
+        guard containsAny(type) else { return accept(type, context) ? [check(value)] : nil }
         if let paren = type.as(TupleTypeSyntax.self), paren.elements.count == 1,
            let only = paren.elements.first, only.firstName == nil {
-            return checks(only.type, context)
+            return checks(only.type, value, context)
         }
         if let existential = type.as(SomeOrAnyTypeSyntax.self), existential.someOrAnySpecifier.tokenKind == .keyword(.any) {
             if existential.constraint.is(MetatypeTypeSyntax.self) {
@@ -170,9 +197,7 @@ public struct PlainDataMacro: ExtensionMacro {
                 return nil
             }
             guard accept(existential.constraint, context) else { return nil }
-            // The type goes in the closure's parameter: `(any (P & Q)).self` doesn't parse as an
-            // expression, and the parameter takes every spelling.
-            return ["SwiftStateTurns.PlainDataCheck.existential { (value: \(existential.trimmed)) in value }"]
+            return ["SwiftStateTurns.PlainDataCheck.existential(\(value))"]
         }
         // A closure or a tuple holding an existential is refused as a closure or a tuple.
         var bare = type
@@ -185,26 +210,42 @@ public struct PlainDataMacro: ExtensionMacro {
             context.diagnose(Diagnostic(node: type, message: PlainDataDiagnostic.tuple))
             return nil
         }
-        if let optional = type.as(OptionalTypeSyntax.self) { return checks(optional.wrappedType, context) }
-        if let optional = type.as(ImplicitlyUnwrappedOptionalTypeSyntax.self) { return checks(optional.wrappedType, context) }
-        if let array = type.as(ArrayTypeSyntax.self) { return checks(array.element, context) }
-        if let dictionary = type.as(DictionaryTypeSyntax.self) { return pair(dictionary.key, dictionary.value, context) }
-        if let found = standardWrapper(type) {
-            guard let inner = wrapperChecks(found, context) else { return nil }
-            // The name, bare or `Swift.`-qualified, can be the module's own type (a namesake, a
-            // typealias, or a module-level `enum Swift`). The helper's parameter is the standard
-            // library's type, spelled inside SwiftStateTurns, so only that type compiles. The
-            // closure's parameters bind its arguments to the ones checked above, so an alias
-            // that ignores its argument (`Array<E> = Swift.Array<Ref>`) doesn't compile either.
-            let parameters = found.arguments.map { "_: \($0.trimmed)" }.joined(separator: ", ")
-            return inner + ["SwiftStateTurns.PlainDataCheck.\(found.helper)((\(type.trimmed)).self) { (\(parameters)) in }"]
-        }
+        // A wrapper's helper takes the standard library's type, spelled inside SwiftStateTurns,
+        // so a value of the module's own namesake (or of an alias to another type) doesn't
+        // compile, and passes each element to the closure, whose checks read it as `$0` (a
+        // dictionary's key as `$0`, its value as `$1`).
+        if let optional = type.as(OptionalTypeSyntax.self) { return wrap("optional", [optional.wrappedType], value, context) }
+        if let optional = type.as(ImplicitlyUnwrappedOptionalTypeSyntax.self) { return wrap("optional", [optional.wrappedType], value, context) }
+        if let array = type.as(ArrayTypeSyntax.self) { return wrap("array", [array.element], value, context) }
+        if let dictionary = type.as(DictionaryTypeSyntax.self) { return wrap("dictionary", [dictionary.key, dictionary.value], value, context) }
+        if let found = standardWrapper(type) { return wrap(found.helper, found.arguments, value, context) }
         context.diagnose(Diagnostic(node: type, message: PlainDataDiagnostic.existentialInGeneric))
         return nil
     }
 
+    /// `PlainDataCheck.<helper>(value) { … }` with the element checks inside. A dictionary's key
+    /// is checked as a whole: it can't hold an existential (an existential key isn't `Hashable`).
+    private static func wrap(_ helper: String, _ arguments: [TypeSyntax], _ value: String, _ context: some MacroExpansionContext) -> [String]? {
+        var inner: [String] = []
+        if arguments.count == 2 {
+            let key = arguments[0]
+            if containsAny(key) {
+                context.diagnose(Diagnostic(node: key, message: PlainDataDiagnostic.existentialInGeneric))
+                return nil
+            }
+            guard accept(key, context), let valueChecks = checks(arguments[1], "$1", context) else { return nil }
+            inner = [check("$0")] + valueChecks
+        } else {
+            guard let elementChecks = checks(arguments[0], "$0", context) else { return nil }
+            inner = elementChecks
+        }
+        return ["SwiftStateTurns.PlainDataCheck.\(helper)(\(value)) { \(inner.joined(separator: "; ")) }"]
+    }
+
     /// `Optional<…>`, `Array<…>`, `ContiguousArray<…>` or `Dictionary<…, …>` spelled out, bare or
-    /// as `Swift.…`: its name, its arguments, and the `PlainDataCheck` helper that pins it.
+    /// as `Swift.…`: its name, its arguments, and the `PlainDataCheck` helper for it. The name can
+    /// be the module's own type (a namesake, a typealias, a module-level `enum Swift`); the
+    /// helper then doesn't compile.
     private static func standardWrapper(_ type: TypeSyntax) -> (name: String, arguments: [TypeSyntax], helper: String)? {
         let name: String
         let clause: GenericArgumentClauseSyntax?
@@ -227,26 +268,6 @@ public struct PlainDataMacro: ExtensionMacro {
         case ("Dictionary", 2): return (name, arguments, "dictionary")
         default: return nil
         }
-    }
-
-    private static func wrapperChecks(
-        _ wrapper: (name: String, arguments: [TypeSyntax], helper: String),
-        _ context: some MacroExpansionContext
-    ) -> [String]? {
-        wrapper.name == "Dictionary"
-            ? pair(wrapper.arguments[0], wrapper.arguments[1], context)
-            : checks(wrapper.arguments[0], context)
-    }
-
-    /// A dictionary's checks: its key as a whole, which can't hold an existential (an existential
-    /// key isn't `Hashable`), and its value as above.
-    private static func pair(_ key: TypeSyntax, _ value: TypeSyntax, _ context: some MacroExpansionContext) -> [String]? {
-        if containsAny(key) {
-            context.diagnose(Diagnostic(node: key, message: PlainDataDiagnostic.existentialInGeneric))
-            return nil
-        }
-        guard accept(key, context), let valueChecks = checks(value, context) else { return nil }
-        return [check(key)] + valueChecks
     }
 
     private static func containsAny(_ type: TypeSyntax) -> Bool {

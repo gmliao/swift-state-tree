@@ -1,4 +1,4 @@
-// expect-error: to closure result type 'any PlainData'
+// expect-error: 'any Loose'
 import SwiftStateTurns
 
 // An existential field of a protocol that doesn't refine PlainData.

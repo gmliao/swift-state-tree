@@ -1,6 +1,6 @@
 // Tests/SwiftStateTurnsMacrosTests/PlainDataLintTests.swift
 //
-// The turn core's plain-data rule, on SwiftSyntax's tokens: outside the core's two targets, no
+// The turn core's plain-data rule, on SwiftSyntax's tokens: outside Sources/SwiftStateTurns/, no
 // code may write PlainData's requirement or conform to PlainData by hand, and nothing may take
 // the names the macro's expansion relies on. `@PlainData` is the only way in. The rule reads
 // the parsed source, so comments, strings, raw strings, tabs and nested comments can't hide

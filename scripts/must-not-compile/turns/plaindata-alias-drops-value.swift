@@ -1,7 +1,7 @@
-// expect-error: to expected argument type '(String, Ref) -> Void'
+// expect-error: 'Ref' does not conform to expected type 'PlainData'
 import SwiftStateTurns
 
-// A `Dictionary` alias that keeps its key and drops its value: the closure binds both.
+// A `Dictionary` alias that keeps its key and drops its value: the checks read the stored values.
 protocol Payload: PlainData, Sendable {}
 
 final class Ref: Sendable {}

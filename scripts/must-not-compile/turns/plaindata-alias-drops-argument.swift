@@ -1,9 +1,9 @@
-// expect-error: to expected argument type '(Ref) -> Void'
+// expect-error: 'Ref' does not conform to expected type 'PlainData'
 import SwiftStateTurns
 
-// The alias is the standard library's `Array`, so the pinned helper's first parameter accepts
-// it, but it ignores its argument: `Array<any Payload>` is a `[Ref]`, and the existential check
-// sees only the spelled `any Payload`. The closure binds the element to the spelled one.
+// The alias is the standard library's `Array`, so the helper accepts it, but it ignores its
+// argument: `Array<any Payload>` is a `[Ref]`. The checks read the stored elements, which are
+// `Ref`s, not the spelled `any Payload`.
 protocol Payload: PlainData, Sendable {}
 
 final class Ref: Sendable {}

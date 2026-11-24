@@ -52,9 +52,10 @@ struct PlainDataMacroTests {
             """)
         #expect(messages.isEmpty)
         #expect(text.contains("extension Room: SwiftStateTurns.PlainData {"))
-        #expect(text.contains("PlainDataCheck.field(([Int: String]).self)"))
-        #expect(text.contains("PlainDataCheck.field((Bool).self)"))
-        #expect(text.contains("PlainDataCheck.field((Int).self)"))
+        // Each check reads the stored value, never a spelled type.
+        #expect(text.contains("func check(_ value: inout Self) { SwiftStateTurns.PlainDataCheck.field(value.players)"))
+        #expect(text.contains("PlainDataCheck.field(value.open)"))
+        #expect(text.contains("PlainDataCheck.field(value.ticks)"))
         // `ticks` is checked once (Int); `count` and `shared` aren't checked at all.
         #expect(text.components(separatedBy: "PlainDataCheck.field").count - 1 == 3)
     }
@@ -68,7 +69,7 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(messages.isEmpty)
-        #expect(text.components(separatedBy: "PlainDataCheck.field((Int).self)").count - 1 == 2)
+        #expect(text.contains("PlainDataCheck.field(value.a) SwiftStateTurns.PlainDataCheck.field(value.b)"))
     }
 
     @Test("A generic struct's conformance requires each parameter to be PlainData")
@@ -82,8 +83,8 @@ struct PlainDataMacroTests {
             """)
         #expect(messages.isEmpty)
         #expect(text.contains("extension Box: SwiftStateTurns.PlainData where T: SwiftStateTurns.PlainData, U: SwiftStateTurns.PlainData {"))
-        #expect(text.contains("PlainDataCheck.field((T).self)"))
-        #expect(text.contains("PlainDataCheck.field(([U: T]).self)"))
+        #expect(text.contains("PlainDataCheck.field(value.value)"))
+        #expect(text.contains("PlainDataCheck.field(value.index)"))
     }
 
     @Test("An enum checks every associated value of every case")
@@ -98,9 +99,11 @@ struct PlainDataMacroTests {
             """)
         #expect(messages.isEmpty)
         #expect(text.contains("extension Phase: SwiftStateTurns.PlainData {"))
-        for type in ["Int", "UInt64", "[String]", "String?"] {
-            #expect(text.contains("PlainDataCheck.field((\(type)).self)"), "checks \(type)")
-        }
+        // Each case's values are bound by position and checked; a case without values has none.
+        #expect(text.contains("if case let .joining(v0, v1) = value { SwiftStateTurns.PlainDataCheck.field(v0) SwiftStateTurns.PlainDataCheck.field(v1) }"))
+        #expect(text.contains("if case let .running(v0) = value { SwiftStateTurns.PlainDataCheck.field(v0) }"))
+        #expect(text.contains("if case let .ended(v0) = value { SwiftStateTurns.PlainDataCheck.field(v0) }"))
+        #expect(!text.contains(".idle"))
     }
 
     @Test("A type that already declares PlainData gets the checks without a second conformance")
@@ -114,7 +117,7 @@ struct PlainDataMacroTests {
         #expect(messages.isEmpty)
         #expect(text.contains("extension Done {"))
         #expect(!text.contains("extension Done: PlainData"))
-        #expect(text.contains("PlainDataCheck.field((Int).self)"))
+        #expect(text.contains("PlainDataCheck.field(value.n)"))
     }
 
     @Test("Members inside `#if` are checked under the same conditions, in every clause")
@@ -132,7 +135,7 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(messages.isEmpty)
-        #expect(text.contains("PlainDataCheck.field((Int).self) #if DEBUG SwiftStateTurns.PlainDataCheck.field(([String]).self) #elseif os(Linux) SwiftStateTurns.PlainDataCheck.field((UInt32).self) #else #endif"))
+        #expect(text.contains("PlainDataCheck.field(value.n) #if DEBUG SwiftStateTurns.PlainDataCheck.field(value.trace) #elseif os(Linux) SwiftStateTurns.PlainDataCheck.field(value.linuxOnly) #else #endif"))
     }
 
     @Test("A closure inside `#if` is refused like one outside it; so is an enum case inside `#if`")
@@ -212,7 +215,7 @@ struct PlainDataMacroTests {
         }
     }
 
-    @Test("An existential gets a closure check, on its own and as the element of Optional, Array, ContiguousArray and a Dictionary's value")
+    @Test("An existential value is checked on its own and as the element of Optional, Array, ContiguousArray and a Dictionary's value")
     func existentialChecks() {
         let (text, messages) = expand("""
             @PlainData
@@ -230,25 +233,26 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(messages.isEmpty)
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.field((String).self)"))
-        // One closure check per existential; no `field` check for a wrapper, which can't conform.
-        #expect(text.components(separatedBy: "SwiftStateTurns.PlainDataCheck.existential { (value: any Payload) in value }").count - 1 == 8)
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.existential { (value: any Payload & Sendable) in value }"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.existential { (value: any (Payload & Sendable)) in value }"))
-        #expect(text.components(separatedBy: "PlainDataCheck.field").count - 1 == 2)
-        // A wrapper spelled out, bare or `Swift.`-qualified, is pinned to the standard library's
-        // type at each layer, with its arguments bound by the closure; one spelled as sugar needs
-        // no check.
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.contiguousArray((ContiguousArray<any Payload>).self) { (_: any Payload) in }"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.optional((Optional<Array<any Payload>>).self) { (_: Array<any Payload>) in }"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.array((Array<any Payload>).self) { (_: any Payload) in }"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.optional((Swift.Optional<any Payload>).self) { (_: any Payload) in }"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.dictionary((Dictionary<String, any Payload>).self) { (_: String, _: any Payload) in }"))
-        #expect(!text.contains("PlainDataCheck.same"))
-        let pinned = ["optional(", "array(", "contiguousArray(", "dictionary("].map {
+        let check = "SwiftStateTurns.PlainDataCheck."
+        // An existential field is checked as a value; inside a wrapper, every element is passed
+        // to the closure and checked there, with the dictionary's key checked as a whole. The
+        // wrapper's helper takes the standard library's type, however the field spells it.
+        #expect(text.contains("\(check)existential(value.head)"))
+        #expect(text.contains("\(check)optional(value.next) { \(check)existential($0) }"))
+        #expect(text.contains("\(check)array(value.all) { \(check)existential($0) }"))
+        #expect(text.contains("\(check)contiguousArray(value.later) { \(check)existential($0) }"))
+        #expect(text.contains("\(check)dictionary(value.byName) { \(check)field($0); \(check)existential($1) }"))
+        #expect(text.contains("\(check)array(value.nested) { \(check)optional($0) { \(check)array($0) { \(check)existential($0) } } }"))
+        #expect(text.contains("\(check)optional(value.plain) { \(check)array($0) { \(check)existential($0) } }"))
+        #expect(text.contains("\(check)existential(value.grouped)"))
+        #expect(text.contains("\(check)optional(value.qualified) { \(check)existential($0) }"))
+        #expect(text.contains("\(check)dictionary(value.spelled) { \(check)field($0); \(check)existential($1) }"))
+        // No spelled type reaches the checks.
+        #expect(!text.contains(".self"))
+        let counts = ["existential(", "field(", "optional(", "array(", "contiguousArray(", "dictionary("].map {
             text.components(separatedBy: "PlainDataCheck.\($0)").count - 1
         }
-        #expect(pinned == [2, 1, 1, 1])
+        #expect(counts == [10, 2, 4, 4, 1, 2])
     }
 
     @Test("The expansion names the core's module for the conformance and a generic's constraint")
@@ -260,7 +264,7 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(text.contains("extension Box: SwiftStateTurns.PlainData where T: SwiftStateTurns.PlainData {"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.field((T).self)"))
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.field(value.value)"))
     }
 
     @Test("The checks' witness is as visible as the type: public for a public type, internal otherwise")
@@ -358,7 +362,7 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(messages.isEmpty)
-        #expect(text.contains("PlainDataCheck.field((Calendar.Date).self)"))
+        #expect(text.contains("PlainDataCheck.field(value.value)"))
         // A type nested in the module's own `Date` or `URL` isn't Foundation's either.
         let (nested, nestedMessages) = expand("""
             @PlainData
@@ -368,7 +372,7 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(nestedMessages.isEmpty)
-        #expect(nested.contains("PlainDataCheck.field((Date.Part).self)"))
+        #expect(nested.contains("PlainDataCheck.field(value.part)"))
     }
 
     @Test("An indirect enum and an indirect case are checked like any enum")
@@ -381,7 +385,7 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(whole.messages.isEmpty)
-        #expect(whole.text.contains("PlainDataCheck.field((Tree).self)"))
+        #expect(whole.text.contains("if case let .node(v0, v1) = value"))
         let single = expand("""
             @PlainData
             enum List {
@@ -390,7 +394,7 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(single.messages.isEmpty)
-        #expect(single.text.contains("PlainDataCheck.field((List).self)"))
+        #expect(single.text.contains("if case let .cons(v0, v1) = value"))
     }
 
     @Test("A parenthesized type is not a tuple")
@@ -410,6 +414,8 @@ struct PlainDataMacroTests {
             ("weak var owner: Owner?", "a weak or unowned property holds a reference, which isn't plain data"),
             ("unowned let owner: Owner", "a weak or unowned property holds a reference, which isn't plain data"),
             ("@Clamped var level: Int", "@PlainData can't check a property wrapper's storage; store the value itself"),
+            ("@lowercased var level: Int", "@PlainData can't check a property wrapper's storage; store the value itself"),
+            ("@usableFromInline @Clamped var level: Int", "@PlainData can't check a property wrapper's storage; store the value itself"),
             ("let (a, b): (Int, Int)", "@PlainData checks one stored property per binding; split the tuple pattern"),
         ]
         for (property, message) in cases {
@@ -421,6 +427,23 @@ struct PlainDataMacroTests {
                 """)
             #expect(messages == [message], "\(property)")
         }
+    }
+
+    @Test("A built-in attribute that leaves the storage alone isn't a wrapper; a computed property is skipped whatever its attributes")
+    func storageNeutralAttributes() {
+        let (text, messages) = expand("""
+            @PlainData
+            struct Angle {
+                @usableFromInline
+                internal var degrees: Int32
+                @available(*, deprecated) var old: Int
+                @inlinable
+                public var radians: Float { Float(degrees) }
+                @Clamped var shown: Int { 0 }
+            }
+            """)
+        #expect(messages.isEmpty, "\(messages)")
+        #expect(text.contains("PlainDataCheck.field(value.degrees) SwiftStateTurns.PlainDataCheck.field(value.old) }"))
     }
 
     @Test("An enum case's closure payload is refused")
