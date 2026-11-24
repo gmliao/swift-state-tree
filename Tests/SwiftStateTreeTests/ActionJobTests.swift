@@ -835,20 +835,6 @@ private func joinThroughCanJoin(_ keeper: LandKeeper<ActionJobTestState>, player
     )
 }
 
-/// Waits until `keeper`'s count of `kind` is `count`, resumed by the transition, within a
-/// deadline: a missing end fails the test instead of hanging it.
-private func expectAbandoned(
-    _ keeper: LandKeeper<ActionJobTestState>,
-    _ kind: ResolverAbandonment.Kind,
-    _ count: Int,
-    sourceLocation: SourceLocation = #_sourceLocation
-) async throws {
-    _ = try await withinDeadline("\(kind) abandoned count \(count)", sourceLocation: sourceLocation) {
-        await keeper.abandonmentCounter.waitForCount(kind, count)
-    }
-    #expect(keeper.abandonmentCounter.count(kind) == count, sourceLocation: sourceLocation)
-}
-
 /// Abandons one group of `kind` on `keeper` at its deadline; returns the gate holding it.
 private func abandonOne(_ keeper: LandKeeper<ActionJobTestState>, _ kind: ResolverAbandonment.Kind) async throws -> WatermarkGate {
     let key = KindGates.freshKey()
@@ -867,6 +853,49 @@ private func abandonOne(_ keeper: LandKeeper<ActionJobTestState>, _ kind: Resolv
         Issue.record("abandonOne covers the join and leave kinds")
     }
     return KindGates.gate(key)
+}
+
+/// Abandons one group of `kind` on `keeper` by gate, not wall-clock. Starts the join (or
+/// leave) in an unstructured task, waits until `kind`'s resolver has entered its gate
+/// (confirming all prior resolver groups have finished), then cancels the task to abandon the
+/// group without a timing race. Returns the gate still holding the resolver, or nil on a
+/// missed entry (gate never entered; the task was cancelled and the gate released).
+private func abandonOneByGate(_ keeper: LandKeeper<ActionJobTestState>, _ kind: ResolverAbandonment.Kind) async throws -> WatermarkGate? {
+    guard kind == .canJoin || kind == .onJoin || kind == .onLeave else {
+        Issue.record("abandonOneByGate covers the join and leave kinds")
+        return nil
+    }
+    let key = KindGates.freshKey()
+    let session = "\(kind.rawValue)-\(key)"
+    let gate = KindGates.gate(key)
+    switch kind {
+    case .canJoin, .onJoin:
+        let task = Task { try await joinThroughCanJoin(keeper, player: "k\(key)", session: session) }
+        guard await gate.waitUntilEntered("\(kind.rawValue) resolver enters gate") else {
+            task.cancel()
+            gate.release()
+            _ = try await withinDeadline("task ends after missed gate") { await task.result }
+            return nil
+        }
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+    case .onLeave:
+        try await joinThroughCanJoin(keeper, player: "k\(key)", session: session)
+        let task = Task {
+            try await keeper.leave(playerID: PlayerID("k\(key)"), clientID: ClientID("c-k\(key)"), sessionID: SessionID(session))
+        }
+        guard await gate.waitUntilEntered("\(kind.rawValue) resolver enters gate") else {
+            task.cancel()
+            gate.release()
+            _ = try await withinDeadline("task ends after missed gate") { await task.result }
+            return nil
+        }
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+    case .action, .onInitialize:
+        break
+    }
+    return gate
 }
 
 @Suite("Resolver abandonment: per land and per kind (#364)", .timeLimit(.minutes(1)))
@@ -913,10 +942,14 @@ struct ResolverAbandonmentTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let metrics = ResolverDeadlineMetrics()
         let action = ActionJobGates.freshKey()
-        let gate = try await withLimits(inFlight: 0, abandoned: 0, abandonedPerLand: 1, deadline: .milliseconds(10), metrics: metrics) {
-            try await abandonOne(keeper, kind)
+        // No wall-clock deadline: the group is abandoned by cancellation once its resolver
+        // enters the gate, so the kind-under-test group is always the one abandoned.
+        let gate = try await withLimits(inFlight: 0, abandoned: 0, abandonedPerLand: 1, metrics: metrics) {
+            try await abandonOneByGate(keeper, kind)
         }
-        #expect(keeper.abandonmentCounter.count(kind) == 1)
+        defer { gate?.release() }
+        try await expectAbandoned(keeper, kind, 1)
+        #expect(metrics.snapshot.timeouts == 0)
         #expect(keeper.abandonmentCounter.count(.action) == 0)
         try await withLimits(inFlight: 0, abandoned: 0, abandonedPerLand: 1, metrics: metrics) {
             // The cap is 1 and a group of another kind is abandoned: actions still run.
@@ -924,7 +957,7 @@ struct ResolverAbandonmentTests {
             ActionJobGates.gate(action).release()
             #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
         }
-        gate.release()
+        gate?.release()
         try await expectAbandoned(keeper, kind, 0)
     }
 
@@ -943,6 +976,8 @@ struct ResolverAbandonmentTests {
         #expect(during.abandoned == 2)
         #expect(during.abandonedActions == 1)
         #expect(during.abandonedCanJoin == 1)
+        try await expectAbandoned(keeper, .action, 1)
+        try await expectAbandoned(keeper, .canJoin, 1)
 
         ActionJobGates.gate(stuck).release()
         joinGate.release()

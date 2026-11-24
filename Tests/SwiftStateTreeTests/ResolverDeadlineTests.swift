@@ -225,6 +225,7 @@ struct ResolverDeadlineTests {
         }
         #expect(await keeper.playerCount() == 0, "the inserted player is removed")
         #expect(metrics.snapshot == .init(timeouts: 1, abandoned: 1, onLeaveDropped: 0, abandonedOnJoin: 1))
+        try await expectAbandoned(keeper, .onJoin, 1)
 
         try await withDeadline(generous, metrics: metrics) { try await join(keeper, "p-1") }
         #expect(await keeper.playerCount() == 1)
@@ -312,6 +313,7 @@ struct ResolverDeadlineTests {
         }
         #expect(await keeper.playerCount() == 0)
         #expect(metrics.snapshot == .init(timeouts: 1, abandoned: 1, onLeaveDropped: 1, abandonedOnLeave: 1))
+        try await expectAbandoned(keeper, .onLeave, 1)
 
         // The rejoin, while the old OnLeave resolver still runs.
         try await withDeadline(generous, metrics: metrics) {
