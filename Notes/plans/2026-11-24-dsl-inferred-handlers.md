@@ -221,6 +221,85 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
 | **D1** | The generic builders and typed `buildExpression`s (§3.1), `Rules` flattened in the builder, `Land(_:using:services:)` returning `TypedLand` and `NoServices` (inert until R1), the two client-event registration refusals (§3.3, D-Q4 (e)) with the no-op handlers for the 15 test lands they refuse (own commit), the wrong-State refusal, D-Q5's answer. **Required by D0:** `LifetimeBuilder` gains a typed `buildExpression(LifetimeDirective<State>)`, with a test that `Tick(every:) { state, ctx in }` inside `Lifetime` compiles unannotated (D0 result 2). Annotated closures keep compiling. The only call sites edited are the five standalone `Rules` (§3.1), the two `ServerEventNode` tests (§3.1) and the 15 no-op handlers (§3.3). Docs show the inferred form | D0 | build time of `SwiftStateTreeTests`, before and after (no call-site change, so it isolates the builder's own cost) |
 | **D2** | The codemod run over Sources, Tests and Examples, with #769 R1 in the same PR, as commits (a) to (e) (§4). The listed sites are fixed by hand | D1, #769 R1, #769's macro slice | §5's build-time gate |
 
+**D1's commits** (a draft at main 72c3a7b2. D-Q5's answer can change commit 2. Line numbers are at that commit). Each commit builds. From commit 2 on, `swift test` fails only on commit 1's refusal and backstop tests, which pass from commit 6.
+
+1. **The tests, failing first.** Nothing else changes.
+   - **New suite** `Tests/SwiftStateTreeTests/ClientEventRegistrationTests.swift`. At this commit the two refusal tests and the backstop fail, and the control and `nestedRulesHandlersAreKept` pass. The latter is a guard: today's `LandBuilder` already flattens `RulesNode`.
+     - `refusesRegisteredClientEventWithoutHandler`;
+     - `refusesHandledClientEventNotRegistered`;
+     - the directly built keeper's backstop, for both;
+     - the matching control;
+     - `nestedRulesHandlersAreKept`.
+   - **New must-not-compile snippets** in `scripts/must-not-compile/`. They compile today, so `check-must-not-compile.sh` fails on them at this commit:
+     - `wrong-state-node.swift` (an `OnJoin` for another State inside `Rules`), with D0's text as the `expect-error` fragment;
+     - `wrong-state-top-level.swift` (a prebuilt node at the land's top level);
+     - `let-action-field.swift` (an unannotated action closure assigning to a `let` field).
+   - **`compiles.swift` gains the inferred forms.** They fail to compile at this commit:
+     - every entry unannotated;
+     - `Tick(every:) { state, ctx in }` inside `Lifetime`;
+     - a two-stage `validate` with `Plan` inferred;
+     - nested `Rules`.
+2. **The generic builders** (§3.1). Everything that turns the commit-1 compile checks green, in one commit, since none of it compiles alone:
+   - `Sources/SwiftStateTree/Land/LandDSL.swift`:
+     - `LandDSL<State, Services>` with one `buildExpression` per node type, and `buildBlock`, `buildArray`, `buildOptional` and `buildEither` over `[LandNode]`;
+     - `Rules<State, Services>` and `RulesNode<State, Services>`, flattened in `buildExpression`;
+     - `LifetimeBuilder`'s typed `buildExpression(LifetimeDirective<State>)`, with `buildBlock` over arrays;
+     - `NoServices`;
+     - `Land(_:using:)` takes `@LandDSL<State, NoServices>`;
+     - D-Q5's answer: if (a), `buildExpression(_: [LandNode])`;
+   - `Sources/SwiftStateTree/Land/LandBuilder.swift`: the `RulesNode` case (LB:57) deleted, since the builder flattens it;
+   - `Sources/SwiftStateTree/Land/LandMacros.swift` and `Sources/SwiftStateTreeMacros/LandMacro.swift`: the `@Land` doc and its body under D-Q5's answer, with the macro test updated;
+   - **the five standalone `Rules` sites**, typed `RulesNode<…, NoServices>` (§3.1):
+     - PerSequenceResultTests.swift:107;
+     - TransportAdapterSyncPhaseTests.swift:102;
+     - InputDecodeOnceTests.swift:224;
+     - LiveRoutingPinTests.swift:54;
+     - TwoPhaseHandlerTests.swift:93.
+3. **`Land(_:using:services:)` and `TypedLand`**: `TypedLand<State, Services>` holding `.definition`, and `LandDefinition.servicesType` (`package`, nil from `Land(_:using:)`). One test checks `servicesType`. Inert until #769 R1.
+4. **The deprecated forms removed** (D-Q2):
+   - from `LandDSL.swift`: `ServerEvent(_:)`, `ServerEventNode` and `OnShutdown`;
+   - from `LandBuilder.swift`: the `ServerEventNode` case (LB:138);
+   - from `LandDSL.swift` and `LandDefinition.swift`: `LifetimeConfig.onShutdown` and `LifetimeHandlers.onShutdown`, with its init parameter;
+   - the keeper's call (LK:5954–5958);
+   - the doc comment at LandRegistration.swift:62.
+   
+   **The two EV8 tests move** to `replacingServerEventRegistry` with a public `AnyEventDescriptor` (ReplayTypedEventDecodeTests.swift:114, RecordSchemaFingerprintRegistrationTests.swift:108), their assertions unchanged.
+5. **The no-op handlers, by hand,** in their own commit. Each gets `HandleEvent(X.self) { _, _, _ in }` inside its land's `Rules`. Its `State` comes from the builder (commit 2).
+   - **The 15 lands**, 16 events:
+     - DecimalRegistrationTests.swift:151 (`DecimalBidEvent`);
+     - EventNameRegistrationTests.swift:87 (`ENKnockEvent`), :98 and :191 (`ENTap`);
+     - LandDSLTests.swift:54 and :171 (`DemoChatEvent`), :464 (`TestEvent1`, `TestEvent2`), :567 (`TestRegisteredEvent`), :596 (`ClientEvent`);
+     - SchemaFingerprintTests.swift:434, :450 and :474 (`FPv1.FPNote`), :658 (`FPPlainNote`);
+     - SchemaTypeNameCollisionTests.swift:231 (`SchemaNameA.HitEvent`);
+     - TransportTests.swift:46 (`TestChatEvent`).
+   - **The schema-fingerprint goldens must not move.** The fingerprint covers registered types, not handlers. If one moves, the commit stops and the change is reported, not re-blessed.
+   - The commit message lists the 15.
+6. **The refusal** (§3.3):
+   - `LandBuilder` computes the mismatches;
+   - `LandDefinition.clientEventMismatches` (`package`), carried by `replacingServerEventRegistry`;
+   - `LandRegistrationError.clientEventMismatches`, with its `description` part and its `init` parameter;
+   - `validateForRegistration`;
+   - the keeper's backstop (LK:1252–1271).
+   
+   Commit 1's refusal tests pass from here.
+7. **The docs**, English and `zh-TW` in the same commit. The inferred form on every page that shows a handler closure (counts of annotated closures per page):
+   - `quickstart` (5), `FAQ` (2), `core/land-dsl` (7, and `OnShutdown` dropped at line 229), `core/resolver` (2), `core/runtime` (1), `examples/cookie-clicker` (2), `transport/auth` (2);
+   - `core/land-dsl` adds the D-Q3 helper spelling and the typealias form;
+   - `@Land`'s documented form, under D-Q5's answer.
+
+**Not in D1:**
+- the codemod. It lives under `Tools/Codemods/DSL/` in D2's PR (D-Q1), with commits (a) to (e) of §4;
+- Examples: no handler closure in Examples changes in D1;
+- annotated closures in `Tests/`, which keep compiling.
+
+**D1's local gate**, on the Mac holding the slot:
+- `swift build`, and `swift test --filter` for `ClientEventRegistrationTests`, `LandDSLTests`, the two EV8 suites and the five standalone-`Rules` suites;
+- `scripts/check-must-not-compile.sh`;
+- the mutants of §5;
+- the build-time gate: D0's baseline script at D1's base and at D1's head, alternating base and head, three test-module rebuilds each. It passes if the head's median is within 10% of the base's, and if the only expressions over 200 ms are the baseline's two.
+
+CI runs the full `swift test` and E2E.
+
 Examples go in their own commit in D2. `docs/` pages that show handler closures (`quickstart`, `programming-model`, `core/*`) move to the inferred form in D1, both languages in the same commit.
 
 ## 7. Public API
@@ -295,3 +374,4 @@ The decision is the maintainer's (§8, D-Q5).
 - **five call sites get a type:** three helpers `-> RulesNode` and two `let rules = Rules {`, which have no outer builder to fix `Services` (§3.1, §6, §7);
 - **the keeper's backstop** (LK:1252–1271) adds `clientEventMismatches`, with a mutant. Only lands that are registered or run fail without the no-op handler (§3.3, §5);
 - **D-Q5** (an array of nodes in a land body: D-Q3's helpers and the `@Land` macro), recommended (a) with a probe before D1 commits to it (§8).
+- **D1's commit list** (§6, after rev 2.3's findings): seven commits, the failing tests first, the 15 no-op handlers in their own commit, with the files and line numbers at 72c3a7b2. The codemod stays in D2.
