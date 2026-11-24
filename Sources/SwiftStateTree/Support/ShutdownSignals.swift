@@ -10,9 +10,21 @@ import Glibc
 import Musl
 #elseif canImport(Darwin)
 import Darwin
+#elseif os(Windows)
+import ucrt
 #endif
 
 extension ProcessSignals {
+    /// SIGINT and SIGTERM; on Windows also SIGBREAK, which the CRT raises for Ctrl-Break and for
+    /// a closing console window.
+    public static var defaultShutdownSignals: [Int32] {
+        #if os(Windows)
+        [SIGINT, SIGTERM, SIGBREAK]
+        #else
+        [SIGINT, SIGTERM]
+        #endif
+    }
+
     /// The shutdown signals delivered to this process, as a stream: a server awaits the first
     /// element, then shuts down (`NIOLandHost.runUntilShutdownSignal` does both).
     ///
@@ -35,7 +47,7 @@ extension ProcessSignals {
     /// - **Calling it again** returns another stream fed by the same handler and thread.
     ///
     /// - Parameter signals: The signals to catch. Defaults to SIGINT and SIGTERM.
-    public static func shutdownSignals(_ signals: [Int32] = [SIGINT, SIGTERM]) -> AsyncStream<Int32> {
+    public static func shutdownSignals(_ signals: [Int32] = defaultShutdownSignals) -> AsyncStream<Int32> {
         ShutdownSignalReader.shared.subscribe(signals: signals, escalates: true)
     }
 
@@ -57,7 +69,11 @@ nonisolated(unsafe) private var shutdownSignalWriteFD: Int32 = -1
 private let shutdownSignalHandler: @convention(c) (Int32) -> Void = { signal in
     let saved = errno
     var byte = UInt8(truncatingIfNeeded: signal)
+    #if os(Windows)
+    _ = _write(shutdownSignalWriteFD, &byte, 1)
+    #else
     _ = write(shutdownSignalWriteFD, &byte, 1)
+    #endif
     errno = saved
 }
 
@@ -99,6 +115,12 @@ final class ShutdownSignalReader: @unchecked Sendable {
     private func startIfNeeded() {
         guard readFD < 0 else { return }
         var fds: [Int32] = [-1, -1]
+        #if os(Windows)
+        // _pipe has no O_NONBLOCK / FD_CLOEXEC equivalents; _O_NOINHERIT keeps it from children.
+        guard _pipe(&fds, 4096, _O_BINARY | _O_NOINHERIT) == 0 else {
+            preconditionFailure("ShutdownSignals: _pipe() failed (errno \(errno))")
+        }
+        #else
         guard pipe(&fds) == 0 else {
             preconditionFailure("ShutdownSignals: pipe() failed (errno \(errno))")
         }
@@ -106,6 +128,7 @@ final class ShutdownSignalReader: @unchecked Sendable {
         _ = fcntl(fds[0], F_SETFD, FD_CLOEXEC)
         _ = fcntl(fds[1], F_SETFD, FD_CLOEXEC)
         _ = fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK)
+        #endif
         readFD = fds[0]
         shutdownSignalWriteFD = fds[1]
         let fd = readFD
@@ -115,6 +138,10 @@ final class ShutdownSignalReader: @unchecked Sendable {
     }
 
     private func install(_ signal: Int32) {
+        #if os(Windows)
+        // The CRT signal() handler runs on its own thread for Ctrl-C; SIG_ERR is not imported.
+        _ = ucrt.signal(signal, shutdownSignalHandler)
+        #else
         var action = sigaction()
         #if canImport(Glibc)
         action.__sigaction_handler.sa_handler = shutdownSignalHandler
@@ -129,12 +156,17 @@ final class ShutdownSignalReader: @unchecked Sendable {
         guard sigaction(signal, &action, nil) == 0 else {
             preconditionFailure("ShutdownSignals: sigaction(\(signal)) failed (errno \(errno))")
         }
+        #endif
     }
 
     private func readLoop(fd: Int32) {
         while true {
             var byte: UInt8 = 0
+            #if os(Windows)
+            let count = Int(_read(fd, &byte, 1))
+            #else
             let count = read(fd, &byte, 1)
+            #endif
             if count == 1 {
                 deliver(Int32(byte))
             } else if count < 0, errno == EINTR {

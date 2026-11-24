@@ -9,7 +9,7 @@ import Testing
 
 #if canImport(Glibc)
 import Glibc
-#else
+#elseif canImport(Darwin)
 import Darwin
 #endif
 

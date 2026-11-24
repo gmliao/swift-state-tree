@@ -3,6 +3,33 @@
 import CompilerPluginSupport
 import PackageDescription
 
+// The NIO provisioning middleware is not built on Windows: AsyncHTTPClient's C target needs POSIX
+// `strptime`, which the Windows CRT lacks. On other platforms the two lists hold the same product and
+// target as before, in the same place in `products` and `targets`.
+#if os(Windows)
+let provisioningProducts: [Product] = []
+let provisioningTargets: [Target] = []
+#else
+let provisioningProducts: [Product] = [
+    .library(
+        name: "SwiftStateTreeNIOProvisioning",
+        targets: ["SwiftStateTreeNIOProvisioning"]
+    ),
+]
+let provisioningTargets: [Target] = [
+    .target(
+        name: "SwiftStateTreeNIOProvisioning",
+        dependencies: [
+            "SwiftStateTreeNIO",
+            .product(name: "Logging", package: "swift-log"),
+            .product(name: "AsyncHTTPClient", package: "async-http-client"),
+            .product(name: "NIOPosix", package: "swift-nio"),
+        ],
+        path: "Sources/SwiftStateTreeNIOProvisioning"
+    ),
+]
+#endif
+
 let package = Package(
     name: "SwiftStateTree",
     platforms: [
@@ -40,10 +67,7 @@ let package = Package(
             targets: ["SwiftStateTreeNIO"]
         ),
         // 📡 NIO Provisioning Middleware: Optional middleware for control plane registration
-        .library(
-            name: "SwiftStateTreeNIOProvisioning",
-            targets: ["SwiftStateTreeNIOProvisioning"]
-        ),
+        ] + provisioningProducts + [
         // 🔍 Reevaluation Monitor: Built-in Land for monitoring reevaluation verification
         .library(
             name: "SwiftStateTreeReevaluationMonitor",
@@ -147,16 +171,7 @@ let package = Package(
         ),
 
         // 📡 NIO Provisioning: Middleware + HTTP client for control plane registration
-        .target(
-            name: "SwiftStateTreeNIOProvisioning",
-            dependencies: [
-                "SwiftStateTreeNIO",
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "AsyncHTTPClient", package: "async-http-client"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-            ],
-            path: "Sources/SwiftStateTreeNIOProvisioning"
-        ),
+        ] + provisioningTargets + [
 
         // 🔁 Turn core: depends on nothing else in this package
         .target(
