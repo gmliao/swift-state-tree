@@ -99,7 +99,7 @@ private func makeSyncPhaseLand(periodicSync: Bool = true) -> LandDefinition<Sync
     }
 }
 
-private func syncPhaseRules() -> RulesNode {
+private func syncPhaseRules() -> RulesNode<SyncPhaseTestState, NoServices> {
         Rules {
             OnJoin { (state: inout SyncPhaseTestState, ctx: LandContext) in
                 state.scores[ctx.playerID] = 0

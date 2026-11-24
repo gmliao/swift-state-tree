@@ -221,7 +221,7 @@ private struct DecodeOnceFixture {
     }
 }
 
-private func decodeOnceRules() -> RulesNode {
+private func decodeOnceRules() -> RulesNode<DecodeOnceState, NoServices> {
     Rules {
         HandleAction(DecodeOnceAction.self) { (state: inout DecodeOnceState, action: DecodeOnceAction, _: LandContext) in
             state.hits.append("action:\(action.tag)")

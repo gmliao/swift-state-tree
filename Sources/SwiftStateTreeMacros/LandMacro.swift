@@ -4,7 +4,7 @@ import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
-public struct LandMacro: MemberMacro {
+public struct LandMacro: MemberMacro, MemberAttributeMacro {
     public static func expansion(
         of attribute: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
@@ -18,11 +18,7 @@ public struct LandMacro: MemberMacro {
         }
 
         guard structDecl.memberBlock.members.contains(where: { member in
-            guard let variable = member.decl.as(VariableDeclSyntax.self) else { return false }
-            guard variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) else { return false }
-            return variable.bindings.contains { binding in
-                binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text == "body"
-            }
+            member.decl.as(VariableDeclSyntax.self).map(isStaticBody) ?? false
         }) else {
             throw DiagnosticsError(diagnostics: [
                 Diagnostic(
@@ -47,6 +43,32 @@ public struct LandMacro: MemberMacro {
             """
 
         return [definitionDecl]
+    }
+
+    /// Puts `static var body` under the land's builder (#771 D-Q5), unless it already carries an
+    /// attribute: a hand-written `@LandDSL<…>` or an alias of it is left as written.
+    public static func expansion(
+        of attribute: AttributeSyntax,
+        attachedTo declaration: some DeclGroupSyntax,
+        providingAttributesFor member: some DeclSyntaxProtocol,
+        in context: some MacroExpansionContext
+    ) throws -> [AttributeSyntax] {
+        guard declaration.is(StructDeclSyntax.self),
+              let variable = member.as(VariableDeclSyntax.self),
+              isStaticBody(variable),
+              variable.attributes.isEmpty
+        else { return [] }
+        // A missing state type is the member expansion's diagnostic; this one adds nothing.
+        guard let args = try? LandAttributeArguments.parse(from: attribute) else { return [] }
+        return ["@LandDSL<\(args.stateType), NoServices>"]
+    }
+}
+
+/// `static var body`, the declaration the macro builds the land from.
+private func isStaticBody(_ variable: VariableDeclSyntax) -> Bool {
+    guard variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) else { return false }
+    return variable.bindings.contains { binding in
+        binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text == "body"
     }
 }
 
@@ -127,7 +149,7 @@ private enum LandMacroDiagnostics: DiagnosticMessage {
         case .onlyStructs:
             return "@Land can only be applied to struct declarations"
         case .missingBody:
-            return "@Land struct must declare `static var body: some LandDSL`"
+            return "@Land struct must declare `static var body: [LandNode]`"
         case .missingArguments:
             return "@Land requires state type"
         }

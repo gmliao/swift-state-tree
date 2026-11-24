@@ -8,20 +8,21 @@ final class LandMacroTests {
     ]
 
 
-    @Test("Land macro generates definition property")
+    @Test("Land macro generates definition property and puts body under the land's builder")
     func testLandMacroExpansion() {
         expectMacroExpansion(
             """
             @Land(GameState.self, id: "demo-land")
             struct DemoLand {
-                static var body: some LandDSL {
+                static var body: [LandNode] {
                     AccessControl { }
                 }
             }
             """,
             expandedSource: """
             struct DemoLand {
-                static var body: some LandDSL {
+                @LandDSL<GameState, NoServices>
+                static var body: [LandNode] {
                     AccessControl { }
                 }
 
@@ -36,4 +37,35 @@ final class LandMacroTests {
         )
     }
 
+    @Test("A body that carries an attribute is left as written, and no other member gets one")
+    func handWrittenBuilderAttributeIsKept() {
+        expectMacroExpansion(
+            """
+            @Land(GameState.self, id: "demo-land")
+            struct DemoLand {
+                static let tag = "demo"
+                @GameDSL
+                static var body: [LandNode] {
+                    AccessControl { }
+                }
+            }
+            """,
+            expandedSource: """
+            struct DemoLand {
+                static let tag = "demo"
+                @GameDSL
+                static var body: [LandNode] {
+                    AccessControl { }
+                }
+
+                public static var definition: LandDefinition<GameState> {
+                    Land("demo-land", using: GameState.self) {
+                        Self.body
+                    }
+                }
+            }
+            """,
+            macros: landMacros
+        )
+    }
 }

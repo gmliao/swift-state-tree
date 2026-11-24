@@ -19,8 +19,9 @@ private func warnIfHandlerAlreadyDefined(_ handlerName: String, landID: String) 
 enum LandBuilder {
     /// Builds a `LandDefinition` from a list of `LandNode`s.
     ///
-    /// This function iterates through the provided nodes, flattening nested structures (like `RulesNode`),
-    /// and aggregating configuration into the final definition.
+    /// This function iterates through the provided nodes and aggregates their configuration into
+    /// the final definition. `Rules` blocks arrive flattened: the land's builder splices their
+    /// nodes in (`LandDSL.buildExpression(RulesNode)`).
     static func build<State: StateNodeProtocol>(
         id: String,
         stateType: State.Type,
@@ -54,8 +55,6 @@ enum LandBuilder {
                     accessControl = access.config
                 case let allowed as AllowedClientEventsNode:
                     allowedClientEvents.formUnion(allowed.allowed)
-                case let rules as RulesNode:
-                    ingest(nodes: rules.nodes)
                 case let canJoinNode as CanJoinNode<State>:
                     canJoin = canJoinNode.handler
                     canJoinResolverExecutors = canJoinNode.resolverExecutors

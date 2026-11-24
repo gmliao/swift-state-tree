@@ -104,7 +104,7 @@ private func makePerSequenceDefinition(tick: Bool) -> LandDefinition<PerSequence
     }
 }
 
-private func perSequenceRules() -> RulesNode {
+private func perSequenceRules() -> RulesNode<PerSequenceTestState, NoServices> {
     Rules {
         OnJoin { (state: inout PerSequenceTestState, ctx: LandContext) in
             state.log.append("join:\(ctx.playerID.rawValue)")
