@@ -1,4 +1,4 @@
-FROM swift:6.4.3-noble
+FROM swift:6.4.3-noble@sha256:4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a
 
 # Verify Swift installation
 RUN swift --version && \
