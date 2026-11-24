@@ -1,11 +1,15 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 5.1, plan only. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answers them (below) and needs Review's check of that delta. Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
+**Status:** rev 5.2, plan only. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
 
 Code pointers are at main 8e622a20:
 - `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
 - `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`;
 - `LKT` is `Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift`.
+
+**Rev 5.2** (Review's GO on rev 5.1, two shoulds for K1a):
+- **The harness off the pinned toolchain** (§3.11, Harness). There canonical JSON bytes may differ, so the record's decoded view renders a recorded payload as its tree, not as base64. The rule is named `recordPayloadAsTree`. The classify script then sees no payload leaf change. Tests are named.
+- **A replay decode failure kept as text** (§3.11, Replay's decode failures). The item can't keep the error value, so `applyPendingItem` throws a wrapper whose description is the stored text, and `PayloadNesting.TooDeep` keeps its own form. The consumers were checked: none inspects an action's error type in replay, and the client-event path inspects only `TooDeep`. Both are pinned in `replayPayloadDecodeFailureIsReportedAsBefore`.
 
 **Rev 5.1** (Review on rev 5's delta):
 - **MF1, §3.11: JSON bytes weren't stable.** Rev 5 kept the bytes of the live round trip, `JSONEncoder().encode(payload)` (InboundPayloadDecoding.swift:15). That encoder doesn't sort keys, and `AnyCodable` encodes a `[String: Any]` in the dictionary's iteration order, which follows the per-process hash seed. So the same payload gave different bytes per run, as `Notes/solutions/2026-11-07-encoded-bytes-vary-with-per-process-hash-order.md` describes. Rev 5.1 records **canonical JSON bytes**, encoded once for the record with a fixed configuration. The live round trip is untouched, so the live decode can't change. A two-process test pins the bytes.
@@ -547,12 +551,33 @@ If P3 takes up #616 (a live input's payload checked once, by its frame's decode)
 
 **Replay's decode failures.** Replay now decodes when it builds the item, not at apply. Today a recorded payload that doesn't decode throws in `applyPendingItem` before its record (LK:3571, before LK:3584). `applyInputs` (LK:3941–3959) then gives its caller the failure, leaves it out of `rejected` (only recorded inputs are listed) and logs it. The live/replay comparison sees what follows from that.
 
-K1a keeps that report:
-- an item whose bytes don't decode at build time is still queued, carrying the failure's description (a `String`, so the item stays plain) and no `decoded`;
-- `applyPendingItem` throws the same error type at the same point, before the record;
-- so outcomes, `rejected`, the log line and the comparison are unchanged.
+A replayed client event that doesn't decode isn't thrown: its handler drops it (LandDefinition.swift:414–423). A `PayloadNesting.TooDeep` is also logged and counted (`noteDroppedClientEvent`, #362); any other error is dropped silently.
 
-`replayPayloadDecodeFailureIsReportedAsBefore` pins today's report on main first, with a recorded action whose payload has a field of the wrong type. K1a keeps it green with a 3.7 record whose bytes fail the same way.
+K1a keeps both reports. An item whose bytes don't decode at build time is still queued, with no `decoded` and a plain failure record (rev 5.2):
+
+```swift
+@PlainData enum RecordedPayloadDecodeFailure {
+    case tooDeep(limit: Int)          // rebuilt as PayloadNesting.TooDeep(limit:)
+    case undecodable(String)          // String(describing: error) of the decode's error
+}
+```
+
+- **The error value isn't kept;** the item stays plain. At apply, `.tooDeep` throws `PayloadNesting.TooDeep(limit:)` again, the same type and value. `.undecodable` throws `RecordedPayloadDecodeError`, whose `description` is the stored text. It is thrown at the same point as today, before the record.
+- **Who looks at the error** (checked at 2fdcabf9). Nothing inspects an action's error type in replay:
+  - `applyInputs` counts it, logs `String(describing:)` and puts it in `outcomes` (LK:3946–3959);
+  - `outcomes` reaches `inputTurnResults` (LK:5713–5717), whose waiters exist only for live callers;
+  - the tick replay path takes `.applied` only (LK:4697);
+  - in `Sources/`, `DecodingError` is matched only in `TypeToSchemaConverter.swift:540`, which is unrelated.
+
+  The client-event path matches `TooDeep` only, which `.tooDeep` keeps.
+- So outcomes, `rejected`, the log line's text, the drop counter and the comparison are unchanged.
+
+`replayPayloadDecodeFailureIsReportedAsBefore` pins today's report on main first, with three recorded inputs:
+- an action whose payload has a field of the wrong type: refused, not in `rejected`, and the log line's error text;
+- a client event of the same kind: dropped, not counted;
+- a client event nested past the limit: dropped and counted once.
+
+K1a keeps it green with 3.7 records whose bytes fail the same way. The test also asserts that the action's thrown error's `description` equals `String(describing:)` of the original `DecodingError`.
 
 **Tests (K1a):**
 - **Per encoding** (JSON, opcode JSON, MessagePack), an action and a client event: the recorded bytes decode, with the live decoder, to a value equal to the live `decoded`.
@@ -568,14 +593,24 @@ K1a keeps that report:
 - `.sortedKeys` dropped from `canonicalJSON`. Caught by `canonicalJSONIsStableAcrossProcesses`;
 - the live round trip's bytes recorded instead of `canonicalJSON`'s (rev 5's design). Caught by the same test;
 - the MessagePack bytes are packed non-canonically. Caught by the decode-equality test on an `Int` that fits a smaller width;
-- the header is omitted. Caught by the read-back test.
+- the header is omitted. Caught by the read-back test;
+- the record view shows the base64 string (no `recordPayloadAsTree`). Caught by `jsonRecordPayloadComparesAsTreeOffThePinnedToolchain`;
+- `.tooDeep` stored as `.undecodable`. Caught by `replayPayloadDecodeFailureIsReportedAsBefore`'s drop counter.
 
 The E2E record/replay runs in three encodings and the game's reevaluation E2E end with 0 mismatches.
 
-**Harness.** The wire frames don't change. Every golden's record changes: the header's new field, the version, and each recorded payload's form. `classify-golden-changes.py` compares the decoded record and would call these `other` (exit 1). So K1a first adds a class to it in a tool-only commit: `recordPayload`, which covers exactly a recorded action's or client event's `payload` turning from a tree into bytes that decode to that tree, `metadata.payloadEncoding` appearing, and `metadata.version` 3.6 → 3.7. Then:
+**Harness.** The wire frames don't change. Every golden's record changes: the header's new field, the version, and each recorded payload's form.
+
+**Rule `recordPayloadAsTree` (rev 5.2).** The harness compares record bytes only when a golden was recorded with the running toolchain (`checkBytes`, DifferentialHarnessTests.swift:91). Elsewhere it compares the record's decoded view (`DiffRunner.decodedView`, DiffRunner.swift:656). Canonical JSON bytes are stable within a toolchain and platform only. If the view showed a 3.7 payload as its base64 string, a run off the pinned image would report a payload difference that is only a spelling (a number's form, an escape). So the view renders each recorded payload as its tree: the bytes decoded with the header's `payloadEncoding` (JSON parsed, MessagePack unpacked), in the form a 3.6 golden's tree has. The byte comparison on the pinned image still sees the bytes.
+
+`classify-golden-changes.py` compares decoded views, so with that rule a 3.6 → 3.7 golden shows no payload leaf change. Its `recordPayload` class then covers only `metadata.payloadEncoding` appearing and `metadata.version` 3.6 → 3.7, and a changed payload leaf stays `other`. K1a adds the rule and the class in a tool-only commit first. Then:
 - the goldens are re-recorded by the recorder script in the pinned image;
 - every change classifies as `recordPayload`, with no `other`;
 - each cell's difference goes in `ExpectedDifferences.swift` with that cause.
+
+Tests for the rule:
+- **`DiffSelfCheckTests.jsonRecordPayloadComparesAsTreeOffThePinnedToolchain`:** two captures whose record bytes differ only in one JSON payload's spelling (`"a\/b"` against `"a/b"`). Byte mode reports `<bytes>` only; decoded-only mode reports nothing. A changed payload value is reported at its field path in both modes.
+- **`scripts/classify-golden-changes.py --self-test`** (new, in the tool-only commit): a 3.6 → 3.7 pair of fixture goldens classifies only the two header leaves, as `recordPayload`. A pair whose payload value changed reports `other` and exits 1.
 
 ## 4. How each CLAUDE.md exception ends
 
