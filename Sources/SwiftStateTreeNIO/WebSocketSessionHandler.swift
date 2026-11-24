@@ -389,6 +389,12 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         // Any frame from the peer shows it is alive: it answers an outstanding ping (#108).
         notePeerAlive()
 
+        // RSV1–3 MUST be 0 unless a negotiated extension defines them (RFC 6455 §5.2).
+        if frame.rsv1 || frame.rsv2 || frame.rsv3 {
+            closeOnLoop(code: .protocolError)
+            return
+        }
+
         switch frame.opcode {
         case .binary, .text, .continuation:
             handleDataFrame(frame, context: context)
@@ -403,7 +409,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             handleClose(frame, context: context)
 
         default:
-            logger.warning("Received unknown opcode: \(frame.opcode)")
+            // Unknown or reserved opcode: Fail the connection (RFC 6455 §5.2).
+            closeOnLoop(code: .protocolError)
         }
     }
 
@@ -667,17 +674,69 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             peerCloseReceived = true
             return
         }
-        isClosed = true
         var payload = frame.unmaskedData
-        noteCloseCause(.clientClose, code: payload.readInteger(as: UInt16.self).map { WebSocketErrorCode(codeNumber: Int($0)) })
 
-        // Send close frame back
-        let closeData = frame.unmaskedData
-        let closeFrame = WebSocketFrame(fin: true, opcode: .connectionClose, data: closeData)
-        _ = context.writeAndFlush(wrapOutboundOut(closeFrame))
+        // Empty payload: reply with empty close, nothing to validate (RFC 6455 §5.5.1).
+        guard payload.readableBytes > 0 else {
+            isClosed = true
+            noteCloseCause(.clientClose, code: nil)
+            let f = WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer())
+            _ = context.writeAndFlush(wrapOutboundOut(f))
+            closeChannel(context)
+            enqueueDisconnect()
+            return
+        }
+
+        // A 1-byte payload is malformed (RFC 6455 §5.5.1).
+        guard payload.readableBytes != 1 else {
+            closeOnLoop(code: .protocolError)
+            enqueueDisconnect()
+            return
+        }
+
+        guard let codeValue = payload.readInteger(as: UInt16.self) else {
+            closeOnLoop(code: .protocolError)
+            enqueueDisconnect()
+            return
+        }
+
+        // Invalid close code (RFC 6455 §7.4.2).
+        guard isValidCloseCode(codeValue) else {
+            closeOnLoop(code: .protocolError)
+            enqueueDisconnect()
+            return
+        }
+
+        // Close reason must be valid UTF-8 (RFC 6455 §8.1).
+        if payload.readableBytes > 0,
+           let reasonBytes = payload.readBytes(length: payload.readableBytes),
+           String(bytes: reasonBytes, encoding: .utf8) == nil
+        {
+            closeOnLoop(code: .dataInconsistentWithMessage)
+            enqueueDisconnect()
+            return
+        }
+
+        // Valid close: record the client's code, reply with 1000.
+        noteCloseCause(.clientClose, code: WebSocketErrorCode(codeNumber: Int(codeValue)))
+        isClosed = true
+        var buf = context.channel.allocator.buffer(capacity: 2)
+        buf.write(webSocketErrorCode: .normalClosure)
+        let replyFrame = WebSocketFrame(fin: true, opcode: .connectionClose, data: buf)
+        _ = context.writeAndFlush(wrapOutboundOut(replyFrame))
         closeChannel(context)
-
         enqueueDisconnect()
+    }
+
+    private func isValidCloseCode(_ code: UInt16) -> Bool {
+        switch code {
+        case 1000...1003, 1007...1014:
+            return true
+        case 3000...4999:
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: - Outbound
