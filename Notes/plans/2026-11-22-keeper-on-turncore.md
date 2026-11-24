@@ -190,7 +190,7 @@ The world is lent mutably to steps and read-only to `core.read` between steps. I
 
 **The shared RNG (#765).** `DeterministicRngService` is a reference in `services`, drawn by handlers in steps and reachable by resolvers off the actor. #765 decides its fix. #700's K1 census lists it, and K2 doesn't move it.
 
-**K1b's census.** Every stored field of `LandKeeper` gets a home: the model, `Behavior` (the land definition and `LandConfig`), a binding token, the per-player services table, an output, or the K2–K7 replacement list (Tasks and continuations, §3.4, §4). There is no world home. A field that fits nowhere is a finding for Review. The census also checks the model's type: `KeeperModel` is `@PlainData`, so a field that isn't plain doesn't compile.
+**K1b's census** (draft in Appendix A). Every stored field of `LandKeeper` gets a home: the model, `Behavior` (the land definition and `LandConfig`), a binding token, the per-player services table, an output, or the K2–K7 replacement list (Tasks and continuations, §3.4, §4). There is no world home. A field that fits nowhere is a finding for Review. The census also checks the model's type: `KeeperModel` is `@PlainData`, so a field that isn't plain doesn't compile.
 
 ### 3.2 Keys, the result slot, and cancellation (MF4, MF-a, MF-b)
 
@@ -824,3 +824,97 @@ Decided:
 - **Cancellation tokens checked at the commit point** (.NET's `CancellationToken`, Go's `context`). §3.2's token is set synchronously by the canceller and read by the step that would deliver, so the decision sits where the effect lands, not in the hop that carries the news.
 - **Capabilities over ambient references.** §3.1's binding token names its binding, and the step checks it before use.
 - **The strangler fig.** K1 extracts the bodies so the live and replay paths share them, K2 routes the live path through the core, and #612 later removes the replay owner (Q1 (c)).
+
+## Appendix A. K1b's census (draft)
+
+**Status:** a draft, written after rev 5.2; not part of any rev's delta. It is ready for K1a's review and is checked again on K1b's base.
+
+It covers every stored property of `LandKeeper`, from `LK` at main d25ca82d: 123 declarations in the actor body (LK:113–6024), computed properties excluded. Each gets one home.
+
+**Homes:**
+- **Model:** `KeeperModel<State>`, `@PlainData`, the core's machine;
+- **Behavior:** `KeeperBehavior<State>`, immutable, fixed at init (#768): the definition and `LandConfig`. Sendable, not necessarily `PlainData`;
+- **Outside:** held by `LiveLandTurns` or the facade, written only from `flush` or at init (§3.1's reference table);
+- **Replay:** `ReplayLandOwner` (Q1 (c));
+- **Kn:** replaced in that slice, and kept as today until then.
+
+**PlainData status:**
+- *plain*: a `PlainData` type today, or after #772;
+- *@PD*: needs `@PlainData` on a named type, which K1b adds;
+- *P3*, *P4*, *K1a*: plain once that slice lands;
+- *finding*: not plain, and the census proposes a form.
+
+### A.1 Model
+
+| Fields (LK line) | Status | Note |
+|---|---|---|
+| `state` (357) | P4 | |
+| `players` (358) | @PD `InternalPlayerSession` minus `services` | `services` moves Outside (the per-player table, §3.1). `clientID`, `lastSessionID` and `Epoch` are plain once `ClientID`/`SessionID` (P3 or P4) and `Epoch` are |
+| `pendingItems` (372), `serverInputsHeldWhileFrozen` (3261) | P3 + P4 + K1a | `PendingItem`'s cases: action and client event (K1a), lifecycle (`resolverOutputs`: P3), server input (P3), shutdown (plain), land failure (@PD `LandFailure`) |
+| counters: `stateHashUnavailableTotal` (369), `serverInputsInFlight` (374), `serverInputCapRejections` (377), `syncStreamCounter` (452), `passOrdinal` (460), `foldedSyncs`, `overdueFoldedSyncs`, `lateFoldedSyncs` (751–759), `inTurnDeferredTurns` (766), `recorderSubmissionCount` (812), `inputsSkippedAfterDestroy` (851), `joinSyncTicks` (2122), `supersededSenderRejections` (2128), `actionJobsStarted` (2272), `pendingItemScans` (3531), `requestedSyncWork` (5304), `ticksInFlight` (5364), `nextTickId` (656), `lastCommittedTickId` (662) | plain | `serverInputCapRejections` is counted at intake; in K2 that is the admission query's step (§3.3) |
+| flags: `destructionFinished` (514), `transportRecordsFolds` (527), `didInitialize` (643), `inTurnSyncDue` (748), `inputDrainScheduled` (795), `joinSyncWaitsForCommit` (2125), `shutdownRequested` (2778), `hasHeldTransport` (5166), `destroyHandlersStarted` (5383), `shutdownTurnApplied` (5565) | plain | |
+| `passInProgress` (463), `appliedTickPhaseOffset`, `appliedSyncPhaseOffset` (3383, 3388) | plain | `Int64?`, `Duration?` |
+| `inTurnSyncTurnKind` (454) | @PD `ReevaluationRecordedSyncOutput.TurnKind` | a `String` enum |
+| `syncOutputIndexCursor` (457) | finding (tuple) | a `@PlainData` struct `{ observedTickId: Int64?, count: Int }` |
+| `entryGenerations` (360) | @PD `EpochCounter`, `Epoch` | K2 replaces it with `EntryID` (§3.2); K9 deletes it |
+| `syncBinding` (5170), `inTurnDrainRetryBinding` (779), `joinSyncTurnBinding` (5111) | @PD `Ticket`, `GenerationTable` (Generations.swift:8, :31) | K2's `BindingID` replaces them (§3.5); K9 deletes them |
+| `serverInputMaxInFlight` (375) | plain | set at init from the environment, and by a package setter (LK:3298). Behavior if the setter goes; else Model |
+| `ticklessJobWork`, `ticklessJobTurns` (2275, 2278) | plain | `Set<Int64>` |
+| `filledActionSlotsForAssert`, `…OrderForAssert`, `…NextForAssert` (2282–2284) | plain | debug-only bookkeeping, kept in Model under `#if DEBUG` |
+| `initializationFailure` (642) | **finding F1** (`any Error`) | see A.5 |
+| `outputCollector` (441), a class | finding: split | `nextSequence`, `checksOverflow`, `sequenceExhausted` and `syncRequestsByTick` (@PD `SyncRequests`) go to Model. `emittedEvents` is staged as `any ServerEventPayload` (P3) with @PD `EventTarget` (§3.6, K2). The class goes |
+| `actionJobs` (2256) | split | `item` (K1a), `input`, `completed` and `cancelledByKeeper` go to Model. `ticket` is @PD `Ticket` until K2's keys. `task` → K5. `abandonment` (a class) → K5. `callerCancelled` (a class) → K2's `JobCancellation` (§3.2) |
+| `actionSlots` (2256–2257) | **finding F1/F2** | `result` holds `AnyCodable` or `any Error` (A.5). `waiter`, a continuation, → K2's `InputID` (§3.2) |
+| `inputTurnResults` (5652) | **finding F1/F2** | the same as `actionSlots.result` |
+
+### A.2 Behavior
+
+| Fields | Status | Note |
+|---|---|---|
+| `definition` (355) | not plain (handler closures) | the reason Behavior exists (#768) |
+| `services` (361) | not plain (references) | §3.1: land services are config. The RNG inside is #765's |
+| `logger` (364) | not plain | immutable and Sendable |
+| `autoStartLoops`, `enableLoopPhaseOffset`, `enableLiveStateHashRecording` (365–368), `reevaluationOutputMode` (370), `mode` (378), `actualLandID` (473) | plain | `LandConfig`. `actualLandID` is set once at init (#751) |
+| `systemPlayerID`, `systemClientID`, `systemSessionID` (955–957) | plain | constants; could be static instead |
+
+### A.3 Outside (LiveLandTurns or the facade)
+
+| Fields | What it becomes |
+|---|---|
+| `transport` (363), `releasedTransport` (519), `boundSyncRequesterObject` (5173), `pendingSyncTurnAfterTurn` (5268, holds the port) | the binding token and its follow-up (§3.1, §3.5), K2 |
+| `reevaluationRecorder` (444), `recorderSubmissions` (809) | the recorder sink; drafts are outputs that `flush` hands on (§3.1), K2 |
+| `drainFlag` (544) | a class read `nonisolated` (`isDraining`, `failure`); `flush` publishes into it, K2 |
+| `pendingTransportFailure` (565) | `LandFailureMailbox`: K4 deletes it (the core's mailbox) |
+| `abandonmentCounter` (2260) | shared with resolver groups, read at intake: Outside, K5 |
+| `tickLoopClock` (3400), `tickLoopConfiguredAt` (3387), `nextTickDeadline` (783), `pendingFold` (763, holds an `Instant`) | the loop driver's time. `ContinuousClock.Instant` isn't `PlainData`. K2 writes the next tick deadline into Model on #759's clock (G2, §3.9). `pendingFold`'s flag part is Model already in K1b |
+
+### A.4 Replaced in a slice (K2–K9), with test hooks
+
+| Fields | Slice |
+|---|---|
+| `tickTask`, `syncTask` (539–540) | K2 drivers (§3.9), then K8 |
+| `destroyTask`, `drainTask` (541, 543), `forceShutdownFlight` (2774) | K7 |
+| `initializationTask` (639) | K5 (`.initialization` request) |
+| continuations: `inputTurnWaiters` (799), `actionJobRemovalWaiters` (2270), `initializationWaits` / `initializationWaitWatchers` (1112–1113), `tickIdleWaiters` (5365), `shutdownTurnWaiters` (5555) | K2: a waiter is an `InputID` in Model, its reply the core's |
+| the freeze: `debugFrozen`, `debugHeldInputs`, `debugInFlightWork`, `debugDrainWaiters`, `debugNextWaiterID`, `debugActiveGeneration`, `debugReleasedGeneration` (941–952) | K7 (#129). The counts and generations are plain and go to Model; the continuations go |
+| test-only waiters: `drainStartedWaitersForTesting` (595–596), `freezeWaitWatchersForTesting` (2557), `inputDrainIdleWaitersForTesting` (2569), `requestedSyncWorkWaitersForTesting` (5307–5308), `failureWaitersForTesting` (5456–5457) | K2: each becomes a wait on a core outcome or a `HoldPoints` replacement (§6.3); K9 deletes what's left |
+| test hooks: `holds` (633), `inTurnProbeForTesting` (822, a closure), `inTurnYieldForTesting` (826), `syncClockForTesting`, `tickClockForTesting` (910, 921) | Outside, on `LiveLandTurns`, test-only; `holds` per §6.3 |
+| test counters: `joinSyncRequestTurnsForTesting` (2090), `joinSyncTurnsForTesting` (5113), `requestedSyncTurnsForTesting` (5298) | Model (plain counters, with @PD `SyncTurnReason` as a dictionary key) |
+
+### A.5 Replay
+
+`replayPassObserver` (4116, a closure), `replayFailureEnd` (4122, a tuple), `replayRecordsPassOrdinals`, `replayRecordsRejected` (4125, 4134), `replayRejected` (4142), `recordedPassMismatches` (4194), `replayedInitializeBeforeTickZero`, `replayedInitializeRefusal` (646, 651) go to `ReplayLandOwner` (Q1 (c)). `reevaluationSource` and `reevaluationSink` (466, 469) go there too. None of these has to be plain: the replay owner has no core. `replayFailureEnd` becomes a struct anyway, if it is shared with the turn bodies.
+
+### A.6 Findings for Review
+
+- **F1: errors in the model.** `initializationFailure` (`LandInitializationError.underlying: any Error`), the failure side of `actionSlots.result` and of `inputTurnResults` (`Result<AnyCodable, any Error>`). `any Error` isn't `PlainData`. A handler's error must reach its caller as the same value, since the adapter maps error types to client error codes. Proposal:
+  - Model keeps a plain record per failure: an id, a kind and a description;
+  - the error value waits in an Outside table keyed by that id, written by `flush` from the step's output and read when the reply is made;
+  - the table follows the per-player services table's pattern (§3.1).
+
+  Rev 5.2's `RecordedPayloadDecodeFailure` is the same move for replay: a plain record in the item, with the error rebuilt at apply.
+- **F2: action responses.** The success side of `actionSlots.result` and `inputTurnResults` is an `AnyCodable` built from the handler's `ResponsePayload`. The PlainData plan (§3.3) leaves the form to this census. Proposal: hold `any ResponsePayload`, with `ResponsePayload` refining `PlainData`. That is **an addition to P3's scope**: today P3 names action, event and server-input payloads and resolver outputs, not responses. The other option, encoded response bytes, would make the keeper encode, which today is the transport's job.
+- **F3: three tuples** (`syncOutputIndexCursor`, `pendingFold`, `replayFailureEnd`) become small structs, since a tuple can't conform.
+- **F4: the loop's `ContinuousClock.Instant`s** stay Outside until G2. K1b's census test lists them as an expected exception, so the test passes until K2 moves them.
+
+**K1b's census test** (§6.2) checks this table against the actor's stored properties with `Mirror`: each name must appear in exactly one home. A new field fails until it is placed. `KeeperModel`'s `@PlainData` gives the compile-time half.
