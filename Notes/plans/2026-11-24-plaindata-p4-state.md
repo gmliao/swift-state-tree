@@ -1,8 +1,17 @@
 # PlainData P4: land State is PlainData
 
-**Status:** rev 1, plan only, no code. P4-Q1–Q4 decided by the maintainer as recommended (2026-11-24, §9). Slice P4 of `2026-11-22-plaindata-all-the-way.md` (rev 2, in PR #772), which sets the rule (§3.3, first row) and the maintainer's decisions Q1–Q6. This plan is how P4 does it. It builds on Code-1's P3/4-0 PR (the shared field walk, the Q2/Q3 diagnostics, `@PlainData` on the DeterministicMath types), which isn't up yet. §2 lists what P4 takes from it; anything that PR doesn't do moves into P4.
+**Status:** rev 2, plan only, no code. Rev 1 was NOT GO from Review (2 must-fix, 3 should, 2 nit); rev 2 answers each (below). P4-Q1–Q3 decided by the maintainer as recommended (2026-11-24, §9); P4-Q4 is reopened. Slice P4 of `2026-11-22-plaindata-all-the-way.md` (rev 2, in PR #772), which sets the rule (§3.3, first row) and the maintainer's decisions Q1–Q6. This plan is how P4 does it. It builds on Code-1's P3/4-0 PR (the shared field walk, the Q2/Q3 diagnostics, `@PlainData` on the DeterministicMath types), which isn't up yet. §2 lists what P4 takes from it; anything that PR doesn't do moves into P4.
 
-Code pointers are at #772's head 06ce5f99 (P1 + P2 on main 8a3f3e15). The compile probe in §3.2 ran on Swift 6.4.2 (macOS). P4 re-runs it on 6.2.4 before relying on it.
+Code pointers are at #772's head 06ce5f99 (P1 + P2 on main 8a3f3e15). The compile probe in §3.2 ran on Swift 6.4.2 (macOS). P4 re-runs it on 6.2.4 before relying on it. P3/4-0's plan is `2026-11-24-plaindata-p34-0-shared-walk.md` on `feat/plaindata-p34-0-shared-walk` (2af72dd2).
+
+**Rev 2** (Review on rev 1):
+- **MF1, §2: name visibility.** The emitted `PlainDataCheck.field(…)`, the inherited `PlainData` requirement and a hand-written `@PlainData` all name SwiftStateTurns' declarations from a user file that imports only SwiftStateTree. P4 takes that as an input (§2): a re-export of SwiftStateTurns from SwiftStateTree (a) or narrow typealiases (b), with the maintainer (Review recommends (a)).
+- **MF2, §3.6: the boundary of the compile check.** It holds in this repository, where the lint refuses a hand-written `_plainDataCheck`. Outside, `extension MyClass: PlainData { static func _plainDataCheck() {} }` compiles and no lint runs. §3.6 states that, and P4-Q4 (retirement) is reopened with the maintainer with three options (§9).
+- **Should, §3.3: an `@Internal` field without a type annotation.** Nothing is emitted for it. `Internal`'s own constraint checks the inferred type, and a snippet pins that.
+- **Should, §3.3: access.** The member is emitted as `public static func _plainDataCheck()` in every type. A `public` member compiles in an internal type; rev 1's trap claim was wrong, since P1's trap was the extension form.
+- **Should, §3.3: `@StateNodeBuilder` with `@PlainData` on one type** would write two witnesses. `@StateNodeBuilder` refuses it with a pinned diagnostic, and a macro test covers it.
+- **Nits:** §2 names `PlainDataMacroSupport`. §5 says which message each snippet's `expect-error` pins after P3/4-0's unavailable overload.
+- **Also (from reading P3/4-0's plan):** the emitted line checks the field's value type with its name, `field((T).self, "name")`, not `field(Sync<T>.self)`. Then P3/4-0's Q3 message names the field. With `Sync<T>` the wrapper's constraint fails first and that message never shows. The wrapper's own storage is checked by `@PlainData` on the wrapper, pinned by a compile test (§3.2, M4).
 
 ## 1. Goal and scope
 
@@ -26,11 +35,12 @@ Not in scope:
 |---|---|---|
 | #772 (P1) | `PlainData` with its requirement `_plainDataCheck`; `PlainDataCheck.field`; the witness takes the type's access level | the conformance `StateNodeProtocol` inherits, and the emitted member's access |
 | #772 (P2) | `Internal<Value: PlainData & Sendable>` | `@Internal` is already checked; P4 makes `Sync` match |
-| P3/4-0 | the shared field walk: one field type in, its check lines out, or nil after a diagnostic (Q2 Foundation types, closures, tuples, existentials) | `@StateNodeBuilder`'s per-field diagnostics (§3.3) |
-| P3/4-0 | the Q3 diagnostic for a nested type that isn't `PlainData` | the message for a nested user type in a state field (§3.4) |
+| P3/4-0 | the shared field walk in the new regular target `PlainDataMacroSupport`, which both macro targets depend on: one field type in, its check lines out, or nil after a diagnostic (Q2 Foundation types, closures, tuples, existentials). It also holds the member walk with `#if` clauses, and the refusal classifier that replaces `RefusedFieldTypes.swift` | `@StateNodeBuilder`'s per-field diagnostics and `#if` members (§3.3) |
+| P3/4-0 | the Q3 diagnostic: `PlainDataCheck.field(_:_:)` with a field name, and an unavailable unconstrained overload whose message is the error for a type that isn't `PlainData` | the message for a nested user type in a state field, naming the field (§3.3, §3.4) |
+| maintainer, with P3/4-0 (Review MF1 on P3/4-0) | **name visibility**: a user file that imports only SwiftStateTree must see `PlainData`, `PlainDataCheck` and the `@PlainData` macro. (a) SwiftStateTree re-exports SwiftStateTurns; (b) SwiftStateTree declares narrow typealiases and re-declares the macro. Review recommends (a) | every expansion of `@StateNodeBuilder` and `@SnapshotConvertible` in a user module, `StateNodeProtocol`'s inherited requirement, and `@PlainData` on a user's nested type. Under (b) the emitted lines name the aliases, and §3.3's member uses whatever (b) declares. P4-1 doesn't start before this is decided |
 | P3/4-0 | `@PlainData` on `IVec2`, `IVec3`, `Position2`, `Velocity2`, `Acceleration2`, `Angle` and the rest of DeterministicMath | Demo, GameDemo and tests keep these in state |
 
-The plan assumes the walk can be called from `SwiftStateTreeMacros` (a target both macro targets depend on, or the same source in both). If P3/4-0 places it differently, only §3.3's call site changes.
+P3/4-0 keeps `@StateNodeBuilder`'s behavior and `diagnoseRefusedFieldTypes`' scope unchanged (an adapter over the classifier). P4 changes that adapter's scope (§3.3).
 
 Also assumed: `AnyCodable` and `AnyHashable` stay non-`PlainData`. If P3 made `AnyCodable` `PlainData`, §3.6's retirement of the `existentialField` row wouldn't hold.
 
@@ -55,7 +65,7 @@ The lint already allows a protocol to refine `PlainData` (P1). Nothing new is al
 
 Each side does its own job:
 - **The constraint** puts the error at the field. It names the nested type that isn't plain, and for a generic node it names the parameter.
-- **`@PlainData` on the wrapper** checks the wrapper's own storage. If a later change put a reference back into it, the build fails. #520 removed exactly that kind of field: a policy enum with closures.
+- **`@PlainData` on the wrapper** checks the wrapper's own storage: the value and the dirty flag. If a later change put a reference back into it, the wrapper's own declaration fails to compile. #520 removed exactly that kind of field: a policy enum with closures. A compile test in SwiftStateTreeTests, `PlainDataCheck.field(Sync<Int>.self)` and the same for `Internal`, pins that the wrappers stay `PlainData` (M4).
 
 **Probe** (`swiftc -typecheck -swift-version 6`, one file, Swift 6.4.2):
 
@@ -73,18 +83,20 @@ Nothing in `Sources/` is generic over `Sync<V>`: only the generated code names `
 `@StateNodeBuilder` is a member macro with `names: arbitrary` (StateTreeBuilder.swift:33), so it can add the member without changing its declaration. It emits:
 
 ```swift
-<access> static func _plainDataCheck() {
-    PlainDataCheck.field(Sync<[PlayerID: PlayerState]>.self)   // @Sync var players: [PlayerID: PlayerState]
-    PlainDataCheck.field(Internal<Int64>.self)                 // @Internal var lastTick: Int64
+public static func _plainDataCheck() {
+    PlainDataCheck.field(([PlayerID: PlayerState]).self, "players")   // @Sync var players: [PlayerID: PlayerState]
+    PlainDataCheck.field((Int64).self, "lastTick")                    // @Internal var lastTick: Int64
 }
 ```
 
-- **What it checks:** one line per stored property, on the storage type (`Sync<T>` or `Internal<T>`), not on `T` alone. That covers the wrapper and the value together.
-- **Access:** the type's own (`public`, `package`, or none), as P1's witness. A `public` witness in an internal type's member fails to compile, the trap P1 hit.
+- **What it checks:** one line per stored property with a type annotation, on the field's value type, with the field's name (P3/4-0's form). For a type that isn't `PlainData`, P3/4-0's unavailable overload is chosen and its message is the error, on the line that names the field. The wrapper's constraint gives a second error at the field itself (§3.2). The wrappers' own storage is `@PlainData` on the wrappers (§3.2), so it isn't repeated per field.
+- **An `@Internal` field without a type annotation** (`@Internal var cache = [String: Int]()`): nothing is emitted for it. `Internal<Value: PlainData & Sendable>` checks the inferred type at the field, so `@Internal var cache = [String: Any]()` doesn't compile; a snippet pins it. A `@Sync` field already needs an annotation (`validateProperties`, StateNodeBuilderMacro.swift:292).
+- **Access:** always `public static func`, as `@StateNodeBuilder` already emits its other members (`public func getSyncFields()`). A `public` member compiles in an internal or private type and is a valid witness for a public type. Rev 1 said it would fail in an internal type; that was P1's trap in the extension form, which this member isn't.
+- **`@StateNodeBuilder` and `@PlainData` on one type:** two macros would each write `_plainDataCheck`, an invalid redeclaration. `@StateNodeBuilder` sees the sibling attribute and refuses with its own diagnostic: "`@StateNodeBuilder` writes the PlainData check; remove `@PlainData`". `@PlainData` (in SwiftStateTurnsMacros) stays unaware of SwiftStateTree. A macro test pins the diagnostic. A hand-written node without `@StateNodeBuilder` uses `@PlainData` alone (§3.1).
 - **Generic node:** nothing extra. The user writes `T: PlainData` and the compiler asks for it at the field (probe).
 - **Diagnostics:** per field, the macro runs the shared walk on `T` before emitting. That gives Q2's named replacement for `Date`, `UUID`, `URL` and `Decimal`, and the closure and tuple messages, at the field. The compiler's own message (`requires that 'Date' conform to 'PlainData'`) still appears beside it.
 - **#535's refusal stays** for synced fields: `Any`, `AnyObject`, `AnyHashable`, `AnyCodable`, `any P` and compositions, even when `P` refines `PlainData`. The sync has no wire form for an open type. In an `@Internal` field, `any P` already fails `Internal`'s constraint, since an existential doesn't conform to `PlainData`.
-- **One `Decimal` message:** #597's `DecimalFieldTypeDiagnostic` (RefusedFieldTypes.swift) stops running for state fields. Q2's message covers every field now, `.serverOnly` and `@Internal` included. `@Payload`'s use of it is P3's.
+- **One `Decimal` message:** the classifier's `Decimal` case (from #597, moved into `PlainDataMacroSupport` by P3/4-0) stops running for state fields through `diagnoseRefusedFieldTypes`. Q2's message from the shared walk covers every field now, `.serverOnly` and `@Internal` included. `@Payload`'s use of it is P3's.
 
 **A gap the emission must close: `#if` members.** `collectStoredProperties` (StateNodeBuilderMacro.swift:160) reads only the struct's direct members. A stored property inside an `#if` block is skipped:
 - by the marker check (`validateProperties`, :292);
@@ -92,14 +104,14 @@ Nothing in `Sources/` is generic over `Sync<V>`: only the generated code names `
 - and, unless P4 handles it, by `_plainDataCheck`. A class there would pass.
 
 P4 does two things:
-- `_plainDataCheck` reads `#if` clauses the way P1's `checkLines` does (every clause, each under its own condition);
+- `_plainDataCheck` reads `#if` clauses through the shared member walk (P3/4-0 moves P1's `checkLines` into `PlainDataMacroSupport`: every clause, each under its own condition);
 - the marker check runs on `#if` members too, so an unmarked stored property there is refused as it is outside one.
 
 Syncing a field declared inside `#if` is a separate question. P4 doesn't change it: it files an issue if the census finds such a field in use, and none is known.
 
 ### 3.4 Nested user types (Q3)
 
-Every type stored under a `@Sync` or `@Internal` field must be `PlainData`. A nested `@StateNodeBuilder` node is `PlainData` through §3.1. Any other user type needs `@PlainData`. The compiler's error is at the field and names the type (probe); P3/4-0's Q3 diagnostic adds the attribute's name.
+Every type stored under a `@Sync` or `@Internal` field must be `PlainData`. A nested `@StateNodeBuilder` node is `PlainData` through §3.1. Any other user type needs `@PlainData`. Two errors show: the wrapper's constraint at the field, naming the type (probe), and P3/4-0's Q3 message on the emitted line, naming the field and the fix (§3.3).
 
 Two state-side protocols and a macro decide how much users must write:
 
@@ -120,21 +132,23 @@ Two state-side protocols and a macro decide how much users must write:
 
 ### 3.6 Retiring #464's runtime check
 
-With §3.1–§3.4, the compiler rejects a class, closure, `Any` or `Decimal` anywhere under a synced or internal field. That includes behind a typealias, in a plain struct's own property, and in a hand-written `toSnapshotValue()` type: the stored type itself must be `PlainData`. The registration walks that looked for these find nothing.
+**In this repository,** with §3.1–§3.4, the compiler rejects a class, closure, `Any` or `Decimal` anywhere under a synced or internal field. That includes behind a typealias, in a plain struct's own property, and in a hand-written `toSnapshotValue()` type: the stored type itself must be `PlainData`. The registration walks that looked for these find nothing here.
+
+**The boundary (Review MF2).** That holds because the lint refuses a hand-written `_plainDataCheck` (P1). The lint runs only on this repository. In a user's project, `extension MyClass: PlainData { static func _plainDataCheck() {} }` compiles, and a `@Sync var x: MyClass` then compiles too. The parent plan's §3.2 says the same for every `PlainData` conformance: outside the repository a hand-written witness is a visible, unchecked promise. So retiring the runtime walk removes the only check a user's hand-written conformance would still meet. Whether to retire it is P4-Q4, reopened (§9). The table below is the full retirement, option (a). Under (b) or (c), the rows marked † stay as §9 says.
 
 | Item | Where | P4 |
 |---|---|---|
-| `SyncValueSemantics` (the Mirror walk of a default instance) | Sync/SyncValueSemantics.swift | delete |
-| `SyncValueSemanticsError` (public) | same file | delete (source break) |
-| `SyncRegistrationError.Problem.valueSemantics` (public) | Land/SyncRegistration.swift:14 | delete (source break) |
-| `.existentialField` (public) and `TypeWalker`'s open-type branch, `isOpenType` | SyncRegistration.swift:30, :172 | delete. The key check in the same walker (`.unsupportedKey`) stays |
-| `.decimalField` (public), the state half of `DecimalFields` | SyncRegistration.swift:35; DecimalFields.swift | delete the state half. `payloadPaths` stays for P3 |
+| `SyncValueSemantics` (the Mirror walk of a default instance) † | Sync/SyncValueSemantics.swift | delete |
+| `SyncValueSemanticsError` (public) † | same file | delete (source break) |
+| `SyncRegistrationError.Problem.valueSemantics` (public) † | Land/SyncRegistration.swift:14 | delete (source break) |
+| `.existentialField` (public) and `TypeWalker`'s open-type branch, `isOpenType` † | SyncRegistration.swift:30, :172 | delete. The key check in the same walker (`.unsupportedKey`) stays. The same boundary applies: a user's hand-written `PlainData` struct can hold `Any` |
+| `.decimalField` (public), the state half of `DecimalFields` † | SyncRegistration.swift:35; DecimalFields.swift | delete the state half. `payloadPaths` stays for P3. The same boundary applies |
 | `SnapshotConvertibleStoredFields` | SyncRegistration.swift:77 | stays while `DecimalFields.payloadPaths` reads it (DecimalFields.swift:66); P3 decides |
 | `.policyNesting`, `.unsupportedKey`, `.typeNameCollision` | SyncRegistration.swift | stay: not value semantics |
 | `SnapshotValue.classRefusal` and the `.class` backstop | SnapshotValue.swift:193, :314, :490, :611 | stay. `SyncOutputVerifier.swift:300` and `SyncStreamCanonical.swift:12` still convert `event.payload.base` (an `AnyCodable`). The comments that call them a state backstop change to name the payload path, with a pointer to P3/P5 |
 | `SnapshotValueConvertible`'s "a conformer promises value semantics" doc | SnapshotValue.swift:167 | says what checks it now: the field's type is `PlainData` |
 
-Registration also stops building a default instance just for the value-semantics walk. The two remaining walks still use one.
+Under (a), registration also stops building a default instance just for the value-semantics walk. The two remaining walks still use one.
 
 ### 3.7 Docs
 
@@ -161,8 +175,9 @@ English and zh-TW together:
 ## 5. Tests and mutants
 
 **Macro tests** (SwiftStateTreeMacrosTests):
-- the emitted member for `@Sync` and `@Internal` fields;
-- `public` / `package` / internal access;
+- the emitted member for `@Sync` and `@Internal` fields, with field names, and nothing for an unannotated `@Internal`;
+- `public` on the member in a public, a package and an internal type;
+- `@StateNodeBuilder` with `@PlainData` on one type: the diagnostic;
 - a generic node;
 - an `#if` member;
 - an unmarked stored property inside `#if`, refused;
@@ -170,15 +185,23 @@ English and zh-TW together:
 - `@PlainData` on a hand-written node, with no conformance clause in the extension;
 - with P4-Q1: `@SnapshotConvertible`'s `PlainData` extension, and none when `@PlainData` is also there.
 
-**Must-not-compile** (scripts/must-not-compile/; `expect-error:` text in brackets):
-- a `@Sync` class field [`conform to 'PlainData'`];
-- a nested struct without `@PlainData` [`generic struct 'Sync' requires`];
-- a nested struct holding `Any` (the closed existential gap);
-- a generic node without `T: PlainData`;
-- a hand-written `StateNodeProtocol` conformance without `_plainDataCheck` [`does not conform to protocol 'PlainData'`];
-- a `.serverOnly` `Decimal`;
-- an unmarked stored property under `#if`;
-- controls that compile: a hand-written node with `@PlainData`, a generic node with the constraint, and a nested `@PlainData` struct.
+**Must-not-compile** (scripts/must-not-compile/). Each pins one `expect-error` text, written after P3/4-0's unavailable overload exists. "Q3 message" is P3/4-0's text ("this field's type isn't PlainData: add @PlainData …"), which P4 takes as P3/4-0 merges it.
+
+| Snippet | `expect-error` pins | Which check it proves |
+|---|---|---|
+| a `@Sync` class field | the Q3 message | the emitted line (M1) |
+| a nested struct without `@PlainData`, in `[String: T]` | the Q3 message | the emitted line, through a collection |
+| the same nested struct, a second snippet | `generic struct 'Sync' requires` | the wrapper's constraint (M3) |
+| a nested struct holding `Any` | `@PlainData`'s existential refusal on the nested type | the existential gap closes |
+| a generic node without `T: PlainData` | `generic struct 'Sync' requires that 'T'` | the constraint on a generic node |
+| a hand-written `StateNodeProtocol` conformance without `_plainDataCheck` | `does not conform to protocol 'PlainData'` | §3.1 |
+| a `.serverOnly` `Decimal` | Q2's `Decimal` message | one `Decimal` message, every policy |
+| an unannotated `@Internal var cache = [String: Any]()` | `generic struct 'Internal' requires` | the inferred type, with nothing emitted |
+| an unmarked stored property under `#if` | `@StateNodeBuilder`'s marker diagnostic | the marker check reads `#if` (M5) |
+| a `@Sync` class field inside `#if` | the Q3 message | `_plainDataCheck` reads `#if` (M2) |
+| `@StateNodeBuilder` with `@PlainData` on one type | the new diagnostic's text | §3.3 |
+
+Controls that compile: a hand-written node with `@PlainData`, a generic node with the constraint, a nested `@PlainData` struct, and an unannotated `@Internal var count = 0`.
 
 **Unchanged output:**
 - the differential harness (`DifferentialHarnessTests`) byte-compares against its goldens, with no `SST_UPDATE_GOLDEN` run and no golden file changed;
@@ -186,11 +209,12 @@ English and zh-TW together:
 - the schema and the generated TS client unchanged for Demo and GameDemo (`SchemaGen` output diffed).
 
 **Mutants**, each caught by a named test:
-- M1: `@StateNodeBuilder` skips one field's check. Caught by the class-field snippet once `Sync`'s constraint is also removed. So M1 runs with M3 applied, which shows the emitted check catches what the constraint would;
-- M2: `_plainDataCheck` skips `#if` members. Caught by the `#if` snippet;
-- M3: `Sync` loses its `PlainData` constraint. Caught by the nested-struct snippet's `expect-error` text: the error moves into the macro expansion and its wording changes;
-- M4: `Sync` loses `@PlainData`. Caught by the build: every node's emitted check names `Sync<T>`, which then doesn't conform;
-- M5: the marker check skips `#if` members. Caught by the unmarked-`#if` snippet.
+- M1: `@StateNodeBuilder` skips one field's check. Caught by the class-field snippet: the constraint's error is still there, but the Q3 message it pins isn't;
+- M2: `_plainDataCheck` skips `#if` members. Caught by the `#if` class-field snippet;
+- M3: `Sync` loses its `PlainData` constraint. Caught by the second nested-struct snippet, whose `generic struct 'Sync' requires` text is gone;
+- M4: `Sync` loses `@PlainData`. Caught by the wrappers' compile test (§3.2);
+- M5: the marker check skips `#if` members. Caught by the unmarked-`#if` snippet;
+- M6: `@StateNodeBuilder` drops the `@PlainData` sibling check. Caught by its macro test (and the snippet then fails on a redeclaration, not the pinned text).
 
 ## 6. Measurement
 
@@ -202,12 +226,12 @@ The check: a Mac magnitude check of `EncodingBenchmark` (messagepack) and `Serve
 
 | PR | Content | Gate |
 |---|---|---|
-| **P4-1** | §3.1–§3.5. `StateNodeProtocol: PlainData`; the wrappers; the emitted member, `#if` members included; nested types and generic nodes migrated in `Sources/` and `Tests/`; Examples in its own commit; docs for the compile-time rule | build, macro tests, must-not-compile, mutants M1–M5, full `swift test` (CI), differential harness, E2E three encodings + reevaluation, Mac magnitude check |
-| **P4-2** | §3.6. The runtime retirements and their public API removals; tests of retired rows become snippets or go; docs for the registration rows | build, full `swift test` (CI), must-not-compile, E2E |
+| **P4-1** | §3.1–§3.5. `StateNodeProtocol: PlainData`; the wrappers; the emitted member, `#if` members included; the sibling refusal; nested types and generic nodes migrated in `Sources/` and `Tests/`; Examples in its own commit; docs for the compile-time rule and its boundary (§3.6) | build, macro tests, must-not-compile, mutants M1–M6, full `swift test` (CI), differential harness, E2E three encodings + reevaluation, Mac magnitude check |
+| **P4-2** | §3.6, as P4-Q4 decides. Under (a): the runtime retirements and their public API removals; tests of retired rows become snippets or go; docs for the registration rows. Under (b): the walk runs in debug builds only. Under (c): nothing until the stronger seal exists | build, full `swift test` (CI), must-not-compile, E2E |
 
-P4-1 first. P4-2 can be reviewed while P4-1 waits on CI, but merges after it.
+P4-1 first; it doesn't depend on P4-Q4. P4-2 can be reviewed while P4-1 waits on CI, but merges after it.
 
-**Order against P3:** both PRs touch the shared walk's call sites and `RefusedFieldTypes.swift` (P3 for `@Payload`'s `Decimal`). P4-1 starts after P3/4-0 merges. Then P3 and P4 can run in parallel with one rule: neither changes the walk's signature without telling the other.
+**Order against P3:** both PRs touch the shared walk's call sites and the classifier adapter (`diagnoseRefusedFieldTypes`; P3 for `@Payload`'s `Decimal`). P4-1 starts after P3/4-0 merges and the name-visibility decision (§2) is made. Then P3 and P4 can run in parallel with one rule: neither changes the walk's signature without telling the other.
 
 ## 8. Public API
 
@@ -216,7 +240,9 @@ All source breaks without deprecation, as the parent plan's §5:
 - `Sync<Value: PlainData & Sendable>` (was `Sendable`). A state field's nested type needs `@PlainData` (Q3), a generic node needs `T: PlainData`;
 - `Sync` and `Internal` conform to `PlainData` (additive);
 - `@StateNodeBuilder` emits `_plainDataCheck`, and refuses an unmarked stored property inside `#if`;
-- P4-2 removes `SyncValueSemanticsError` and `SyncRegistrationError.Problem.valueSemantics`, `.existentialField` and `.decimalField`;
+- `@StateNodeBuilder` refuses `@PlainData` on the same type;
+- under P4-Q4 (a), P4-2 removes `SyncValueSemanticsError` and `SyncRegistrationError.Problem.valueSemantics`, `.existentialField` and `.decimalField`. Under (b) they stay, reported in debug builds only. Under (c) they stay;
+- whatever the name-visibility decision adds (§2): a re-export of SwiftStateTurns from SwiftStateTree, or typealiases;
 - with P4-Q1: `@SnapshotConvertible` writes a `PlainData` conformance;
 - with P4-Q2: `StateProtocol` refines `PlainData`;
 - with P4-Q3: `ReactiveDictionary` and `ReactiveSet` are removed.
@@ -228,7 +254,7 @@ All source breaks without deprecation, as the parent plan's §5:
 | P4-Q1 | Does `@SnapshotConvertible` make its type `PlainData`? | (a) yes, through the shared walk, as `@Payload` does in P3; (b) no: a state value type carries both `@SnapshotConvertible` and `@PlainData` | (a): one attribute per type, and the rule stays "the macro that shapes the type checks it" |
 | P4-Q2 | `StateProtocol` | (a) refine `PlainData`; (b) leave it; (c) deprecate it (it adds only `Codable, Sendable`) | (a): the error then lands on the type's declaration |
 | P4-Q3 | `ReactiveDictionary` / `ReactiveSet` | (a) delete; (b) drop `onChange` and make them `@PlainData` | (a): unused, and they predate the dirty tracking `Sync` does |
-| P4-Q4 | Retirement timing | (a) P4-2 right after P4-1; (b) keep the runtime walk one release as a debug-only assertion | (a): the compile check covers every field the walk sees, and a check that can't fire only costs registration time |
+| P4-Q4 (reopened) | Retire #464's runtime walk, given the boundary in §3.6? | (a) delete it anyway, as rev 1 planned: the compile check covers the repository, and a user's hand-written `_plainDataCheck` is their stated promise; (b) keep the Mirror walk, run only in debug builds, and report what it finds there; (c) keep it as today until a stronger seal than the lint exists (one a user's build enforces) | (b), Main's recommendation: debug builds still catch a user's wrong promise, and release registration stops paying for a walk that can't fire in this repository |
 
 ### Decisions (maintainer, 2026-11-24)
 
@@ -237,4 +263,4 @@ All source breaks without deprecation, as the parent plan's §5:
 | P4-Q1 | **(a)** `@SnapshotConvertible` also writes the `PlainData` conformance and `_plainDataCheck`, and nothing when the type carries `@PlainData` too |
 | P4-Q2 | **(a)** `StateProtocol` refines `PlainData` |
 | P4-Q3 | **(a)** delete `ReactiveDictionary` and `ReactiveSet` |
-| P4-Q4 | **(a)** P4-2 lands right after P4-1 |
+| P4-Q4 | ~~(a) P4-2 lands right after P4-1~~ **reopened** (Review MF2 on rev 1): the options are now (a) delete anyway, (b) debug-only, (c) keep until a stronger seal |
