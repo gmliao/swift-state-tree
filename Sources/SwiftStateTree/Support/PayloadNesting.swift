@@ -199,8 +199,13 @@ package enum PayloadNesting {
         droppedLock.withLock { dropped }
     }
 
+    /// Counts the drops noted in the task that binds it, and in the tasks that inherit it. Tests
+    /// only: `droppedClientEventCount` is process-wide, so tests running in parallel move it too.
+    @TaskLocal package static var droppedForTesting: WalkCounter?
+
     /// Logs and counts a client event of `type` dropped for its depth.
     package static func noteDroppedClientEvent(type: String, _ error: TooDeep) {
+        droppedForTesting?.add()
         let total = droppedLock.withLock { () -> Int in
             dropped += 1
             return dropped
