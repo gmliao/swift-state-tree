@@ -1,4 +1,4 @@
-FROM swift:6.2.4-noble
+FROM swift:6.4.3-noble
 
 # Verify Swift installation
 RUN swift --version && \
