@@ -237,11 +237,13 @@ struct PlainDataMacroTests {
         #expect(text.contains("SwiftStateTurns.PlainDataCheck.existential { (value: any (Payload & Sendable)) in value }"))
         #expect(text.components(separatedBy: "PlainDataCheck.field").count - 1 == 2)
         // A wrapper spelled out, bare or `Swift.`-qualified, is pinned to the standard library's
-        // type at each layer; one spelled as sugar needs no check.
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.contiguousArray((ContiguousArray<any Payload>).self)"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.optional((Optional<Array<any Payload>>).self)"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.array((Array<any Payload>).self)"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.optional((Swift.Optional<any Payload>).self)"))
+        // type at each layer, with its arguments bound by the closure; one spelled as sugar needs
+        // no check.
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.contiguousArray((ContiguousArray<any Payload>).self) { (_: any Payload) in }"))
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.optional((Optional<Array<any Payload>>).self) { (_: Array<any Payload>) in }"))
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.array((Array<any Payload>).self) { (_: any Payload) in }"))
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.optional((Swift.Optional<any Payload>).self) { (_: any Payload) in }"))
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.dictionary((Dictionary<String, any Payload>).self) { (_: String, _: any Payload) in }"))
         #expect(!text.contains("PlainDataCheck.same"))
         let pinned = ["optional(", "array(", "contiguousArray(", "dictionary("].map {
             text.components(separatedBy: "PlainDataCheck.\($0)").count - 1

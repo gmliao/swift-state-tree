@@ -1,4 +1,4 @@
-// expect-error: to expected argument type 'Array<
+// expect-error: to expected argument type 'Swift.Array<
 import SwiftStateTurns
 
 // A typealias named `Array` that names the module's own type: the bare spelling is pinned too.

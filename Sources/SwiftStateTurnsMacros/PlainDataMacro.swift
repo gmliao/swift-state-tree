@@ -193,8 +193,11 @@ public struct PlainDataMacro: ExtensionMacro {
             guard let inner = wrapperChecks(found, context) else { return nil }
             // The name, bare or `Swift.`-qualified, can be the module's own type (a namesake, a
             // typealias, or a module-level `enum Swift`). The helper's parameter is the standard
-            // library's type, spelled inside SwiftStateTurns, so only that type compiles.
-            return inner + ["SwiftStateTurns.PlainDataCheck.\(found.helper)((\(type.trimmed)).self)"]
+            // library's type, spelled inside SwiftStateTurns, so only that type compiles. The
+            // closure's parameters bind its arguments to the ones checked above, so an alias
+            // that ignores its argument (`Array<E> = Swift.Array<Ref>`) doesn't compile either.
+            let parameters = found.arguments.map { "_: \($0.trimmed)" }.joined(separator: ", ")
+            return inner + ["SwiftStateTurns.PlainDataCheck.\(found.helper)((\(type.trimmed)).self) { (\(parameters)) in }"]
         }
         context.diagnose(Diagnostic(node: type, message: PlainDataDiagnostic.existentialInGeneric))
         return nil

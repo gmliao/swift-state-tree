@@ -39,23 +39,26 @@ public enum PlainDataCheck {
 
     // A wrapper spelled `Array<…>` (or `Optional`, `ContiguousArray`, `Dictionary`), bare or
     // `Swift.`-qualified, compiles only when it is the standard library's: each parameter names
-    // the type here, where the user's module can't rebind `Swift` or the type's name.
+    // the type here, where the user's module can't rebind `Swift` or the type's name. The
+    // closure's parameter types are the arguments as the field spells them, so the wrapper's
+    // arguments must be the ones the macro checked: an alias that drops its argument
+    // (`typealias Array<E> = Swift.Array<Ref>`) doesn't compile.
 
-    /// Compiles only for the standard library's `Optional`.
+    /// Compiles only for the standard library's `Optional` of the spelled `Wrapped`.
     @inlinable @inline(__always)
-    public static func optional<Wrapped>(_: Swift.Optional<Wrapped>.Type) {}
+    public static func optional<Wrapped>(_: Swift.Optional<Wrapped>.Type, _: (Wrapped) -> Void) {}
 
-    /// Compiles only for the standard library's `Array`.
+    /// Compiles only for the standard library's `Array` of the spelled `Element`.
     @inlinable @inline(__always)
-    public static func array<Element>(_: Swift.Array<Element>.Type) {}
+    public static func array<Element>(_: Swift.Array<Element>.Type, _: (Element) -> Void) {}
 
-    /// Compiles only for the standard library's `ContiguousArray`.
+    /// Compiles only for the standard library's `ContiguousArray` of the spelled `Element`.
     @inlinable @inline(__always)
-    public static func contiguousArray<Element>(_: Swift.ContiguousArray<Element>.Type) {}
+    public static func contiguousArray<Element>(_: Swift.ContiguousArray<Element>.Type, _: (Element) -> Void) {}
 
-    /// Compiles only for the standard library's `Dictionary`.
+    /// Compiles only for the standard library's `Dictionary` of the spelled `Key` and `Value`.
     @inlinable @inline(__always)
-    public static func dictionary<Key, Value>(_: Swift.Dictionary<Key, Value>.Type) {}
+    public static func dictionary<Key, Value>(_: Swift.Dictionary<Key, Value>.Type, _: (Key, Value) -> Void) {}
 }
 
 extension Bool: PlainData { public static func _plainDataCheck() {} }

@@ -1,4 +1,4 @@
-// expect-error: to expected argument type 'Array<Element>.Type'
+// expect-error: to expected argument type 'Swift.Array<
 import SwiftStateTurns
 
 // The module's own `Array` holds a class and a closure. Spelled `Array<any Payload>`, the macro
