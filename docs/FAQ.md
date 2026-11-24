@@ -155,7 +155,7 @@ enum JoinRoomError: Error {
 
 Rules {
     HandleAction(JoinAction.self,
-        validate: { (state: GameState, action: JoinAction, ctx: ValidateContext) throws in
+        validate: { state, action, ctx in
             // Validation: a throw refuses the action
             guard !action.name.isEmpty else {
                 throw JoinRoomError.nameRequired
@@ -166,7 +166,7 @@ Rules {
                 throw JoinRoomError.roomFull
             }
         },
-        apply: { (state: inout GameState, action: JoinAction, ctx: LandContext) -> JoinResponse in
+        apply: { state, action, ctx in
             // Normal processing
             state.players[ctx.playerID] = PlayerState(name: action.name)
             return JoinResponse(status: "ok")

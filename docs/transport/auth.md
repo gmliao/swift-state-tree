@@ -346,13 +346,13 @@ Rules {
     }
     
     HandleAction(PremiumAction.self,
-        validate: { (state: GameState, action: PremiumAction, ctx: ValidateContext) throws in
+        validate: { state, action, ctx in
             // Guest players cannot perform certain actions; the throw refuses it, nothing is written
             if ctx.isGuest {
                 throw GuestNotAllowed()
             }
         },
-        apply: { (state: inout GameState, action: PremiumAction, ctx: LandContext) -> PremiumResponse in
+        apply: { state, action, ctx in
             // Normal processing...
             return PremiumResponse()
         })

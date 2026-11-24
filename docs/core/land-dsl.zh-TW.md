@@ -10,6 +10,7 @@ Land 是伺服器邏輯的最小可運行單位，負責定義加入規則、行
 - Land DSL 只描述行為，不暴露 Transport 細節
 - handlers 以同步方式定義；輸出請用 `ctx.emitEvent(...)` / `ctx.requestSync*()`，非同步 I/O 請在 handler 之外處理（例如 Resolver）。
 - 事件型別註冊（Client/ServerEvents）用於 schema 與驗證
+- Handler closure 不必寫出型別：state 型別來自 `Land(_:using:)`，每個 input 型別來自它的 handler 的 `.self` 參數
 
 ## 基本結構
 
@@ -43,6 +44,8 @@ ServerEvents {
     Register(PongEvent.self)
 }
 ```
+
+land 處理的每個 client event 都要註冊，註冊的每個 client event 都要處理。兩份清單不一致的 land 會在註冊時被拒絕：註冊了卻沒有 `HandleEvent` 的 event，或處理了卻沒有 `Register` 的 event。錯誤 `LandRegistrationError.clientEventMismatches` 會列出每個這樣的 event 與它缺少的那一邊。沒經過註冊就建立的 keeper，會在初始化時拒絕這個 land。
 
 server event 是通知，同步的狀態才是真實來源。仍在加入中的 session，會在它的 firstSync 之後依送出順序收到送給它的 targeted event，而這些 event 的效果已經包含在該 firstSync 裡（見 [Transport](../transport/README.zh-TW.md#join-與-session-流程)）。
 
@@ -83,12 +86,12 @@ Input handler 寫入後不能再拋出錯誤（#586）。單一 closure 的 `Han
 
 ```swift
 HandleAction(BuyAction.self,
-    validate: { (state: ShopState, action: BuyAction, ctx: ValidateContext) throws -> BuyPlan in
+    validate: { state, action, ctx in
         guard let item = state.shop[action.itemID] else { throw ShopError.notFound }
         guard (state.players[ctx.playerID]?.gold ?? 0) >= item.price else { throw ShopError.noGold }
         return BuyPlan(item: item)
     },
-    apply: { (state: inout ShopState, action: BuyAction, plan: BuyPlan, ctx: LandContext) -> BuyResponse in
+    apply: { state, action, plan, ctx in
         state.players[ctx.playerID]?.gold -= plan.item.price
         state.players[ctx.playerID]?.items.append(plan.item)
         return BuyResponse(ok: true)
@@ -178,7 +181,7 @@ struct BuyItemResponse: ResponsePayload {
 let maxAppliedPurchases = 64
 
 // In the land's Rules:
-HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemAction, ctx: LandContext) -> BuyItemResponse in
+HandleAction(BuyItemAction.self) { state, action, ctx in
     let player = ctx.playerID
     let coins = state.coins[player] ?? 0
     var applied = state.appliedPurchases[player] ?? []
@@ -204,6 +207,41 @@ HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemActio
 - 在有 tick 的 land 上，client 收到的 `BuyItemResponse` 只是 ACK，`coins` 要從狀態讀。
 - 這裡的檢查不拒絕 action，而是回答它（`applied: false`），所以一個不會拋出錯誤的 body 就夠了。應以錯誤失敗的 action 改由 `validate` 拋出，它什麼都不寫入（[兩段式 Handler](#兩段式-handler)）。
 
+## Helper 與 `@Land`
+
+helper 是一個函式，回傳給 land 使用的 handler。在它上面加上 land 的 builder 並寫出 land 的 state 型別，它的 closure 就會像在 `Land(_:using:)` 裡一樣推斷型別：
+
+```swift
+@LandDSL<GameState, NoServices>
+func joinRules() -> [LandNode] {
+    OnJoin { state, ctx in state.players[ctx.playerID] = 0 }
+}
+
+let land = Land("game", using: GameState.self) {
+    joinRules()
+    Rules { joinRules() }
+}
+```
+
+builder 的 typealias 是同一個 attribute 的較短寫法：`typealias GameDSL = LandDSL<GameState, NoServices>`，然後寫 `@GameDSL func joinRules() -> [LandNode]`。`NoServices` 是沒有 services 的 land 的 services 型別。
+
+`@Land` 把 land 宣告成一個型別。它的 `body` 在 builder 之下，和 helper 一樣：
+
+```swift
+@Land(GameState.self)
+struct GameLand {
+    static var body: [LandNode] {
+        Rules {
+            OnJoin { state, ctx in state.players[ctx.playerID] = 0 }
+        }
+    }
+}
+
+let definition = GameLand.definition
+```
+
+限制：`@Land` 建立的是沒有 services 的 land。有 services 的 land 用 `Land(_:using:services:)` 建立。
+
 ## LandContext
 
 Handler 會取得 `LandContext`，包含：
@@ -226,7 +264,7 @@ Resolver 先並行執行，成功後再同步進入 handler。
 - `StateSync(every:)`：狀態同步（只讀 callback，會被調用）
 - `DestroyWhenEmpty(after:)`：空房間自動關閉
 - `PersistSnapshot(every:)`：快照週期
-- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`。與 input handler 相同，它們寫入後都不會再拋出錯誤（#593）：
+- `OnInitialize` / `OnFinalize` / `AfterFinalize`。與 input handler 相同，它們寫入後都不會再拋出錯誤（#593）：
   - `OnFinalize` 與 `DestroyWhenEmpty(after:_:)` 的 handler 接受不會拋出錯誤的 body。Land 正在結束，沒有人會處理拒絕：body 若呼叫會拋出錯誤的程式碼，要自己處理錯誤。
   - `OnInitialize` 接受不會拋出錯誤的 body，或像 input 一樣分成 `validate` 與 `apply` 兩段（[兩段式 Handler](#兩段式-handler)）。`validate` 拋出錯誤時，land 的初始化失敗，和 resolver 失敗時相同，什麼都不寫入（見下方範例）。
 - `OnInitialize(resolvers:onResolverFailure:)`：resolver 丟錯時預設會讓 land 初始化失敗（`.failLand`）；`.continue` 則在沒有 resolver 輸出的情況下執行 OnInitialize。見 [Resolver 期限](resolver.zh-TW.md#期限)
@@ -234,7 +272,7 @@ Resolver 先並行執行，成功後再同步進入 handler。
 ```swift
 Lifetime {
     // 遊戲邏輯更新（20Hz）
-    Tick(every: .milliseconds(50)) { (state: inout GameState, ctx: LandContext) in
+    Tick(every: .milliseconds(50)) { state, ctx in
         // 使用 ctx.tickId (Int64) 進行確定性、重播相容的邏輯
         if let tickId = ctx.tickId {
             let tickIntervalSeconds = 0.05  // 50ms = 0.05s
@@ -245,7 +283,7 @@ Lifetime {
     
     // 網路同步（10Hz）
     // Callback 是唯讀的，會在 sync 時被調用 - 請勿修改 state
-    StateSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+    StateSync(every: .milliseconds(100)) { state, ctx in
         // 唯讀 callback - 會在 sync 時被調用
         // 用於日誌記錄、指標收集或其他唯讀操作
         // Network sync 機制會在 callback 之後觸發網路同步
@@ -265,11 +303,11 @@ Lifetime {
     OnInitialize(
         resolvers: RoomConfigResolver.self,
         onResolverFailure: .continue,
-        validate: { (_: RoomState, ctx: ValidateContext) throws -> RoomConfigOutput in
+        validate: { _, ctx in
             guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
             return config
         },
-        apply: { (state: inout RoomState, config: RoomConfigOutput, _: LandContext) in
+        apply: { state, config, _ in
             state.maxPlayers = config.maxPlayers
         }
     )

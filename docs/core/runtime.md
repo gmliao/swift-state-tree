@@ -248,7 +248,7 @@ Define Tick in Land DSL:
 
 ```swift
 Lifetime {
-    Tick(every: .milliseconds(100)) { (state: inout GameState, ctx: LandContext) in
+    Tick(every: .milliseconds(100)) { state, ctx in
         // Execute every 100ms
         state.stepSimulation()
     }

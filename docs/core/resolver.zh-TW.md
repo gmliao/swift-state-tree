@@ -424,12 +424,12 @@ enum AdminError: Error {
 
 // 在 handler 中使用：validate 讀取 resolver 輸出並拒絕；apply 執行操作
 HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self,
-    validate: { (state: GameState, action: AdminAction, ctx: ValidateContext) throws in
+    validate: { state, action, ctx in
         guard let permission: UserPermission = ctx.userPermission, permission.isAdmin else {
             throw AdminError.adminRequired  // 什麼都不寫入
         }
     },
-    apply: { (state: inout GameState, action: AdminAction, ctx: LandContext) -> AdminResponse in
+    apply: { state, action, ctx in
         // 執行管理員操作
         return AdminResponse()
     })
