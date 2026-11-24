@@ -114,6 +114,29 @@ struct PlainDataMacroTests {
         #expect(text.contains("extension Nested: SwiftStateTurns.PlainData where A: SwiftStateTurns.PlainData, C: SwiftStateTurns.PlainData {"))
     }
 
+    @Test("A same-type requirement makes the other side named when one side is, either way round and transitively")
+    func sameTypeRequirementsCarryTheName() {
+        let (text, messages) = expand("""
+            @PlainData
+            struct First<C: Collection, T> where C.Element == T {
+                let first: C.Element?
+            }
+            @PlainData
+            struct Reversed<C: Collection, T, U> where T == C.Element, U == T {
+                let first: C.Element?
+            }
+            @PlainData
+            struct Unrelated<C: Collection, T, U> where C.Element == T {
+                let u: U
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("extension First: SwiftStateTurns.PlainData where C: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData {"))
+        #expect(text.contains("extension Reversed: SwiftStateTurns.PlainData where C: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData, U: SwiftStateTurns.PlainData {"))
+        // A requirement whose sides no field names adds nothing.
+        #expect(text.contains("extension Unrelated: SwiftStateTurns.PlainData where U: SwiftStateTurns.PlainData {"))
+    }
+
     @Test("A field of a type or typealias the body declares constrains every parameter, `#if` included", arguments: [
         "struct Inner { let x: Int }",
         "enum Inner { case x }",

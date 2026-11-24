@@ -43,7 +43,9 @@ public enum PlainDataExtension {
         // The expansion names the core's module, so a namesake type in the user's module can't
         // stand in for `PlainData` or `PlainDataCheck`.
         let members = declaration.memberBlock.members
-        let named = storedNames(members)
+        let requirements = declaration.as(StructDeclSyntax.self)?.genericWhereClause
+            ?? declaration.as(EnumDeclSyntax.self)?.genericWhereClause
+        let named = closedOverSameType(storedNames(members), requirements)
         // A field of a type or typealias declared in the body may stand for any parameter, so
         // it constrains them all.
         let all = !named.isDisjoint(with: localTypeNames(members))
@@ -127,9 +129,11 @@ public enum PlainDataExtension {
     /// services it doesn't store, #769). Only what the checks read counts: a stored property's
     /// type and initializer, and an enum case's associated values. A parameter that only a
     /// method or a computed property names adds no constraint. A name is a whole identifier
-    /// anywhere in them: `D`, `[D]`, `Box<D>` and `D.Element` all name `D`. The checks still
-    /// read every stored value, so a parameter this misses is a field that fails to compile,
-    /// never one that conforms unchecked.
+    /// anywhere in them: `D`, `[D]`, `Box<D>` and `D.Element` all name `D`. Any identifier
+    /// counts, an argument label (`case value(T: Int)`) or a member name (`Limits.T`) included,
+    /// which constrains a parameter the value may not store: conservative, as for every
+    /// parameter before #769. The checks still read every stored value, so a parameter this
+    /// misses is a field that fails to compile, never one that conforms unchecked.
     private static func storedNames(_ members: MemberBlockItemListSyntax) -> Set<String> {
         var names: Set<String> = []
         func collect(_ syntax: some SyntaxProtocol) {
@@ -164,6 +168,30 @@ public enum PlainDataExtension {
         }
         walk(members)
         return names
+    }
+
+    /// `named` with each same-type requirement of the declaration's `where` clause followed: when
+    /// one side names something named, the other side's names are named too, until nothing
+    /// changes. In `struct First<C: Collection, T> where C.Element == T { let first: C.Element? }`
+    /// the field names `C`, and `T` is what proves `C.Element` plain data, so `T` is constrained.
+    private static func closedOverSameType(_ named: Set<String>, _ clause: GenericWhereClauseSyntax?) -> Set<String> {
+        func names(_ syntax: some SyntaxProtocol) -> Set<String> {
+            Set(syntax.tokens(viewMode: .sourceAccurate).compactMap { $0.identifier?.name })
+        }
+        let pairs: [(Set<String>, Set<String>)] = (clause?.requirements ?? []).compactMap {
+            guard case .sameTypeRequirement(let same) = $0.requirement else { return nil }
+            return (names(same.leftType), names(same.rightType))
+        }
+        var result = named
+        var changed = true
+        while changed {
+            changed = false
+            for (left, right) in pairs {
+                if !left.isDisjoint(with: result), !right.isSubset(of: result) { result.formUnion(right); changed = true }
+                if !right.isDisjoint(with: result), !left.isSubset(of: result) { result.formUnion(left); changed = true }
+            }
+        }
+        return result
     }
 
     /// The types and typealiases the body declares, `#if` clauses included. The macro can't see
