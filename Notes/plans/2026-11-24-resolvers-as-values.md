@@ -1,6 +1,6 @@
 # #769: a resolver is a PlainData value
 
-**Status:** rev 2.1, plan only, no code. Rev 2 is GO (659cd242); 2.1 folds in its notes (§9). R-Q1 to R-Q4 are all decided (§8). It follows the maintainer's 2026-11-22 decisions on #769 (the issue body, then three comments: `currentState` removed, the value form, and capability protocols for dependencies), and R-Q1 as decided 2026-11-24 (§3.4). Rev 2 answers Review's NOT GO on rev 1 (1ee8b88f); what changed is listed in §9. Open questions are in §8.
+**Status:** rev 2.2, plan only, no code. Rev 2 is GO (659cd242); 2.1 folds in its notes, 2.2 records R0's results (§3.8, §9). R-Q1 to R-Q4 are all decided (§8). It follows the maintainer's 2026-11-22 decisions on #769 (the issue body, then three comments: `currentState` removed, the value form, and capability protocols for dependencies), and R-Q1 as decided 2026-11-24 (§3.4). Rev 2 answers Review's NOT GO on rev 1 (1ee8b88f); what changed is listed in §9. Open questions are in §8.
 
 Code pointers are at main c9f149ad. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. The dependency probe in §3.4 is a one-file probe kept outside the repository. It passed on Swift 6.4.2 and 6.4.3, without the real `@PlainData` (§3.1.1). **The pin is moving to 6.4.3** (a bump PR is in flight), so R0 probes on 6.4.3 as the target toolchain, in the pinned image once the bump lands. If the bump hasn't landed when R1 starts, R0 also probes on 6.2.4, since CI still gates on it.
 
@@ -93,7 +93,7 @@ Constraining the fields' types instead (`where [D]: PlainData`, "perfect derive"
 - An explicit opt-out (`@PlainData(unconstrained: D)`). It is a second spelling of the same fact, and the macro would still have to check that `D` isn't stored.
 - `Dependencies` not generic (`any HasProductDatabase`). This loses the compile-time check: no Swift constraint says "`Services` conforms to the protocol that `R` names".
 
-**R0 probes it with the real macro** (P1/P2's `@PlainData`, not a stand-in), on the toolchains in the header:
+**R0 probed it with the real macro** (results in §3.8) (P1/P2's `@PlainData`, not a stand-in), on the toolchains in the header:
 - `ProductInfo<AppServices>` is `PlainData` with a class-holding `AppServices`;
 - `struct Box<T> { let t: T }` with a class `T` still fails, naming the field;
 - the nested-type and member-typealias cases constrain everything;
@@ -112,7 +112,7 @@ HandleAction(A.self,
 - **It runs where today's code captures the snapshot:** `startActionJob`, LK:2289, in the intake segment, with `tickId: lastCommittedTickId`. After K2 that is the admission step. It reads State, the typed input and a read-only context. It mutates nothing.
 - **The context is `ValidateContext`** (#586): read-only, with `landID`, `playerID`, `clientID`, `sessionID`, `deviceID`, `isGuest`, `metadata`, `tickId`. It has no `random` (§3.6). No new context type.
 - **`nil` means nothing is fetched,** and the handler gets `nil` for that output. That is today's cache check, made explicit.
-- **Several resolvers:** the closure returns a tuple of optionals, and the handler gets a tuple of optional outputs, in the same order. R0 probes a parameter pack (`repeat (each R)?` in, `repeat (each R).Output?` out) on R0's toolchains. If it doesn't infer inside #771's generic builder, the arity overloads stay as today (one to three).
+- **Several resolvers:** the closure returns a tuple of optionals, and the handler gets a tuple of optional outputs, in the same order. R0 probed a parameter pack (`repeat (each R)?` in, `repeat (each R).Output?` out). It doesn't compile: a pack needs a same-element requirement (`R.Dependencies == Services`), which 6.2.4 and 6.4.2 don't support yet (§3.8). So the arity overloads stay as today (one to three), and R0 checked those inside #771's generic builder.
 - **Entries, with what their closure reads:**
   - `HandleAction`: State, the action, `ValidateContext`;
   - `CanJoin`: State, `PlayerSession`, `ValidateContext`;
@@ -140,7 +140,7 @@ HandleAction(A.self,
   - `Land(_:using:)` without services still returns `LandDefinition<State>`, so the existing `makeLand() -> LandDefinition<X>` functions stay.
   - `register(_: TypedLand<State, Services>, services: (LandID, [String: String]) -> Services)` is the only registration that takes it, so a wrong factory type fails to compile.
   - The no-services `register(LandDefinition)` stays. It doesn't accept a `TypedLand`.
-  - Main's probe (6.4.2, a stand-in for `@PlainData`) runs the positive case and refuses the wrong factory, the missing capability and the untyped registration. **R0 re-runs it with the real `@PlainData`** (§3.1.1).
+  - Main's probe (6.4.2, a stand-in for `@PlainData`) runs the positive case and refuses the wrong factory, the missing capability and the untyped registration. **R0 re-ran it with the real `@PlainData`** (§3.1.1, §3.8): the same results, plus the typed keeper initializer.
 - **Lands that declare services at main:** one, GameDemo's `ResolverTest.makeLand()` (ResolverTestLand.swift:363). Its three resolvers (`JoinCheckResolver`, `LeaveCheckResolver`, `ServiceCallResolver`, lines 313–350) read `SimulatedExternalService`. No resolver in `Tests/` reads services. The test resolvers that build a `ResolverContext` by hand pass an empty `LandServices()`. Its return type becomes `TypedLand<ResolverTestState, ResolverTestServices>`. It has 10 call sites in 7 files:
   - registration in `GameServer/main.swift`;
   - the replay factory (`GameReevaluationFactory.swift`, `ReevaluationRunner/main.swift`), `SchemaGen/main.swift` and the schema fingerprint test add `.definition`. A replay never calls `resolve` (§3.5), so a replay keeper needs no `Services`;
@@ -215,6 +215,74 @@ HandleAction(A.self,
 - **Docs** (bilingual, same commit per page): `docs/core/resolver.md`, `docs/programming-model.md`, `docs/quickstart.md`, `docs/FAQ.md`, each with its `.zh-TW.md`. `Sources/SwiftStateTree/Resolver/README.md` (in Chinese, inside `Sources/`) is rewritten in English in R1 (agreed with Main, 2026-11-24).
 - **The schema:** resolver outputs aren't in the client schema today. Nothing changes there.
 
+### 3.8 R0 results (2026-11-24)
+
+**How it was run.** The probes are scratch files outside the repository.
+- The macro is #772's `@PlainData` at its head dc9b1dcc, in three variants:
+  - **today**, as on #772;
+  - **patched**, with §3.1.1's rule;
+  - **mutant**, with no constraint at all (M7).
+- Each variant was built as the `SwiftStateTurnsMacros` tool. The cases were type-checked, and the positive ones run, with `swiftc -load-plugin-executable` against that build's `SwiftStateTurns`.
+- Toolchains: 6.4.2 (macOS) and 6.2.4 (the pinned `swift:6.2.4-noble` image). **6.4.3, the target, is not run yet:** its image (#775) was pulled, and the run was stopped to free the build slot. It is a re-run of the same scripts.
+
+**§3.1.1, the macro rule.** Results are the same on both toolchains:
+- **The positive case compiles and runs only with the patched rule.** It covers three types:
+  - `ProductInfo<D>`, which stores no `D`, is `PlainData` with a class-holding `AppServices`. Its synthesized `Codable` and `Hashable` work (a JSON round trip and a hash);
+  - an enum whose stored case names `T` and not `U` is `PlainData` with a class `U`;
+  - `Box<Int>` is `PlainData`.
+
+  Today's macro refuses the case: `AppServices` must conform to `PlainData`.
+- **The negatives are refused by today's macro and by the patched one:**
+  - `Box<Ref>`, where `Ref` is a class;
+  - a nested type used as a field;
+  - a member typealias used as a field (both constrain every parameter);
+  - an enum case that stores `T`.
+- **The mutant fails `Box<T>` at its declaration.** The field check needs `T: PlainData`, and nothing supplies it, so M7 is caught as §5 says. The mutant also lets the member-typealias case compile, which is the conservative rule doing its job.
+- **New: a member type of a parameter isn't covered by either rule.**
+  - `struct S<C: Collection> { let first: C.Element? }` fails with every variant, today's included: the field check needs `C.Element: PlainData`, and the macro writes `C: PlainData`.
+  - The user writes the requirement on the declaration (`<C: Collection> where C.Element: PlainData`), and then it compiles.
+  - This is not a regression. The macro PR documents it, and adds this case to its macro tests as a must-not-compile snippet with its constrained pair.
+
+**§3.4, the dependency probe and Main's R-Q1 (c) probe, with the real macro.**
+- **The positive case runs only with the patched rule.** A `cart` land with `AppServices` and a no-services `ping` land register. A resolver's output arrives (`p7 @ 70`).
+- **The typed keeper initializer works.** `LandKeeper(land:resolverServices:)` builds a live keeper. A keeper built from `.definition` alone fails with "land cart declares services AppServices; none given". A no-services land's keeper builds.
+- **Refused, with the patched rule:**
+  - the wrong factory type;
+  - a missing capability, naming the struct and the protocol;
+  - `register(LandDefinition)` given a `TypedLand`;
+  - the typed keeper given the wrong services type.
+- **Today's macro refuses even the positive case.** `ProductInfo<D>` isn't a `Resolver`, since `D` is constrained.
+
+**#771's generic builder, with `D` inferred through the closure's return.**
+- **With the patched rule:** a land whose `HandleAction` returns `ProductInfo(...)` from its `resolvers:` closure compiles, and `D` is inferred as the land's `Services`. A `Services` without the capability is refused, naming `HasProductDatabase`.
+- **The arity overloads compile inside the builder:** one, two and three resolvers. A missing capability in one of them is refused.
+
+**§3.2, the parameter pack: it doesn't compile.**
+- `each R: Resolver` with `where repeat (each R).Dependencies == Services` fails on both toolchains: "same-element requirements are not yet supported".
+- Spelling the dependency as a primary associated type (`each R: Resolver<Services>`) gives the same error.
+- So R1 keeps one to three arity overloads.
+
+**A compiler crash on 6.2.4, inside the builder only.**
+- The case: a generic resolver that stores a parameter (`Keyed<K, D>` with `let key: K`) is given a class `K` inside a `HandleAction` closure.
+- On 6.4.2, it is refused: "does not conform to protocol 'Resolver'".
+- On 6.2.4, swift-frontend crashes with signal 5 while type-checking the land's builder.
+- These cases get diagnostics on both toolchains:
+  - the same misuse outside a builder (a generic function that takes `R: Resolver`);
+  - a non-generic resolver that stores a class (it names the field);
+  - a resolver without `@PlainData`.
+- Today's macro crashes 6.2.4 the same way on the probe's positive case, so the crash comes from the failing conditional conformance in the builder's closure, not from the patched rule.
+
+  The consequence for R1:
+  - **R1 lands after the 6.4.3 bump (#775)** if it can. On 6.2.4, a user's mistake of this kind shows as a compiler crash.
+  - If R1 lands first, its must-not-compile snippet for this case runs only on 6.4.x. The `swift:6.2.4-noble` job accepts the crash as "doesn't compile", with a comment naming this section.
+  - The 6.4.3 re-run checks whether the crash is gone there.
+
+**Diagnostic wording differs between toolchains.** Two examples:
+- `register(LandDefinition)` given a `TypedLand`: "cannot convert value of type 'TypedLand<…>'" on 6.4.2, "generic parameter 'State' could not be inferred" on 6.2.4;
+- a missing capability in an arity overload: 6.2.4 names `ProductInfo<ThinServices>.Dependencies (aka 'ThinServices')`.
+
+The must-not-compile snippets therefore check that the snippet fails, and at most a stable type name in the message, never the whole message.
+
 ## 4. Public API
 
 All breaking, with no deprecation path; there are no external users yet (the issue's "Shape and order"):
@@ -273,9 +341,9 @@ All breaking, with no deprecation path; there are no external users yet (the iss
 
 | Slice | Content | After | Measurement |
 |---|---|---|---|
-| **R0** | Probes on 6.4.3, the pin after the bump (and on 6.2.4 too if the bump hasn't landed when R1 starts), all with the real `@PlainData`: §3.1.1's cases; the dependency probe (positive and missing-capability cases); Main's R-Q1 (c) probe with the typed keeper initializer; their combination with #771's generic builder and `D`'s inference through the builder closure's return; the parameter pack of §3.2. Results go in this plan; no library code | now | none |
+| **R0** | **Done 2026-11-24 on 6.4.2 and 6.2.4; 6.4.3 pending (§3.8).** Probes on 6.4.3, the pin after the bump (and on 6.2.4 too if the bump hasn't landed when R1 starts), all with the real `@PlainData`: §3.1.1's cases; the dependency probe (positive and missing-capability cases); Main's R-Q1 (c) probe with the typed keeper initializer; their combination with #771's generic builder and `D`'s inference through the builder closure's return; the parameter pack of §3.2. Results go in this plan; no library code | now | none |
 | **macro** | §3.1.1's change to `@PlainData`, its macro tests, must-not-compile snippets and M7 | R0 | none |
-| **R1** | `Resolver`, `TypedLand` and the registration (§3.4), the builder closures at admission and typed outputs, `ResolverContext` deleted for actions, OnInitialize and OnFinalize, every call site migrated with #771's codemod, Examples, docs. Resolvers still run as today's jobs (the value replaces the snapshot). The record is today's (§3.5) | P3, R0, macro, #771's D1 (not P4: R-Q4) | the resolver cell: an action with one resolver, live, A/B against main |
+| **R1** | `Resolver`, `TypedLand` and the registration (§3.4), the builder closures at admission and typed outputs, `ResolverContext` deleted for actions, OnInitialize and OnFinalize, every call site migrated with #771's codemod, Examples, docs. Resolvers still run as today's jobs (the value replaces the snapshot). The record is today's (§3.5) | P3, R0, macro, #771's D1 (not P4: R-Q4); the 6.4.3 bump (#775) if it can (§3.8) | the resolver cell: an action with one resolver, live, A/B against main |
 | **R2** | The record and replay (§3.5): the admission point, requests and positions, eager decode; #765's regression. With K5, so the value is the keyed request's payload | R1, K1a, K5 | the record part of the goldens; frames none |
 | **R3** | CanJoin, OnJoin and OnLeave carry values with the land's `Services`; per-join services leave resolvers, and #700's K2 OnLeave test is rewritten (§3.4). With K6 | R2, K6 | none beyond K6's |
 
@@ -315,3 +383,9 @@ R1 doesn't depend on #700 or on P4, so it goes right after P3, in parallel with 
 - **S2** (a precondition can only be tested by an exit test): the check is a `LandRegistrationError` in `validateForRegistration`. Registration throws it, and a directly built keeper holds it as its initialization failure, as #535's check does. Tested in-process (§3.4, §5).
 - **Nit** (same base type twice is a new refusal): named in §4 under behavior, with the two declarations on main that do it (§3.5).
 - **R-Q2 decided (b)**, **R-Q3 decided (a)** and **R-Q4 decided** (R1 right after P3, in parallel with P4), all 2026-11-24: recorded in §2, §3.5, §3.6, §6 and §8.
+
+**Rev 2.2** records R0 (§3.8), run 2026-11-24 on 6.4.2 and 6.2.4 with #772's `@PlainData` at dc9b1dcc; the 6.4.3 run is pending:
+- §3.1.1's rule holds, and the mutant is caught. One case neither rule covers is a member type of a parameter (`C.Element`): the user constrains it on the declaration, and the macro PR tests it;
+- R-Q1 (c), the typed keeper and the dependency check work with the real macro, including `D` inferred through #771's builder;
+- the parameter pack doesn't compile (same-element requirements are unsupported), so the arity overloads stay (§3.2);
+- 6.2.4 crashes on a failing conditional conformance inside the builder. R1 prefers to land after #775, and its snippets don't match whole diagnostic messages.
