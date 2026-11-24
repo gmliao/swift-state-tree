@@ -241,6 +241,8 @@ let game = Land("game", using: GameState.self) { leaveRules() }
 let lobby = Land("lobby", using: LobbyState.self, services: LobbyServices.self) { leaveRules() }
 ```
 
+A land declares some nodes once: `AccessControl`, `CanJoin`, `OnJoin`, `OnLeave`, and each setting in `Lifetime` (`Tick`, `StateSync`, `DestroyWhenEmpty`, `PersistSnapshot`, `OnInitialize`, `OnFinalize`, `AfterFinalize`). Two helpers in one land can declare the same one. The land is then refused at registration, and the error names both places. Two `Lifetime` blocks that set different things combine, and so do `AllowedClientEvents` lists and `ServerEvents` registrations.
+
 `@Land` declares a land as a type. Its `body` is under the builder and returns `LandRules`, like a helper:
 
 ```swift

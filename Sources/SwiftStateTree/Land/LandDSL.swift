@@ -20,6 +20,8 @@ public struct NoServices: Sendable {
 
 public struct AccessControlNode: LandNode {
     public let config: AccessControlConfig
+    /// Where it was declared (`fileID:line`), for the once-per-land check (#796).
+    package let site: String?
 }
 
 public typealias AccessControlDirective = (inout AccessControlConfig) -> Void
@@ -45,22 +47,26 @@ public enum AccessControlBuilder {
 /// }
 /// ```
 public func AccessControl(
+    fileID: String = #fileID,
+    line: Int = #line,
     _ configure: (inout AccessControlConfig) -> Void
 ) -> AccessControlNode {
     var config = AccessControlConfig()
     configure(&config)
-    return AccessControlNode(config: config)  // Multi-line: must include return
+    return AccessControlNode(config: config, site: "\(fileID):\(line)")  // Multi-line: must include return
 }
 
 /// Defines the access control policy for the Land using a result builder.
 ///
 /// This overload allows using the declarative syntax with `AccessControlBuilder`.
 public func AccessControl(
+    fileID: String = #fileID,
+    line: Int = #line,
     @AccessControlBuilder _ content: () -> [AccessControlDirective]
 ) -> AccessControlNode {
     var config = AccessControlConfig()
     content().forEach { $0(&config) }
-    return AccessControlNode(config: config)  // Multi-line: must include return
+    return AccessControlNode(config: config, site: "\(fileID):\(line)")  // Multi-line: must include return
 }
 
 /// Sets whether the Land is publicly visible and joinable.
@@ -111,13 +117,25 @@ public func Rules<State: StateNodeProtocol, Services: Sendable>(
 public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
     public let handler: @Sendable (inout State, LandContext) -> Void
     public let resolverExecutors: [any AnyResolverExecutor]
+    /// Where it was declared (`fileID:line`), for the once-per-land check (#796).
+    package let site: String?
     
     public init(
         handler: @escaping @Sendable (inout State, LandContext) -> Void,
         resolverExecutors: [any AnyResolverExecutor] = []
     ) {
+        self.init(handler: handler, site: nil, resolverExecutors: resolverExecutors)
+    }
+
+    /// The DSL's init, with the site the node was declared at (#796).
+    package init(
+        handler: @escaping @Sendable (inout State, LandContext) -> Void,
+        site: String?,
+        resolverExecutors: [any AnyResolverExecutor] = []
+    ) {
         self.handler = handler
         self.resolverExecutors = resolverExecutors
+        self.site = site
     }
 }
 
@@ -131,9 +149,11 @@ public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
 ///
 /// - Parameter body: The synchronous closure to execute.
 public func OnJoin<State: StateNodeProtocol>(
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnJoinNode<State> {
-    OnJoinNode(handler: body)  // Single-expression: omit return
+    OnJoinNode(handler: body, site: "\(fileID):\(line)")  // Single-expression: omit return
 }
 
 /// Registers a handler called when a player joins the Land with resolvers.
@@ -146,10 +166,13 @@ public func OnJoin<State: StateNodeProtocol>(
 ///   - body: The synchronous closure to execute with resolved data available via `ctx`.
 public func OnJoin<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnJoinNode<State> {
     OnJoinNode(
         handler: body,
+        site: "\(fileID):\(line)",
         resolverExecutors: [ResolverExecutorWrapper<R1>()]
     )  // Single-expression: omit return
 }
@@ -157,10 +180,13 @@ public func OnJoin<State: StateNodeProtocol, R1: ContextResolver>(
 /// Registers a handler called when a player joins the Land with multiple resolvers.
 public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnJoinNode<State> {
     OnJoinNode(
         handler: body,
+        site: "\(fileID):\(line)",
         resolverExecutors: [ResolverExecutorWrapper<R1>(), ResolverExecutorWrapper<R2>()]
     )  // Single-expression: omit return
 }
@@ -168,10 +194,13 @@ public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRes
 /// Registers a handler called when a player joins the Land with multiple resolvers.
 public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnJoinNode<State> {
     OnJoinNode(
         handler: body,
+        site: "\(fileID):\(line)",
         resolverExecutors: [
             ResolverExecutorWrapper<R1>(),
             ResolverExecutorWrapper<R2>(),
@@ -183,13 +212,25 @@ public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRes
 public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
     public let handler: @Sendable (inout State, LandContext) -> Void
     public let resolverExecutors: [any AnyResolverExecutor]
+    /// Where it was declared (`fileID:line`), for the once-per-land check (#796).
+    package let site: String?
     
     public init(
         handler: @escaping @Sendable (inout State, LandContext) -> Void,
         resolverExecutors: [any AnyResolverExecutor] = []
     ) {
+        self.init(handler: handler, site: nil, resolverExecutors: resolverExecutors)
+    }
+
+    /// The DSL's init, with the site the node was declared at (#796).
+    package init(
+        handler: @escaping @Sendable (inout State, LandContext) -> Void,
+        site: String?,
+        resolverExecutors: [any AnyResolverExecutor] = []
+    ) {
         self.handler = handler
         self.resolverExecutors = resolverExecutors
+        self.site = site
     }
 }
 
@@ -200,9 +241,11 @@ public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
 ///
 /// - Parameter body: The synchronous closure to execute.
 public func OnLeave<State: StateNodeProtocol>(
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnLeaveNode<State> {
-    OnLeaveNode(handler: body)  // Single-expression: omit return
+    OnLeaveNode(handler: body, site: "\(fileID):\(line)")  // Single-expression: omit return
 }
 
 /// Registers a handler called when a player leaves the Land with resolvers.
@@ -215,10 +258,13 @@ public func OnLeave<State: StateNodeProtocol>(
 ///   - body: The synchronous closure to execute with resolved data available via `ctx`.
 public func OnLeave<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnLeaveNode<State> {
     OnLeaveNode(
         handler: body,
+        site: "\(fileID):\(line)",
         resolverExecutors: [ResolverExecutorWrapper<R1>()]
     )  // Single-expression: omit return
 }
@@ -226,10 +272,13 @@ public func OnLeave<State: StateNodeProtocol, R1: ContextResolver>(
 /// Registers a handler called when a player leaves the Land with multiple resolvers.
 public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnLeaveNode<State> {
     OnLeaveNode(
         handler: body,
+        site: "\(fileID):\(line)",
         resolverExecutors: [ResolverExecutorWrapper<R1>(), ResolverExecutorWrapper<R2>()]
     )  // Single-expression: omit return
 }
@@ -237,10 +286,13 @@ public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRe
 /// Registers a handler called when a player leaves the Land with multiple resolvers.
 public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnLeaveNode<State> {
     OnLeaveNode(
         handler: body,
+        site: "\(fileID):\(line)",
         resolverExecutors: [
             ResolverExecutorWrapper<R1>(),
             ResolverExecutorWrapper<R2>(),
@@ -252,13 +304,25 @@ public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRe
 public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
     public let handler: @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
     public let resolverExecutors: [any AnyResolverExecutor]
+    /// Where it was declared (`fileID:line`), for the once-per-land check (#796).
+    package let site: String?
     
     public init(
         handler: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision,
         resolverExecutors: [any AnyResolverExecutor] = []
     ) {
+        self.init(handler: handler, site: nil, resolverExecutors: resolverExecutors)
+    }
+
+    /// The DSL's init, with the site the node was declared at (#796).
+    package init(
+        handler: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision,
+        site: String?,
+        resolverExecutors: [any AnyResolverExecutor] = []
+    ) {
         self.handler = handler
         self.resolverExecutors = resolverExecutors
+        self.site = site
     }
 }
 
@@ -291,9 +355,11 @@ public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
 ///
 /// - Parameter body: The synchronous closure that validates the join request.
 public func CanJoin<State: StateNodeProtocol>(
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
 ) -> CanJoinNode<State> {
-    CanJoinNode(handler: body)  // Single-expression: omit return
+    CanJoinNode(handler: body, site: "\(fileID):\(line)")  // Single-expression: omit return
 }
 
 /// Registers a handler called before a player joins with resolvers.
@@ -303,10 +369,13 @@ public func CanJoin<State: StateNodeProtocol>(
 ///   - body: The synchronous closure that validates the join request with resolved data available via `ctx`.
 public func CanJoin<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
 ) -> CanJoinNode<State> {
     CanJoinNode(
         handler: body,
+        site: "\(fileID):\(line)",
         resolverExecutors: [ResolverExecutor.createExecutor(for: resolvers)]
     )  // Single-expression: omit return
 }
@@ -314,10 +383,13 @@ public func CanJoin<State: StateNodeProtocol, R1: ContextResolver>(
 /// Registers a handler called before a player joins with multiple resolvers.
 public func CanJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
 ) -> CanJoinNode<State> {
     CanJoinNode(
         handler: body,
+        site: "\(fileID):\(line)",
         resolverExecutors: [
             ResolverExecutor.createExecutor(for: resolvers.0),
             ResolverExecutor.createExecutor(for: resolvers.1)
@@ -328,10 +400,13 @@ public func CanJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRe
 /// Registers a handler called before a player joins with multiple resolvers.
 public func CanJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
 ) -> CanJoinNode<State> {
     CanJoinNode(
         handler: body,
+        site: "\(fileID):\(line)",
         resolverExecutors: [
             ResolverExecutor.createExecutor(for: resolvers.0),
             ResolverExecutor.createExecutor(for: resolvers.1),
@@ -379,17 +454,14 @@ public func AllowedClientEvents(
 // MARK: - Lifetime
 
 public struct LifetimeNode<State: StateNodeProtocol>: LandNode {
+    /// Where the block was declared (`fileID:line`): the site of a setting the closure form of
+    /// `Lifetime` makes, since it claims nothing itself (#796).
+    package let site: String?
     public let configure: @Sendable (inout LifetimeConfig<State>) -> Void
 }
 
 // MARK: - Helper Functions for On* Handlers
 
-/// Helper function to warn when a handler is already defined
-private func warnIfHandlerAlreadyDefined(_ handlerName: String, isDefined: Bool) {
-    guard isDefined else { return }
-    let message = "⚠️ [LandDSL] \(handlerName) handler is already defined. The previous handler will be replaced.\n"
-    writeStandardErrorDiagnostic(message)
-}
 
 public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     public var tickInterval: Duration?
@@ -445,6 +517,67 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     /// Resolver executors for the onDestroyWhenEmpty handler.
     public var onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = []
 
+    /// Where each setting was made (`fileID:line`), by the entry that made it (#796).
+    package var settingSites: [LifetimeSetting: String] = [:]
+    /// Settings made a second time in this config (#796): a land makes each once.
+    package var repeatedSettings: [DuplicateHandlerDeclaration] = []
+
+    /// Records that `setting` is made at `site`, and returns whether it is the first time. A
+    /// second time is recorded in `repeatedSettings`, and its entry doesn't apply it: the
+    /// first is kept.
+    package mutating func claim(_ setting: LifetimeSetting, at site: String) -> Bool {
+        if let first = settingSites[setting] {
+            repeatedSettings.append(DuplicateHandlerDeclaration(node: setting.rawValue, firstSite: first, duplicateSite: site))
+            return false
+        }
+        settingSites[setting] = site
+        return true
+    }
+
+    /// Copies `setting`'s fields from `other`. The land builder runs each `Lifetime` block on
+    /// its own config, and copies each setting no earlier block made (#796).
+    package mutating func take(_ setting: LifetimeSetting, from other: LifetimeConfig<State>) {
+        switch setting {
+        case .tick:
+            tickInterval = other.tickInterval
+            tickHandler = other.tickHandler
+        case .stateSync:
+            syncInterval = other.syncInterval
+            syncHandler = other.syncHandler
+        case .destroyWhenEmpty:
+            destroyWhenEmptyAfter = other.destroyWhenEmptyAfter
+            onDestroyWhenEmpty = other.onDestroyWhenEmpty
+            onDestroyWhenEmptyResolverExecutors = other.onDestroyWhenEmptyResolverExecutors
+        case .persistSnapshot:
+            persistInterval = other.persistInterval
+        case .onInitialize:
+            onInitialize = other.onInitialize
+            onInitializeResolverExecutors = other.onInitializeResolverExecutors
+            onInitializeResolverFailure = other.onInitializeResolverFailure
+        case .onFinalize:
+            onFinalize = other.onFinalize
+            onFinalizeResolverExecutors = other.onFinalizeResolverExecutors
+        case .afterFinalize:
+            afterFinalize = other.afterFinalize
+        }
+    }
+
+    /// Whether this config holds `setting`, however it was made: by an entry, or by the
+    /// closure form of `Lifetime`, which claims nothing.
+    package func holds(_ setting: LifetimeSetting) -> Bool {
+        switch setting {
+        case .tick: tickInterval != nil || tickHandler != nil
+        case .stateSync: syncInterval != nil || syncHandler != nil
+        case .destroyWhenEmpty:
+            destroyWhenEmptyAfter != nil || onDestroyWhenEmpty != nil || !onDestroyWhenEmptyResolverExecutors.isEmpty
+        case .persistSnapshot: persistInterval != nil
+        case .onInitialize:
+            onInitialize != nil || !onInitializeResolverExecutors.isEmpty || onInitializeResolverFailure != .failLand
+        case .onFinalize: onFinalize != nil || !onFinalizeResolverExecutors.isEmpty
+        case .afterFinalize: afterFinalize != nil
+        }
+    }
+
 
     public init(
         tickInterval: Duration? = nil,
@@ -461,6 +594,18 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
         self.syncInterval = syncInterval
         self.syncHandler = syncHandler
     }
+}
+
+/// A part of a land's lifetime that the land makes once (#796), named by the entry that makes
+/// it. A second one, in the same `Lifetime` block or another, is refused at registration.
+package enum LifetimeSetting: String, CaseIterable, Sendable {
+    case tick = "Tick"
+    case stateSync = "StateSync"
+    case destroyWhenEmpty = "DestroyWhenEmpty"
+    case persistSnapshot = "PersistSnapshot"
+    case onInitialize = "OnInitialize"
+    case onFinalize = "OnFinalize"
+    case afterFinalize = "AfterFinalize"
 }
 
 public typealias LifetimeDirective<State: StateNodeProtocol> =
@@ -483,6 +628,10 @@ public enum LifetimeBuilder<State: StateNodeProtocol> {
 ///
 /// Use this block to configure ticks, auto-destruction, and persistence.
 ///
+/// The closure gets a fresh configuration, not the land's: it doesn't see what other
+/// `Lifetime` blocks set, and every field reads as its default until it writes it. Each setting
+/// it writes, any of its fields, is that setting's declaration (#796).
+///
 /// Example:
 /// ```swift
 /// Lifetime {
@@ -491,16 +640,20 @@ public enum LifetimeBuilder<State: StateNodeProtocol> {
 /// }
 /// ```
 public func Lifetime<State: StateNodeProtocol>(
+    fileID: String = #fileID,
+    line: Int = #line,
     _ configure: @escaping @Sendable (inout LifetimeConfig<State>) -> Void
 ) -> LifetimeNode<State> {
-    LifetimeNode(configure: configure)  // Single-expression: omit return
+    LifetimeNode(site: "\(fileID):\(line)", configure: configure)  // Single-expression: omit return
 }
 
 /// Defines the lifetime and periodic behaviors of the Land using a result builder.
 public func Lifetime<State: StateNodeProtocol>(
+    fileID: String = #fileID,
+    line: Int = #line,
     @LifetimeBuilder<State> _ directives: @escaping @Sendable () -> [LifetimeDirective<State>]
 ) -> LifetimeNode<State> {
-    LifetimeNode { config in
+    LifetimeNode(site: "\(fileID):\(line)") { config in
         directives().forEach { $0(&config) }
     }  // Single-expression: omit return
 }
@@ -527,9 +680,12 @@ public func Lifetime<State: StateNodeProtocol>(
 ///   - body: The synchronous handler to execute on each tick (for gameplay logic).
 public func Tick<State: StateNodeProtocol>(
     every interval: Duration,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
+        guard config.claim(.tick, at: "\(fileID):\(line)") else { return }
         config.tickInterval = interval
         config.tickHandler = body
     }
@@ -550,9 +706,12 @@ public func Tick<State: StateNodeProtocol>(
 ///
 /// - Parameter interval: The duration between ticks.
 public func Tick<State: StateNodeProtocol>(
-    every interval: Duration
+    every interval: Duration,
+    fileID: String = #fileID,
+    line: Int = #line
 ) -> LifetimeDirective<State> {
     return { config in
+        guard config.claim(.tick, at: "\(fileID):\(line)") else { return }
         config.tickInterval = interval
         config.tickHandler = nil
     }
@@ -585,9 +744,12 @@ public func Tick<State: StateNodeProtocol>(
 ///   - body: A read-only callback to execute when sync is triggered.
 public func StateSync<State: StateNodeProtocol>(
     every interval: Duration,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
+        guard config.claim(.stateSync, at: "\(fileID):\(line)") else { return }
         config.syncInterval = interval
         config.syncHandler = body
     }
@@ -610,9 +772,12 @@ public func StateSync<State: StateNodeProtocol>(
 ///
 /// - Parameter interval: The duration between sync operations.
 public func StateSync<State: StateNodeProtocol>(
-    every interval: Duration
+    every interval: Duration,
+    fileID: String = #fileID,
+    line: Int = #line
 ) -> LifetimeDirective<State> {
     return { config in
+        guard config.claim(.stateSync, at: "\(fileID):\(line)") else { return }
         config.syncInterval = interval
     }
 }
@@ -621,9 +786,12 @@ public func StateSync<State: StateNodeProtocol>(
 ///
 /// - Parameter duration: The duration to wait after the last player leaves before destroying.
 public func DestroyWhenEmpty<State: StateNodeProtocol>(
-    after duration: Duration
+    after duration: Duration,
+    fileID: String = #fileID,
+    line: Int = #line
 ) -> LifetimeDirective<State> {
     return { config in
+        guard config.claim(.destroyWhenEmpty, at: "\(fileID):\(line)") else { return }
         config.destroyWhenEmptyAfter = duration
     }
 }
@@ -641,9 +809,12 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
 ///     `OnFinalize`'s body can't.
 public func DestroyWhenEmpty<State: StateNodeProtocol>(
     after duration: Duration,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ handler: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
+        guard config.claim(.destroyWhenEmpty, at: "\(fileID):\(line)") else { return }
         config.destroyWhenEmptyAfter = duration
         config.onDestroyWhenEmpty = handler
     }
@@ -654,21 +825,25 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
 ///
 /// - Parameter interval: The duration between snapshots.
 public func PersistSnapshot<State: StateNodeProtocol>(
-    every interval: Duration
+    every interval: Duration,
+    fileID: String = #fileID,
+    line: Int = #line
 ) -> LifetimeDirective<State> {
     return { config in
+        guard config.claim(.persistSnapshot, at: "\(fileID):\(line)") else { return }
         config.persistInterval = interval
     }
 }
 
 /// Installs OnInitialize's handler and its resolvers in the config: every form goes through here.
 private func initializeDirective<State: StateNodeProtocol>(
+    site: String,
     _ handler: InitializeHandler<State>,
     executors: [any AnyResolverExecutor],
     onResolverFailure: InitializeResolverFailure
 ) -> LifetimeDirective<State> {
     return { config in
-        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
+        guard config.claim(.onInitialize, at: site) else { return }
         config.onInitialize = handler
         config.onInitializeResolverExecutors = executors
         config.onInitializeResolverFailure = onResolverFailure
@@ -686,9 +861,11 @@ private func initializeDirective<State: StateNodeProtocol>(
 ///
 /// - Parameter body: The synchronous closure to execute.
 public func OnInitialize<State: StateNodeProtocol>(
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    initializeDirective(InitializeHandler(body), executors: [], onResolverFailure: .failLand)
+    initializeDirective(site: "\(fileID):\(line)", InitializeHandler(body), executors: [], onResolverFailure: .failLand)
 }
 
 /// What a land does when one of its OnInitialize resolvers throws (#238). A timeout
@@ -715,9 +892,12 @@ public enum InitializeResolverFailure: Sendable, Equatable {
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
     onResolverFailure: InitializeResolverFailure = .failLand,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     initializeDirective(
+        site: "\(fileID):\(line)",
         InitializeHandler(body),
         executors: [ResolverExecutor.createExecutor(for: resolvers)],
         onResolverFailure: onResolverFailure
@@ -728,9 +908,12 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
     onResolverFailure: InitializeResolverFailure = .failLand,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     initializeDirective(
+        site: "\(fileID):\(line)",
         InitializeHandler(body),
         executors: [
         ResolverExecutor.createExecutor(for: resolvers.0),
@@ -744,9 +927,12 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
     onResolverFailure: InitializeResolverFailure = .failLand,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     initializeDirective(
+        site: "\(fileID):\(line)",
         InitializeHandler(body),
         executors: [
         ResolverExecutor.createExecutor(for: resolvers.0),
@@ -776,18 +962,22 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
 ///     })
 /// ```
 public func OnInitialize<State: StateNodeProtocol, Plan>(
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
     apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    initializeDirective(InitializeHandler(validate: validate, apply: apply), executors: [], onResolverFailure: .failLand)
+    initializeDirective(site: "\(fileID):\(line)", InitializeHandler(validate: validate, apply: apply), executors: [], onResolverFailure: .failLand)
 }
 
 /// OnInitialize in two stages with nothing to pass from `validate` to `apply` (#593).
 public func OnInitialize<State: StateNodeProtocol>(
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
     apply: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    initializeDirective(InitializeHandler(validate: validate, apply: apply), executors: [], onResolverFailure: .failLand)
+    initializeDirective(site: "\(fileID):\(line)", InitializeHandler(validate: validate, apply: apply), executors: [], onResolverFailure: .failLand)
 }
 
 /// OnInitialize in two stages with a resolver (#593): `validate` reads its output from the
@@ -795,10 +985,13 @@ public func OnInitialize<State: StateNodeProtocol>(
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, Plan>(
     resolvers: R1.Type,
     onResolverFailure: InitializeResolverFailure = .failLand,
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
     apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     initializeDirective(
+        site: "\(fileID):\(line)",
         InitializeHandler(validate: validate, apply: apply),
         executors: [ResolverExecutor.createExecutor(for: resolvers)],
         onResolverFailure: onResolverFailure
@@ -809,10 +1002,13 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, Plan>(
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
     onResolverFailure: InitializeResolverFailure = .failLand,
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
     apply: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     initializeDirective(
+        site: "\(fileID):\(line)",
         InitializeHandler(validate: validate, apply: apply),
         executors: [ResolverExecutor.createExecutor(for: resolvers)],
         onResolverFailure: onResolverFailure
@@ -823,10 +1019,13 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, Plan>(
     resolvers: (R1.Type, R2.Type),
     onResolverFailure: InitializeResolverFailure = .failLand,
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
     apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     initializeDirective(
+        site: "\(fileID):\(line)",
         InitializeHandler(validate: validate, apply: apply),
         executors: [
         ResolverExecutor.createExecutor(for: resolvers.0),
@@ -840,10 +1039,13 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
     onResolverFailure: InitializeResolverFailure = .failLand,
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
     apply: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     initializeDirective(
+        site: "\(fileID):\(line)",
         InitializeHandler(validate: validate, apply: apply),
         executors: [
         ResolverExecutor.createExecutor(for: resolvers.0),
@@ -857,10 +1059,13 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver, Plan>(
     resolvers: (R1.Type, R2.Type, R3.Type),
     onResolverFailure: InitializeResolverFailure = .failLand,
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
     apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     initializeDirective(
+        site: "\(fileID):\(line)",
         InitializeHandler(validate: validate, apply: apply),
         executors: [
         ResolverExecutor.createExecutor(for: resolvers.0),
@@ -875,10 +1080,13 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
     onResolverFailure: InitializeResolverFailure = .failLand,
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
     apply: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     initializeDirective(
+        site: "\(fileID):\(line)",
         InitializeHandler(validate: validate, apply: apply),
         executors: [
         ResolverExecutor.createExecutor(for: resolvers.0),
@@ -900,10 +1108,12 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
 ///
 /// - Parameter body: The synchronous closure to execute.
 public func OnFinalize<State: StateNodeProtocol>(
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
-        warnIfHandlerAlreadyDefined("OnFinalize", isDefined: config.onFinalize != nil)
+        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
         config.onFinalize = body
     }
 }
@@ -915,11 +1125,13 @@ public func OnFinalize<State: StateNodeProtocol>(
 ///   - body: The synchronous closure to execute with resolved data available via `ctx`.
 public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     let executors = [ResolverExecutor.createExecutor(for: resolvers)]
     return { config in
-        warnIfHandlerAlreadyDefined("OnFinalize", isDefined: config.onFinalize != nil)
+        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
         config.onFinalize = body
         config.onFinalizeResolverExecutors = executors
     }
@@ -928,6 +1140,8 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver>(
 /// Registers a handler called when the Land is finalizing with multiple resolvers.
 public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     let executors = [
@@ -935,7 +1149,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
         ResolverExecutor.createExecutor(for: resolvers.1)
     ]
     return { config in
-        warnIfHandlerAlreadyDefined("OnFinalize", isDefined: config.onFinalize != nil)
+        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
         config.onFinalize = body
         config.onFinalizeResolverExecutors = executors
     }
@@ -944,6 +1158,8 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
 /// Registers a handler called when the Land is finalizing with multiple resolvers.
 public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     let executors = [
@@ -952,7 +1168,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
         ResolverExecutor.createExecutor(for: resolvers.2)
     ]
     return { config in
-        warnIfHandlerAlreadyDefined("OnFinalize", isDefined: config.onFinalize != nil)
+        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
         config.onFinalize = body
         config.onFinalizeResolverExecutors = executors
     }
@@ -965,9 +1181,12 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
 ///
 /// - Parameter body: The async closure to execute with state snapshot and context.
 public func AfterFinalize<State: StateNodeProtocol>(
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (State, LandContext) async -> Void
 ) -> LifetimeDirective<State> {
     return { config in
+        guard config.claim(.afterFinalize, at: "\(fileID):\(line)") else { return }
         config.afterFinalize = body
     }
 }

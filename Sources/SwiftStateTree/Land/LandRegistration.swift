@@ -52,7 +52,9 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// `SyncPolicyNestingError`; each is now this field's associated value.
     public let sync: SyncRegistrationError?
     /// Client-event or server-input types declared with more than one handler (#586): an input
-    /// runs exactly one `validate` and one `apply`. Empty when there are none.
+    /// runs exactly one `validate` and one `apply`. Also a node a land declares once
+    /// (`AccessControl`, `CanJoin`, `OnJoin`, `OnLeave`, a `Lifetime` setting) declared again,
+    /// kind `"node"` (#796). Empty when there are none.
     public let duplicateHandlers: [DuplicateHandlerDeclaration]
     /// Client event types the land registers without handling, or handles without registering
     /// (#771 §3.3), one line per type: its name and the missing side (`registered, no

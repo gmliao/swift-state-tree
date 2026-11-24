@@ -241,6 +241,8 @@ let game = Land("game", using: GameState.self) { leaveRules() }
 let lobby = Land("lobby", using: LobbyState.self, services: LobbyServices.self) { leaveRules() }
 ```
 
+有些 node 一個 land 只宣告一次：`AccessControl`、`CanJoin`、`OnJoin`、`OnLeave`，以及 `Lifetime` 裡的每一項設定（`Tick`、`StateSync`、`DestroyWhenEmpty`、`PersistSnapshot`、`OnInitialize`、`OnFinalize`、`AfterFinalize`）。同一個 land 裡的兩個 helper 可能宣告同一個 node。這時 land 會在註冊時被拒絕，錯誤訊息會指出兩處宣告的位置。設定不同項目的兩個 `Lifetime` 區塊可以組合，`AllowedClientEvents` 清單與 `ServerEvents` 的註冊也可以。
+
 `@Land` 把 land 宣告成一個型別。它的 `body` 在 builder 之下，並和 helper 一樣回傳 `LandRules`：
 
 ```swift

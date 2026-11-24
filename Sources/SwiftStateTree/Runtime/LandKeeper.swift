@@ -1298,7 +1298,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func performInitialization() async {
         // The backstop for a keeper no registration checked (#535 §4): a state type that fails
         // the synced-state rows, a definition with two handlers for one client-event or
-        // server-input type (#586), one whose client event registrations and handlers disagree
+        // server-input type, or a node it declares once declared twice (#586, #796), one whose
+        // client event registrations and handlers disagree
         // (#771), or one holding a node its builder doesn't recognize (#794), fails initialization, as an OnInitialize resolver timeout does, before
         // any handler runs. One cached lookup per state type.
         let problems = SyncRegistration.cachedProblems(State.self)
