@@ -320,14 +320,16 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
                     // `onMessage` returned, so once the writer has handed the queue over, an
                     // input that is still unanswered never will be: the settle marks the answers
                     // final, the wait returns short and `requireComplete` fails the run.
+                    // The settle is joined after the span ends, so the measured window holds the
+                    // actions and their replies, not the drain's poll.
+                    var settle: Task<Void, Never>?
                     if awaitsReplies, let submitted = inputCounts?.submitted[roomIndex] {
                         let ticket = await room.transport.beginAnswerWait()
-                        let settle = Task { [adapter = room.adapter, transport = room.transport] in
+                        settle = Task { [adapter = room.adapter, transport = room.transport] in
                             await MeasuredSync.drain([adapter])
                             await transport.markAnswersFinal(ticket: ticket)
                         }
                         await room.transport.waitForAnswers(atLeast: submitted)
-                        await settle.value
                     }
                     if ticksPerSync > 0 {
                         let tickStart = ContinuousClock.now
@@ -339,6 +341,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
                         tickDuration += tickStart.duration(to: ContinuousClock.now)
                     }
                     perfWindow?.end(.nonsync)
+                    await settle?.value
                 } else if ticksPerSync > 0 {
                     let tickStart = ContinuousClock.now
                     perfWindow?.beginEither()
