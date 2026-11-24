@@ -1,11 +1,17 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 5, plan only. Rev 4 had Review's GO; rev 5 changes K1 and needs Review's check of the delta below. Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1. No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
+**Status:** rev 5.1, plan only. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answers them (below) and needs Review's check of that delta. Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
 
 Code pointers are at main 8e622a20:
 - `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
 - `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`;
 - `LKT` is `Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift`.
+
+**Rev 5.1** (Review on rev 5's delta):
+- **MF1, §3.11: JSON bytes weren't stable.** Rev 5 kept the bytes of the live round trip, `JSONEncoder().encode(payload)` (InboundPayloadDecoding.swift:15). That encoder doesn't sort keys, and `AnyCodable` encodes a `[String: Any]` in the dictionary's iteration order, which follows the per-process hash seed. So the same payload gave different bytes per run, as `Notes/solutions/2026-11-07-encoded-bytes-vary-with-per-process-hash-order.md` describes. Rev 5.1 records **canonical JSON bytes**, encoded once for the record with a fixed configuration. The live round trip is untouched, so the live decode can't change. A two-process test pins the bytes.
+- **Should, §3.11:** a 3.7 payload that fails to decode at replay is reported where today's apply-time decode failure is, with a test that pins today's report first.
+- **Should, §3.11:** the test for a JSON-sourced item under a `messagepack` header is named.
+- **Nit:** the status line names G2 beside Q1, as §5 does.
 
 **Rev 5** (Q2 decided; K1 carries the recorded raw bytes):
 - **Q2 = no world** (maintainer, 2026-11-22, with `2026-11-22-plaindata-all-the-way.md`). The core holds the model only, and the model holds every value the keeper's turns change: `State` (PlainData P4), the queued items, entry facts, the staged events. The land definition, its handler closures and `LandConfig` are the machine's `Behavior` (#768, merged 8a3f3e15), fixed at `TurnCore.init`. #758 is on hold and no longer blocks K2 (§7). §3.1 and §3.10 are rewritten for it; the other homes in §3.1's reference table are unchanged.
@@ -499,7 +505,14 @@ K1a does that, and it is what lets a queued item become `PlainData` without an `
 **`actionType`** stops being stored. It becomes a computed `type(of: decoded)`, so the public property stays. The handler lookup by it is unchanged in K1a; K2's brief turns it into a dictionary keyed by wire name (Main). The PlainData plan's "the metatype becomes a name" is met this way, without storing a name: nothing in the model is a metatype.
 
 **What the bytes are.** The record's encoding is one of two: `json` (the `json` and `opcodeJsonArray` transports, whose payloads are JSON text) or `messagepack`. The rule: the bytes the record keeps decode, with the decoder the live run used, to the value the live run decoded. Per source:
-- **JSON** (`AnyCodablePayloadSource`). The live decode already encodes the tree with `JSONEncoder` and decodes that data (`InboundPayloadDecoding.decode`, InboundPayloadDecoding.swift:13–15). Those bytes are the record's: kept, not produced again, so a JSON land pays nothing new. Replay decodes them with the same `JSONDecoder`. A 3.7 payload needs no `integralFloats` allowance: the JSON view decodes the bytes, not a tree rendered from them.
+- **JSON** (`AnyCodablePayloadSource`). The live decode encodes the tree with a default `JSONEncoder` and decodes that data (`InboundPayloadDecoding.decode`, InboundPayloadDecoding.swift:13–15). Those bytes can't be the record's (rev 5.1): the encoder doesn't sort keys, and an `AnyCodable` object's keys come out in hash-seed order, so the bytes vary per process. Instead, a recording land encodes the tree once more, for the record, with one fixed configuration: `outputFormatting = [.sortedKeys, .withoutEscapingSlashes]` and the default number strategies, in one place (`RecordPayloadEncoding.canonicalJSON`). This is **canonical JSON**:
+  - **Key order** is sorted.
+  - **Numbers and escapes** come from one encoder configuration, so the form is fixed within a toolchain and platform. The goldens are recorded in the pinned 6.2.4 image. Bytes across platforms aren't claimed: replay's correctness rests on decode equality, not on bytes.
+  - **Decode equality:** the tree is the one the live run decoded. Its JSON decodes with the same `JSONDecoder` to the same value, since key order doesn't change what `Decodable` reads from an object with distinct keys.
+  - **The live round trip is unchanged.** So the live decode can't change, and a land that doesn't record pays nothing. A recording JSON land pays one extra encode per input.
+  - **A 3.7 payload needs no `integralFloats` allowance:** the JSON view decodes the bytes, not a tree rendered from them.
+
+  Prior art: RFC 8785 (JCS) and RFC 8949 §4.2 (deterministic CBOR) define canonical forms across implementations. Neither is needed here: within one toolchain one encoder configuration is deterministic once keys are sorted. JCS's ECMAScript number form would mean a hand-written serializer. The record log's own MessagePack is already canonical (`CanonicalMessagePack`).
 - **MessagePack** (`MessagePackPayloadSource`). The frame decoder has unpacked the payload into a `MessagePackValue`; the client's byte range isn't kept. K1a writes the value packed canonically. Unpacking it gives the same value (a non-finite number is refused at intake by `validateRecordable`), so replay's `MessagePackValueDecoder` decodes the same result. Keeping the client's exact slice needs the frame decoder to keep offsets: **K1-Q2**.
 - **A source in the other encoding, or none:** a hand-built `AnyClientEvent`, an item from a test, or a server input. The bytes are the decoded typed value, encoded once in the record's encoding at intake. Nothing was received, so there is nothing to keep.
 
@@ -532,8 +545,19 @@ It must keep:
 
 If P3 takes up #616 (a live input's payload checked once, by its frame's decode), it tells K1a which source types remain.
 
+**Replay's decode failures.** Replay now decodes when it builds the item, not at apply. Today a recorded payload that doesn't decode throws in `applyPendingItem` before its record (LK:3571, before LK:3584). `applyInputs` (LK:3941–3959) then gives its caller the failure, leaves it out of `rejected` (only recorded inputs are listed) and logs it. The live/replay comparison sees what follows from that.
+
+K1a keeps that report:
+- an item whose bytes don't decode at build time is still queued, carrying the failure's description (a `String`, so the item stays plain) and no `decoded`;
+- `applyPendingItem` throws the same error type at the same point, before the record;
+- so outcomes, `rejected`, the log line and the comparison are unchanged.
+
+`replayPayloadDecodeFailureIsReportedAsBefore` pins today's report on main first, with a recorded action whose payload has a field of the wrong type. K1a keeps it green with a 3.7 record whose bytes fail the same way.
+
 **Tests (K1a):**
 - **Per encoding** (JSON, opcode JSON, MessagePack), an action and a client event: the recorded bytes decode, with the live decoder, to a value equal to the live `decoded`.
+- **`canonicalJSONIsStableAcrossProcesses`:** the same 16-key object, recorded in two child processes (Swift Testing exit tests, each writing its bytes to standard output) with default hashing, gives equal bytes. A one-process check under `SWIFT_DETERMINISTIC_HASHING` can't show it. With 16 keys, two seeds that happen to give the same unsorted order are negligible (1 in 16!).
+- **`jsonSourcedItemUnderMessagePackHeaderRecordsTheTypedValue`:** on a land whose header is `messagepack`, an action that arrives through `AnyCodablePayloadSource` is recorded as its typed value's canonical MessagePack. The test checks equality with `CanonicalMessagePack` of the typed value, and inequality with that payload's canonical JSON bytes.
 - **An integral float:** a JSON `1` into a `Double` field replays equal without `integralFloats`.
 - **A hand-built item and a server input:** recorded in the header's encoding.
 - **A non-recording land:** its items hold no bytes. A `Mirror` test fails if `bytes` is set when `recordsInputs` is false.
@@ -541,7 +565,8 @@ If P3 takes up #616 (a live input's payload checked once, by its frame's decode)
 - **3.6 records:** per K1-Q1.
 
 **Mutants:**
-- the JSON round trip's bytes are dropped and the tree is re-encoded with different key order. Caught by the byte-equality test on a two-field payload;
+- `.sortedKeys` dropped from `canonicalJSON`. Caught by `canonicalJSONIsStableAcrossProcesses`;
+- the live round trip's bytes recorded instead of `canonicalJSON`'s (rev 5's design). Caught by the same test;
 - the MessagePack bytes are packed non-canonically. Caught by the decode-equality test on an `Int` that fits a smaller width;
 - the header is omitted. Caught by the read-back test.
 
