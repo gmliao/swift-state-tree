@@ -340,7 +340,7 @@ final class Rewriter: SyntaxRewriter {
             if typed { signature.returnClause = nil }
             signature.inKeyword = signature.inKeyword.with(\.leadingTrivia, .space)
             if var effects = signature.effectSpecifiers {
-                effects = effects.with(\.leadingTrivia, .space)
+                effects = effects.with(\.leadingTrivia, .space).with(\.trailingTrivia, [])
                 signature.effectSpecifiers = effects
             }
             closure.signature = signature
