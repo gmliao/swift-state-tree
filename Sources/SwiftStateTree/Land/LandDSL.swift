@@ -1463,3 +1463,33 @@ public func Land<State: StateNodeProtocol>(
         nodes: content()
     )  // Single-expression: omit return
 }
+
+/// A land that declares the services its handlers use (#769 §3.4, #771 §3.1). Its body's builder
+/// is `LandDSL<State, Services>`, and `definition` records the services type.
+///
+/// Until #769 R1 nothing reads the services type: register `definition` as any other land's.
+public struct TypedLand<State: StateNodeProtocol, Services: Sendable>: Sendable {
+    public let definition: LandDefinition<State>
+}
+
+/// Defines a land that declares its services type.
+///
+/// - Parameters:
+///   - id: The unique identifier for this Land.
+///   - stateType: The type of the root state node.
+///   - services: The type of the services value the land's handlers use.
+///   - content: The DSL block, under `LandDSL<State, Services>`.
+/// - Returns: The land, typed by its State and Services.
+public func Land<State: StateNodeProtocol, Services: Sendable>(
+    _ id: String,
+    using stateType: State.Type,
+    services: Services.Type,
+    @LandDSL<State, Services> _ content: () -> [LandNode]
+) -> TypedLand<State, Services> {
+    TypedLand(definition: LandBuilder.build(
+        id: id,
+        stateType: stateType,
+        nodes: content(),
+        servicesType: services
+    ))
+}

@@ -25,7 +25,8 @@ enum LandBuilder {
     static func build<State: StateNodeProtocol>(
         id: String,
         stateType: State.Type,
-        nodes: [LandNode]
+        nodes: [LandNode],
+        servicesType: Any.Type? = nil
     ) -> LandDefinition<State> {
         var accessControl = AccessControlConfig()
         var allowedClientEvents: Set<AllowedEventIdentifier> = []
@@ -207,7 +208,8 @@ enum LandBuilder {
             eventHandlers: eventHandlers,
             serverInputHandlers: serverInputHandlers,
             duplicateHandlers: duplicateHandlers,
-            lifetimeHandlers: lifetimeHandlers
+            lifetimeHandlers: lifetimeHandlers,
+            servicesType: servicesType
         )
     }
 }

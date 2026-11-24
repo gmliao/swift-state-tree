@@ -42,6 +42,9 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     package let duplicateHandlers: [DuplicateHandlerDeclaration]
     /// Lifecycle handlers (join, leave, tick, shutdown).
     public let lifetimeHandlers: LifetimeHandlers<State>
+    /// The services type the land declares (`Land(_:using:services:)`), nil for a land without
+    /// services (`Land(_:using:)`). Read by registration and the keeper from #769 R1 on.
+    package let servicesType: Any.Type?
     /// This definition's record schema fingerprint, computed once (#521 D15). A copy of the
     /// definition shares it; a definition built again computes its own.
     let schemaFingerprintCache = SchemaFingerprintCache()
@@ -60,7 +63,8 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
             eventHandlers: eventHandlers,
             serverInputHandlers: serverInputHandlers,
             duplicateHandlers: duplicateHandlers,
-            lifetimeHandlers: lifetimeHandlers
+            lifetimeHandlers: lifetimeHandlers,
+            servicesType: servicesType
         )
     }
 }
