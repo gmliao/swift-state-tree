@@ -30,6 +30,7 @@ struct HooksPingResponse: ResponsePayload {
     let tag: String
 }
 
+@PlainData
 struct HooksPingOutput: ResolverOutput {}
 
 /// Returns at once; with it the ping is a pending job, answered by the adapter's response task.

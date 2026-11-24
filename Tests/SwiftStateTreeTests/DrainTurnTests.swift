@@ -38,6 +38,7 @@ struct DrainAck: ResponsePayload {
     let ok: Bool
 }
 
+@PlainData
 struct DrainResolverOutput: ResolverOutput {
     let value: Int
 }

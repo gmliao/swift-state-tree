@@ -9,6 +9,7 @@ import Testing
 @testable import SwiftStateTreeTransport
 
 /// Conforms by hand, with no `@Payload`: no positional writer.
+@PlainData
 struct PWHandWrittenEvent: ServerEventPayload {
     let n: Int
 }

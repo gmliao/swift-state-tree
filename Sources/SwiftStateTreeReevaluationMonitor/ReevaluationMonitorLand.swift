@@ -56,7 +56,7 @@ public enum ReevaluationMonitor {
                         )
                         ctx.emitEvent(event, to: .all)
 
-                        if let actualState = result.actualState {
+                        if let state = result.actualState, let actualState = ReevaluationStateText.text(of: state) {
                             let processedEvent = TickProcessedEvent(
                                 tickId: result.tickId,
                                 expectedState: actualState,

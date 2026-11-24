@@ -348,15 +348,18 @@ struct FPAnyEvent: ServerEventPayload {
 
 /// A server input and a client event without `@Payload` that have fields: their fields can't be
 /// listed.
+@PlainData
 struct FPPlainInput: ServerInputPayload {
     let tag: String
 }
 
 /// A server event without `@Payload`: no positional writer, and unlistable fields.
+@PlainData
 struct FPPlainEvent: ServerEventPayload {
     let tag: String
 }
 
+@PlainData
 struct FPPlainNote: ClientEventPayload {
     let text: String
 }

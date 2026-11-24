@@ -58,6 +58,7 @@ enum WNLeft {
         typealias Response = WireNameAck
     }
 
+    @Payload
     struct Nudge: ServerInputPayload {}
 }
 
@@ -67,6 +68,7 @@ enum WNRight {
         typealias Response = WireNameAck
     }
 
+    @Payload
     struct Nudge: ServerInputPayload {}
 }
 

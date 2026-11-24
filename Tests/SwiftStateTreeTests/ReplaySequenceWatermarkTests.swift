@@ -70,6 +70,7 @@ struct WatermarkInitEvent: ServerEventPayload {
 
 struct WatermarkResolverFailure: Error {}
 
+@PlainData
 struct WatermarkResolverOutput: ResolverOutput {
     let value: Int
 }

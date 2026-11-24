@@ -107,6 +107,28 @@ private final class PlainDataVisitor: SyntaxVisitor {
         return false
     }
 
+    /// `_plainDataCheck` as a member a macro declares it writes: inside `named(…)` in the `names:`
+    /// argument of an `@attached(…)` attribute on a macro declaration (`@Payload`'s extension
+    /// role). The declaration names the member; it writes nothing.
+    private func namesMacroRoleMember(_ token: TokenSyntax) -> Bool {
+        guard let reference = token.parent?.as(DeclReferenceExprSyntax.self),
+              let argument = reference.parent?.as(LabeledExprSyntax.self), argument.label == nil,
+              let call = argument.parent?.parent?.as(FunctionCallExprSyntax.self),
+              call.calledExpression.as(DeclReferenceExprSyntax.self)?.baseName.text == "named",
+              let element = call.parent?.as(LabeledExprSyntax.self),
+              let list = element.parent?.as(LabeledExprListSyntax.self),
+              let attribute = list.parent?.as(AttributeSyntax.self),
+              attribute.attributeName.trimmedDescription == "attached",
+              attribute.parent?.parent?.is(MacroDeclSyntax.self) == true
+        else { return false }
+        // `names:` labels the first of its list; the elements after it, up to the next label,
+        // belong to it.
+        for candidate in list.prefix(through: list.index(of: element) ?? list.startIndex).reversed() {
+            if let label = candidate.label { return label.text == "names" }
+        }
+        return false
+    }
+
     private func reserved(_ name: TokenSyntax) {
         if let text = identifier(name), PlainDataLint.reservedNames.contains(text) {
             note(name, PlainDataLint.reserved(text))
@@ -128,7 +150,7 @@ private final class PlainDataVisitor: SyntaxVisitor {
         markers(in: token.trailingTrivia, from: token.endPositionBeforeTrailingTrivia)
         // A string literal's text is a segment token, never an identifier: only code is read.
         switch identifier(token) {
-        case "_plainDataCheck": note(token, PlainDataLint.witness)
+        case "_plainDataCheck" where !namesMacroRoleMember(token): note(token, PlainDataLint.witness)
         case "PlainDataCheck": note(token, PlainDataLint.helper)
         default: break
         }
@@ -273,6 +295,12 @@ struct PlainDataLintTests {
         ("enum Swift { struct Array<E> {} }", 1, PlainDataLint.reserved("Swift")),
         ("typealias PlainDataCheck = Int", 1, PlainDataLint.helper),
         ("typealias Array<E> = Swift.Array<Ref>", 1, PlainDataLint.reserved("Array")),
+        // `_plainDataCheck` is allowed only where a macro declaration names a member it writes.
+        ("@freestanding(declaration, names: named(_plainDataCheck))\nmacro M() = #externalMacro(module: \"A\", type: \"B\")", 1, PlainDataLint.witness),
+        ("@attached(extension, conformances: _plainDataCheck)\nmacro M() = #externalMacro(module: \"A\", type: \"B\")", 1, PlainDataLint.witness),
+        ("@attached(extension, names: named(PlainDataCheck))\nmacro M() = #externalMacro(module: \"A\", type: \"B\")", 1, PlainDataLint.helper),
+        ("@attached(extension, names: named(_plainDataCheck))\nstruct NotAMacro {}", 1, PlainDataLint.witness),
+        ("@attached(member, names: named(a), named(_plainDataCheck))\nfunc notAMacro() {}", 1, PlainDataLint.witness),
         ("struct Optional<W> {}", 1, PlainDataLint.reserved("Optional")),
         ("enum Dictionary {}", 1, PlainDataLint.reserved("Dictionary")),
         ("final class ContiguousArray {}", 1, PlainDataLint.reserved("ContiguousArray")),
@@ -296,6 +324,8 @@ struct PlainDataLintTests {
         "protocol HasPayload { associatedtype P: PlainData }",
         "@PlainData\nstruct Model { var n: Int }",
         "typealias Pair = PlainPair<Int, Int>",
+        "@attached(extension, conformances: PlainData, names: named(_plainDataCheck))\npublic macro P() = #externalMacro(module: \"A\", type: \"B\")",
+        "@attached(member, names: named(a), named(_plainDataCheck))\n@attached(extension, conformances: PlainData, names: named(b), named(_plainDataCheck))\nmacro Q() = #externalMacro(module: \"A\", type: \"B\")",
         "typealias AnyPlain = any PlainData",
         "typealias Plains = [any PlainData & Sendable]",
         "import SwiftStateTurns\nlet pair = SwiftStateTurns.PlainPair<Int, Int>(1, 2)",

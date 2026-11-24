@@ -27,6 +27,7 @@ struct SnippetEvent: ClientEventPayload {
 
 struct SnippetError: Error {}
 
+@Payload
 struct SnippetInput: ServerInputPayload {
     let amount: Int
 }

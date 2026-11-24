@@ -21,20 +21,23 @@ func stateNodeMetadataIncludesDefaultValues() {
     #expect(tagsField?.defaultValue == .array([.string("alpha"), .string("beta")]))
 }
 
-@Test("Payload captures default values in FieldMetadata")
-func payloadMetadataIncludesDefaultValues() {
+/// Payload fixtures of `payloadMetadataIncludesDefaultValues`, at file scope: an extension macro can't attach to a local type.
+private enum PayloadMetadataIncludesDefaultValuesFixtures {
     @Payload
     struct EmptyResponse: ResponsePayload {}
-    
+
     @Payload
     struct ExampleAction: ActionPayload {
         typealias Response = EmptyResponse
-        
+
         var id: String = "default-id"
         var count: Int = 2
     }
+}
 
-    let metadata = ExampleAction.getFieldMetadata()
+@Test("Payload captures default values in FieldMetadata")
+func payloadMetadataIncludesDefaultValues() {
+    let metadata = PayloadMetadataIncludesDefaultValuesFixtures.ExampleAction.getFieldMetadata()
 
     let idField = metadata.first(where: { $0.name == "id" })
     #expect(idField?.defaultValue == .string("default-id"))

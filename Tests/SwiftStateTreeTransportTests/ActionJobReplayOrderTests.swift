@@ -38,6 +38,7 @@ struct ReplayOrderPlainAction: ActionPayload {
     let value: Int
 }
 
+@PlainData
 struct ReplayOrderOutput: ResolverOutput {
     let value: Int
 }

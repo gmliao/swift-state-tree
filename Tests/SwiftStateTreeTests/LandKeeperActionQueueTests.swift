@@ -12,11 +12,8 @@ struct QueueTestState: StateNodeProtocol {
     var counter: Int = 0
 }
 
-struct QueueIncrementResponse: ResponsePayload {
-    static func getFieldMetadata() -> [FieldMetadata] {
-        return []
-    }
-}
+@Payload
+struct QueueIncrementResponse: ResponsePayload {}
 
 @Payload
 struct QueueIncrementAction: ActionPayload {

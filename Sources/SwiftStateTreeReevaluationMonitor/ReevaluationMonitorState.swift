@@ -41,6 +41,7 @@ public struct ReevaluationMonitorState: StateNodeProtocol {
     public init() {}
 }
 
+@PlainData
 public struct TickMismatch: Codable, Sendable {
     public let tickId: Int64
     public let computed: String

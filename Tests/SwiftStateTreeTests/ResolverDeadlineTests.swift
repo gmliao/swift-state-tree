@@ -18,6 +18,7 @@ struct DeadlineTestState: StateNodeProtocol {
     public init() {}
 }
 
+@PlainData
 struct DeadlineResolverOutput: ResolverOutput {
     let value: Int
 }

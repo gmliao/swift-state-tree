@@ -57,43 +57,48 @@ struct TestEvent: ServerEventPayload, SchemaMetadataProvider {
 
 // MARK: - SchemaExtractor Tests
 
-@Test("SchemaExtractor can extract schema from LandDefinition")
-func testSchemaExtractorBasic() throws {
+/// Payload fixtures of `testSchemaExtractorBasic`, at file scope: an extension macro can't attach to a local type.
+private enum TestSchemaExtractorBasicFixtures {
     // Create a simple land definition
     @StateNodeBuilder
     struct SimpleState: StateNodeProtocol {
         @Sync(.broadcast)
         var value: Int = 0
-        
+
         init() {}
     }
-    
+
     @Payload
     struct SimpleActionResponse: ResponsePayload {
         let value: String
     }
-    
+
     @Payload
     struct SimpleAction: ActionPayload {
         typealias Response = SimpleActionResponse
         let input: String
     }
-    
+
+    @PlainData
     enum SimpleClientEvents: ClientEventPayload {
         case test(String)
     }
-    
+
+    @PlainData
     enum SimpleServerEvents: ServerEventPayload {
         case result(String)
     }
-    
+}
+
+@Test("SchemaExtractor can extract schema from LandDefinition")
+func testSchemaExtractorBasic() throws {
     let landDefinition = Land(
         "test-land",
-        using: SimpleState.self
+        using: TestSchemaExtractorBasicFixtures.SimpleState.self
     ) {
         Rules {
-            HandleAction(SimpleAction.self) { (state: inout SimpleState, action: SimpleAction, ctx: LandContext) in
-                return SimpleActionResponse(value: "response")
+            HandleAction(TestSchemaExtractorBasicFixtures.SimpleAction.self) { (state: inout TestSchemaExtractorBasicFixtures.SimpleState, action: TestSchemaExtractorBasicFixtures.SimpleAction, ctx: LandContext) in
+                return TestSchemaExtractorBasicFixtures.SimpleActionResponse(value: "response")
             }
         }
     }
@@ -109,7 +114,7 @@ func testSchemaExtractorBasic() throws {
     #expect(landSchema.stateType == "SimpleState")
     
     // Verify that Response type is included in definitions
-    let responseTypeName = String(describing: SimpleActionResponse.self)
+    let responseTypeName = String(describing: TestSchemaExtractorBasicFixtures.SimpleActionResponse.self)
     #expect(schema.defs[responseTypeName] != nil)
     
     // Verify Response schema has correct properties
@@ -120,27 +125,32 @@ func testSchemaExtractorBasic() throws {
     #expect(responseSchema.properties?["value"]?.type == .string)
 }
 
-@Test("SchemaExtractor includes state type in definitions")
-func testSchemaExtractorStateTypeInDefinitions() throws {
+/// Payload fixtures of `testSchemaExtractorStateTypeInDefinitions`, at file scope: an extension macro can't attach to a local type.
+private enum TestSchemaExtractorStateTypeInDefinitionsFixtures {
     @StateNodeBuilder
     struct TestState: StateNodeProtocol {
         @Sync(.broadcast)
         var field: String = ""
-        
+
         init() {}
     }
-    
+
+    @PlainData
     enum TestClientEvents: ClientEventPayload {
         case test
     }
-    
+
+    @PlainData
     enum TestServerEvents: ServerEventPayload {
         case result
     }
-    
+}
+
+@Test("SchemaExtractor includes state type in definitions")
+func testSchemaExtractorStateTypeInDefinitions() throws {
     let landDefinition = Land(
         "test",
-        using: TestState.self
+        using: TestSchemaExtractorStateTypeInDefinitionsFixtures.TestState.self
     ) {
         Rules {}
     }
@@ -156,30 +166,35 @@ func testSchemaExtractorStateTypeInDefinitions() throws {
     #expect(stateSchema.properties?["field"] != nil)
 }
 
-@Test("SchemaExtractor includes actions in schema")
-func testSchemaExtractorActions() throws {
+/// Payload fixtures of `testSchemaExtractorActions`, at file scope: an extension macro can't attach to a local type.
+private enum TestSchemaExtractorActionsFixtures {
     @StateNodeBuilder
     struct TestState: StateNodeProtocol {
         @Sync(.broadcast)
         var value: Int = 0
-        
+
         init() {}
     }
-    
+
+    @PlainData
     enum TestClientEvents: ClientEventPayload {
         case test
     }
-    
+
+    @PlainData
     enum TestServerEvents: ServerEventPayload {
         case result
     }
-    
+}
+
+@Test("SchemaExtractor includes actions in schema")
+func testSchemaExtractorActions() throws {
     let landDefinition = Land(
         "test",
-        using: TestState.self
+        using: TestSchemaExtractorActionsFixtures.TestState.self
     ) {
         Rules {
-            HandleAction(TestAction.self) { (state: inout TestState, action: TestAction, ctx: LandContext) in
+            HandleAction(TestAction.self) { (state: inout TestSchemaExtractorActionsFixtures.TestState, action: TestAction, ctx: LandContext) in
                 return TestActionResponse(success: true, message: "ok")
             }
         }
@@ -207,24 +222,28 @@ func testSchemaExtractorActions() throws {
     #expect(responseSchema.required?.contains("message") == true)
 }
 
-@Test("SchemaExtractor includes struct server events in definitions")
-func testSchemaExtractorStructServerEvents() throws {
+/// Payload fixtures of `testSchemaExtractorStructServerEvents`, at file scope: an extension macro can't attach to a local type.
+private enum TestSchemaExtractorStructServerEventsFixtures {
     @StateNodeBuilder
     struct TestState: StateNodeProtocol {
         @Sync(.broadcast)
         var value: Int = 0
-        
+
         init() {}
     }
-    
+
+    @PlainData
     enum TestClientEvents: ClientEventPayload {
         case test
     }
-    
+}
+
+@Test("SchemaExtractor includes struct server events in definitions")
+func testSchemaExtractorStructServerEvents() throws {
     // Use TestEvent (struct ServerEventPayload with @Payload) as server events type
     let landDefinition = Land(
         "test-events",
-        using: TestState.self
+        using: TestSchemaExtractorStructServerEventsFixtures.TestState.self
     ) {
         ServerEvents {
             Register(TestEvent.self)
@@ -594,27 +613,32 @@ func testSchemaExtractorServerEventProperties() throws {
 
 // MARK: - ProtocolSchema Encoding Tests
 
-@Test("ProtocolSchema can be encoded to JSON")
-func testProtocolSchemaEncoding() throws {
+/// Payload fixtures of `testProtocolSchemaEncoding`, at file scope: an extension macro can't attach to a local type.
+private enum TestProtocolSchemaEncodingFixtures {
     @StateNodeBuilder
     struct TestState: StateNodeProtocol {
         @Sync(.broadcast)
         var value: Int = 0
-        
+
         init() {}
     }
-    
+
+    @PlainData
     enum TestClientEvents: ClientEventPayload {
         case test
     }
-    
+
+    @PlainData
     enum TestServerEvents: ServerEventPayload {
         case result
     }
-    
+}
+
+@Test("ProtocolSchema can be encoded to JSON")
+func testProtocolSchemaEncoding() throws {
     let landDefinition = Land(
         "test",
-        using: TestState.self
+        using: TestProtocolSchemaEncodingFixtures.TestState.self
     ) {
         Rules {}
     }

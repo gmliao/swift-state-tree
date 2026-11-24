@@ -4,7 +4,6 @@ import Testing
 @testable import SwiftStateTreeTransport
 
 struct TransportMessageEncoderTests {
-    
     @Test("OpcodeTransportMessageEncoder encodes known event to opcode")
     func testEncodeKnownEvent() throws {
         // Setup
@@ -96,6 +95,16 @@ struct TransportMessageEncoderTests {
         #expect(jsonArray?[2] as? Int == 42)  // Event Opcode for "MoveTo"
         #expect(jsonArray?[3] as? String == "loc")
     }
+    /// Payload fixtures of `testEncodePayloadAsArray`, at file scope: an extension macro can't attach to a local type.
+    private enum TestEncodePayloadAsArrayFixtures {
+        @Payload
+        struct TestPayload: ServerEventPayload {
+            let x: Int
+            let y: Int
+            let name: String
+        }
+    }
+
     @Test("OpcodeTransportMessageEncoder encodes payload as array when compression enabled")
     func testEncodePayloadAsArray() throws {
         // Setup
@@ -105,14 +114,8 @@ struct TransportMessageEncoderTests {
             enablePayloadCompression: true
         )
         
-        @Payload
-        struct TestPayload: ServerEventPayload {
-            let x: Int
-            let y: Int
-            let name: String
-        }
         
-        let payload = TestPayload(x: 10, y: 20, name: "foo")
+        let payload = TestEncodePayloadAsArrayFixtures.TestPayload(x: 10, y: 20, name: "foo")
         
         let event = AnyServerEvent(
             type: "Test",
@@ -143,23 +146,26 @@ struct TransportMessageEncoderTests {
         }
     }
     
-    @Test("OpcodeTransportMessageEncoder encodes ActionResponse payload as array when compression enabled")
-    func testEncodeActionResponsePayloadAsArray() throws {
+    /// Payload fixtures of `testEncodeActionResponsePayloadAsArray`, at file scope: an extension macro can't attach to a local type.
+    private enum TestEncodeActionResponsePayloadAsArrayFixtures {
         // Setup: Use a ResponsePayload with @Payload macro to ensure correct field order
         @Payload
         struct TestResponse: ResponsePayload {
             let success: Bool
             let newCount: Int
             let message: String
-            
+
             init(success: Bool, newCount: Int, message: String) {
                 self.success = success
                 self.newCount = newCount
                 self.message = message
             }
         }
-        
-        let response = TestResponse(success: true, newCount: 42, message: "done")
+    }
+
+    @Test("OpcodeTransportMessageEncoder encodes ActionResponse payload as array when compression enabled")
+    func testEncodeActionResponsePayloadAsArray() throws {
+        let response = TestEncodeActionResponsePayloadAsArrayFixtures.TestResponse(success: true, newCount: 42, message: "done")
         let encoder = OpcodeTransportMessageEncoder(
             enablePayloadCompression: true
         )
@@ -192,20 +198,23 @@ struct TransportMessageEncoderTests {
         }
     }
     
-    @Test("OpcodeTransportMessageEncoder encodes ActionResponse payload as object when compression disabled")
-    func testEncodeActionResponsePayloadAsObject() throws {
+    /// Payload fixtures of `testEncodeActionResponsePayloadAsObject`, at file scope: an extension macro can't attach to a local type.
+    private enum TestEncodeActionResponsePayloadAsObjectFixtures {
         @Payload
         struct TestResponse: ResponsePayload {
             let success: Bool
             let newCount: Int
-            
+
             init(success: Bool, newCount: Int) {
                 self.success = success
                 self.newCount = newCount
             }
         }
-        
-        let response = TestResponse(success: true, newCount: 42)
+    }
+
+    @Test("OpcodeTransportMessageEncoder encodes ActionResponse payload as object when compression disabled")
+    func testEncodeActionResponsePayloadAsObject() throws {
+        let response = TestEncodeActionResponsePayloadAsObjectFixtures.TestResponse(success: true, newCount: 42)
         let encoder = OpcodeTransportMessageEncoder(
             enablePayloadCompression: false
         )
@@ -234,30 +243,33 @@ struct TransportMessageEncoderTests {
         }
     }
     
-    @Test("OpcodeTransportMessageEncoder encodes Action payload as array when compression enabled")
-    func testEncodeActionPayloadAsArray() throws {
+    /// Payload fixtures of `testEncodeActionPayloadAsArray`, at file scope: an extension macro can't attach to a local type.
+    private enum TestEncodeActionPayloadAsArrayFixtures {
         // Setup: Use an ActionPayload with @Payload macro to ensure correct field order
         @Payload
         struct TestAction: ActionPayload {
             typealias Response = TestActionResponse
-            
+
             let amount: Int
             let target: String
             let enabled: Bool
-            
+
             init(amount: Int, target: String, enabled: Bool) {
                 self.amount = amount
                 self.target = target
                 self.enabled = enabled
             }
         }
-        
+
         @Payload
         struct TestActionResponse: ResponsePayload {
             let success: Bool
         }
-        
-        let action = TestAction(amount: 100, target: "player1", enabled: true)
+    }
+
+    @Test("OpcodeTransportMessageEncoder encodes Action payload as array when compression enabled")
+    func testEncodeActionPayloadAsArray() throws {
+        let action = TestEncodeActionPayloadAsArrayFixtures.TestAction(amount: 100, target: "player1", enabled: true)
         let encoder = OpcodeTransportMessageEncoder(
             enablePayloadCompression: true
         )
@@ -295,27 +307,30 @@ struct TransportMessageEncoderTests {
         }
     }
     
-    @Test("OpcodeTransportMessageEncoder encodes Action payload as object when compression disabled")
-    func testEncodeActionPayloadAsObject() throws {
+    /// Payload fixtures of `testEncodeActionPayloadAsObject`, at file scope: an extension macro can't attach to a local type.
+    private enum TestEncodeActionPayloadAsObjectFixtures {
         @Payload
         struct TestAction: ActionPayload {
             typealias Response = TestActionResponse
-            
+
             let amount: Int
             let target: String
-            
+
             init(amount: Int, target: String) {
                 self.amount = amount
                 self.target = target
             }
         }
-        
+
         @Payload
         struct TestActionResponse: ResponsePayload {
             let success: Bool
         }
-        
-        let action = TestAction(amount: 50, target: "player2")
+    }
+
+    @Test("OpcodeTransportMessageEncoder encodes Action payload as object when compression disabled")
+    func testEncodeActionPayloadAsObject() throws {
+        let action = TestEncodeActionPayloadAsObjectFixtures.TestAction(amount: 50, target: "player2")
         let encoder = OpcodeTransportMessageEncoder(
             enablePayloadCompression: false
         )

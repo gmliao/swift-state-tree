@@ -15,6 +15,7 @@ struct RegistrationTestState: StateNodeProtocol {
 }
 
 /// Conforms by hand, with no `@Payload`.
+@PlainData
 struct RTHandWrittenResponse: ResponsePayload {
     let ok: Bool
     static func getFieldMetadata() -> [FieldMetadata] { [] }
@@ -22,6 +23,7 @@ struct RTHandWrittenResponse: ResponsePayload {
 
 /// Conforms by hand, with no `@Payload` and no `getResponseType()`: `HandleAction` must not call
 /// the trapping default.
+@PlainData
 struct RTHandWrittenAction: ActionPayload {
     typealias Response = RTHandWrittenResponse
     let n: Int

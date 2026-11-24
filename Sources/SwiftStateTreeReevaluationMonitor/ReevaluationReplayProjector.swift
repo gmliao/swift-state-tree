@@ -39,7 +39,8 @@ public struct HeroDefenseReplayProjector: ReevaluationReplayProjecting {
     }
 
     private func parseProjectedState(from actualState: AnyCodable?) throws -> [String: AnyCodable] {
-        guard let jsonText = actualState?.base as? String else {
+        // The monitor's bridge: the built-in runner's JSON text, or another value as JSON text.
+        guard let state = actualState, let jsonText = ReevaluationStateText.text(of: state) else {
             return [:]
         }
 

@@ -24,6 +24,7 @@ struct InitRecordEvent: ServerEventPayload {
     }
 }
 
+@PlainData
 struct InitRecordResolverOutput: ResolverOutput {
     let value: Int
 }

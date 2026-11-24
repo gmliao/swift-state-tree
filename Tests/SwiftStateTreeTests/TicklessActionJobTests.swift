@@ -59,6 +59,7 @@ struct TicklessJobFailingAction: ActionPayload {
 
 struct TicklessJobResolverFailure: Error {}
 
+@PlainData
 struct TicklessJobResolverOutput: ResolverOutput {
     let key: Int
 }

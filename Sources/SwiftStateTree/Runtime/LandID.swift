@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTurns
 
 /// Unique identifier for a Land instance.
 ///
@@ -10,6 +11,7 @@ import Foundation
 ///
 /// This type provides a structured way to identify lands, with support for
 /// conversion to/from String for backward compatibility and distributed actor systems.
+@PlainData
 public struct LandID: Hashable, Codable, Sendable, CustomStringConvertible {
     /// The type of Land (e.g., "lobby", "game1", "battle")
     public let landType: String

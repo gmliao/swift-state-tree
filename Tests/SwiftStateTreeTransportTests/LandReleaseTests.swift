@@ -46,6 +46,7 @@ private func releaseTestLand(_ landID: LandID) -> LandDefinition<LandReleaseTest
     }
 }
 
+@PlainData
 struct LandReleaseInitOutput: ResolverOutput {
     let value: Int
 }
@@ -92,6 +93,7 @@ struct LandReleaseHeldAction: ActionPayload {
     let value: Int
 }
 
+@PlainData
 struct LandReleaseHeldOutput: ResolverOutput {
     let value: Int
 }

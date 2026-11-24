@@ -42,6 +42,7 @@ struct DeliveryEvent: ServerEventPayload {
     let amount: Int
 }
 
+@PlainData
 struct DeliveryResolverOutput: ResolverOutput {
     let value: Int
 }

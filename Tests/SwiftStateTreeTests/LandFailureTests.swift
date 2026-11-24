@@ -33,6 +33,7 @@ struct LandFailureResolvedAction: ActionPayload {
     let amount: Int
 }
 
+@PlainData
 struct LandFailureResolverOutput: ResolverOutput {
     let value: Int
 }

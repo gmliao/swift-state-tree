@@ -50,13 +50,10 @@ public struct PayloadMacro: MemberMacro {
         let properties = collectStoredProperties(from: structDecl, diagnostics: &diagnostics)
             .sorted { $0.name < $1.name }
         
-        // A Decimal field has no wire form (#597). Only Decimal: a payload may hold an AnyCodable.
-        let refusedDecimal = diagnoseRefusedFieldTypes(in: structDecl, onlySynced: false, kinds: [.decimal], context: context)
+        // The field types are checked by the extension role, through `@PlainData`'s walk: a
+        // Decimal (#597), a class, a closure or an existential is refused there, once.
         if !diagnostics.isEmpty {
             throw DiagnosticsError(diagnostics: diagnostics)
-        }
-        if refusedDecimal {
-            throw RefusedFieldTypeError()
         }
 
         // Generate getFieldMetadata() method
@@ -336,6 +333,106 @@ private struct PropertyInfo {
     var wireName: String { String(name.filter { $0 != "`" }) }
 }
 
+// MARK: - The extension role: the type is PlainData (P3)
+
+extension PayloadMacro: ExtensionMacro {
+    /// The protocols a payload conforms through; each refines `PlainData`.
+    static let payloadProtocols: Set<String> = [
+        "ActionPayload", "ClientEventPayload", "ServerEventPayload", "ServerInputPayload", "ResponsePayload", "ResolverOutput",
+    ]
+
+    /// Writes `@PlainData`'s extension with the shared builder: the witness, and the conformance
+    /// when the type doesn't already conform through a payload protocol.
+    public static func expansion(
+        of node: AttributeSyntax,
+        attachedTo declaration: some DeclGroupSyntax,
+        providingExtensionsOf type: some TypeSyntaxProtocol,
+        conformingTo protocols: [TypeSyntax],
+        in context: some MacroExpansionContext
+    ) throws -> [ExtensionDeclSyntax] {
+        // The member role reports a declaration that isn't a struct.
+        guard let structDecl = declaration.as(StructDeclSyntax.self) else { return [] }
+        var failed = false
+        for attribute in structDecl.attributes {
+            guard case .attribute(let other) = attribute else { continue }
+            switch other.attributeName.trimmedDescription.split(separator: ".").last.map(String.init) {
+            case "PlainData":
+                context.diagnose(Diagnostic(node: other, message: PayloadDiagnostics.besidePlainData))
+                failed = true
+            case "SnapshotConvertible":
+                context.diagnose(Diagnostic(node: other, message: PayloadDiagnostics.besideSnapshotConvertible))
+                failed = true
+            default:
+                break
+            }
+        }
+        let conformsThroughPayload = structDecl.inheritanceClause?.inheritedTypes.contains {
+            payloadProtocols.contains(lastName($0.type))
+        } ?? false
+        if conformsThroughPayload { diagnoseUnconstrainedParameters(of: structDecl, failed: &failed, context) }
+        if failed { return [] }
+        return PlainDataExtension.build(
+            of: node,
+            attachedTo: declaration,
+            providingExtensionsOf: type,
+            conformingTo: protocols,
+            constrainGenerics: !protocols.isEmpty,
+            in: context
+        )
+    }
+
+    /// A payload conforms unconditionally, so a generic parameter that a stored property names
+    /// must be `PlainData` itself: declared on the parameter or in a `where` requirement on it,
+    /// as `PlainData` or one of the payload protocols. A spelling the macro can't read (an
+    /// alias, another refining protocol) passes here and is left to the compiler.
+    private static func diagnoseUnconstrainedParameters(
+        of structDecl: StructDeclSyntax,
+        failed: inout Bool,
+        _ context: some MacroExpansionContext
+    ) {
+        let plain = payloadProtocols.union(["PlainData"])
+        for parameter in structDecl.genericParameterClause?.parameters ?? [] {
+            let name = parameter.name.identifier?.name ?? parameter.name.text
+            guard let field = storedProperty(naming: name, in: structDecl) else { continue }
+            var constraints: [Syntax] = parameter.inheritedType.map { [Syntax($0)] } ?? []
+            for requirement in structDecl.genericWhereClause?.requirements ?? [] {
+                if case .conformanceRequirement(let conformance) = requirement.requirement,
+                   conformance.leftType.trimmedDescription == name {
+                    constraints.append(Syntax(conformance.rightType))
+                }
+            }
+            let constrained = constraints.contains { constraint in
+                constraint.tokens(viewMode: .sourceAccurate).contains { plain.contains($0.identifier?.name ?? $0.text) }
+            }
+            if !constrained {
+                context.diagnose(Diagnostic(node: parameter.name, message: PayloadDiagnostics.unconstrainedParameter(name, field: field)))
+                failed = true
+            }
+        }
+    }
+
+    /// The first stored property whose type names `parameter`.
+    private static func storedProperty(naming parameter: String, in structDecl: StructDeclSyntax) -> String? {
+        for member in structDecl.memberBlock.members {
+            guard let variable = member.decl.as(VariableDeclSyntax.self),
+                  !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) else { continue }
+            for binding in variable.bindings where binding.accessorBlock == nil {
+                guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self),
+                      let type = binding.typeAnnotation?.type else { continue }
+                if type.tokens(viewMode: .sourceAccurate).contains(where: { ($0.identifier?.name ?? $0.text) == parameter }) {
+                    return pattern.identifier.identifier?.name ?? pattern.identifier.text
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func lastName(_ type: TypeSyntax) -> String {
+        if let member = type.as(MemberTypeSyntax.self) { return member.name.text }
+        return type.trimmedDescription
+    }
+}
+
 private struct PayloadDiagnostics: DiagnosticMessage, @unchecked Sendable {
     let message: String
     let diagnosticID: MessageID
@@ -347,6 +444,26 @@ private struct PayloadDiagnostics: DiagnosticMessage, @unchecked Sendable {
         severity: .error
     )
     
+    static let besidePlainData = PayloadDiagnostics(
+        message: "@Payload already makes this type PlainData; remove @PlainData",
+        diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "payloadBesidePlainData"),
+        severity: .error
+    )
+
+    static let besideSnapshotConvertible = PayloadDiagnostics(
+        message: "@Payload and @SnapshotConvertible both write getFieldMetadata(); a payload uses @Payload only",
+        diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "payloadBesideSnapshotConvertible"),
+        severity: .error
+    )
+
+    static func unconstrainedParameter(_ name: String, field: String) -> PayloadDiagnostics {
+        PayloadDiagnostics(
+            message: "generic parameter '\(name)' is stored in '\(field)'; a payload must declare '\(name): PlainData'",
+            diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "payloadUnconstrainedParameter"),
+            severity: .error
+        )
+    }
+
     static func optionalNotSupported(propertyName: String) -> PayloadDiagnostics {
         PayloadDiagnostics(
             message: "Payload field '\(propertyName)' cannot be Optional; use a concrete value with a default instead",

@@ -48,6 +48,7 @@ struct DecodeOnceEvent: ClientEventPayload {
     let deep: AnyCodable
 }
 
+@PlainData
 struct DecodeOnceJobOutput: ResolverOutput {}
 
 struct DecodeOnceJobResolver: ContextResolver {

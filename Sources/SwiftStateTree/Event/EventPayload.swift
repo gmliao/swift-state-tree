@@ -1,16 +1,17 @@
 import Foundation
+import SwiftStateTurns
 
 // MARK: - Event Payload Protocols
 
 /// Protocol for client events (Client -> Server)
 ///
 /// Users should define concrete enum or struct types conforming to this protocol.
-public protocol ClientEventPayload: Codable, Sendable, SchemaMetadataProvider, PayloadCompression {}
+public protocol ClientEventPayload: PlainData, Codable, Sendable, SchemaMetadataProvider, PayloadCompression {}
 
 /// Protocol for server events (Server -> Client)
 ///
 /// Users should define concrete enum or struct types conforming to this protocol.
-public protocol ServerEventPayload: Codable, Sendable, SchemaMetadataProvider, PayloadCompression {}
+public protocol ServerEventPayload: PlainData, Codable, Sendable, SchemaMetadataProvider, PayloadCompression {}
 
 // MARK: - Payload Compression Protocol
 

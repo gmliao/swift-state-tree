@@ -5,6 +5,7 @@ import Logging
 
 // MARK: - Test ResolverOutput Types
 
+@PlainData
 struct ProductInfo: ResolverOutput {
     let id: String
     let name: String
@@ -12,6 +13,7 @@ struct ProductInfo: ResolverOutput {
     let stock: Int
 }
 
+@PlainData
 struct UserProfileInfo: ResolverOutput {
     let userID: String
     let name: String

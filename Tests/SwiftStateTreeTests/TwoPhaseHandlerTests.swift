@@ -61,6 +61,7 @@ struct TwoPhaseRefused: Error, Equatable {
     let reason: String
 }
 
+@PlainData
 struct TwoPhaseLimitOutput: ResolverOutput {
     let limit: Int
 }

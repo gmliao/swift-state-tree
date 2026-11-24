@@ -35,16 +35,19 @@ struct ENOpenAction: ActionPayload {
 }
 
 /// Renamed from `ENOldBell`; the hand-written wire name keeps the old one.
+@PlainData
 struct ENBellEvent: ServerEventPayload {
     static var _payloadWireName: String { "ENOldBell" }
 }
 
 /// A client event whose hand-written wire name isn't its schema name.
+@PlainData
 struct ENKnockEvent: ClientEventPayload {
     static var _payloadWireName: String { "ENOldKnock" }
 }
 
 /// Renamed from `ENOldDoorAction`; the hand-written wire name keeps the old schema name.
+@PlainData
 struct ENDoorAction: ActionPayload {
     typealias Response = ENAck
     static func getFieldMetadata() -> [FieldMetadata] { [] }
@@ -52,6 +55,7 @@ struct ENDoorAction: ActionPayload {
 }
 
 /// No `@Payload`: the runtime rule names it.
+@PlainData
 struct ENPlainEvent: ServerEventPayload {}
 
 enum ENOuter {

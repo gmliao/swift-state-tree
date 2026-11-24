@@ -50,6 +50,7 @@ struct NewestWinsJoinResolver: ContextResolver {
     }
 }
 
+@PlainData
 struct NewestWinsJoinOutput: ResolverOutput {}
 
 @Payload
@@ -74,6 +75,7 @@ struct NewestWinsActionResolver: ContextResolver {
     }
 }
 
+@PlainData
 struct NewestWinsActionOutput: ResolverOutput {}
 
 /// Records frames (in send order) and closed sessions.

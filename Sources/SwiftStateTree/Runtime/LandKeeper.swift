@@ -3,7 +3,7 @@ import Logging
 
 // MARK: - Helper for Replay Mode
 
-// Note: AnyCodableResolverOutput is now defined in LandContext.swift for access by dynamic member lookup
+// Note: HeldResolverOutput and RecordedResolverOutput are defined in LandContext.swift, beside the subscript that reads them
 
 /// The runtime executor for a Land instance.
 ///
@@ -165,7 +165,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         public let deviceID: String?
         public let isGuest: Bool?
         public let metadata: [String: String]
-        public let resolverOutputs: [String: any ResolverOutput]
+        /// The resolver outputs: produced live, or read from a record in replay (P3).
+        package let heldResolverOutputs: [String: HeldResolverOutput]
         public let resolvedAtTick: Int64
 
         public init(
@@ -180,6 +181,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: [String: any ResolverOutput],
             resolvedAtTick: Int64
         ) {
+            self.init(
+                sequence: sequence, kind: kind, playerID: playerID, clientID: clientID, sessionID: sessionID,
+                deviceID: deviceID, isGuest: isGuest, metadata: metadata,
+                heldResolverOutputs: resolverOutputs.mapValues { .live($0) }, resolvedAtTick: resolvedAtTick
+            )
+        }
+
+        /// An item whose outputs are held as they were produced or read (P3).
+        package init(
+            sequence: Int64,
+            kind: LifecycleKind,
+            playerID: PlayerID?,
+            clientID: ClientID?,
+            sessionID: SessionID?,
+            deviceID: String?,
+            isGuest: Bool?,
+            metadata: [String: String],
+            heldResolverOutputs: [String: HeldResolverOutput],
+            resolvedAtTick: Int64
+        ) {
             self.sequence = sequence
             self.kind = kind
             self.playerID = playerID
@@ -188,7 +209,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             self.deviceID = deviceID
             self.isGuest = isGuest
             self.metadata = metadata
-            self.resolverOutputs = resolverOutputs
+            self.heldResolverOutputs = heldResolverOutputs
             self.resolvedAtTick = resolvedAtTick
         }
     }
@@ -205,7 +226,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         public let playerID: PlayerID
         public let clientID: ClientID
         public let sessionID: SessionID
-        public let resolverOutputs: [String: any ResolverOutput]
+        /// The resolver outputs: produced live, or read from a record in replay (P3).
+        package let heldResolverOutputs: [String: HeldResolverOutput]
         public let resolvedAtTick: Int64
 
         public init(
@@ -226,7 +248,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
-                resolverOutputs: resolverOutputs,
+                heldResolverOutputs: resolverOutputs.mapValues { .live($0) },
+                resolvedAtTick: resolvedAtTick
+            )
+        }
+
+        /// A recorded action in replay: its payload decoded at apply, its outputs as read (P3).
+        package init(
+            sequence: Int64,
+            action: AnyCodable,
+            actionType: any ActionPayload.Type,
+            playerID: PlayerID,
+            clientID: ClientID,
+            sessionID: SessionID,
+            heldResolverOutputs: [String: HeldResolverOutput],
+            resolvedAtTick: Int64
+        ) {
+            self.init(
+                sequence: sequence,
+                source: AnyCodablePayloadSource(action),
+                decoded: nil,
+                actionType: actionType,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                heldResolverOutputs: heldResolverOutputs,
                 resolvedAtTick: resolvedAtTick
             )
         }
@@ -240,7 +286,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             playerID: PlayerID,
             clientID: ClientID,
             sessionID: SessionID,
-            resolverOutputs: [String: any ResolverOutput],
+            heldResolverOutputs: [String: HeldResolverOutput],
             resolvedAtTick: Int64
         ) {
             self.sequence = sequence
@@ -250,12 +296,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             self.playerID = playerID
             self.clientID = clientID
             self.sessionID = sessionID
-            self.resolverOutputs = resolverOutputs
+            self.heldResolverOutputs = heldResolverOutputs
             self.resolvedAtTick = resolvedAtTick
         }
 
         /// This item with other resolver outputs and tick, its source and decoded value kept.
-        package func with(resolverOutputs: [String: any ResolverOutput], resolvedAtTick: Int64) -> PendingActionItem {
+        package func with(heldResolverOutputs: [String: HeldResolverOutput], resolvedAtTick: Int64) -> PendingActionItem {
             PendingActionItem(
                 sequence: sequence,
                 source: source,
@@ -264,7 +310,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
-                resolverOutputs: resolverOutputs,
+                heldResolverOutputs: heldResolverOutputs,
                 resolvedAtTick: resolvedAtTick
             )
         }
@@ -1182,10 +1228,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// (`ReevaluationReplayFrame.integralFloats(for:)`).
     private func replayedResolverOutputs(
         _ recorded: [String: ReevaluationRecordedResolverOutput]
-    ) -> [String: any ResolverOutput] {
+    ) -> [String: HeldResolverOutput] {
         let integralFloats = reevaluationSource is JSONReevaluationSource
         return recorded.mapValues {
-            AnyCodableResolverOutput(typeIdentifier: $0.typeIdentifier, value: $0.value, integralFloats: integralFloats)
+            .recorded(RecordedResolverOutput(typeIdentifier: $0.typeIdentifier, value: $0.value, integralFloats: integralFloats))
         }
     }
 
@@ -1373,12 +1419,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
 
             if let recorder = reevaluationRecorder {
-                let resolverOutputsDict = ctx.getAllResolverOutputs().mapValues { output in
-                    ReevaluationRecordedResolverOutput(
-                        typeIdentifier: String(describing: type(of: output)),
-                        value: AnyCodable(output)
-                    )
-                }
+                let resolverOutputsDict = ctx.getAllResolverOutputs().recordedEntries
                 let recorded = ReevaluationRecordedLifecycleEvent(
                     kind: LifecycleKind.initialize.rawValue,
                     sequence: sequence,
@@ -1758,7 +1799,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
-        var resolverOutputs: [String: any ResolverOutput] = [:]
+        var resolverOutputs: [String: HeldResolverOutput] = [:]
 
         // Execute resolvers in parallel if any are declared
         if !definition.lifetimeHandlers.onJoinResolverExecutors.isEmpty {
@@ -1806,7 +1847,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 deviceID: session.deviceID,
                 isGuest: session.isGuest,
                 metadata: session.metadata,
-                resolverOutputs: resolverOutputs,
+                heldResolverOutputs: resolverOutputs,
                 resolvedAtTick: resolvedAtTick
             )
         )
@@ -1980,7 +2021,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
-        var resolverOutputs: [String: any ResolverOutput] = [:]
+        var resolverOutputs: [String: HeldResolverOutput] = [:]
 
         // Execute resolvers in parallel if any are declared
         if !definition.lifetimeHandlers.onJoinResolverExecutors.isEmpty {
@@ -2030,7 +2071,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 deviceID: session.deviceID,
                 isGuest: session.isGuest,
                 metadata: session.metadata,
-                resolverOutputs: resolverOutputs,
+                heldResolverOutputs: resolverOutputs,
                 resolvedAtTick: resolvedAtTick
             )
         )
@@ -2202,7 +2243,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         input: String
     ) throws {
         try validateDelivery(of: item, ticket: ticket, input: input)
-        pendingItems.append(.action(item.with(resolverOutputs: item.resolverOutputs, resolvedAtTick: lastCommittedTickId)))
+        pendingItems.append(.action(item.with(heldResolverOutputs: item.heldResolverOutputs, resolvedAtTick: lastCommittedTickId)))
         inTurnProbeForTesting?("action-queued")
     }
 
@@ -2335,7 +2376,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// against the current state, and fills the job's slot with the outcome.
     private func completeAction(
         sequence: Int64,
-        resolved: Result<[String: any ResolverOutput], any Error>
+        resolved: Result<[String: HeldResolverOutput], any Error>
     ) async {
         await holds.at(.actionComplete)
         guard var job = actionJobs[sequence], !job.completed else { return }
@@ -2357,7 +2398,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let item = job.item
             do {
                 try deliverResolvedAction(
-                    item.with(resolverOutputs: outputs, resolvedAtTick: item.resolvedAtTick),
+                    item.with(heldResolverOutputs: outputs, resolvedAtTick: item.resolvedAtTick),
                     ticket: job.ticket,
                     input: job.input
                 )
@@ -2665,7 +2706,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
-        var resolverOutputs: [String: any ResolverOutput] = [:]
+        var resolverOutputs: [String: HeldResolverOutput] = [:]
 
         // Execute resolvers in parallel if any are declared
         if !definition.lifetimeHandlers.onLeaveResolverExecutors.isEmpty {
@@ -2726,7 +2767,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 deviceID: deviceID,
                 isGuest: isGuest,
                 metadata: metadata,
-                resolverOutputs: resolverOutputs,
+                heldResolverOutputs: resolverOutputs,
                 resolvedAtTick: resolvedAtTick
             )
         )
@@ -3323,7 +3364,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         isGuest: Bool? = nil,
         metadata: [String: String] = [:],
         tickId: Int64? = nil,
-        resolverOutputs: [String: any ResolverOutput] = [:]
+        resolverOutputs: [String: HeldResolverOutput] = [:]
     ) -> LandContext {
         let baseServices = servicesOverride ?? LandServices()
         let playerServices = players[playerID]?.services
@@ -3576,19 +3617,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 clientID: actionItem.clientID,
                 sessionID: actionItem.sessionID,
                 tickId: executingTickId,
-                resolverOutputs: actionItem.resolverOutputs
+                resolverOutputs: actionItem.heldResolverOutputs
             )
 
             // Recorded before the handler runs: an input whose `validate` throws is recorded too, so
             // replay runs it again and it fails the same way (`applyInputs`). Built only when
             // something reads records (#521): the payload's tree may have to be built for it.
             if recordsInputs {
-                let resolverOutputsDict = actionItem.resolverOutputs.mapValues { output in
-                    ReevaluationRecordedResolverOutput(
-                        typeIdentifier: String(describing: type(of: output)),
-                        value: AnyCodable(output)
-                    )
-                }
+                let resolverOutputsDict = actionItem.heldResolverOutputs.recordedEntries
                 applied.recordedActions.append(ReevaluationRecordedAction(
                     kind: "action",
                     sequence: actionItem.sequence,
@@ -3750,12 +3786,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func applyLifecycleItem(_ lifecycleItem: PendingLifecycleItem, executingTickId: Int64, into applied: inout AppliedInputs) {
         if skipsAfterDestroy(.lifecycle(lifecycleItem)) { return }
         // Recorded before the handler runs (see the action case).
-        let resolverOutputsDict = lifecycleItem.resolverOutputs.mapValues { output in
-            ReevaluationRecordedResolverOutput(
-                typeIdentifier: String(describing: type(of: output)),
-                value: AnyCodable(output)
-            )
-        }
+        let resolverOutputsDict = lifecycleItem.heldResolverOutputs.recordedEntries
         let recordedLifecycleEvent = ReevaluationRecordedLifecycleEvent(
             kind: lifecycleItem.kind.rawValue,
             sequence: lifecycleItem.sequence,
@@ -3787,7 +3818,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 clientID: systemClientID,
                 sessionID: systemSessionID,
                 tickId: executingTickId,
-                resolverOutputs: lifecycleItem.resolverOutputs
+                resolverOutputs: lifecycleItem.heldResolverOutputs
             )
             // Execute handler synchronously (resolver outputs already injected). Only
             // re-evaluation queues an initialize item, for a record without an initialize record
@@ -3815,7 +3846,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 isGuest: lifecycleItem.isGuest,
                 metadata: lifecycleItem.metadata,
                 tickId: executingTickId,
-                resolverOutputs: lifecycleItem.resolverOutputs
+                resolverOutputs: lifecycleItem.heldResolverOutputs
             )
             withMutableStateSync { state in
                 handler(&state, ctx)
@@ -3835,7 +3866,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 isGuest: lifecycleItem.isGuest,
                 metadata: lifecycleItem.metadata,
                 tickId: executingTickId,
-                resolverOutputs: lifecycleItem.resolverOutputs
+                resolverOutputs: lifecycleItem.heldResolverOutputs
             )
             // The player is gone: the broadcast-only sync follows the pass, deferred until after
             // the pending items' removal.
@@ -4365,7 +4396,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                             playerID: PlayerID(recordedAction.playerID),
                             clientID: ClientID(recordedAction.clientID),
                             sessionID: SessionID(recordedAction.sessionID),
-                            resolverOutputs: resolverOutputs,
+                            heldResolverOutputs: resolverOutputs,
                             resolvedAtTick: recordedAction.resolvedAtTick
                         )
                     )
@@ -4443,7 +4474,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                             deviceID: recordedLifecycleEvent.deviceID,
                             isGuest: recordedLifecycleEvent.isGuest,
                             metadata: recordedLifecycleEvent.metadata,
-                            resolverOutputs: resolverOutputs,
+                            heldResolverOutputs: resolverOutputs,
                             resolvedAtTick: recordedLifecycleEvent.resolvedAtTick
                         )
                     )

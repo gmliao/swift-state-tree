@@ -16,6 +16,7 @@ import Testing
 /// A resolver output with each field a JSON round trip loses or reshapes. `at` is a whole second,
 /// so the stated Date truncation (ReplayTypedEventDecodeTests) doesn't apply; `ratio` is an
 /// integral Double, which the JSON view writes as an integer.
+@PlainData
 struct ResolverReplayStamp: ResolverOutput, Equatable {
     let at: Date
     let blob: Data
@@ -73,6 +74,7 @@ struct ResolverReplayResponse: ResponsePayload {
 
 /// Another output type the handler asks for under the same name: the recorded tree doesn't decode
 /// into it (no `missing` field).
+@PlainData
 struct ResolverReplayMismatch: ResolverOutput {
     let missing: String
 }

@@ -22,6 +22,7 @@ struct EHLiveEvent: ServerEventPayload {
 }
 
 /// Renamed from `EHOldBell`; the hand-written wire name keeps the old one.
+@PlainData
 struct EHBellEvent: ServerEventPayload {
     static var _payloadWireName: String { "EHOldBell" }
 }
