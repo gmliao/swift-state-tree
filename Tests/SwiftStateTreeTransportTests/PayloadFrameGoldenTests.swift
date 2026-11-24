@@ -244,6 +244,13 @@ enum PayloadFrameCases {
                 actualState: #"{"hp":4}"#,
                 isMatch: false, expectedHash: "aa", actualHash: "bb"
             )),
+            // What the built-in runner sends: each state is the snapshot's JSON text.
+            serverEvent("monitor-tick-processed-text", TickProcessedEvent(
+                tickId: 7,
+                expectedState: #"{"hp":3,"name":"x"}"#,
+                actualState: #"{"hp":4}"#,
+                isMatch: false, expectedHash: "aa", actualHash: "bb"
+            )),
             serverEvent("monitor-progress", VerificationProgressEvent(processedTicks: 3, totalTicks: 9)),
             serverEvent("monitor-complete", VerificationCompleteEvent(
                 totalTicks: 9, correctTicks: 8, mismatchedTicks: 1,
