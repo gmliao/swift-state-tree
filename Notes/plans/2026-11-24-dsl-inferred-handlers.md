@@ -1,6 +1,6 @@
 # #771: handler closures infer their types; the payload type is written once
 
-**Status:** rev 2.2, plan only, no code. D0's probes and build baseline are done (§5); D-Q1 to D-Q4 are decided (§8). Rev 2.2 drops client-event self-registration for D-Q4 (e) (§9). It follows the maintainer's 2026-11-22 decision on #771, and it is aligned with the #769 plan (`2026-11-24-resolvers-as-values.md`, rev 2): the builders are generic over `<State, Services>` from the start, and `Land(_:using:services:)` returns #769's `TypedLand` (R-Q1 (c), decided 2026-11-24). Review gave rev 1 a GO (1ee8b88f) with 5 shoulds and 2 nits; rev 2 folds them in (§9). Open questions are in §8.
+**Status:** rev 2.3, plan only, no code. D0's probes and build baseline are done (§5); D-Q1 to D-Q4 are decided, D-Q5 is open (§8). Rev 2.2 dropped client-event self-registration for D-Q4 (e). Rev 2.3 records what D1's prep found: five call sites that need a type, two tests that use `ServerEventNode`, the keeper's backstop, and D-Q5 (§9). It follows the maintainer's 2026-11-22 decision on #771, and it is aligned with the #769 plan (`2026-11-24-resolvers-as-values.md`, rev 2): the builders are generic over `<State, Services>` from the start, and `Land(_:using:services:)` returns #769's `TypedLand` (R-Q1 (c), decided 2026-11-24). Review gave rev 1 a GO (1ee8b88f) with 5 shoulds and 2 nits; rev 2 folds them in (§9). Open questions are in §8.
 
 Code pointers are at main 13390afb. `DSL` is `Sources/SwiftStateTree/Land/LandDSL.swift`; `LB` is `Sources/SwiftStateTree/Land/LandBuilder.swift`. The issue's probe ran on Swift 6.4.2. The pin is moving to 6.4.3 (a bump PR is in flight), so D0 probes on 6.4.3, and on 6.2.4 too if the bump hasn't landed when D1 starts.
 
@@ -72,7 +72,20 @@ public func Rules<State, Services>(@LandDSL<State, Services> _ content: () -> [L
 - **Nested blocks:** `Rules` is generic, and its `State` and `Services` come from the outer builder's `buildExpression(RulesNode<State, Services>)`.
 - **`Rules` is flattened in `buildExpression`,** which returns `node.nodes`. Today `LandBuilder.build` flattens it with `case let rules as RulesNode` (LB:57). Once `RulesNode` is generic, that cast would have to name `Services`, which `LandBuilder` (generic over `State` only) doesn't know. A `RulesNode<State, Services>` that reached it would match no case and be dropped like a wrong-State node (LB:141), with every handler inside. Flattening in the builder means no `RulesNode` reaches `LandBuilder`, and its case is deleted. The other way, a non-generic `NestedNodes` protocol that `LandBuilder` matches, keeps a run-time match that a later node type could miss. D0's nested-`Rules` probe pins it, and a runtime test checks that a handler declared inside `Rules` is in the definition (mutant: `buildExpression` returns `[node]` and the `LandBuilder` case is gone). `Lifetime`'s `LifetimeBuilder<State>` (DSL:458) is already generic. Its `State` now comes from `buildExpression(LifetimeNode<State>)` instead of from the `Tick` closure's annotation. D0 probes both nestings.
 - **`LandNode` stays the stored element,** so `LandBuilder.build` and `LandDefinition<State>` don't change, apart from the `RulesNode` case leaving it. `TypedLand<State, Services>` holds the `LandDefinition<State>` (#769 R-Q1 (c)). Until R1, `Services` is only a type parameter of the builder, and a `TypedLand`'s only use is `.definition`.
-- **The deprecated forms are removed in D1** (D-Q2, decided (a)): `ServerEvent(_:)` and `ServerEventNode` (DSL:1254–1272, and LandBuilder's legacy case, LB:139), and `OnShutdown` (DSL:964) with the `onShutdown` it sets (`LifetimeConfig`, `LifetimeHandlers` in LandDefinition.swift:176, and the keeper's call, LK:5955). Neither gets a `buildExpression`. Neither is called anywhere in Sources, Tests or Examples today (the matches for the names are other identifiers, such as `saveOnShutdown`).
+- **The deprecated forms are removed in D1** (D-Q2, decided (a)). Neither gets a `buildExpression`.
+  - `ServerEvent(_:)` and `ServerEventNode` (DSL:1254–1272, and LandBuilder's legacy case, LB:139);
+  - `OnShutdown` (DSL:964), with the `onShutdown` it sets (`LifetimeConfig`, `LifetimeHandlers` in LandDefinition.swift:176) and the keeper's call (LK:5955).
+- **Who uses them** (corrected in rev 2.3):
+  - `OnShutdown` is called nowhere. The other matches for the name are other identifiers, such as the host middleware's `onShutdown`. `docs/core/land-dsl.md:229` and its translation list it, and D1's docs commit removes it.
+  - **`ServerEventNode(type:)` is used by two tests:** ReplayTypedEventDecodeTests.swift:114 and RecordSchemaFingerprintRegistrationTests.swift:108. Rev 2.2 missed them: its grep looked for `ServerEvent(`.
+  - Both tests register a type that isn't a `ServerEventPayload`, to reach EV8, a server event a replay can't decode (`serverEventsWithoutDecoder`, LandRegistration.swift:59–64). The other route to EV8 stays: a descriptor built with the public `AnyEventDescriptor(type:eventName:direction:)` (EventRegistry.swift:27).
+  - In D1 the two tests build their land without the node, and put that descriptor in with `definition.replacingServerEventRegistry(EventRegistry(registered: […]))` (package). Their assertions don't change. The doc comment at LandRegistration.swift:62 drops `ServerEventNode`.
+- **Five call sites get a type in D1** (rev 2.3; rev 2.2 said none would). A `Rules { … }` outside any land has no outer builder to give it `Services`. Its closures' annotations still fix `State`, but nothing fixes `Services`, so it doesn't compile:
+  - three helpers declared `-> RulesNode`: PerSequenceResultTests.swift:107, TransportAdapterSyncPhaseTests.swift:102, InputDecodeOnceTests.swift:224;
+  - two locals, `let rules = Rules {`: LiveRoutingPinTests.swift:54 and TwoPhaseHandlerTests.swift:93.
+  
+  Each gets `RulesNode<TheirState, NoServices>`, in D1's builder commit. They are the only `RulesNode` or standalone `Rules` in `Sources`, `Tests`, `Examples` and `docs`. Nothing names `@LandDSL` outside LandDSL.swift.
+- **Arrays of nodes** (a helper's `[LandNode]`, the `@Land` macro's `Self.body`): D-Q5 (§8).
 
 ### 3.2 The handler entries
 
@@ -95,7 +108,7 @@ The entries' signatures don't change. Their generic `State` is now inferred from
 **After D1 both are refused at registration**, as #599's shared names are:
 - `LandBuilder` compares the two once it has every node. For each registered client event type, it looks for a handler with the predicate the intake uses (`canHandle`, LK:3114). For each handler, it looks for its `eventType` among the registrations, by type identity.
 - It keeps the mismatches on the definition, as it keeps `duplicateHandlers`. `validateForRegistration` (LandRegistration.swift:141) puts them in `LandRegistrationError`. Its new field, `clientEventMismatches: [String]`, holds one line per type: its name and which side is missing ("registered, no HandleEvent" / "handled, not in ClientEvents").
-- A keeper built directly runs the same registration check and holds the error as its `LandInitializationError` (#535), as for every other registration problem.
+- **A keeper built directly** holds the error as its `LandInitializationError` (#535), as for every other registration problem. That check is the keeper's backstop in `performInitialization` (LK:1252–1271). It refuses `SyncRegistration` problems and `duplicateHandlers` today, and gains `|| !definition.clientEventMismatches.isEmpty`, with the field passed into its `LandRegistrationError`. `LandDefinition` keeps the mismatches as a `package let`, like `duplicateHandlers` (LandDefinition.swift:42), and `replacingServerEventRegistry` carries them.
 - **The intake checks stay** (LK:3102–3124). The first still refuses an event type a client sends that the land doesn't know. The second becomes unreachable for a registered land, and stays as the guard for a definition built by hand.
 - **Tested in-process**, no exit test (§5).
 
@@ -110,6 +123,8 @@ The entries' signatures don't change. Their generic `State` is now inferred from
   
   None is in `Sources/` or Examples.
 - **handled, not registered: 0.** No test expects `eventNotRegistered` today either (0 matches in `Tests/`).
+
+**Which of them fail.** Only a land that is registered, or whose keeper is built, fails. Building a `LandDefinition` refuses nothing: `LandBuilder` records the mismatches, and the checks above read them. So of the 15, only those a test registers or runs fail without the handler. The full `swift test` shows which, and D1 gives all 15 the handler, so that no land in the repository disagrees.
 
 **What D1 does with them:**
 - each of the 15 lands gets a no-op handler, `HandleEvent(X.self) { _, _, _ in }`, by hand in D1, in its own commit. The refusal lands in D1, so D1 can't wait for D2's codemod. The commit lists each land with file and line;
@@ -186,7 +201,10 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
 - `nestedRulesHandlersAreKept`: a handler declared inside `Rules` (and inside `Rules` inside `Rules`) is in the definition and handles its input (§3.1);
 - every existing test, unchanged in what it asserts, after the codemod.
 
+- the two EV8 tests, on the public descriptor (§3.1): their assertions unchanged.
+
 **Mutants:**
+- the keeper's backstop without `clientEventMismatches`. Caught by the directly built keeper in `refusesRegisteredClientEventWithoutHandler`;
 - the registered-without-handler check removed. Caught by `refusesRegisteredClientEventWithoutHandler`;
 - the handled-not-registered check removed. Caught by `refusesHandledClientEventNotRegistered`;
 - `Rules` not flattened in `buildExpression`. Caught by `nestedRulesHandlersAreKept`.
@@ -200,7 +218,7 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
 | Slice | Content | After | Measurement |
 |---|---|---|---|
 | **D0** | The probes (§5), in a scratch package; results in this plan | now | type-check times only |
-| **D1** | The generic builders and typed `buildExpression`s (§3.1), `Rules` flattened in the builder, `Land(_:using:services:)` returning `TypedLand` and `NoServices` (inert until R1), the two client-event registration refusals (§3.3, D-Q4 (e)) with the no-op handlers for the 15 test lands they refuse (own commit), the wrong-State refusal. **Required by D0:** `LifetimeBuilder` gains a typed `buildExpression(LifetimeDirective<State>)`, with a test that `Tick(every:) { state, ctx in }` inside `Lifetime` compiles unannotated (D0 result 2). No call site is edited: annotated closures keep compiling. Docs show the inferred form | D0 | build time of `SwiftStateTreeTests`, before and after (no call-site change, so it isolates the builder's own cost) |
+| **D1** | The generic builders and typed `buildExpression`s (§3.1), `Rules` flattened in the builder, `Land(_:using:services:)` returning `TypedLand` and `NoServices` (inert until R1), the two client-event registration refusals (§3.3, D-Q4 (e)) with the no-op handlers for the 15 test lands they refuse (own commit), the wrong-State refusal, D-Q5's answer. **Required by D0:** `LifetimeBuilder` gains a typed `buildExpression(LifetimeDirective<State>)`, with a test that `Tick(every:) { state, ctx in }` inside `Lifetime` compiles unannotated (D0 result 2). Annotated closures keep compiling. The only call sites edited are the five standalone `Rules` (§3.1), the two `ServerEventNode` tests (§3.1) and the 15 no-op handlers (§3.3). Docs show the inferred form | D0 | build time of `SwiftStateTreeTests`, before and after (no call-site change, so it isolates the builder's own cost) |
 | **D2** | The codemod run over Sources, Tests and Examples, with #769 R1 in the same PR, as commits (a) to (e) (§4). The listed sites are fixed by hand | D1, #769 R1, #769's macro slice | §5's build-time gate |
 
 Examples go in their own commit in D2. `docs/` pages that show handler closures (`quickstart`, `programming-model`, `core/*`) move to the inferred form in D1, both languages in the same commit.
@@ -212,8 +230,8 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
   - `Rules` returns `RulesNode<State, Services>`;
   - `RulesNode` gains its parameters.
 
-  A user writing `@LandDSL` by name (a helper returning `[LandNode]`) must add the parameters. No deprecation path; there are no external users yet.
-- **Removed (D-Q2):** `ServerEvent(_:)`, `ServerEventNode`, `OnShutdown`, and `onShutdown` on `LifetimeConfig` and the land's lifetime handlers. None is called in the repository. A user's `OnShutdown` moves to `AfterFinalize`, which also runs after the last turn and gets the context.
+  A user writing `@LandDSL` by name (a helper returning `[LandNode]`) must add the parameters. So must a helper typed `-> RulesNode`, or a `let` holding a `Rules { … }` outside a land: five sites in the repository (§3.1). No deprecation path; there are no external users yet.
+- **Removed (D-Q2):** `ServerEvent(_:)`, `ServerEventNode`, `OnShutdown`, and `onShutdown` on `LifetimeConfig` and the land's lifetime handlers. Only two tests use `ServerEventNode`, and they move to the public descriptor route (§3.1). A user's `OnShutdown` moves to `AfterFinalize`, which also runs after the last turn and gets the context.
 - **Added:** `Land(_:using:services:)`, returning `TypedLand<State, Services>`, and `NoServices`, which #769 also needs. Both are inert until #769's R1: nothing reads `Services`, and nothing takes a `TypedLand` except through `.definition`.
 - **Behavior:**
   - **a land whose client-event registrations and handlers disagree is refused at registration** (§3.3), where today each such event is refused at intake. `LandRegistrationError` gains `clientEventMismatches` (additive). In the repository this refuses 15 test lands, which D1 gives a no-op handler;
@@ -227,7 +245,17 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
 | D-Q1 | Where the codemod lives | **Decided 2026-11-24: (a).** Committed under `Tools/Codemods/DSL/` in D2's PR, as commit (a) of §4, and deleted in its last commit (e). Option (b), never committed and only described in the PR body, was declined | — |
 | D-Q2 | The deprecated `ServerEventNode` and `OnShutdown` | **Decided 2026-11-24: (a).** Removed in D1, with no `buildExpression` (§3.1, §7). Option (b), an overload each in the generic builder, was declined | — |
 | D-Q3 | A helper that returns handlers outside a `Land` (a function returning `[LandNode]` under `@LandDSL`) | **Decided 2026-11-24: (a).** The docs use the full generic `@LandDSL<MyState, NoServices>` as the standard spelling, and show a per-land typealias (`typealias MyDSL = LandDSL<MyState, AppServices>`) as the optional shorter form. The codemod lists every such helper. D0 probe 1 compiles one | — |
+| D-Q5 | **An array of nodes in a land body:** a D-Q3 helper's `[LandNode]` spliced into a land (`helperRules()`), and the `@Land` macro, whose expansion is `Land(id, using: S.self) { Self.body }` (LandMacro.swift:43). With a typed `buildExpression` per node type, an expression of type `[LandNode]` matches none. Today neither is used in the repository. `@Land`'s doc example declares `static var body: some LandDSL` (LandMacros.swift:19), which doesn't compile today (`LandDSL` is an enum), and its only tests check the expansion's text | **(a)** add `buildExpression(_ nodes: [LandNode]) -> [LandNode]`. The nodes in such an array were typed where it was built: a helper under `@LandDSL<S, Svc>` gets the same wrong-State refusal, at its own definition. A hand-built array, written without the builder, still passes another State's node silently, as every node does today. `@Land`'s body becomes `@LandDSL<S, NoServices> static var body: [LandNode]`. Its doc is fixed, and a `compiles` snippet uses `@Land` for real. **(b)** no array overload. A helper is spliced as a builder closure, `Rules(helperRules)` (a function reference). `@Land` expands to a new public `Land(_:using:nodes:)` that takes the array. **(c)** as (b), and `@Land` is removed: it has no user, and its documented form has never compiled | **(a):** the helper keeps the form D-Q3 documents, inside a land or `Rules`, and `@Land` keeps working with one fixed doc. It costs one overload in each expression's set, so **D1's first step probes it (below) before D1 commits to it** |
 | D-Q4 | A client event registered without a handler, which every intake refuses (LK:3124) | **Decided 2026-11-24: (e), a new option.** Both directions stay explicitly registered, as the land's contract with its clients (symmetry with `ServerEvents`, which can't self-register). Self-registration is dropped. Registration refuses both mismatches: a registered client event with no `HandleEvent`, and a `HandleEvent` whose event isn't in `ClientEvents` (§3.3). Options (a) refuse only the first, with self-registration, (b) a warning, and (c) documented only were declined | — |
+
+**D-Q5's probe** runs on D0's harness: D0's model of the builder, plus the `[LandNode]` overload. It runs with `swiftc -typecheck` on Apple Swift 6.4.2 and in the `swift:6.4.3-noble` image, at the next slot after #769's 6.4.3 R0:
+- D0 probes 1, 2, 3 and 5 re-run, with the same results: the nesting and every entry unannotated, `Plan` inferred, and the wrong-State node refused with D0's text;
+- D0 probe 4 re-run: the medians stay within 5% of D0's (0.461 s for the new shape unannotated), and no expression goes over 200 ms;
+- new, a helper `@LandDSL<GameState, NoServices> func helperRules() -> [LandNode]` spliced as `helperRules()` into a land and into a `Rules`. It compiles, and a run shows its handler in the definition;
+- new, `@Land`'s expansion text compiled as written, with `body` typed as in (a);
+- new, a helper whose body holds a node for another State: refused at the helper, with the text pinned.
+
+If the probe holds, (a) goes into D1's builder commit. If probe 4's medians move by more than 5%, or a refused case starts compiling, the recommendation becomes (b).
 
 ## 9. Revisions
 
@@ -248,3 +276,9 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
 - client-event self-registration is dropped (§1, §3.3, §7). With it go the schema-order rule, the codemod's `Register` removal (§4), and #599's newly surfaced refusal (§7);
 - registration refuses both mismatches between `ClientEvents` and `HandleEvent`, in `LandRegistrationError.clientEventMismatches`, tested in-process with two tests and two mutants (§3.3, §5);
 - the new refusal is counted before D1: 16 registrations without a handler in 15 test lands (6 files) and 0 handlers without a registration. D1 gives those lands a no-op handler in its own commit (§3.3, §6).
+
+**Rev 2.3** records what D1's prep found at main fa992e64:
+- **`ServerEventNode` is used** by two EV8 tests, which move to a descriptor built with the public `AnyEventDescriptor` init, through `replacingServerEventRegistry`. Their assertions are unchanged (§3.1, §5, §7);
+- **five call sites get a type:** three helpers `-> RulesNode` and two `let rules = Rules {`, which have no outer builder to fix `Services` (§3.1, §6, §7);
+- **the keeper's backstop** (LK:1252–1271) adds `clientEventMismatches`, with a mutant. Only lands that are registered or run fail without the no-op handler (§3.3, §5);
+- **D-Q5** (an array of nodes in a land body: D-Q3's helpers and the `@Land` macro), recommended (a) with a probe before D1 commits to it (§8).
