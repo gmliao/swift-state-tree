@@ -21,7 +21,7 @@ enum LandBuilder {
     ///
     /// This function iterates through the provided nodes and aggregates their configuration into
     /// the final definition. `Rules` blocks arrive flattened: the land's builder splices their
-    /// nodes in (`LandDSL.buildExpression(RulesNode)`).
+    /// nodes in (`LandDSL.buildExpression(LandRules)`).
     static func build<State: StateNodeProtocol>(
         id: String,
         stateType: State.Type,

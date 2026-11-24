@@ -163,7 +163,7 @@ private enum LandMacroDiagnostics: DiagnosticMessage {
         case .onlyStructs:
             return "@Land can only be applied to struct declarations"
         case .missingBody:
-            return "@Land struct must declare `static var body: [LandNode]`"
+            return "@Land struct must declare `static var body: LandRules<State, NoServices>`"
         case .missingArguments:
             return "@Land requires state type"
         }

@@ -209,11 +209,11 @@ HandleAction(BuyItemAction.self) { state, action, ctx in
 
 ## Helper 與 `@Land`
 
-helper 是一個函式，回傳給 land 使用的 handler。在它上面加上 land 的 builder 並寫出 land 的 state 型別，它的 closure 就會像在 `Land(_:using:)` 裡一樣推斷型別：
+land 的 rules 就是遊戲規則：誰可以加入、input 怎麼改變狀態、時間怎麼推進、有哪些事件。helper 是一個函式，回傳其中一部分，例如 `chatRules()` 就是聊天的規則。在它上面加上 land 的 builder 並寫出 land 的 state 型別，回傳同樣型別的 `LandRules`。它的 closure 會像在 `Land(_:using:)` 裡一樣推斷型別：
 
 ```swift
 @LandDSL<GameState, NoServices>
-func joinRules() -> [LandNode] {
+func joinRules() -> LandRules<GameState, NoServices> {
     OnJoin { state, ctx in state.players[ctx.playerID] = 0 }
 }
 
@@ -223,14 +223,30 @@ let land = Land("game", using: GameState.self) {
 }
 ```
 
-builder 的 typealias 是同一個 attribute 的較短寫法：`typealias GameDSL = LandDSL<GameState, NoServices>`，然後寫 `@GameDSL func joinRules() -> [LandNode]`。`NoServices` 是沒有 services 的 land 的 services 型別。
+`NoServices` 是沒有 services 的 land 的 services 型別。typealias 可以讓同一個 helper 寫得短一些：`typealias GameDSL = LandDSL<GameState, NoServices>` 與 `typealias GameRules = LandRules<GameState, NoServices>`，然後寫 `@GameDSL func joinRules() -> GameRules`。
 
-`@Land` 把 land 宣告成一個型別。它的 `body` 在 builder 之下，和 helper 一樣：
+helper 只能放進 state 型別與 services 型別都相同的 land。為別的 state 或別的 services 寫的 helper，在放進 land 的地方就無法編譯。給多個 land 用的 helper 寫成泛型：對這些 state 共有的 protocol 泛型，也對 services 型別泛型，任何 services 的 land 都能用它：
+
+```swift
+protocol HasPlayers: StateNodeProtocol {
+    var players: [PlayerID: Int] { get set }
+}
+
+@LandDSL<S, Svc>
+func leaveRules<S: HasPlayers, Svc: Sendable>() -> LandRules<S, Svc> {
+    OnLeave { state, ctx in state.players[ctx.playerID] = nil }
+}
+
+let game = Land("game", using: GameState.self) { leaveRules() }
+let lobby = Land("lobby", using: LobbyState.self, services: LobbyServices.self) { leaveRules() }
+```
+
+`@Land` 把 land 宣告成一個型別。它的 `body` 在 builder 之下，並和 helper 一樣回傳 `LandRules`：
 
 ```swift
 @Land(GameState.self)
 struct GameLand {
-    static var body: [LandNode] {
+    static var body: LandRules<GameState, NoServices> {
         Rules {
             OnJoin { state, ctx in state.players[ctx.playerID] = 0 }
         }

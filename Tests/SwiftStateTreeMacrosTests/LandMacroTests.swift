@@ -14,7 +14,7 @@ final class LandMacroTests {
             """
             @Land(GameState.self, id: "demo-land")
             struct DemoLand {
-                static var body: [LandNode] {
+                static var body: LandRules<GameState, NoServices> {
                     AccessControl { }
                 }
             }
@@ -22,7 +22,7 @@ final class LandMacroTests {
             expandedSource: """
             struct DemoLand {
                 @LandDSL<GameState, NoServices>
-                static var body: [LandNode] {
+                static var body: LandRules<GameState, NoServices> {
                     AccessControl { }
                 }
 
@@ -45,7 +45,7 @@ final class LandMacroTests {
             struct DemoLand {
                 static let tag = "demo"
                 @GameDSL
-                static var body: [LandNode] {
+                static var body: LandRules<GameState, NoServices> {
                     AccessControl { }
                 }
             }
@@ -54,7 +54,7 @@ final class LandMacroTests {
             struct DemoLand {
                 static let tag = "demo"
                 @GameDSL
-                static var body: [LandNode] {
+                static var body: LandRules<GameState, NoServices> {
                     AccessControl { }
                 }
 
@@ -76,7 +76,7 @@ final class LandMacroTests {
             @Land(GameState.self, id: "available-land")
             struct AvailableLand {
                 @available(*, deprecated)
-                static var body: [LandNode] {
+                static var body: LandRules<GameState, NoServices> {
                     AccessControl { }
                 }
             }
@@ -85,7 +85,7 @@ final class LandMacroTests {
             struct AvailableLand {
                 @available(*, deprecated)
                 @LandDSL<GameState, NoServices>
-                static var body: [LandNode] {
+                static var body: LandRules<GameState, NoServices> {
                     AccessControl { }
                 }
 
@@ -102,12 +102,12 @@ final class LandMacroTests {
             """
             @Land(GameState.self, id: "stored-land")
             struct StoredLand {
-                static let body: [LandNode] = []
+                static let body: LandRules<GameState, NoServices> = Rules {}
             }
             """,
             expandedSource: """
             struct StoredLand {
-                static let body: [LandNode] = []
+                static let body: LandRules<GameState, NoServices> = Rules {}
 
                 public static var definition: LandDefinition<GameState> {
                     Land("stored-land", using: GameState.self) {

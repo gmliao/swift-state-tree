@@ -51,7 +51,7 @@ private func logAndEmit(_ entry: String, _ state: inout RoutingPinState, _ ctx: 
 }
 
 func makeRoutingPinLand(tick: Bool) -> LandDefinition<RoutingPinState> {
-    let rules: RulesNode<RoutingPinState, NoServices> = Rules {
+    let rules: LandRules<RoutingPinState, NoServices> = Rules {
         OnJoin { (state: inout RoutingPinState, ctx: LandContext) in logAndEmit("join:\(ctx.playerID.rawValue)", &state, ctx) }
         OnLeave { (state: inout RoutingPinState, ctx: LandContext) in logAndEmit("leave:\(ctx.playerID.rawValue)", &state, ctx) }
         HandleAction(RoutingPinAction.self) { (state: inout RoutingPinState, action: RoutingPinAction, ctx: LandContext) in

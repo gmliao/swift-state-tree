@@ -5,7 +5,7 @@ import SwiftStateTree
 
 @Land(SnippetState.self)
 struct SnippetLetFieldLand {
-    static var body: [LandNode] {
+    static var body: LandRules<SnippetState, NoServices> {
         Rules {
             HandleAction(SnippetAction.self) { state, action, _ in
                 action.amount = 1

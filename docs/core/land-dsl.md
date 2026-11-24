@@ -209,11 +209,11 @@ HandleAction(BuyItemAction.self) { state, action, ctx in
 
 ## Helpers and `@Land`
 
-A helper is a function that returns handlers for a land to use. Put the land's builder on it, with the land's state type, and its closures infer their types as they do inside `Land(_:using:)`:
+A land's rules are the game's rules: who can join, how inputs change the state, how time advances, which events exist. A helper is a function that returns part of them, such as `chatRules()`, the chat rules. Put the land's builder on it, with the land's state type, and return `LandRules` with the same types. Its closures infer their types as they do inside `Land(_:using:)`:
 
 ```swift
 @LandDSL<GameState, NoServices>
-func joinRules() -> [LandNode] {
+func joinRules() -> LandRules<GameState, NoServices> {
     OnJoin { state, ctx in state.players[ctx.playerID] = 0 }
 }
 
@@ -223,14 +223,30 @@ let land = Land("game", using: GameState.self) {
 }
 ```
 
-A typealias for the builder is a shorter spelling of the same attribute: `typealias GameDSL = LandDSL<GameState, NoServices>`, then `@GameDSL func joinRules() -> [LandNode]`. `NoServices` is the services type of a land without services.
+`NoServices` is the services type of a land without services. Typealiases give a shorter spelling of the same helper: `typealias GameDSL = LandDSL<GameState, NoServices>` and `typealias GameRules = LandRules<GameState, NoServices>`, then `@GameDSL func joinRules() -> GameRules`.
 
-`@Land` declares a land as a type. Its `body` is under the builder, like a helper's:
+A helper is spliced only into a land with its state type and services type. One built for another state, or for other services, doesn't compile where it's spliced. A helper for several lands is generic: over a protocol their states share, and over the services type, so lands with any services can use it:
+
+```swift
+protocol HasPlayers: StateNodeProtocol {
+    var players: [PlayerID: Int] { get set }
+}
+
+@LandDSL<S, Svc>
+func leaveRules<S: HasPlayers, Svc: Sendable>() -> LandRules<S, Svc> {
+    OnLeave { state, ctx in state.players[ctx.playerID] = nil }
+}
+
+let game = Land("game", using: GameState.self) { leaveRules() }
+let lobby = Land("lobby", using: LobbyState.self, services: LobbyServices.self) { leaveRules() }
+```
+
+`@Land` declares a land as a type. Its `body` is under the builder and returns `LandRules`, like a helper:
 
 ```swift
 @Land(GameState.self)
 struct GameLand {
-    static var body: [LandNode] {
+    static var body: LandRules<GameState, NoServices> {
         Rules {
             OnJoin { state, ctx in state.players[ctx.playerID] = 0 }
         }

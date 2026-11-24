@@ -6,7 +6,7 @@ import SwiftStateTree
 
 @Land(SnippetState.self)
 struct SnippetMacroLand {
-    static var body: [LandNode] {
+    static var body: LandRules<SnippetState, NoServices> {
         Rules {
             OnJoin { state, _ in state.total += 1 }
             HandleAction(SnippetAction.self) { state, action, _ in
@@ -20,7 +20,7 @@ struct SnippetMacroLand {
 @Land(SnippetState.self, id: "snippet-macro-hand")
 struct SnippetMacroHandLand {
     @LandDSL<SnippetState, NoServices>
-    static var body: [LandNode] {
+    static var body: LandRules<SnippetState, NoServices> {
         Rules {
             OnJoin { state, _ in state.total += 1 }
             HandleAction(SnippetAction.self) { state, action, _ in
@@ -36,7 +36,7 @@ typealias SnippetDSL = LandDSL<SnippetState, NoServices>
 @Land(SnippetState.self, id: "snippet-macro-alias")
 struct SnippetMacroAliasLand {
     @SnippetDSL
-    static var body: [LandNode] {
+    static var body: LandRules<SnippetState, NoServices> {
         Rules {
             OnJoin { state, _ in state.total += 1 }
         }
@@ -45,7 +45,7 @@ struct SnippetMacroAliasLand {
 
 /// A helper under the builder, spliced into a land and into a Rules (D-Q3, D-Q5).
 @LandDSL<SnippetState, NoServices>
-func snippetJoinRules() -> [LandNode] {
+func snippetJoinRules() -> LandRules<SnippetState, NoServices> {
     OnJoin { state, _ in state.total += 1 }
 }
 

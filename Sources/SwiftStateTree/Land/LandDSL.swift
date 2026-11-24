@@ -79,9 +79,12 @@ public func MaxPlayers(_ value: Int) -> AccessControlDirective {
 
 // MARK: - Rules
 
-/// A `Rules` block's nodes. The land's builder flattens it into the land's nodes, so it isn't a
-/// `LandNode` itself and never reaches the `LandBuilder` (#771 §3.1).
-public struct RulesNode<State: StateNodeProtocol, Services: Sendable>: Sendable {
+/// Part of a land's rules, in the game sense: who can join, how inputs change the state, how time
+/// advances, which events exist. A `Rules { … }` block, a helper such as `chatRules()` (the chat
+/// rules) and an `@Land` body return one, typed by the land's `State` and `Services`. The land's
+/// builder splices it into the land only where those types are the land's, and flattens it, so
+/// it isn't a `LandNode` itself and never reaches the `LandBuilder` (#771 §3.1, #794).
+public struct LandRules<State: StateNodeProtocol, Services: Sendable>: Sendable {
     public let nodes: [LandNode]
 }
 
@@ -98,11 +101,11 @@ public struct RulesNode<State: StateNodeProtocol, Services: Sendable>: Sendable 
 /// ```
 ///
 /// Inside a land, `Rules` takes the land's `State` and `Services`. Outside one (a helper, a
-/// local), name them: `-> RulesNode<GameState, NoServices>`.
+/// local), name them: `-> LandRules<GameState, NoServices>`.
 public func Rules<State: StateNodeProtocol, Services: Sendable>(
     @LandDSL<State, Services> _ content: () -> [LandNode]
-) -> RulesNode<State, Services> {
-    RulesNode(nodes: content())  // Single-expression: omit return
+) -> LandRules<State, Services> {
+    LandRules(nodes: content())  // Single-expression: omit return
 }
 
 public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
@@ -975,15 +978,20 @@ public func AfterFinalize<State: StateNodeProtocol>(
 /// type has its own `buildExpression`, so the closures in a node get the land's types, and a
 /// node for another State doesn't compile.
 ///
-/// A helper that returns nodes for a land is written under the builder by name, and spliced into
-/// a land or a `Rules` like a node:
+/// A helper that returns handlers for a land is written under the builder by name and returns
+/// `LandRules<State, Services>`, which the builder builds from its body. It is spliced into a land
+/// or a `Rules` like a node, and only where its `State` and `Services` are the land's (#794):
 ///
 /// ```swift
 /// @LandDSL<GameState, NoServices>
-/// func movementRules() -> [LandNode] {
+/// func movementRules() -> LandRules<GameState, NoServices> {
 ///     HandleAction(Move.self) { state, action, ctx in ... }
 /// }
 /// ```
+///
+/// A helper for several lands is generic: over a protocol its states share
+/// (`@LandDSL<S, NoServices> func chatRules<S: HasChat>() -> LandRules<S, NoServices>`), or over
+/// `Services`, so lands with any services can use it.
 @resultBuilder
 public enum LandDSL<State: StateNodeProtocol, Services: Sendable> {
     public static func buildExpression(_ node: AnyActionHandler<State>) -> [LandNode] { [node] }
@@ -994,14 +1002,25 @@ public enum LandDSL<State: StateNodeProtocol, Services: Sendable> {
     public static func buildExpression(_ node: OnLeaveNode<State>) -> [LandNode] { [node] }
     public static func buildExpression(_ node: LifetimeNode<State>) -> [LandNode] { [node] }
     /// Flattened here: a `Rules` block's nodes become the enclosing block's.
-    public static func buildExpression(_ node: RulesNode<State, Services>) -> [LandNode] { node.nodes }
+    public static func buildExpression(_ node: LandRules<State, Services>) -> [LandNode] { node.nodes }
     public static func buildExpression(_ node: AccessControlNode) -> [LandNode] { [node] }
     public static func buildExpression(_ node: AllowedClientEventsNode) -> [LandNode] { [node] }
     public static func buildExpression(_ node: ClientEventsNode) -> [LandNode] { [node] }
     public static func buildExpression(_ node: ServerEventsNode) -> [LandNode] { [node] }
-    /// Nodes built elsewhere: a helper under `@LandDSL<State, Services>`, or the `@Land` macro's
-    /// `body` (#771 D-Q5). Each node in it was checked by the builder that made it.
+    /// An array of nodes has lost its State and Services, so it isn't spliced: a node built for
+    /// another State would reach `LandBuilder` unchecked (#794). A helper or an `@Land` body
+    /// returns `LandRules<State, Services>` instead.
+    @available(*, unavailable, message: "a helper or @Land body returns LandRules<State, Services>, so its State and Services are checked")
     public static func buildExpression(_ nodes: [LandNode]) -> [LandNode] { nodes }
+
+    /// A land's, a `Rules`' or a `Lifetime`'s own closure: its nodes.
+    public static func buildFinalResult(_ nodes: [LandNode]) -> [LandNode] { nodes }
+
+    /// A helper's or an `@Land` body's result: its nodes, typed by the builder's `State` and
+    /// `Services`, which the typed `buildExpression` checks where it is spliced.
+    public static func buildFinalResult(_ nodes: [LandNode]) -> LandRules<State, Services> {
+        LandRules(nodes: nodes)
+    }
 
     public static func buildBlock(_ components: [LandNode]...) -> [LandNode] {
         components.flatMap { $0 }
