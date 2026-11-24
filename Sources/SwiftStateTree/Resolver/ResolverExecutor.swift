@@ -247,7 +247,7 @@ public enum ResolverExecutor {
         return ResolverExecutorWrapper<R>()
     }
 
-    /// Convert resolver type name to property name for dynamic member lookup
+    /// Convert a resolver type name to the name its output is recorded under
     ///
     /// Examples:
     /// - "ProductInfoResolver" -> "productInfo"
