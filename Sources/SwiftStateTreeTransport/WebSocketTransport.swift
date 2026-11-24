@@ -8,7 +8,7 @@ import SwiftStateTree
 /// closed (`WebSocketTransport.closeSessionAfterQueuedFrames`), or a flush marker
 /// (`WebSocketTransport.flushSessionQueues`), whose waiter resumes when the drain reaches it.
 private enum SessionSendElement: Sendable {
-    case data(Data)
+    case data(Data, WebSocketFrameKind)
     case close
     case flush(UInt64)
 }
@@ -144,9 +144,11 @@ private struct SessionSendQueue: Sendable {
             }
             for await element in stream {
                 let data: Data
+                let kind: WebSocketFrameKind
                 switch element {
-                case .data(let frame):
+                case .data(let frame, let frameKind):
                     data = frame
+                    kind = frameKind
                 case .close:
                     await onCloseMarker()
                     drainEnd.set(.closeMarker)
@@ -156,7 +158,7 @@ private struct SessionSendQueue: Sendable {
                     continue
                 }
                 do {
-                    try await connection.send(data)
+                    try await connection.send(data, kind: kind)
                 } catch {
                     if logger.logLevel <= .debug {
                         logger.debug("WS drain send failed (connection likely closed)", metadata: [
@@ -350,12 +352,12 @@ public actor WebSocketTransport: Transport {
 
     /// Yields `data` to the session's stream; counts it when the stream is finished, or when the
     /// session's close marker is already queued.
-    private func enqueue(_ data: Data, into queue: SessionSendQueue) {
+    private func enqueue(_ data: Data, kind: WebSocketFrameKind, into queue: SessionSendQueue) {
         if queue.closeMarkerYielded {
             framesDroppedAfterCloseMarker += 1
             return
         }
-        if case .terminated = queue.continuation.yield(.data(data)) {
+        if case .terminated = queue.continuation.yield(.data(data, kind)) {
             framesDroppedAfterSendFailure += 1
         }
     }
@@ -379,7 +381,8 @@ public actor WebSocketTransport: Transport {
         }
     }
 
-    /// Enqueue message and return. Drain Tasks send to connections asynchronously.
+    /// Enqueue message and return. Drain Tasks send to connections asynchronously. The message
+    /// goes out in a binary frame; `sendSessionFrames` takes each frame's type.
     public func send(_ message: Data, to target: EventTarget) {
         logOutgoing(message, target: target)
 
@@ -390,7 +393,7 @@ public actor WebSocketTransport: Transport {
                 logDropMissingSession(sessionID: sessionID, bytes: message.count)
                 return
             }
-            enqueue(message, into: queue)
+            enqueue(message, kind: .binary, into: queue)
 
         case let .player(playerID):
             guard let sessionIDs = playerSessions[playerID] else {
@@ -398,17 +401,17 @@ public actor WebSocketTransport: Transport {
                 return
             }
             for sessionID in sessionIDs {
-                if let queue = sessionQueues[sessionID] { enqueue(message, into: queue) }
+                if let queue = sessionQueues[sessionID] { enqueue(message, kind: .binary, into: queue) }
             }
 
         case .broadcast:
             for queue in sessionQueues.values {
-                enqueue(message, into: queue)
+                enqueue(message, kind: .binary, into: queue)
             }
 
         case let .broadcastExcept(excludedSessionID):
             for (id, queue) in sessionQueues where id != excludedSessionID {
-                enqueue(message, into: queue)
+                enqueue(message, kind: .binary, into: queue)
             }
         }
     }
@@ -425,25 +428,25 @@ public actor WebSocketTransport: Transport {
             switch target {
             case let .session(sessionID):
                 if let queue = sessionQueues[sessionID] {
-                    enqueue(message, into: queue)
+                    enqueue(message, kind: .binary, into: queue)
                 } else {
                     logDropMissingSession(sessionID: sessionID, bytes: message.count)
                 }
             case let .player(playerID):
                 if let sessionIDs = playerSessions[playerID] {
                     for sessionID in sessionIDs {
-                        if let queue = sessionQueues[sessionID] { enqueue(message, into: queue) }
+                        if let queue = sessionQueues[sessionID] { enqueue(message, kind: .binary, into: queue) }
                     }
                 } else {
                     logDropMissingPlayer(playerID: playerID, bytes: message.count)
                 }
             case .broadcast:
                 for queue in sessionQueues.values {
-                    enqueue(message, into: queue)
+                    enqueue(message, kind: .binary, into: queue)
                 }
             case let .broadcastExcept(excludedSessionID):
                 for (id, queue) in sessionQueues where id != excludedSessionID {
-                    enqueue(message, into: queue)
+                    enqueue(message, kind: .binary, into: queue)
                 }
             }
         }
@@ -537,6 +540,17 @@ public actor WebSocketTransport: Transport {
     public func handleIncomingMessage(sessionID: SessionID, data: Data) async {
         logIncoming(data, from: sessionID)
         await delegate?.onMessage(data, from: sessionID)
+    }
+
+    /// `handleIncomingMessage(sessionID:data:)` for a message whose frame kind the connection
+    /// knows: a delegate that conforms to `FrameKindTransportDelegate` gets the kind too.
+    public func handleIncomingMessage(sessionID: SessionID, data: Data, kind: WebSocketFrameKind) async {
+        guard let kindDelegate = delegate as? any FrameKindTransportDelegate else {
+            await handleIncomingMessage(sessionID: sessionID, data: data)
+            return
+        }
+        logIncoming(data, from: sessionID)
+        await kindDelegate.onMessage(data, kind: kind, from: sessionID)
     }
 
     /// Maps a player to a session for `.player` targets, and returns the session's current
@@ -779,7 +793,7 @@ public actor WebSocketTransport: Transport {
                 }
                 continue
             }
-            enqueue(frame.data, into: queue)
+            enqueue(frame.data, kind: frame.kind, into: queue)
         }
     }
 
@@ -900,9 +914,20 @@ public enum ConnectionRejection: Sendable, Equatable {
     case sessionIDInUse
 }
 
+/// The type of a WebSocket data frame: text (its payload is UTF-8, a JSON message) or binary
+/// (anything else, a MessagePack message). A frame's type follows the bytes it carries, so one
+/// connection carries both: the JoinResponse is always JSON, and a hybrid configuration sends
+/// JSON messages beside MessagePack state updates.
+public enum WebSocketFrameKind: Sendable, Equatable {
+    case text
+    case binary
+}
+
 /// Abstract interface for a WebSocket connection
 public protocol WebSocketConnection: Sendable {
-    func send(_ data: Data) async throws
+    /// Sends `data` as one message in a frame of type `kind`, which the caller takes from the
+    /// encoder that produced the bytes, never from their content.
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws
     func close() async throws
     /// Close with a status code and reason (`SessionClose`). The default calls `close()`.
     func close(with close: SessionClose) async throws

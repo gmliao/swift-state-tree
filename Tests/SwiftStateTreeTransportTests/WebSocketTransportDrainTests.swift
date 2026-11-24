@@ -11,7 +11,7 @@ import Testing
 /// Every send fails.
 private actor FailingConnection: WebSocketConnection {
     private(set) var sends = 0
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         sends += 1
         throw CancellationError()
     }

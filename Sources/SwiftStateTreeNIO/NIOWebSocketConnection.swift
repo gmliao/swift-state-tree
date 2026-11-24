@@ -20,7 +20,7 @@ public struct NIOWebSocketConnection: WebSocketConnection, ClosedAwaitingConnect
         self.handler = handler
     }
 
-    public func send(_ data: Data) async throws {
+    public func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         guard let handler = handler else {
             throw NIOWebSocketError.connectionClosed
         }
@@ -30,7 +30,7 @@ public struct NIOWebSocketConnection: WebSocketConnection, ClosedAwaitingConnect
         buffer.writeBytes(data)
 
         // Send via handler (which ensures we're on the right event loop)
-        handler.send(buffer)
+        handler.send(buffer, kind: kind)
     }
 
     public func close() async throws {

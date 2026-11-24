@@ -99,7 +99,7 @@ struct WebSocketSessionHandlerLoopTests {
         // Queued behind the blocker: the removal runs first, then whatever `send` queued.
         let removed = loop.makePromise(of: Void.self)
         fixture.channel.pipeline.removeHandler(fixture.handler, promise: removed)
-        fixture.handler.send(ByteBuffer(string: "late"))
+        fixture.handler.send(ByteBuffer(string: "late"), kind: .binary)
         blocker.release()
         try await removed.futureResult.get()
         try await drain(loop)
@@ -124,12 +124,12 @@ struct WebSocketSessionHandlerLoopTests {
     func stoppedFenceDropsHops() async throws {
         let fence = StopFence()
         let fixture = try await makeFixture(stopFence: fence)
-        fixture.handler.send(ByteBuffer(string: "before"))
+        fixture.handler.send(ByteBuffer(string: "before"), kind: .binary)
         try await drain(fixture.channel.eventLoop)
         #expect(fixture.counter.sequence == ["before"])
 
         await fence.stop()
-        fixture.handler.send(ByteBuffer(string: "late"))
+        fixture.handler.send(ByteBuffer(string: "late"), kind: .binary)
         fixture.handler.close(code: .goingAway)
         try await drain(fixture.channel.eventLoop)
         #expect(fixture.counter.sequence == ["before"], "nothing after the stop: \(fixture.counter.sequence)")
@@ -141,7 +141,7 @@ struct WebSocketSessionHandlerLoopTests {
         let fixture = try await makeFixture()
         try await fixture.channel.pipeline.removeHandler(fixture.handler)
         let handler = fixture.handler
-        try await fixture.channel.eventLoop.submit { handler.send(ByteBuffer(string: "late")) }.get()
+        try await fixture.channel.eventLoop.submit { handler.send(ByteBuffer(string: "late"), kind: .binary) }.get()
         #expect(fixture.counter.opcodes == [])
     }
 
@@ -149,10 +149,10 @@ struct WebSocketSessionHandlerLoopTests {
     func offLoopSendsKeepOrder() async throws {
         let fixture = try await makeFixture()
         for index in 0..<20 {
-            fixture.handler.send(ByteBuffer(string: "m\(index)"))
+            fixture.handler.send(ByteBuffer(string: "m\(index)"), kind: .binary)
         }
         fixture.handler.close(code: .normalClosure)
-        fixture.handler.send(ByteBuffer(string: "after-close"))
+        fixture.handler.send(ByteBuffer(string: "after-close"), kind: .binary)
         try await drain(fixture.channel.eventLoop)
         let sequence = fixture.counter.sequence
         let close = "\(WebSocketOpcode.connectionClose)"
@@ -167,7 +167,7 @@ struct WebSocketSessionHandlerLoopTests {
             let sent = DispatchGroup()
             sent.enter()
             let sender = Thread {
-                for _ in 0..<200 { handler.send(ByteBuffer(string: "x")) }
+                for _ in 0..<200 { handler.send(ByteBuffer(string: "x"), kind: .binary) }
                 sent.leave()
             }
             sender.start()

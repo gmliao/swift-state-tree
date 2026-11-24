@@ -65,7 +65,7 @@ private func recordingLogger(_ records: LogRecords, level: Logger.Level) -> Logg
 
 /// Accepts every frame; the test only needs the connection to be accepted.
 private struct SilentConnection: WebSocketConnection {
-    func send(_ data: Data) async throws {}
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {}
     func close() async throws {}
 }
 

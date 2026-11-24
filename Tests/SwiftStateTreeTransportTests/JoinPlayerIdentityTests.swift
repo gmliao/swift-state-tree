@@ -18,7 +18,7 @@ import SwiftStateTreeTestSupport
 private actor IdentityReplyConnection: WebSocketConnection {
     private(set) var messages: [Data] = []
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         messages.append(data)
     }
 

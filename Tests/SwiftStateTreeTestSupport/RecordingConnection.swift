@@ -18,6 +18,8 @@ package actor RecordingConnection: WebSocketConnection {
     private let hangBound: Duration
 
     package private(set) var frames: [Data] = []
+    /// The frame type of each frame in `frames`, in the same order.
+    package private(set) var kinds: [WebSocketFrameKind] = []
     package private(set) var closeCode: UInt16?
     /// The close's reason: empty for `close()`, the given one for `close(with:)`.
     package private(set) var closeReason: String?
@@ -30,8 +32,9 @@ package actor RecordingConnection: WebSocketConnection {
         self.hangBound = hangBound
     }
 
-    package func send(_ data: Data) async throws {
+    package func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         frames.append(data)
+        kinds.append(kind)
         let sent = frames
         for (id, waiter) in frameWaiters where waiter.condition(sent) {
             frameWaiters.removeValue(forKey: id)

@@ -6,6 +6,15 @@ public enum TransportEncoding: String, Sendable {
     case json
     case opcodeJsonArray
     case messagepack
+
+    /// The WebSocket frame type of the bytes this encoding writes: text for JSON, binary for
+    /// MessagePack.
+    public var frameKind: WebSocketFrameKind {
+        switch self {
+        case .json, .opcodeJsonArray: return .text
+        case .messagepack: return .binary
+        }
+    }
 }
 
 /// Encodes and decodes transport payloads.

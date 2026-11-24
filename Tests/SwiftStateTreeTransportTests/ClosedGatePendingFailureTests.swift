@@ -341,7 +341,7 @@ struct ClosedGatePendingFailureTests {
         let sentBefore = await land.transport.sends
         // The door a join ended before its admission, an inbound overflow after the join and the
         // router's join failure use (`endJoinBeforeAdmission`, TA:1789 and :2390, LR:1420).
-        await land.adapter.sendFinalFrameAndClose(Data("final".utf8), to: UntypedPayloadLand.session)
+        await land.adapter.sendFinalFrameAndClose(Data("final".utf8), kind: .binary, to: UntypedPayloadLand.session)
         await land.adapter.waitForOutboundIdleForTesting()
         #expect(await land.transport.sends == sentBefore + 1, "the final frame goes out")
         #expect(await land.transport.plainCloses == [UntypedPayloadLand.session], "the close behind it goes out")

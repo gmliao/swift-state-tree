@@ -88,7 +88,7 @@ private actor PendingConnection: WebSocketConnection {
 
     private var frameWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         if let stall { await stall.arrive() }
         entries.append(.frame(data))
         let count = frames.count

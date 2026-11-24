@@ -60,7 +60,7 @@ private func marker(_ prefix: String, _ n: Int) -> String {
 private actor OrderedSendConnection: WebSocketConnection {
     private var frames: [Data] = []
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         frames.append(data)
     }
 
@@ -474,7 +474,7 @@ struct TransportAdapterOrderedSendTests {
             // Blocker: a frame written straight to the writer (not an event, so an event path
             // that bypassed the writer could not bypass it too). The transport holds it, so
             // everything issued after it queues.
-            await adapter.enqueueOutbound(Data("{\"blocker\":\"\(marker("bl", i))\"}".utf8), toSessions: members.map(\.session))
+            await adapter.enqueueOutbound(Data("{\"blocker\":\"\(marker("bl", i))\"}".utf8), kind: .text, toSessions: members.map(\.session))
             try await orderedWaitUntil("blocker \(i) to reach the transport") {
                 members.allSatisfy { m in transport.frames(for: m.session).contains { markers("bl", in: $0).contains(i) } }
             }
