@@ -22,7 +22,7 @@ func stateNodeMetadataIncludesDefaultValues() {
 }
 
 /// Payload fixtures of `payloadMetadataIncludesDefaultValues`, at file scope: an extension macro can't attach to a local type.
-private enum PayloadMetadataIncludesDefaultValuesFixtures {
+fileprivate enum PayloadMetadataIncludesDefaultValuesFixtures {
     @Payload
     struct EmptyResponse: ResponsePayload {}
 

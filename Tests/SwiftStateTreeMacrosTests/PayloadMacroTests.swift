@@ -27,6 +27,16 @@ final class PayloadMacroTests {
             }
             
             struct EmptyResponse: Codable, Sendable {}
+
+            extension InvalidPayload {
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the @PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value.name)
+                    }
+                }
+            }
             """,
             diagnostics: [
                 DiagnosticSpec(

@@ -350,7 +350,7 @@ package struct RecordedResolverOutput: Sendable {
     }
 }
 
-extension Dictionary where Value == HeldResolverOutput {
+extension Dictionary where Key == String, Value == HeldResolverOutput {
     /// The record's entries for these outputs: a live output's type and value, a recorded one's
     /// type and tree as it was read. One projection for every record write site.
     package var recordedEntries: [String: ReevaluationRecordedResolverOutput] {

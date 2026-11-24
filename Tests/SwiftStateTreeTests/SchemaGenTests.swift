@@ -58,7 +58,7 @@ struct TestEvent: ServerEventPayload, SchemaMetadataProvider {
 // MARK: - SchemaExtractor Tests
 
 /// Payload fixtures of `testSchemaExtractorBasic`, at file scope: an extension macro can't attach to a local type.
-private enum TestSchemaExtractorBasicFixtures {
+fileprivate enum TestSchemaExtractorBasicFixtures {
     // Create a simple land definition
     @StateNodeBuilder
     struct SimpleState: StateNodeProtocol {
@@ -126,7 +126,7 @@ func testSchemaExtractorBasic() throws {
 }
 
 /// Payload fixtures of `testSchemaExtractorStateTypeInDefinitions`, at file scope: an extension macro can't attach to a local type.
-private enum TestSchemaExtractorStateTypeInDefinitionsFixtures {
+fileprivate enum TestSchemaExtractorStateTypeInDefinitionsFixtures {
     @StateNodeBuilder
     struct TestState: StateNodeProtocol {
         @Sync(.broadcast)
@@ -167,7 +167,7 @@ func testSchemaExtractorStateTypeInDefinitions() throws {
 }
 
 /// Payload fixtures of `testSchemaExtractorActions`, at file scope: an extension macro can't attach to a local type.
-private enum TestSchemaExtractorActionsFixtures {
+fileprivate enum TestSchemaExtractorActionsFixtures {
     @StateNodeBuilder
     struct TestState: StateNodeProtocol {
         @Sync(.broadcast)
@@ -223,7 +223,7 @@ func testSchemaExtractorActions() throws {
 }
 
 /// Payload fixtures of `testSchemaExtractorStructServerEvents`, at file scope: an extension macro can't attach to a local type.
-private enum TestSchemaExtractorStructServerEventsFixtures {
+fileprivate enum TestSchemaExtractorStructServerEventsFixtures {
     @StateNodeBuilder
     struct TestState: StateNodeProtocol {
         @Sync(.broadcast)
@@ -614,7 +614,7 @@ func testSchemaExtractorServerEventProperties() throws {
 // MARK: - ProtocolSchema Encoding Tests
 
 /// Payload fixtures of `testProtocolSchemaEncoding`, at file scope: an extension macro can't attach to a local type.
-private enum TestProtocolSchemaEncodingFixtures {
+fileprivate enum TestProtocolSchemaEncodingFixtures {
     @StateNodeBuilder
     struct TestState: StateNodeProtocol {
         @Sync(.broadcast)

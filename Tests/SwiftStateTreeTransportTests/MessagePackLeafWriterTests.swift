@@ -15,14 +15,16 @@ import Darwin
 #endif
 
 /// A leaf that writes one kind of malformed value, or a well-formed nested object.
+@PlainData
 private struct ScriptedLeaf: _PayloadWireLeaf, Codable, Sendable, Equatable {
+    @PlainData
     enum Script: String, Codable, CaseIterable, Sendable {
         case keyOutsideObject, valueWithoutKey, objectWithoutKey, twoValues, twoKeys, sameKeyTwice,
              negativeCount
     }
 
     /// An object with fewer entries than its count, which threw before #690 too.
-    var incomplete = false
+    var incomplete: Bool = false
 
     var script: Script?
 

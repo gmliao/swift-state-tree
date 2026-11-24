@@ -19,6 +19,7 @@ struct KeeperModeTestState: StateNodeProtocol {
 
 /// A nested value with required fields and no `@SnapshotConvertible`: the record schema
 /// fingerprint can't list its fields.
+@PlainData
 struct KeeperModeOpaque: Codable, Sendable {
     let x: Int
 }

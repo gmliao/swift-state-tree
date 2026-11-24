@@ -55,9 +55,10 @@ struct ProductInfoResolver: ContextResolver {
 
 ### ResolverOutput
 
-Resolver output must implement `ResolverOutput` protocol:
+Resolver output must implement `ResolverOutput` protocol and carry `@PlainData`. `@PlainData` checks every field at compile time: a field can't be `Date`, `UUID`, `URL`, `Decimal`, `AnyCodable`, `Any`, a class or a closure ([plain data](../turns/README.md#what-counts-as-plain-data)).
 
 ```swift
+@PlainData
 struct ProductInfo: ResolverOutput, Codable, Sendable {
     let id: String
     let name: String

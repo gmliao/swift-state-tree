@@ -12,6 +12,7 @@ import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeReevaluationMonitor
 @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 // MARK: - Fixtures
 
@@ -23,13 +24,12 @@ struct ReplayEventDecodeState: StateNodeProtocol {
     public init() {}
 }
 
-/// A server event with a field of every kind the domain names: the scalars, and the types that
-/// go through their own `Codable` in the record.
+/// A server event with a field of every kind the domain names: the scalars, and `Data`, which goes
+/// through its own `Codable` in the record. (`Date` and `URL` aren't plain data, so a payload
+/// can't hold them.)
 @Payload
 struct ReplayDomainEvent: ServerEventPayload, Equatable {
-    let at: Date
     let blob: Data
-    let link: URL
     let ratio: Double
     let whole: Double
     let small: Float
@@ -38,6 +38,12 @@ struct ReplayDomainEvent: ServerEventPayload, Equatable {
     let flag: Bool
     let name: String
     let negativeZero: Double
+}
+
+/// A value nested past the record codec's depth: a round trip through the codec throws.
+@Payload
+struct ReplayDeepEvent: ServerEventPayload, Equatable {
+    let nest: Nest
 }
 
 @Payload
@@ -70,11 +76,9 @@ struct ReplayNotAPayload: Codable, Sendable {
 
 private let replayDecodeLandID = "replay-decode:local"
 
-func replayDomainEvent(at seconds: Double) -> ReplayDomainEvent {
+func replayDomainEvent() -> ReplayDomainEvent {
     ReplayDomainEvent(
-        at: Date(timeIntervalSince1970: seconds),
         blob: Data([0, 1, 2, 255]),
-        link: URL(string: "https://example.com/a?b=c")!,
         ratio: 2.5,
         whole: 3.0,
         small: 0.1,
@@ -228,14 +232,14 @@ private let frameEncodings: [(String, TransportEncodingConfig)] = [
 struct ReplayTypedEventDecodeTests {
     @Test("Inside the domain the replayed event equals the live one and encodes to the same frame bytes", arguments: ReplayRecordForm.allCases)
     func domainIsByteIdentical(form: ReplayRecordForm) async throws {
-        let live = replayDomainEvent(at: 1_800_000_000)
+        let live = replayDomainEvent()
         let path = try await recordedPath(emitting: live, form: form)
         let frame = try await firstFrame(path: path, definition: makeReplayDecodeLand(emitting: live))
         try #require(frame.recordedEvents.count == 1)
         let replayed = try #require(frame.recordedEvents[0].event as? ReplayDomainEvent)
         // The JSON view's one stated difference: `-0.0` reads back as the integer 0.
         let expected = form == .saved ? live : ReplayDomainEvent(
-            at: live.at, blob: live.blob, link: live.link, ratio: live.ratio, whole: live.whole,
+            blob: live.blob, ratio: live.ratio, whole: live.whole,
             small: live.small, count: live.count, largest: live.largest, flag: live.flag, name: live.name, negativeZero: 0.0
         )
         #expect(replayed == expected, "\(form)")
@@ -246,16 +250,6 @@ struct ReplayTypedEventDecodeTests {
         // The projected event (the runner's own emit) holds the typed value.
         let projected = try #require(frame.projectedEvents.first?.event as? ReplayDomainEvent)
         #expect(projected == live, "\(form): projected")
-    }
-
-    @Test("A Date with a fractional second replays truncated toward negative infinity (the stated difference, decided 2026-11-19)",
-          arguments: ReplayRecordForm.allCases, [(1_800_000_000.5, 1_800_000_000.0), (-1.5, -2.0)])
-    func fractionalDateIsTruncated(form: ReplayRecordForm, seconds: (live: Double, replayed: Double)) async throws {
-        let live = replayDomainEvent(at: seconds.live)
-        let path = try await recordedPath(emitting: live, form: form)
-        let frame = try await firstFrame(path: path, definition: makeReplayDecodeLand(emitting: live))
-        let replayed = try #require(frame.recordedEvents.first?.event as? ReplayDomainEvent)
-        #expect(replayed.at == Date(timeIntervalSince1970: seconds.replayed), "\(form) \(seconds.live)")
     }
 
     @Test("The record source: strict for a saved record, one integer-to-float allowance for the JSON view")
@@ -273,13 +267,10 @@ struct ReplayTypedEventDecodeTests {
 
     @Test("A payload whose base is already the type is taken as is, without the record codec")
     func typedPayloadSkipsTheCodec() throws {
-        // Year 10000 is outside the record codec's dates, so a round trip would throw.
-        let event = ReplayDomainEvent(
-            at: Date(timeIntervalSince1970: 253_402_300_800), blob: Data(), link: URL(string: "https://example.com")!,
-            ratio: 1, whole: 1, small: 1, count: 1, largest: 1, flag: false, name: "", negativeZero: 0
-        )
+        // Nested past the record codec's depth, so a round trip would throw.
+        let event = ReplayDeepEvent(nest: .nested(CanonicalMessagePack.maxDepth + 1))
         #expect(throws: CanonicalMessagePackError.self) { try CanonicalMessagePack.encode(AnyCodable(event)) }
-        #expect(try RecordPayloadSource(AnyCodable(event)).decode(ReplayDomainEvent.self) == event)
+        #expect(try RecordPayloadSource(AnyCodable(event)).decode(ReplayDeepEvent.self) == event)
     }
 
     @Test("An unsigned value above Int.max (#628): a saved record holding one can't be read; on the JSON view it fails the run at the runner (EV7)")
@@ -321,7 +312,7 @@ struct ReplayTypedEventDecodeTests {
         #expect(throws: ReevaluationReplayResolutionError.unregisteredEvent(tickId: 3, origin: .recorded, sequence: 4, name: "Unknown")) {
             try ReevaluationReplayFrame.resolve(
                 tickId: 3, recordedServerEvents: [recorded], emittedServerEvents: [], actualState: nil,
-                definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0))
+                definition: makeReplayDecodeLand(emitting: replayDomainEvent())
             )
         }
     }
@@ -335,7 +326,7 @@ struct ReplayTypedEventDecodeTests {
         }
         #expect(error?.serverEventsWithoutDecoder.count == 1)
         #expect(error?.description.contains("ReplayNotAPayload") == true, "\(String(describing: error))")
-        let decodable = makeReplayDecodeLand(emitting: replayDomainEvent(at: 0))
+        let decodable = makeReplayDecodeLand(emitting: replayDomainEvent())
         #expect(throws: Never.self) {
             try decodable.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
         }
@@ -347,7 +338,7 @@ struct ReplayTypedEventDecodeTests {
         // payload type: the record's checks refuse it before EV8. The fingerprint can't list a
         // type without @Payload (D15), so EV8 is a backstop past them.
         let other = tempPath("sstr")
-        try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), path: other)
+        try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent()), path: other)
         let unlisted = SchemaFingerprintError.unbuildableType(String(describing: ReplayNotAPayload.self))
         await #expect(throws: unlisted) {
             _ = try await ConcreteReevaluationRunner(definition: makeUndecodableEventLand(), recordFilePath: other)
@@ -385,20 +376,20 @@ struct ReplayTypedEventDecodeTests {
           arguments: ["state hash", "server events"])
     func recordReadErrorFailsTheStep(read: String) async throws {
         let path = tempPath("sstr")
-        try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), path: path)
-        let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), recordFilePath: path)
+        try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent()), path: path)
+        let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent()), recordFilePath: path)
         await runner.setFaultsForTesting(ReplayRunnerFaults(stateHashRead: read == "state hash", serverEventsRead: read == "server events"))
         let injected: ReplayRunnerFaults.Injected = read == "state hash" ? .stateHashRead : .serverEventsRead
         await #expect(throws: ReevaluationReplayResolutionError.recordRead(tickId: 0, read: read, error: "\(injected)")) {
             _ = try await runner.step()
         }
-        let fresh = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), recordFilePath: path)
+        let fresh = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent()), recordFilePath: path)
         await fresh.setFaultsForTesting(ReplayRunnerFaults(stateHashRead: read == "state hash", serverEventsRead: read == "server events"))
         let service = await runThroughService(fresh)
         #expect(service.getStatus().phase == .failed)
         #expect(service.consumeNextResult() == nil)
 
-        let missing = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), recordFilePath: path)
+        let missing = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent()), recordFilePath: path)
         await missing.setFaultsForTesting(ReplayRunnerFaults(stateHashMissing: true))
         let step = try #require(try await missing.step())
         #expect(step.recordedHash == nil && step.isMatch, "no hash for the tick: unchanged, not a failure")
@@ -406,7 +397,7 @@ struct ReplayTypedEventDecodeTests {
 
     @Test("Faults installed on a JSON view keep its decode allowance: the policy comes from the record, not the wrapper (#646)")
     func faultWrapperKeepsTheJSONPolicy() async throws {
-        let live = replayDomainEvent(at: 1_800_000_000)
+        let live = replayDomainEvent()
         let path = try await recordedPath(emitting: live, form: .jsonView)
         let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: live), recordFilePath: path)
         await runner.setFaultsForTesting(ReplayRunnerFaults())
@@ -419,8 +410,8 @@ struct ReplayTypedEventDecodeTests {
           arguments: ["state hash", "server events", "snapshot encode", "state hash missing"])
     func faultsAreReplaced(fault: String) async throws {
         let path = tempPath("sstr")
-        try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), path: path)
-        let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), recordFilePath: path)
+        try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent()), path: path)
+        let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent()), recordFilePath: path)
         await runner.setFaultsForTesting(ReplayRunnerFaults(
             stateHashRead: fault == "state hash", serverEventsRead: fault == "server events", snapshotEncode: fault == "snapshot encode",
             stateHashMissing: fault == "state hash missing"
@@ -434,13 +425,13 @@ struct ReplayTypedEventDecodeTests {
     @Test("A snapshot that doesn't encode fails the step (A10), and the run through the service")
     func snapshotEncodeErrorFailsTheStep() async throws {
         let path = tempPath("sstr")
-        try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), path: path)
-        let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), recordFilePath: path)
+        try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent()), path: path)
+        let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent()), recordFilePath: path)
         await runner.setFaultsForTesting(ReplayRunnerFaults(snapshotEncode: true))
         await #expect(throws: ReevaluationReplayResolutionError.stateEncode(tickId: 0, error: "\(ReplayRunnerFaults.Injected.snapshotEncode)")) {
             _ = try await runner.step()
         }
-        let fresh = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), recordFilePath: path)
+        let fresh = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent()), recordFilePath: path)
         await fresh.setFaultsForTesting(ReplayRunnerFaults(snapshotEncode: true))
         let service = await runThroughService(fresh)
         #expect(service.getStatus().phase == .failed)
@@ -507,7 +498,7 @@ struct ReplayTypedEventDecodeTests {
         let frame = try ReevaluationReplayFrame.resolve(
             tickId: 1, recordedServerEvents: [], emittedServerEvents: [],
             actualState: AnyCodable(String(decoding: snapshot, as: UTF8.self)),
-            definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0))
+            definition: makeReplayDecodeLand(emitting: replayDomainEvent())
         )
         #expect(frame.state == nil, "a state that isn't StateFromSnapshotDecodable has no replay land, so no frame state")
         let result = ReevaluationStepResult(

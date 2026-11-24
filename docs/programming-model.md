@@ -266,7 +266,7 @@ The handler can't throw. An action that can be refused splits into a `validate` 
 
 Resolver is implemented in Swift as a type implementing `ContextResolver` protocol:
 
-* Resolver output must implement `ResolverOutput` protocol
+* Resolver output must implement `ResolverOutput` protocol, and its type carries `@PlainData`
 * Access resolver results in handler through `LandContext`'s `@dynamicMemberLookup` feature
 * Resolver executes in parallel before handler execution
 

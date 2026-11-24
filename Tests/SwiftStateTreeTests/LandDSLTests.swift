@@ -448,7 +448,7 @@ func testOnTickSynchronous() async throws {
 // MARK: - Event Registration Tests
 
 /// Payload fixtures of `testClientEventsRegister`, at file scope: an extension macro can't attach to a local type.
-private enum TestClientEventsRegisterFixtures {
+fileprivate enum TestClientEventsRegisterFixtures {
     @Payload
     struct TestEvent1: ClientEventPayload {
         let value: Int
@@ -489,7 +489,7 @@ func testClientEventsRegister() {
 }
 
 /// Payload fixtures of `testServerEventsRegister`, at file scope: an extension macro can't attach to a local type.
-private enum TestServerEventsRegisterFixtures {
+fileprivate enum TestServerEventsRegisterFixtures {
     @Payload
     struct TestServerEvent1: ServerEventPayload {
         let value: Int
@@ -530,7 +530,7 @@ func testServerEventsRegister() {
 }
 
 /// Payload fixtures of `testEventRegistryFindDescriptor`, at file scope: an extension macro can't attach to a local type.
-private enum TestEventRegistryFindDescriptorFixtures {
+fileprivate enum TestEventRegistryFindDescriptorFixtures {
     @Payload
     struct TestFindEvent: ServerEventPayload {
         let id: String
@@ -562,7 +562,7 @@ func testEventRegistryFindDescriptor() {
 }
 
 /// Payload fixtures of `testEventRegistryIsRegistered`, at file scope: an extension macro can't attach to a local type.
-private enum TestEventRegistryIsRegisteredFixtures {
+fileprivate enum TestEventRegistryIsRegisteredFixtures {
     @Payload
     struct TestRegisteredEvent: ClientEventPayload {
         public init() {}
@@ -594,7 +594,7 @@ func testEventRegistryIsRegistered() {
 }
 
 /// Payload fixtures of `testBothClientAndServerEvents`, at file scope: an extension macro can't attach to a local type.
-private enum TestBothClientAndServerEventsFixtures {
+fileprivate enum TestBothClientAndServerEventsFixtures {
     @Payload
     struct ClientEvent: ClientEventPayload {
         public init() {}
@@ -660,7 +660,7 @@ func testOnInitialize() async throws {
 }
 
 /// Payload fixtures of `testOnInitializeWithResolver`, at file scope: an extension macro can't attach to a local type.
-private enum TestOnInitializeWithResolverFixtures {
+fileprivate enum TestOnInitializeWithResolverFixtures {
     @PlainData
     struct ConfigInfo: ResolverOutput {
         let maxPlayers: Int
@@ -994,7 +994,7 @@ func testDestroyWhenEmptyDoesNotDestroyWithPlayers() async throws {
 }
 
 /// Payload fixtures of `testCanJoinWithResolver`, at file scope: an extension macro can't attach to a local type.
-private enum TestCanJoinWithResolverFixtures {
+fileprivate enum TestCanJoinWithResolverFixtures {
     @PlainData
     struct UserLevelInfo: ResolverOutput {
         let userID: String

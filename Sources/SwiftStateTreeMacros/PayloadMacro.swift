@@ -383,14 +383,21 @@ extension PayloadMacro: ExtensionMacro {
 
     /// A payload conforms unconditionally, so a generic parameter that a stored property names
     /// must be `PlainData` itself: declared on the parameter or in a `where` requirement on it,
-    /// as `PlainData` or one of the payload protocols. A spelling the macro can't read (an
-    /// alias, another refining protocol) passes here and is left to the compiler.
+    /// as `PlainData` or one of the payload protocols. The diagnostic fires only where the
+    /// macro can tell: no constraint, or only standard protocols that don't refine `PlainData`.
+    /// A spelling the macro can't read (an alias, another refining protocol) passes here and is
+    /// left to the compiler.
     private static func diagnoseUnconstrainedParameters(
         of structDecl: StructDeclSyntax,
         failed: inout Bool,
         _ context: some MacroExpansionContext
     ) {
         let plain = payloadProtocols.union(["PlainData"])
+        // Standard protocols that don't make a type PlainData, and the words around them.
+        let notPlain: Set<String> = [
+            "Codable", "Encodable", "Decodable", "Sendable", "Hashable", "Equatable", "Comparable",
+            "Copyable", "Escapable", "BitwiseCopyable", "Swift", "any", "&", "~",
+        ]
         for parameter in structDecl.genericParameterClause?.parameters ?? [] {
             let name = parameter.name.identifier?.name ?? parameter.name.text
             guard let field = storedProperty(naming: name, in: structDecl) else { continue }
@@ -401,10 +408,10 @@ extension PayloadMacro: ExtensionMacro {
                     constraints.append(Syntax(conformance.rightType))
                 }
             }
-            let constrained = constraints.contains { constraint in
-                constraint.tokens(viewMode: .sourceAccurate).contains { plain.contains($0.identifier?.name ?? $0.text) }
-            }
-            if !constrained {
+            let names = constraints.flatMap { $0.tokens(viewMode: .sourceAccurate).map { $0.identifier?.name ?? $0.text } }
+            let constrained = names.contains { plain.contains($0) }
+            let unreadable = names.contains { !notPlain.contains($0) && !plain.contains($0) }
+            if !constrained && !unreadable {
                 context.diagnose(Diagnostic(node: parameter.name, message: PayloadDiagnostics.unconstrainedParameter(name, field: field)))
                 failed = true
             }

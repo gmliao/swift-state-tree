@@ -46,6 +46,7 @@ enum PackDepthShape: String, CaseIterable, Sendable, CustomTestStringConvertible
 
 /// A leaf that writes `depth` objects, one inside another: `{"n": {"n": ... 1}}`. Its `Codable`
 /// form is only the depth; the MessagePack writer is what builds the nesting.
+@PlainData
 struct NestedObjectsLeaf: _PayloadWireLeaf, Codable, Sendable, Equatable {
     let depth: Int
 

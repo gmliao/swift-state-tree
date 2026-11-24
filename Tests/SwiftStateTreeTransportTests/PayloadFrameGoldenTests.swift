@@ -53,27 +53,27 @@ struct PFMathEvent: ServerEventPayload {
     let acceleration: Acceleration2
 }
 
+@PlainData
 struct PFNested: Codable, Sendable {
     let a: Int
     let b: String
 }
 
+@PlainData
 enum PFKind: String, Codable, Sendable {
     case first
     case second
 }
 
+/// The fields written through `Codable`. (An `AnyCodable`, `Date` or `UUID` field isn't plain
+/// data, so a payload can't hold one any more.)
 @Payload
 struct PFFallbacksEvent: ServerEventPayload {
     let ints: [Int]
     let byName: [String: Int]
     let byPlayer: [PlayerID: Int]
     let nested: PFNested
-    let anyObject: AnyCodable
-    let anyArray: AnyCodable
-    let date: Date
     let data: Data
-    let uuid: UUID
     let kind: PFKind
 }
 
@@ -227,18 +227,12 @@ enum PayloadFrameCases {
                 byName: ["b": 2, "a": 1, "\u{E9}": 3],
                 byPlayer: [PlayerID("p1"): 10, PlayerID("p2"): 20],
                 nested: PFNested(a: 7, b: "x"),
-                anyObject: AnyCodable(["k": AnyCodable(1), "j": AnyCodable("v"), "n": AnyCodable([AnyCodable(true)])]),
-                anyArray: AnyCodable([AnyCodable(1), AnyCodable("a"), AnyCodable(false)]),
-                date: Date(timeIntervalSinceReferenceDate: 1.5),
                 data: Data([0, 1, 254, 255]),
-                uuid: UUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5F")!,
                 kind: .second
             )),
             serverEvent("fallbacks-empty", PFFallbacksEvent(
                 ints: [], byName: [:], byPlayer: [:], nested: PFNested(a: 0, b: ""),
-                anyObject: AnyCodable([String: AnyCodable]()), anyArray: AnyCodable([AnyCodable]()),
-                date: Date(timeIntervalSinceReferenceDate: 0), data: Data(),
-                uuid: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!, kind: .first
+                data: Data(), kind: .first
             )),
             serverEvent("empty", PFEmptyEvent()),
             serverEvent("unhashed", PFUnhashedEvent(n: 5)),
@@ -246,8 +240,8 @@ enum PayloadFrameCases {
             serverEvent("monitor-tick-summary", TickSummaryEvent(tickId: 42, isMatch: false, expectedHash: "aa", actualHash: "bb")),
             serverEvent("monitor-tick-processed", TickProcessedEvent(
                 tickId: .max,
-                expectedState: AnyCodable(["hp": AnyCodable(3), "name": AnyCodable("x")]),
-                actualState: AnyCodable(["hp": AnyCodable(4)]),
+                expectedState: #"{"hp":3,"name":"x"}"#,
+                actualState: #"{"hp":4}"#,
                 isMatch: false, expectedHash: "aa", actualHash: "bb"
             )),
             serverEvent("monitor-progress", VerificationProgressEvent(processedTicks: 3, totalTicks: 9)),

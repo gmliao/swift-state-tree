@@ -2354,7 +2354,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input, abandonment: abandonment)
         actionJobsStarted += 1
         let task = Task { [weak self] in
-            let resolved: Result<[String: any ResolverOutput], any Error>
+            let resolved: Result<[String: HeldResolverOutput], any Error>
             do {
                 let outputs = try await ResolverExecutor.executeResolvers(
                     executors: executors,
@@ -3053,7 +3053,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     playerID: playerID,
                     clientID: clientID,
                     sessionID: sessionID,
-                    resolverOutputs: [:],
+                    heldResolverOutputs: [:],
                     resolvedAtTick: lastCommittedTickId
                 ),
                 decodedAction: decodedAction,
@@ -3073,7 +3073,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
-                resolverOutputs: [:],
+                heldResolverOutputs: [:],
                 // Rebound to the tick current at delivery (`deliverResolvedAction`).
                 resolvedAtTick: lastCommittedTickId
             ),

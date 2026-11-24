@@ -335,7 +335,7 @@ This example demonstrates how to handle bidirectional event communication:
 struct ChatMessageEvent: ClientEventPayload {
     let playerID: PlayerID
     let message: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 
 @Payload
@@ -349,7 +349,7 @@ struct ChatMessageBroadcastEvent: ServerEventPayload {
     let playerID: PlayerID
     let playerName: String
     let message: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 
 @Payload
@@ -381,7 +381,7 @@ struct ChatMessage: Codable, Sendable {
     var playerID: PlayerID
     var playerName: String
     var message: String
-    var timestamp: Date
+    var timestampMillis: Int64
 }
 
 // Land
@@ -415,7 +415,7 @@ let lobbyLand = Land("lobby", using: LobbyState.self) {
                 playerID: event.playerID,
                 playerName: playerName,
                 message: event.message,
-                timestamp: event.timestamp
+                timestampMillis: event.timestampMillis
             )
             state.chatMessages.append(chatMessage)
             if state.chatMessages.count > 100 {
@@ -428,7 +428,7 @@ let lobbyLand = Land("lobby", using: LobbyState.self) {
                     playerID: event.playerID,
                     playerName: playerName,
                     message: event.message,
-                    timestamp: event.timestamp
+                    timestampMillis: event.timestampMillis
                 ),
                 to: .all
             )
@@ -479,6 +479,7 @@ struct ResourceGameState: StateNodeProtocol {
 }
 
 @SnapshotConvertible
+@PlainData
 struct ResourceState: Codable, Sendable {
     var gold: Int
     var wood: Int
@@ -576,7 +577,7 @@ struct ProductInfoResolver: ContextResolver {
     }
 }
 
-@SnapshotConvertible
+@PlainData
 struct ProductInfo: Codable, Sendable, ResolverOutput {
     let id: String
     let name: String

@@ -38,6 +38,8 @@ No conformer is a class or an actor. Three are generic: `ENGenericEvent<T: Codab
   - **the three generic fixtures** add `T: PlainData`;
   - **the builder** is the one #772 merges: round 5's value-form builder, in `PlainDataMacroSupport`. P3a follows its final shape and doesn't fork it.
 
+**Local types (found in P3a).** Swift doesn't attach an extension macro to a type declared inside a function: the compiler refuses the attachment itself ("local type cannot have attached extension macro", probed with `swiftc -typecheck` on 6.4.3), whether or not the macro would write an extension. So a `@Payload` or `@PlainData` type can't be local. About 35 test fixtures were local (in `SchemaGenTests`, `LandDSLTests`, `ActionEventSyncTests`, `TransportMessageEncoderTests`, `FieldMetadataDefaultValueTests`); each moves into a `private enum <testName>Fixtures` beside its test, which keeps the last-component names that schemas and wire names read. A member-role witness for `@Payload` was considered and declined: it can't add the conformance for a `@Payload` struct used as a field, and a local `@PlainData` type would still not compile. The must-not-compile snippet `payload-local-type.swift` pins the limit, and fails if a later Swift lifts it. No payload in `docs/` or `Examples/` is local.
+
 **Beside other attributes.**
 - `@Payload` with `@PlainData` on the same type: `@Payload` refuses it with a diagnostic ("`@Payload` already makes this type PlainData; remove `@PlainData`"), as P4's `@StateNodeBuilder` does.
 - `@Payload` with `@SnapshotConvertible`, `atomic:` or not: both write `getFieldMetadata()`, so the pair doesn't compile today (a redeclaration). `@Payload` refuses it with a diagnostic naming the other attribute. No type in the repository carries both, nor `@Payload` with `@StateNodeBuilder`.
@@ -342,6 +344,7 @@ Every break is a source break with no deprecation step, as for #593: there are n
   - `TickProcessedPayload` is removed.
   - `PendingActionItem.resolverOutputs` and `PendingLifecycleItem.resolverOutputs` (public, `[String: any ResolverOutput]`, LK:208, 168) are removed. A replayed item's outputs aren't `ResolverOutput` values any more (§2.5). Their public initializers keep their parameters. `PendingAction.resolverOutputs` stays: the legacy queue has no replay path.
   - `@Payload` refuses `@PlainData` and `@SnapshotConvertible` beside it, and a generic payload that stores a parameter without `T: PlainData`.
+  - A payload or resolver output can't be declared inside a function: extension macros don't attach to local types (§2.1, Local types).
 - **Additive (P3a):** `@Payload` declares an extension role (`conformances: PlainData`, `names: named(_plainDataCheck)`). It makes a type `PlainData`. `LandID` is `PlainData`.
 - **Unchanged (P3a):** `ReevaluationStepResult.actualState: AnyCodable?` (the monitor bridges it, §2.2). `LandContext`'s public API.
 - **Behavior (P3b, P3-Q2 (a)):** a server input whose record form doesn't decode back to its type is refused at submit (`.unencodable`), where today it was accepted and failed in its turn. One that decodes to a different value is accepted, and both live and replay apply the decoded value. `ServerInputRefusal.unencodable`'s doc changes to match (§2.3).

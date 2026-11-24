@@ -133,7 +133,10 @@ struct RefusedFieldTypeDiagnosticTests {
                 let value: \(field)
             }
             """)
-        #expect(messages.contains { $0.hasPrefix("property 'value' can't have '\(spelling)' in its type: Decimal isn't plain data") }, "\(messages)")
+        // @Payload checks its fields with @PlainData's walk: the Foundation type is named with its
+        // replacement; a tuple is refused as a tuple before its elements are read.
+        let refusal = field.hasPrefix("(") ? "a tuple can't conform to PlainData" : "Decimal isn't plain data; store an integer in the smallest unit"
+        #expect(messages.contains { $0.hasPrefix(refusal) }, "\(messages)")
         // `Decimal?` also gets @Payload's Optional diagnostic: both are reported.
         if field.hasSuffix("?") {
             #expect(messages.contains { $0.hasPrefix("Payload field 'value' cannot be Optional") }, "\(messages)")
@@ -151,7 +154,7 @@ struct RefusedFieldTypeDiagnosticTests {
         #expect(messages.first?.hasPrefix("property 'amount' can't have 'Decimal' in its type") == true, "\(messages)")
     }
 
-    @Test("Not refused by the macro: a server-only or @Internal Decimal (the type checker refuses the @Internal one: Decimal isn't PlainData), a @Payload AnyCodable, and a Decimal of another module")
+    @Test("Not refused by the macro: a server-only or @Internal Decimal (the type checker refuses the @Internal one: Decimal isn't PlainData), and a Decimal of another module")
     func decimalAllowed() {
         #expect(diagnostics("""
             @StateNodeBuilder
@@ -160,6 +163,11 @@ struct RefusedFieldTypeDiagnosticTests {
                 @Internal var scratch: Decimal = 0
             }
             """).isEmpty)
+        #expect(diagnostics(stateNode("Money.Decimal")).isEmpty)
+    }
+
+    @Test("A @Payload AnyCodable field passes the macro: the type checker refuses it, since AnyCodable isn't PlainData (must-not-compile server-input-anycodable)")
+    func payloadAnyCodableLeftToTheCompiler() {
         #expect(diagnostics("""
             @Payload
             struct ReportEvent: ServerEventPayload {
@@ -167,7 +175,6 @@ struct RefusedFieldTypeDiagnosticTests {
                 let byName: [String: AnyCodable]
             }
             """).isEmpty)
-        #expect(diagnostics(stateNode("Money.Decimal")).isEmpty)
     }
 
     @Test("The serverOnly skip reads the policy, not the text: a policy closure that names serverOnly is still checked")

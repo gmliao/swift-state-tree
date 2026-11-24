@@ -96,7 +96,7 @@ struct TransportMessageEncoderTests {
         #expect(jsonArray?[3] as? String == "loc")
     }
     /// Payload fixtures of `testEncodePayloadAsArray`, at file scope: an extension macro can't attach to a local type.
-    private enum TestEncodePayloadAsArrayFixtures {
+    fileprivate enum TestEncodePayloadAsArrayFixtures {
         @Payload
         struct TestPayload: ServerEventPayload {
             let x: Int
@@ -147,7 +147,7 @@ struct TransportMessageEncoderTests {
     }
     
     /// Payload fixtures of `testEncodeActionResponsePayloadAsArray`, at file scope: an extension macro can't attach to a local type.
-    private enum TestEncodeActionResponsePayloadAsArrayFixtures {
+    fileprivate enum TestEncodeActionResponsePayloadAsArrayFixtures {
         // Setup: Use a ResponsePayload with @Payload macro to ensure correct field order
         @Payload
         struct TestResponse: ResponsePayload {
@@ -199,7 +199,7 @@ struct TransportMessageEncoderTests {
     }
     
     /// Payload fixtures of `testEncodeActionResponsePayloadAsObject`, at file scope: an extension macro can't attach to a local type.
-    private enum TestEncodeActionResponsePayloadAsObjectFixtures {
+    fileprivate enum TestEncodeActionResponsePayloadAsObjectFixtures {
         @Payload
         struct TestResponse: ResponsePayload {
             let success: Bool
@@ -244,7 +244,7 @@ struct TransportMessageEncoderTests {
     }
     
     /// Payload fixtures of `testEncodeActionPayloadAsArray`, at file scope: an extension macro can't attach to a local type.
-    private enum TestEncodeActionPayloadAsArrayFixtures {
+    fileprivate enum TestEncodeActionPayloadAsArrayFixtures {
         // Setup: Use an ActionPayload with @Payload macro to ensure correct field order
         @Payload
         struct TestAction: ActionPayload {
@@ -308,7 +308,7 @@ struct TransportMessageEncoderTests {
     }
     
     /// Payload fixtures of `testEncodeActionPayloadAsObject`, at file scope: an extension macro can't attach to a local type.
-    private enum TestEncodeActionPayloadAsObjectFixtures {
+    fileprivate enum TestEncodeActionPayloadAsObjectFixtures {
         @Payload
         struct TestAction: ActionPayload {
             typealias Response = TestActionResponse

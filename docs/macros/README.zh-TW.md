@@ -127,6 +127,7 @@ class GameState: StateNodeProtocol {
 - **生成 field metadata**：產生 `getFieldMetadata()` 方法
 - **生成 response type**：Action payload 會額外產生 `getResponseType()` 方法
 - **Schema 生成**：用於自動生成 JSON Schema
+- **純資料**：讓型別成為 [`PlainData`](../turns/README.zh-TW.md#什麼算純資料)；欄位不能是 `Date`、`UUID`、`URL`、`Decimal`、`AnyCodable`、`Any`、class 或 closure（[詳細說明](payload.zh-TW.md#概述)）
 
 ### 使用範例
 
@@ -156,14 +157,14 @@ struct JoinResponse: ResponsePayload {
 struct PlayerJoinedEvent: ServerEventPayload {
     let playerID: PlayerID
     let name: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 
 @Payload
 struct ChatMessageEvent: ClientEventPayload {
     let playerID: PlayerID
     let message: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 ```
 
@@ -199,8 +200,7 @@ struct JoinAction: ActionPayload {
     let playerID: PlayerID
 }
 
-// 在 runtime 會 trap
-let responseType = JoinAction.getResponseType()  // ❌ Runtime error
+// ❌ 無法編譯：JoinAction 不是 PlainData，而 PlainData 由 @Payload 加上
 ```
 
 **解決方案**：

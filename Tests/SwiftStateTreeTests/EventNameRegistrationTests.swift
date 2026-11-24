@@ -67,12 +67,12 @@ enum ENOuter {
 }
 
 @Payload
-struct ENGenericEvent<T: Codable & Sendable>: ServerEventPayload {
+struct ENGenericEvent<T: Codable & Sendable & PlainData>: ServerEventPayload {
     let value: T
 }
 
 @Payload
-struct ENGenericAction<T: Codable & Sendable>: ActionPayload {
+struct ENGenericAction<T: Codable & Sendable & PlainData>: ActionPayload {
     typealias Response = ENAck
     let value: T
 }

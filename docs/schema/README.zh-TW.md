@@ -393,6 +393,7 @@ A: 確保自定義型別實作了必要的 protocol：
 - `Codable`：用於序列化
 - `Sendable`：用於並發安全
 - 標記 `@Payload` 或 `@SnapshotConvertible` 以提供 metadata
+- 當作 payload 欄位的型別還需要 `@PlainData`（或 `@Payload`）
 
 ### Q: Schema 檔案很大怎麼辦？
 

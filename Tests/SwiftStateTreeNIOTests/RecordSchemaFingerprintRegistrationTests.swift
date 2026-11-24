@@ -19,6 +19,7 @@ struct FingerprintHostState: StateNodeProtocol, StateFromSnapshotDecodable {
 }
 
 /// A nested value with required fields and no `@SnapshotConvertible`: no sample of it can be built.
+@PlainData
 struct FingerprintHostInner: Codable, Sendable {
     let x: Int
 }

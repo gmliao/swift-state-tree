@@ -9,7 +9,7 @@ import Logging
 struct ProductInfo: ResolverOutput {
     let id: String
     let name: String
-    let price: Decimal
+    let priceCents: Int64
     let stock: Int
 }
 
@@ -38,7 +38,7 @@ struct ProductInfoResolver: ContextResolver {
         return ProductInfo(
             id: productID,
             name: "Test Product",
-            price: Decimal(99.99),
+            priceCents: 9999,
             stock: 100
         )
     }
@@ -174,7 +174,7 @@ private func resolveAnyResolver(
 
 @Test("ResolverOutput protocol conformance")
 func testResolverOutputProtocol() {
-    let product = ProductInfo(id: "1", name: "Test", price: 10.0, stock: 5)
+    let product = ProductInfo(id: "1", name: "Test", priceCents: 1000, stock: 5)
     // ProductInfo conforms to ResolverOutput, so this should compile
     let _: ResolverOutput = product
 
@@ -209,7 +209,7 @@ func testContextResolver() async throws {
     let output = try await ProductInfoResolver.resolve(ctx: resolverContext)
     #expect(output.id == "product-123")
     #expect(output.name == "Test Product")
-    #expect(output.price == Decimal(99.99))
+    #expect(output.priceCents == 9999)
     #expect(output.stock == 100)
 }
 
@@ -282,7 +282,7 @@ func testParallelResolverExecutionAsyncLet() async throws {
 func testDynamicContextStorage() {
     var ctx = TestResolverContext()
 
-    let productInfo = ProductInfo(id: "1", name: "Test", price: 10.0, stock: 5)
+    let productInfo = ProductInfo(id: "1", name: "Test", priceCents: 1000, stock: 5)
     ctx.set(productInfo, for: "ProductInfoResolver")
 
     let userProfile = UserProfileInfo(userID: "1", name: "User", email: "test@test.com", level: 5)
@@ -304,7 +304,7 @@ func testSynchronousActionHandler() throws {
     // that were pre-resolved before the handler executes
 
     // Pre-resolved outputs (simulating what would happen before handler execution)
-    let productInfo = ProductInfo(id: "1", name: "Test Product", price: 99.99, stock: 100)
+    let productInfo = ProductInfo(id: "1", name: "Test Product", priceCents: 9999, stock: 100)
     let userProfile = UserProfileInfo(userID: "1", name: "Test User", email: "test@test.com", level: 10)
 
     // Simulate synchronous action handler
@@ -314,14 +314,14 @@ func testSynchronousActionHandler() throws {
     // Synchronous handler that uses pre-resolved data
     func handleActionSync(state: inout TestState, action: ResolverTestAction, productInfo: ProductInfo, userProfile: UserProfileInfo) throws -> ResolverTestResponse {
         // Use resolver outputs synchronously
-        state.value = Int(truncating: productInfo.price as NSDecimalNumber)
+        state.value = Int(productInfo.priceCents / 100)
         // Handler logic here...
         return ResolverTestResponse(success: true)
     }
 
     let response = try handleActionSync(state: &state, action: action, productInfo: productInfo, userProfile: userProfile)
     #expect(response.success == true)
-    #expect(state.value == 99) // Int(99.99) = 99
+    #expect(state.value == 99) // 9999 cents = 99 whole units
 }
 
 @Test("Resolver error handling - direct resolver")

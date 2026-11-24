@@ -568,7 +568,7 @@ func testManualSyncNowRequest() async throws {
 }
 
 /// Payload fixtures of `testHandleActionEnvelopeDecodesPayloadTypes`, at file scope: an extension macro can't attach to a local type.
-private enum TestHandleActionEnvelopeDecodesPayloadTypesFixtures {
+fileprivate enum TestHandleActionEnvelopeDecodesPayloadTypesFixtures {
     // Arrange
     @Payload
     struct TestActionWithTypes: ActionPayload {
@@ -644,7 +644,7 @@ func testHandleActionEnvelopeDecodesPayloadTypes() async throws {
 }
 
 /// Payload fixtures of `testHandleActionEnvelopeTypeMismatch`, at file scope: an extension macro can't attach to a local type.
-private enum TestHandleActionEnvelopeTypeMismatchFixtures {
+fileprivate enum TestHandleActionEnvelopeTypeMismatchFixtures {
     // Arrange
     @Payload
     struct IntAction: ActionPayload {

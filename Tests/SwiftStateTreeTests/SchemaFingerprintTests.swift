@@ -196,6 +196,7 @@ struct FPExtraAction: ActionPayload {
 /// A `Set` field: its element's fields are hashed, and an element whose fields can't be listed
 /// is refused.
 enum FPSetV1 {
+    @PlainData
     @SnapshotConvertible
     struct FPTag: Codable, Hashable, Sendable {
         let id: Int
@@ -209,6 +210,7 @@ enum FPSetV1 {
 }
 
 enum FPSetElementField {
+    @PlainData
     @SnapshotConvertible
     struct FPTag: Codable, Hashable, Sendable {
         let id: Int
@@ -223,6 +225,7 @@ enum FPSetElementField {
 }
 
 enum FPSetUnbuildable {
+    @PlainData
     struct FPTag: Codable, Hashable, Sendable {
         let id: Int
     }
@@ -236,6 +239,7 @@ enum FPSetUnbuildable {
 
 /// A `CaseIterable` raw-value enum field: its raw values are hashed.
 enum FPEnumV1 {
+    @PlainData
     enum FPKind: String, Codable, CaseIterable, Sendable {
         case first, second
     }
@@ -248,6 +252,7 @@ enum FPEnumV1 {
 }
 
 enum FPEnumCaseAdded {
+    @PlainData
     enum FPKind: String, Codable, CaseIterable, Sendable {
         case first, second, third
     }
@@ -260,6 +265,7 @@ enum FPEnumCaseAdded {
 }
 
 enum FPEnumRevalued {
+    @PlainData
     enum FPKind: String, Codable, CaseIterable, Sendable {
         case first, second = "2nd"
     }
@@ -323,6 +329,7 @@ struct FPCollidingKeys: ServerEventPayload {
 }
 
 /// A nested value no sample of which can be built: required fields, no `@SnapshotConvertible`.
+@PlainData
 struct FPInner: Codable, Sendable {
     let x: Int
 }
@@ -340,11 +347,6 @@ struct FPFieldlessAction: ActionPayload {
 
 @Payload
 struct FPFieldlessEvent: ServerEventPayload {}
-
-@Payload
-struct FPAnyEvent: ServerEventPayload {
-    let value: AnyCodable
-}
 
 /// A server input and a client event without `@Payload` that have fields: their fields can't be
 /// listed.
@@ -635,12 +637,11 @@ struct SchemaFingerprintTests {
         #expect(try land.schemaFingerprintCache.value { "not computed" }.get() == "not computed")
     }
 
-    @Test("Field-less payloads and an AnyCodable field are hashed as they are")
+    @Test("Field-less payloads are hashed as they are")
     func fieldlessIsHashed() throws {
         let land = Land("fp-fieldless", using: FPv1.FPState.self) {
             ServerEvents {
                 Register(FPFieldlessEvent.self)
-                Register(FPAnyEvent.self)
             }
             Rules {
                 HandleAction(FPFieldlessAction.self) { (_: inout FPv1.FPState, _: FPFieldlessAction, _: LandContext) in FPv1.FPResponse(ok: true) }

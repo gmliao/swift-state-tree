@@ -127,6 +127,7 @@ class GameState: StateNodeProtocol {
 - **Generate field metadata**: Generate `getFieldMetadata()` method
 - **Generate response type**: Action payloads additionally generate `getResponseType()` method
 - **Schema generation**: Used for automatic JSON Schema generation
+- **Plain data**: Makes the type [`PlainData`](../turns/README.md#what-counts-as-plain-data); a field can't be `Date`, `UUID`, `URL`, `Decimal`, `AnyCodable`, `Any`, a class or a closure ([details](payload.md#overview))
 
 ### Usage Examples
 
@@ -156,14 +157,14 @@ struct JoinResponse: ResponsePayload {
 struct PlayerJoinedEvent: ServerEventPayload {
     let playerID: PlayerID
     let name: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 
 @Payload
 struct ChatMessageEvent: ClientEventPayload {
     let playerID: PlayerID
     let message: String
-    let timestamp: Date
+    let timestampMillis: Int64
 }
 ```
 
@@ -199,8 +200,7 @@ struct JoinAction: ActionPayload {
     let playerID: PlayerID
 }
 
-// Will trap at runtime
-let responseType = JoinAction.getResponseType()  // ❌ Runtime error
+// ❌ Doesn't compile: JoinAction isn't PlainData, which @Payload adds
 ```
 
 **Solution**:

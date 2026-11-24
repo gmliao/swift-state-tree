@@ -2,8 +2,9 @@
 //
 // A replayed handler reads a recorded resolver output with the codec that wrote the record (#707),
 // as a replayed server event is (#521 PR 1b): `RecordPayloadSource`, strict for a saved record and
-// with one integer-to-float allowance for the JSON view. A JSON round trip can't read a `Date`,
-// `Data` or `URL` field back, so the handler saw `nil` where the live one saw a value.
+// with one integer-to-float allowance for the JSON view. A JSON round trip can't read a `Data`
+// field back, so the handler saw `nil` where the live one saw a value. (`Date`, `URL` and
+// `Decimal` aren't plain data, so a resolver output can't hold them.)
 //
 
 import Foundation
@@ -13,24 +14,17 @@ import Testing
 
 // MARK: - Fixtures
 
-/// A resolver output with each field a JSON round trip loses or reshapes. `at` is a whole second,
-/// so the stated Date truncation (ReplayTypedEventDecodeTests) doesn't apply; `ratio` is an
-/// integral Double, which the JSON view writes as an integer.
+/// A resolver output with each plain field a JSON round trip loses or reshapes: `Data`, and
+/// `ratio`, an integral Double, which the JSON view writes as an integer.
 @PlainData
 struct ResolverReplayStamp: ResolverOutput, Equatable {
-    let at: Date
     let blob: Data
-    let link: URL
-    let amount: Decimal
     let ratio: Double
     let n: Int
 }
 
 let resolverReplayLive = ResolverReplayStamp(
-    at: Date(timeIntervalSince1970: 1_800_000_000),
     blob: Data([0, 1, 254, 255]),
-    link: URL(string: "https://example.com/a?b=c")!,
-    amount: Decimal(string: "12.34")!,
     ratio: 2.0,
     n: 7
 )
@@ -107,8 +101,7 @@ struct ResolverReplayLogHandler: LogHandler {
 func resolverReplaySeen(_ stamp: ResolverReplayStamp?) -> [String] {
     guard let stamp else { return ["nil"] }
     return [
-        "\(stamp.at.timeIntervalSince1970)", stamp.blob.base64EncodedString(), stamp.link.absoluteString,
-        "\(stamp.amount)", "\(stamp.ratio)", "\(stamp.n)",
+        stamp.blob.base64EncodedString(), "\(stamp.ratio)", "\(stamp.n)",
     ]
 }
 
@@ -216,7 +209,7 @@ struct ResolverOutputReplayTests {
         #expect(live.seenAtInit == expected)
     }
 
-    @Test("Replayed from each record form, each handler sees what the live one saw: Date, Data, URL, a finite Decimal, an integral Double",
+    @Test("Replayed from each record form, each handler sees what the live one saw: Data, an integral Double",
           arguments: ResolverReplayForm.allCases)
     func replaySeesTheLiveOutput(form: ResolverReplayForm) async throws {
         let (path, live) = try await recordAction(form: form)
@@ -242,27 +235,5 @@ struct ResolverOutputReplayTests {
         #expect(warnings.first?.metadata["requestedType"].map { "\($0)".hasSuffix("ResolverReplayMismatch") } == true, "\(form)")
         // The outputs that do decode log nothing.
         #expect(replayed.seen == live.seen, "\(form)")
-    }
-
-    @Test("A Decimal NaN in a resolver output is recorded in Decimal's keyed form and replays as NaN from each record form",
-          arguments: ResolverReplayForm.allCases)
-    func decimalNaNReplays(form: ResolverReplayForm) async throws {
-        // Both record forms hold the canonical tree: Decimal's own keyed Codable form, integers and
-        // booleans. The JSON view renders that tree, not the live value, so no bare `NaN` (which
-        // `JSONEncoder` writes for a typed Decimal NaN) reaches the file, and nothing is refused at
-        // the record write.
-        let base = resolverReplayLive
-        let stamp = ResolverReplayStamp(at: base.at, blob: base.blob, link: base.link, amount: .nan, ratio: base.ratio, n: base.n)
-        let (path, live) = try await ResolverReplayStampResolver.$output.withValue(stamp) {
-            try await recordAction(form: form)
-        }
-        #expect(live.seen == resolverReplaySeen(stamp))
-        if form == .jsonView {
-            let text = try String(contentsOfFile: path, encoding: .utf8)
-            #expect(!text.contains("NaN"), "the JSON view holds no bare NaN")
-        }
-        let replayed = try await replayState(path: path)
-        #expect(replayed.seen == live.seen, "\(form)")
-        #expect(replayed.seen.count == 6 && replayed.seen[3] == "\(Decimal.nan)", "\(form): \(replayed.seen)")
     }
 }
