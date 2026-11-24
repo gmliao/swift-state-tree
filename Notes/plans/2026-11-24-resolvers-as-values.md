@@ -1,6 +1,6 @@
 # #769: a resolver is a PlainData value
 
-**Status:** rev 2.2, plan only, no code. Rev 2 is GO (659cd242); 2.1 folds in its notes, 2.2 records R0's results (§3.8, §9). R-Q1 to R-Q4 are all decided (§8). It follows the maintainer's 2026-11-22 decisions on #769 (the issue body, then three comments: `currentState` removed, the value form, and capability protocols for dependencies), and R-Q1 as decided 2026-11-24 (§3.4). Rev 2 answers Review's NOT GO on rev 1 (1ee8b88f); what changed is listed in §9. Open questions are in §8.
+**Status:** rev 2.3, plan only, no code. Rev 2 is GO (659cd242); 2.1 folds in its notes, 2.2 records R0's results (§3.8, §9), 2.3 folds in Review's notes on 2.2, `@Land`'s `services:` parameter and R1's 6.4.3 precondition (§9). R-Q1 to R-Q4 are all decided (§8). It follows the maintainer's 2026-11-22 decisions on #769 (the issue body, then three comments: `currentState` removed, the value form, and capability protocols for dependencies), and R-Q1 as decided 2026-11-24 (§3.4). Rev 2 answers Review's NOT GO on rev 1 (1ee8b88f); what changed is listed in §9. Open questions are in §8.
 
 Code pointers are at main c9f149ad. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. The dependency probe in §3.4 is a one-file probe kept outside the repository. It passed on Swift 6.4.2 and 6.4.3, without the real `@PlainData` (§3.1.1). **The pin is moving to 6.4.3** (a bump PR is in flight), so R0 probes on 6.4.3 as the target toolchain, in the pinned image once the bump lands. If the bump hasn't landed when R1 starts, R0 also probes on 6.2.4, since CI still gates on it.
 
@@ -223,7 +223,9 @@ HandleAction(A.self,
   - **patched**, with §3.1.1's rule;
   - **mutant**, with no constraint at all (M7).
 - Each variant was built as the `SwiftStateTurnsMacros` tool. The cases were type-checked, and the positive ones run, with `swiftc -load-plugin-executable` against that build's `SwiftStateTurns`.
-- Toolchains: 6.4.2 (macOS) and 6.2.4 (the pinned `swift:6.2.4-noble` image). **6.4.3, the target, is not run yet:** its image (#775) was pulled, and the run was stopped to free the build slot. It is a re-run of the same scripts.
+- Toolchains: 6.4.2 (macOS) and 6.2.4 (the `swift:6.2.4-noble` image, CI's pin before #775).
+- **Re-run at #772's round-5 head ef3e469e** (the value form: `PlainDataCheck.field` takes a value, not a metatype), on 6.4.2. The probe cases that called `PlainDataCheck.field(X.self)` now call a probe-local `requirePlainData<T: PlainData>(_: T.Type)`. **Every result below is unchanged.** The mutant's messages now name `field` (`static method 'field' requires that 'T' conform to 'PlainData'`).
+- **6.4.3, the pin since #775, is not run yet.** The first attempt failed before any probe ran: swift-syntax's build stopped with "unable to open dependencies file", in a build directory bind-mounted from the host. The retry builds inside the container. It was stopped to free the build slot. **R1's precondition** (§6): this R0, re-run in the pinned `swift:6.4.3-noble` image at #772's merged head, with the same results. The results go here with that head's SHA, the image digest and `swift --version`.
 
 **§3.1.1, the macro rule.** Results are the same on both toolchains:
 - **The positive case compiles and runs only with the patched rule.** It covers three types:
@@ -242,6 +244,7 @@ HandleAction(A.self,
   - `struct S<C: Collection> { let first: C.Element? }` fails with every variant, today's included: the field check needs `C.Element: PlainData`, and the macro writes `C: PlainData`.
   - The user writes the requirement on the declaration (`<C: Collection> where C.Element: PlainData`), and then it compiles.
   - This is not a regression. The macro PR documents it, and adds this case to its macro tests as a must-not-compile snippet with its constrained pair.
+  - The snippet's expected fragment is `'C.Element' conform to 'PlainData'`. That is the stable part of the message: the subject before it depends on which check fails (6.4.2 says `enum 'PlainDataCheck' requires that …`), and none of it names the declaration's `where` clause. The 6.4.3 re-run confirms the fragment.
 
 **§3.4, the dependency probe and Main's R-Q1 (c) probe, with the real macro.**
 - **The positive case runs only with the patched rule.** A `cart` land with `AppServices` and a no-services `ping` land register. A resolver's output arrives (`p7 @ 70`).
@@ -273,9 +276,12 @@ HandleAction(A.self,
 - Today's macro crashes 6.2.4 the same way on the probe's positive case, so the crash comes from the failing conditional conformance in the builder's closure, not from the patched rule.
 
   The consequence for R1:
-  - **R1 lands after the 6.4.3 bump (#775)** if it can. On 6.2.4, a user's mistake of this kind shows as a compiler crash.
-  - If R1 lands first, its must-not-compile snippet for this case runs only on 6.4.x. The `swift:6.2.4-noble` job accepts the crash as "doesn't compile", with a comment naming this section.
-  - The 6.4.3 re-run checks whether the crash is gone there.
+  - **#775 has landed:** CI builds only with 6.4.3, so no CI job meets the crash, and R1's must-not-compile snippet for this case expects a diagnostic. The 6.4.3 re-run confirms that 6.4.3 gives one, as 6.4.2 does.
+  - **`Package.swift` still says `swift-tools-version: 6.2`**, and README, FAQ and quickstart say "Swift 6.2+". A user on 6.2.x would meet the crash for this mistake, and nothing tests 6.2.x any more. **Decided: raise the floor to 6.4, as its own change, before R1** (a standing OK for floor raises):
+    - `swift-tools-version: 6.4` in `Package.swift`, a core PR;
+    - "Swift 6.4+" in README, `docs/FAQ` and `docs/quickstart`, both languages, in the same PR;
+    - Examples keep `swift-tools-version: 6.0` in their own manifests: they depend on the root package, so the root's floor already applies.
+  - It goes after the 6.4.3 re-run: if 6.4.3 crashes too, the floor raise doesn't help, and the finding goes to the maintainer before R1.
 
 **Diagnostic wording differs between toolchains.** Two examples:
 - `register(LandDefinition)` given a `TypedLand`: "cannot convert value of type 'TypedLand<…>'" on 6.4.2, "generic parameter 'State' could not be inferred" on 6.2.4;
@@ -292,6 +298,11 @@ All breaking, with no deprecation path; there are no external users yet (the iss
 - every `resolvers:` parameter changes from metatypes to a builder closure, and the handler closures gain the outputs parameter;
 - `LandContext`'s dynamic member subscript for outputs is removed;
 - `Land(_:using:services:)`, `TypedLand<State, Services>`, `NoServices`, `register(_: TypedLand, services:)` and `LandKeeper(land:resolverServices:…)` are added (§3.4);
+- **`@Land` gains a `services:` parameter** (from #771 §8, D-Q5). Until R1, `@Land` makes only lands without services: its `body` is under `@LandDSL<S, NoServices>`, and its expansion calls `Land(_:using:)`.
+  - In R1, `@Land(GameState.self, services: AppServices.self)` expands to `Land(id, using: S.self, services: Svc.self) { Self.body }`. Its `definition` is `TypedLand<S, Svc>`, and `body` is under `@LandDSL<S, Svc>`. Who writes that attribute follows #771 D1's outcome: the macro (i), or the user (ii).
+  - Without `services:`, `@Land` is unchanged.
+  - Tests: a macro-expansion test for each form; a `compiles` snippet with `services:` that registers with `register(_: TypedLand, services:)`; a must-not-compile snippet whose body uses a capability the services type lacks.
+  - #771's docs note the limit until then, and R1's docs drop it;
 - `ReevaluationRecordedResolverOutput` and the record's resolver fields change in R2 (R-Q2).
 - **Behavior, new refusals at registration** (`LandRegistrationError`, so a directly built keeper gets them as its initialization failure):
   - a land that declares services, registered or run live without a services value (§3.4);
@@ -341,9 +352,9 @@ All breaking, with no deprecation path; there are no external users yet (the iss
 
 | Slice | Content | After | Measurement |
 |---|---|---|---|
-| **R0** | **Done 2026-11-24 on 6.4.2 and 6.2.4; 6.4.3 pending (§3.8).** Probes on 6.4.3, the pin after the bump (and on 6.2.4 too if the bump hasn't landed when R1 starts), all with the real `@PlainData`: §3.1.1's cases; the dependency probe (positive and missing-capability cases); Main's R-Q1 (c) probe with the typed keeper initializer; their combination with #771's generic builder and `D`'s inference through the builder closure's return; the parameter pack of §3.2. Results go in this plan; no library code | now | none |
+| **R0** | **Done 2026-11-24 on 6.4.2 and 6.2.4, re-run on 6.4.2 at #772's ef3e469e; 6.4.3 at #772's merged head is R1's precondition (§3.8).** Probes all with the real `@PlainData`: §3.1.1's cases; the dependency probe (positive and missing-capability cases); Main's R-Q1 (c) probe with the typed keeper initializer; their combination with #771's generic builder and `D`'s inference through the builder closure's return; the parameter pack of §3.2. Results go in this plan; no library code | now | none |
 | **macro** | §3.1.1's change to `@PlainData`, its macro tests, must-not-compile snippets and M7 | R0 | none |
-| **R1** | `Resolver`, `TypedLand` and the registration (§3.4), the builder closures at admission and typed outputs, `ResolverContext` deleted for actions, OnInitialize and OnFinalize, every call site migrated with #771's codemod, Examples, docs. Resolvers still run as today's jobs (the value replaces the snapshot). The record is today's (§3.5) | P3, R0, macro, #771's D1 (not P4: R-Q4); the 6.4.3 bump (#775) if it can (§3.8) | the resolver cell: an action with one resolver, live, A/B against main |
+| **R1** | `Resolver`, `TypedLand` and the registration (§3.4), `@Land`'s `services:` parameter (§4), the builder closures at admission and typed outputs, `ResolverContext` deleted for actions, OnInitialize and OnFinalize, every call site migrated with #771's codemod, Examples, docs. Resolvers still run as today's jobs (the value replaces the snapshot). The record is today's (§3.5) | P3, R0 including its 6.4.3 re-run (a precondition), macro, the 6.4 floor raise (§3.8), #771's D1 (not P4: R-Q4) | the resolver cell: an action with one resolver, live, A/B against main |
 | **R2** | The record and replay (§3.5): the admission point, requests and positions, eager decode; #765's regression. With K5, so the value is the keyed request's payload | R1, K1a, K5 | the record part of the goldens; frames none |
 | **R3** | CanJoin, OnJoin and OnLeave carry values with the land's `Services`; per-join services leave resolvers, and #700's K2 OnLeave test is rewritten (§3.4). With K6 | R2, K6 | none beyond K6's |
 
@@ -389,3 +400,9 @@ R1 doesn't depend on #700 or on P4, so it goes right after P3, in parallel with 
 - R-Q1 (c), the typed keeper and the dependency check work with the real macro, including `D` inferred through #771's builder;
 - the parameter pack doesn't compile (same-element requirements are unsupported), so the arity overloads stay (§3.2);
 - 6.2.4 crashes on a failing conditional conformance inside the builder. R1 prefers to land after #775, and its snippets don't match whole diagnostic messages.
+
+**Rev 2.3** folds in Review's notes on rev 2.2 (GO at 48fcabcf: 2 should, 1 nit), and two additions:
+- **S1** (re-run R0 on #772's head, and record it): re-run at ef3e469e on 6.4.2, unchanged. The 6.4.3 re-run at #772's merged head is now R1's stated precondition, recorded with the SHA, the digest and `swift --version` (§3.8, §6).
+- **S2** (with #775 merged, the 6.2.4 branch goes): dropped. `swift-tools-version` is raised to 6.4 as its own change, before R1 and after the 6.4.3 re-run, with the docs' "Swift 6.2+" (§3.8, §6).
+- **Nit** (`C.Element`): the snippet pins `'C.Element' conform to 'PlainData'`, without the subject or the `where` (§3.8).
+- **`@Land`'s `services:` parameter** goes in R1, from #771's D-Q5 (§4, §6).
