@@ -1,4 +1,4 @@
-// expect-error: 'Outer.Item' conform to 'PlainData'
+// expect-error: this field's type isn't PlainData: add @PlainData to your struct or enum
 import SwiftStateTurns
 
 // The extension the macro writes is at file scope, where `Item` names the file-scope struct, not

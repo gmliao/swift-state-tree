@@ -113,6 +113,7 @@ let package = Package(
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeMacros",
+                "SwiftStateTurns",
             ],
             path: "Sources/SwiftStateTreeDeterministicMath",
             exclude: [
@@ -167,10 +168,21 @@ let package = Package(
         .macro(
             name: "SwiftStateTurnsMacros",
             dependencies: [
+                "PlainDataMacroSupport",
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
                 .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
             ],
             path: "Sources/SwiftStateTurnsMacros"
+        ),
+        // The field walk behind `@PlainData`, shared by both macro targets (not a product)
+        .target(
+            name: "PlainDataMacroSupport",
+            dependencies: [
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
+                .product(name: "SwiftDiagnostics", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+            ],
+            path: "Sources/PlainDataMacroSupport"
         ),
         .testTarget(
             name: "SwiftStateTurnsTests",
@@ -209,6 +221,7 @@ let package = Package(
         .macro(
             name: "SwiftStateTreeMacros",
             dependencies: [
+                "PlainDataMacroSupport",
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
                 .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
             ],
@@ -307,6 +320,7 @@ let package = Package(
             dependencies: [
                 "SwiftStateTreeDeterministicMath",
                 "SwiftStateTree",
+                "SwiftStateTurns",
             ],
             path: "Tests/SwiftStateTreeDeterministicMathTests"
         ),

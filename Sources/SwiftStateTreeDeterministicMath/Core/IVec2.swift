@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftStateTree
+import SwiftStateTurns
 
 /// A 2D vector using Int32 coordinates for deterministic math.
 ///
@@ -18,6 +19,7 @@ import SwiftStateTree
 /// let v2 = IVec2(x: 500, y: 300)
 /// let sum = v1 + v2  // IVec2(x: 1500, y: 2300)
 /// ```
+@PlainData
 public struct IVec2: Codable, Equatable, Hashable, Sendable, CustomStringConvertible {
     /// The x coordinate.
     public let x: Int32

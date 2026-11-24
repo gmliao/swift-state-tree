@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftStateTree
+import SwiftStateTurns
 
 /// A 2D line segment using integer coordinates for deterministic collision detection.
 ///
@@ -15,6 +16,7 @@ import SwiftStateTree
 /// let segment = ILineSegment(start: IVec2(x: 0.0, y: 0.0), end: IVec2(x: 1.0, y: 1.0))
 /// let distance = segment.distanceToPoint(IVec2(x: 0.5, y: 0.0))  // Distance to segment
 /// ```
+@PlainData
 @SnapshotConvertible
 public struct ILineSegment: Codable, Equatable, Sendable {
     /// The start point of the line segment.

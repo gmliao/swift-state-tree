@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftStateTree
+import SwiftStateTurns
 
 /// An axis-aligned bounding box (AABB) using integer coordinates.
 ///
@@ -17,6 +18,7 @@ import SwiftStateTree
 /// let point = IVec2(x: 500, y: 500)
 /// let contains = box.contains(point)  // true
 /// ```
+@PlainData
 @SnapshotConvertible
 public struct IAABB2: Codable, Equatable, Sendable {
     /// The minimum corner of the bounding box.

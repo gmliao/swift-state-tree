@@ -4,6 +4,7 @@
 // All operations use integer arithmetic for deterministic behavior.
 
 import Foundation
+import SwiftStateTurns
 
 /// A 2D grid for converting between world and cell coordinates.
 ///
@@ -16,6 +17,7 @@ import Foundation
 /// let worldPos = IVec2(x: 2500, y: 3500)
 /// let cell = grid.worldToCell(worldPos)  // IVec2(x: 2, y: 3)
 /// ```
+@PlainData
 public struct Grid2: Sendable {
     /// The size of each cell in fixed-point units.
     public let cellSize: Int32

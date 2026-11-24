@@ -1,4 +1,5 @@
 import SwiftCompilerPlugin
+import PlainDataMacroSupport
 @preconcurrency import SwiftDiagnostics
 import SwiftSyntax
 import SwiftSyntaxBuilder

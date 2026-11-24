@@ -1,4 +1,4 @@
-// expect-error: requires that 'Collaborator' conform to 'PlainData'
+// expect-error: this field's type isn't PlainData: add @PlainData to your struct or enum
 import SwiftStateTurns
 
 // A class stored inside an `#if` block is checked under the same condition.

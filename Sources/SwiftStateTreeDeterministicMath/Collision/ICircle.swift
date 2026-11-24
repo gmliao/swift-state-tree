@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftStateTree
+import SwiftStateTurns
 
 /// A circle using integer coordinates for deterministic collision detection.
 ///
@@ -17,6 +18,7 @@ import SwiftStateTree
 /// let circle2 = ICircle(center: IVec2(x: 1.0, y: 0.0), radius: 0.5)
 /// let intersects = circle1.intersects(circle2)  // true (touching)
 /// ```
+@PlainData
 @SnapshotConvertible
 public struct ICircle: Codable, Equatable, Sendable {
     /// The center point of the circle.

@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftStateTree
+import SwiftStateTurns
 
 /// A 2D ray (half-line) using integer coordinates for deterministic raycast.
 ///
@@ -17,6 +18,7 @@ import SwiftStateTree
 /// let direction = IVec2(x: 1.0, y: 0.0)  // Ray pointing right
 /// let ray = IRay(origin: origin, direction: direction)
 /// ```
+@PlainData
 @SnapshotConvertible
 public struct IRay: Codable, Equatable, Sendable {
     /// The origin point of the ray.

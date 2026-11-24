@@ -115,8 +115,8 @@ control="$scratch/turns-inlinable-control"
 rm -rf "$control/package"
 mkdir -p "$control/package/Sources"
 cp Package.resolved "$control/package/"
-cp -R Sources/SwiftStateTurns Sources/SwiftStateTurnsMacros Sources/TurnsBench Sources/TurnsMailboxBench "$control/package/Sources/"
-# The same four targets as the package's, and its swift-syntax requirement.
+cp -R Sources/SwiftStateTurns Sources/SwiftStateTurnsMacros Sources/PlainDataMacroSupport Sources/TurnsBench Sources/TurnsMailboxBench "$control/package/Sources/"
+# The same five targets as the package's, and its swift-syntax requirement.
 syntax="$(grep -E '\.package\(url: "https://github.com/apple/swift-syntax.git"' Package.swift | sed -E 's/^[[:space:]]*//; s/,$//')"
 cat > "$control/package/Package.swift" <<EOF
 // swift-tools-version: 6.0
@@ -132,10 +132,20 @@ let package = Package(
         .macro(
             name: "SwiftStateTurnsMacros",
             dependencies: [
+                "PlainDataMacroSupport",
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
                 .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
             ],
             path: "Sources/SwiftStateTurnsMacros"
+        ),
+        .target(
+            name: "PlainDataMacroSupport",
+            dependencies: [
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
+                .product(name: "SwiftDiagnostics", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+            ],
+            path: "Sources/PlainDataMacroSupport"
         ),
         .executableTarget(name: "TurnsBench", dependencies: ["SwiftStateTurns"], path: "Sources/TurnsBench"),
         .executableTarget(name: "TurnsMailboxBench", dependencies: ["SwiftStateTurns"], path: "Sources/TurnsMailboxBench"),

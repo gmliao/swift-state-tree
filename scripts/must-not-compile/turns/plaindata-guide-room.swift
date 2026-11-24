@@ -1,4 +1,4 @@
-// expect-error: 'ContinuousClock.Instant' conform to 'PlainData'
+// expect-error: this field's type isn't PlainData: add @PlainData to your struct or enum
 import SwiftStateTurns
 
 // The turn guide's refused `Room` ("Your own types"): a class and a clock instant in the state.
