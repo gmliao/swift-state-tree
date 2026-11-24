@@ -40,7 +40,8 @@ public struct PlainDataMacro: ExtensionMacro {
         // stand in for `PlainData` or `PlainDataCheck`.
         let members = declaration.memberBlock.members
         let own = (generics?.parameters ?? []).map(\.name.text)
-        let enclosing = enclosingParameters(usedIn: members, in: context).filter { !own.contains($0) }
+        let ownNames = Set(own.map { String($0.filter { $0 != "`" }) })
+        let enclosing = enclosingParameters(usedIn: members, in: context).filter { !ownNames.contains(String($0.filter { $0 != "`" })) }
         let constraints = (own + enclosing).map { "\($0): SwiftStateTurns.PlainData" }
         let whereClause = constraints.isEmpty ? "" : " where " + constraints.joined(separator: ", ")
         let conformance = protocols.isEmpty ? "" : ": SwiftStateTurns.PlainData"
@@ -106,14 +107,50 @@ public struct PlainDataMacro: ExtensionMacro {
         walk(members, &seen)
     }
 
-    /// The generic parameters of the enclosing types that the members name: a nested type's
-    /// field of the parent's `T` is plain data only where `T` is (#782). One the members don't
-    /// name adds no constraint, so a nested type that doesn't use it stays unconditionally
-    /// `PlainData`. A parameter of an enclosing extension's type isn't spelled there, so it
-    /// can't be read; such a field stays refused.
+    /// The generic parameters of the enclosing types that the stored values' declarations name:
+    /// a nested type's field of the parent's `T` is plain data only where `T` is (#782). Only
+    /// what the checks read counts: a stored property's type and initializer, and an enum case's
+    /// associated values. A parameter that only a method or a computed property names adds no
+    /// constraint, so such a nested type stays unconditionally `PlainData`. A member must spell
+    /// the parameter: the parent's alias for it, or a parameter of an enclosing extension's type,
+    /// isn't read, and such a field stays refused.
     private static func enclosingParameters(usedIn members: MemberBlockItemListSyntax, in context: some MacroExpansionContext) -> [String] {
-        let names = Set(members.tokens(viewMode: .sourceAccurate).compactMap { $0.identifier?.name })
+        var names: Set<String> = []
+        func collect(_ syntax: some SyntaxProtocol) {
+            for token in syntax.tokens(viewMode: .sourceAccurate) {
+                if let name = token.identifier?.name { names.insert(name) }
+            }
+        }
+        func walk(_ members: MemberBlockItemListSyntax) {
+            for member in members {
+                if let ifConfig = member.decl.as(IfConfigDeclSyntax.self) {
+                    for clause in ifConfig.clauses {
+                        if case .decls(let nested) = clause.elements { walk(nested) }
+                    }
+                } else if let variable = member.decl.as(VariableDeclSyntax.self) {
+                    if variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) || $0.name.tokenKind == .keyword(.class) }) { continue }
+                    for binding in variable.bindings {
+                        // A computed property stores nothing; observers alone keep it stored.
+                        if let block = binding.accessorBlock {
+                            guard case .accessors(let accessors) = block.accessors,
+                                  accessors.allSatisfy({ [.keyword(.willSet), .keyword(.didSet)].contains($0.accessorSpecifier.tokenKind) })
+                            else { continue }
+                        }
+                        if let type = binding.typeAnnotation { collect(type) }
+                        if let initializer = binding.initializer { collect(initializer) }
+                    }
+                } else if let cases = member.decl.as(EnumCaseDeclSyntax.self) {
+                    for element in cases.elements {
+                        if let parameters = element.parameterClause { collect(parameters) }
+                    }
+                }
+            }
+        }
+        walk(members)
+        // Compared by name (`T` and `` `T` ``are one), emitted as spelled: a keyword name such
+        // as `` `repeat` `` keeps its backticks in the `where` clause.
         var found: [String] = []
+        var foundNames: Set<String> = []
         for enclosing in context.lexicalContext {
             let clause = enclosing.as(StructDeclSyntax.self)?.genericParameterClause
                 ?? enclosing.as(EnumDeclSyntax.self)?.genericParameterClause
@@ -121,7 +158,7 @@ public struct PlainDataMacro: ExtensionMacro {
                 ?? enclosing.as(ActorDeclSyntax.self)?.genericParameterClause
             for parameter in clause?.parameters ?? [] {
                 let name = parameter.name.identifier?.name ?? parameter.name.text
-                if names.contains(name), !found.contains(name) { found.append(name) }
+                if names.contains(name), foundNames.insert(name).inserted { found.append(parameter.name.text) }
             }
         }
         return found
