@@ -1,10 +1,11 @@
 // Tests for #796: a node a land declares once (`AccessControl`, `CanJoin`, `OnJoin`, `OnLeave`,
 // and each `Lifetime` setting) declared twice, typically by two rules helpers, is refused at
-// registration and by a directly built keeper, with both sites named. Unions stay unions: two
-// `Lifetime` blocks that set different things, `AllowedClientEvents` lists and `ServerEvents`
-// registrations compose.
+// registration and by a directly built keeper, with both sites named, and the first declaration
+// is the one the definition keeps. Unions stay unions: two `Lifetime` blocks that set different
+// things, `AllowedClientEvents` lists and `ServerEvents` registrations compose.
 
 import Foundation
+import Logging
 import Testing
 @testable import SwiftStateTree
 
@@ -29,11 +30,22 @@ struct OnceSecondServerEvent: ServerEventPayload {
     let value: Int
 }
 
-// Two helpers per node, A before B: the first declaration kept is A's.
+/// Names written by closures under test, read back to tell which one ran.
+final class OnceLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+
+    func record(_ entry: String) { lock.withLock { entries.append(entry) } }
+    var all: [String] { lock.withLock { entries } }
+}
+
+let onceAfterFinalizeLog = OnceLog()
+
+// Two helpers per node, A before B, with values that tell them apart: the kept one is A's.
 @OnceDSL func accessControlA() -> OnceRules { AccessControl { MaxPlayers(4) } }
 @OnceDSL func accessControlB() -> OnceRules { AccessControl { MaxPlayers(8) } }
 @OnceDSL func canJoinA() -> OnceRules { CanJoin { _, session, _ in .allow(playerID: PlayerID(session.playerID)) } }
-@OnceDSL func canJoinB() -> OnceRules { CanJoin { _, session, _ in .allow(playerID: PlayerID(session.playerID)) } }
+@OnceDSL func canJoinB() -> OnceRules { CanJoin { _, _, _ in .deny(reason: "B") } }
 @OnceDSL func onJoinA() -> OnceRules { OnJoin { state, _ in state.count += 1 } }
 @OnceDSL func onJoinB() -> OnceRules { OnJoin { state, _ in state.count += 2 } }
 @OnceDSL func onLeaveA() -> OnceRules { OnLeave { state, _ in state.count -= 1 } }
@@ -48,19 +60,53 @@ struct OnceSecondServerEvent: ServerEventPayload {
 @OnceDSL func persistSnapshotB() -> OnceRules { Lifetime { PersistSnapshot(every: .seconds(30)) } }
 @OnceDSL func onInitializeA() -> OnceRules { Lifetime { OnInitialize { state, _ in state.count = 1 } } }
 @OnceDSL func onInitializeB() -> OnceRules { Lifetime { OnInitialize { state, _ in state.count = 2 } } }
-@OnceDSL func onFinalizeA() -> OnceRules { Lifetime { OnFinalize { state, _ in state.count = 0 } } }
-@OnceDSL func onFinalizeB() -> OnceRules { Lifetime { OnFinalize { state, _ in state.count = -1 } } }
-@OnceDSL func afterFinalizeA() -> OnceRules { Lifetime { AfterFinalize { _, _ in } } }
-@OnceDSL func afterFinalizeB() -> OnceRules { Lifetime { AfterFinalize { _, _ in } } }
+@OnceDSL func onFinalizeA() -> OnceRules { Lifetime { OnFinalize { state, _ in state.count = 10 } } }
+@OnceDSL func onFinalizeB() -> OnceRules { Lifetime { OnFinalize { state, _ in state.count = 20 } } }
+@OnceDSL func afterFinalizeA() -> OnceRules { Lifetime { AfterFinalize { _, _ in onceAfterFinalizeLog.record("A") } } }
+@OnceDSL func afterFinalizeB() -> OnceRules { Lifetime { AfterFinalize { _, _ in onceAfterFinalizeLog.record("B") } } }
 
-/// A land that splices two helpers declaring the same node.
+private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
+
+private func onceContext() -> LandContext {
+    LandContext(
+        landID: "once",
+        playerID: p1,
+        clientID: c1,
+        sessionID: s1,
+        services: LandServices(),
+        logger: Logger(label: "test"),
+        deviceID: nil,
+        metadata: [:],
+        emitEventHandler: { _, _ in },
+        requestSyncNowHandler: { },
+        requestSyncBroadcastOnlyHandler: { }
+    )
+}
+
+/// The count after running `handler` on a state whose count is `start`.
+private func countAfter(_ handler: (@Sendable (inout OnceNodeState, LandContext) -> Void)?, from start: Int = 0) -> Int? {
+    guard let handler else { return nil }
+    var state = OnceNodeState()
+    state.count = start
+    handler(&state, onceContext())
+    return state.count
+}
+
+/// A land that splices two helpers declaring the same node, and a check that the definition
+/// kept the first one.
 struct OnceNodeCase: Sendable, CustomTestStringConvertible {
     let node: String
     let land: @Sendable () -> LandDefinition<OnceNodeState>
+    let keptFirst: @Sendable (LandDefinition<OnceNodeState>) async throws -> Bool
 
     var testDescription: String { node }
 
-    init(_ node: String, _ first: @escaping @Sendable () -> OnceRules, _ second: @escaping @Sendable () -> OnceRules) {
+    init(
+        _ node: String,
+        _ first: @escaping @Sendable () -> OnceRules,
+        _ second: @escaping @Sendable () -> OnceRules,
+        keptFirst: @escaping @Sendable (LandDefinition<OnceNodeState>) async throws -> Bool
+    ) {
         self.node = node
         self.land = {
             Land("once-\(node)", using: OnceNodeState.self) {
@@ -68,33 +114,41 @@ struct OnceNodeCase: Sendable, CustomTestStringConvertible {
                 Rules { second() }
             }
         }
+        self.keptFirst = keptFirst
     }
 }
 
 let onceNodeCases: [OnceNodeCase] = [
-    OnceNodeCase("AccessControl", accessControlA, accessControlB),
-    OnceNodeCase("CanJoin", canJoinA, canJoinB),
-    OnceNodeCase("OnJoin", onJoinA, onJoinB),
-    OnceNodeCase("OnLeave", onLeaveA, onLeaveB),
-    OnceNodeCase("Tick", tickA, tickB),
-    OnceNodeCase("StateSync", stateSyncA, stateSyncB),
-    OnceNodeCase("DestroyWhenEmpty", destroyWhenEmptyA, destroyWhenEmptyB),
-    OnceNodeCase("PersistSnapshot", persistSnapshotA, persistSnapshotB),
-    OnceNodeCase("OnInitialize", onInitializeA, onInitializeB),
-    OnceNodeCase("OnFinalize", onFinalizeA, onFinalizeB),
-    OnceNodeCase("AfterFinalize", afterFinalizeA, afterFinalizeB),
+    OnceNodeCase("AccessControl", accessControlA, accessControlB) { $0.config.maxPlayers == 4 },
+    OnceNodeCase("CanJoin", canJoinA, canJoinB) { land in
+        let decision = try land.lifetimeHandlers.canJoin?(OnceNodeState(), PlayerSession(playerID: "p1"), onceContext())
+        if case .allow? = decision { return true }
+        return false
+    },
+    OnceNodeCase("OnJoin", onJoinA, onJoinB) { countAfter($0.lifetimeHandlers.onJoin) == 1 },
+    OnceNodeCase("OnLeave", onLeaveA, onLeaveB) { countAfter($0.lifetimeHandlers.onLeave) == -1 },
+    OnceNodeCase("Tick", tickA, tickB) {
+        $0.config.tickInterval == .seconds(3600) && countAfter($0.lifetimeHandlers.tickHandler) == 1
+    },
+    OnceNodeCase("StateSync", stateSyncA, stateSyncB) { $0.lifetimeHandlers.syncInterval == .seconds(1) },
+    OnceNodeCase("DestroyWhenEmpty", destroyWhenEmptyA, destroyWhenEmptyB) {
+        $0.config.destroyWhenEmptyAfter == .seconds(60) && $0.lifetimeHandlers.onDestroyWhenEmpty == nil
+    },
+    OnceNodeCase("PersistSnapshot", persistSnapshotA, persistSnapshotB) { $0.config.persistInterval == .seconds(60) },
+    OnceNodeCase("OnInitialize", onInitializeA, onInitializeB) { land in
+        guard let initialize = land.lifetimeHandlers.onInitialize else { return false }
+        var state = OnceNodeState()
+        try initialize.invoke(&state, onceContext())
+        return state.count == 1
+    },
+    OnceNodeCase("OnFinalize", onFinalizeA, onFinalizeB) { countAfter($0.lifetimeHandlers.onFinalize) == 10 },
+    OnceNodeCase("AfterFinalize", afterFinalizeA, afterFinalizeB) { land in
+        guard let afterFinalize = land.lifetimeHandlers.afterFinalize else { return false }
+        let before = onceAfterFinalizeLog.all.count
+        await afterFinalize(OnceNodeState(), onceContext())
+        return Array(onceAfterFinalizeLog.all.dropFirst(before)) == ["A"]
+    },
 ]
-
-/// Counts a closure's runs.
-final class OnceRunCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-
-    func increment() { lock.withLock { count += 1 } }
-    var value: Int { lock.withLock { count } }
-}
-
-private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 
 private func registrationError(_ definition: LandDefinition<OnceNodeState>) throws -> LandRegistrationError {
     try #require(throws: LandRegistrationError.self) {
@@ -133,6 +187,17 @@ private func expectOneDuplicate(_ error: LandRegistrationError, of node: String)
     ), "\(error)")
 }
 
+/// A land that declares `OnJoin` in one branch of an `if` or the other.
+private func branchedLand(_ useA: Bool) -> LandDefinition<OnceNodeState> {
+    Land("once-branched", using: OnceNodeState.self) {
+        if useA {
+            onJoinA()
+        } else {
+            onJoinB()
+        }
+    }
+}
+
 @Suite("A node a land declares once is refused when declared twice (#796)")
 struct SingleValuedNodeTests {
     @Test("Declared by two rules helpers, it is refused at registration and by a directly built keeper, with both sites", arguments: onceNodeCases)
@@ -141,7 +206,12 @@ struct SingleValuedNodeTests {
         try expectOneDuplicate(try await keeperFailure(c.land()), of: c.node)
     }
 
-    @Test("A Lifetime setting made twice in one block is refused")
+    @Test("The definition keeps the first declaration, seen where nothing validates it: a land built directly", arguments: onceNodeCases)
+    func firstIsKept(_ c: OnceNodeCase) async throws {
+        #expect(try await c.keptFirst(c.land()))
+    }
+
+    @Test("A Lifetime setting made twice in one block is refused, and the first is kept")
     func refusedWithinOneLifetimeBlock() throws {
         let land = Land("once-tick-one-block", using: OnceNodeState.self) {
             Lifetime {
@@ -150,28 +220,59 @@ struct SingleValuedNodeTests {
             }
         }
         try expectOneDuplicate(try registrationError(land), of: "Tick")
+        #expect(land.config.tickInterval == .seconds(3600))
+        #expect(countAfter(land.lifetimeHandlers.tickHandler) == 1)
     }
 
-    @Test("A setting the closure form of Lifetime makes in two blocks is refused, at the blocks' sites")
+    @Test("A setting the closure form of Lifetime makes in two blocks is refused at the blocks' sites, and the first is kept")
     func refusedInClosureForm() throws {
         let land = Land("once-tick-closure-form", using: OnceNodeState.self) {
             Lifetime { (config: inout LifetimeConfig<OnceNodeState>) in config.tickInterval = .seconds(3600) }
             Lifetime { (config: inout LifetimeConfig<OnceNodeState>) in config.tickInterval = .seconds(1800) }
         }
         try expectOneDuplicate(try registrationError(land), of: "Tick")
+        #expect(land.config.tickInterval == .seconds(3600))
     }
 
-    @Test("A Lifetime block runs twice when the land is built: once to find its settings, once to apply them")
-    func lifetimeBlockRunsTwice() {
-        let runs = OnceRunCounter()
+    @Test("A Lifetime block runs once when the land is built")
+    func lifetimeBlockRunsOnce() {
+        let runs = OnceLog()
         let land = Land("once-runs", using: OnceNodeState.self) {
             Lifetime { (config: inout LifetimeConfig<OnceNodeState>) in
-                runs.increment()
+                runs.record("run")
                 config.tickInterval = .seconds(3600)
             }
         }
-        #expect(runs.value == 2)
+        #expect(runs.all.count == 1)
         #expect(land.config.tickInterval == .seconds(3600))
+    }
+
+    @Test("Each branch of an if declares the node once: not refused, and the taken branch's is kept")
+    func branchesAreNotDuplicates() throws {
+        for useA in [true, false] {
+            let land = branchedLand(useA)
+            #expect(throws: Never.self) { try land.validateForRegistration(context: .encodingIndependent) }
+            #expect(countAfter(land.lifetimeHandlers.onJoin) == (useA ? 1 : 2))
+        }
+    }
+
+    @Test("Every LifetimeConfig field belongs to one Lifetime setting, so the builder copies it")
+    func lifetimeConfigFieldsAreCovered() {
+        // `LifetimeConfig.take(_:from:)` copies a setting's fields. A field added to the config
+        // without a setting would be dropped by the builder: add it to a setting and to `take`.
+        let covered: Set<String> = [
+            "tickInterval", "tickHandler",
+            "syncInterval", "syncHandler",
+            "destroyWhenEmptyAfter", "onDestroyWhenEmpty", "onDestroyWhenEmptyResolverExecutors",
+            "persistInterval",
+            "onInitialize", "onInitializeResolverExecutors", "onInitializeResolverFailure",
+            "onFinalize", "onFinalizeResolverExecutors",
+            "afterFinalize",
+            // Bookkeeping, not a setting.
+            "settingSites", "repeatedSettings",
+        ]
+        let fields = Set(Mirror(reflecting: LifetimeConfig<OnceNodeState>()).children.compactMap(\.label))
+        #expect(fields == covered)
     }
 
     @Test("Lifetime blocks that set different things compose; allowed client events and server event registrations are unions")

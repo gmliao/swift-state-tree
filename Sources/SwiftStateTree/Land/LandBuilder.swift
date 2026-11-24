@@ -124,17 +124,18 @@ enum LandBuilder {
                         serverInputHandlers[handler.typeIdentifier] = handler
                     }
                 case let lifetime as LifetimeNode<State>:
-                    // The block on its own config first: the settings it makes, and any it
-                    // makes twice. A setting another block made is a duplicate too (#796).
+                    // The block runs once, on its own config: the settings it makes, with the
+                    // first of any it makes twice kept and the rest recorded. Each setting no
+                    // earlier block made is copied into the land's config; one another block
+                    // made first is a duplicate (#796).
                     var own = LifetimeConfig<State>()
                     lifetime.configure(&own)
                     duplicateHandlers += own.repeatedSettings
                     for setting in LifetimeSetting.allCases where own.holds(setting) {
-                        _ = claimOnce(setting.rawValue, at: own.settingSites[setting] ?? lifetime.site)
+                        if claimOnce(setting.rawValue, at: own.settingSites[setting] ?? lifetime.site) {
+                            lifetimeConfig.take(setting, from: own)
+                        }
                     }
-                    var cfg = lifetimeConfig
-                    lifetime.configure(&cfg)
-                    lifetimeConfig = cfg
                     hasLifetimeConfig = true
                 case let clientEvents as ClientEventsNode:
                     // Collect all registrations from ClientEvents block

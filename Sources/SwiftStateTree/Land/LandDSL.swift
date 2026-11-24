@@ -21,7 +21,7 @@ public struct NoServices: Sendable {
 public struct AccessControlNode: LandNode {
     public let config: AccessControlConfig
     /// Where it was declared (`fileID:line`), for the once-per-land check (#796).
-    package var site: String? = nil
+    package let site: String?
 }
 
 public typealias AccessControlDirective = (inout AccessControlConfig) -> Void
@@ -122,7 +122,15 @@ public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
     
     public init(
         handler: @escaping @Sendable (inout State, LandContext) -> Void,
-        site: String? = nil,
+        resolverExecutors: [any AnyResolverExecutor] = []
+    ) {
+        self.init(handler: handler, site: nil, resolverExecutors: resolverExecutors)
+    }
+
+    /// The DSL's init, with the site the node was declared at (#796).
+    package init(
+        handler: @escaping @Sendable (inout State, LandContext) -> Void,
+        site: String?,
         resolverExecutors: [any AnyResolverExecutor] = []
     ) {
         self.handler = handler
@@ -209,7 +217,15 @@ public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
     
     public init(
         handler: @escaping @Sendable (inout State, LandContext) -> Void,
-        site: String? = nil,
+        resolverExecutors: [any AnyResolverExecutor] = []
+    ) {
+        self.init(handler: handler, site: nil, resolverExecutors: resolverExecutors)
+    }
+
+    /// The DSL's init, with the site the node was declared at (#796).
+    package init(
+        handler: @escaping @Sendable (inout State, LandContext) -> Void,
+        site: String?,
         resolverExecutors: [any AnyResolverExecutor] = []
     ) {
         self.handler = handler
@@ -293,7 +309,15 @@ public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
     
     public init(
         handler: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision,
-        site: String? = nil,
+        resolverExecutors: [any AnyResolverExecutor] = []
+    ) {
+        self.init(handler: handler, site: nil, resolverExecutors: resolverExecutors)
+    }
+
+    /// The DSL's init, with the site the node was declared at (#796).
+    package init(
+        handler: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision,
+        site: String?,
         resolverExecutors: [any AnyResolverExecutor] = []
     ) {
         self.handler = handler
@@ -498,13 +522,43 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     /// Settings made a second time in this config (#796): a land makes each once.
     package var repeatedSettings: [DuplicateHandlerDeclaration] = []
 
-    /// Records that `setting` is made at `site`; a second time is recorded in
-    /// `repeatedSettings`.
-    package mutating func claim(_ setting: LifetimeSetting, at site: String) {
+    /// Records that `setting` is made at `site`, and returns whether it is the first time. A
+    /// second time is recorded in `repeatedSettings`, and its entry doesn't apply it: the
+    /// first is kept.
+    package mutating func claim(_ setting: LifetimeSetting, at site: String) -> Bool {
         if let first = settingSites[setting] {
             repeatedSettings.append(DuplicateHandlerDeclaration(node: setting.rawValue, firstSite: first, duplicateSite: site))
-        } else {
-            settingSites[setting] = site
+            return false
+        }
+        settingSites[setting] = site
+        return true
+    }
+
+    /// Copies `setting`'s fields from `other`. The land builder runs each `Lifetime` block on
+    /// its own config, and copies each setting no earlier block made (#796).
+    package mutating func take(_ setting: LifetimeSetting, from other: LifetimeConfig<State>) {
+        switch setting {
+        case .tick:
+            tickInterval = other.tickInterval
+            tickHandler = other.tickHandler
+        case .stateSync:
+            syncInterval = other.syncInterval
+            syncHandler = other.syncHandler
+        case .destroyWhenEmpty:
+            destroyWhenEmptyAfter = other.destroyWhenEmptyAfter
+            onDestroyWhenEmpty = other.onDestroyWhenEmpty
+            onDestroyWhenEmptyResolverExecutors = other.onDestroyWhenEmptyResolverExecutors
+        case .persistSnapshot:
+            persistInterval = other.persistInterval
+        case .onInitialize:
+            onInitialize = other.onInitialize
+            onInitializeResolverExecutors = other.onInitializeResolverExecutors
+            onInitializeResolverFailure = other.onInitializeResolverFailure
+        case .onFinalize:
+            onFinalize = other.onFinalize
+            onFinalizeResolverExecutors = other.onFinalizeResolverExecutors
+        case .afterFinalize:
+            afterFinalize = other.afterFinalize
         }
     }
 
@@ -579,10 +633,6 @@ public enum LifetimeBuilder<State: StateNodeProtocol> {
 ///     DestroyWhenEmpty(after: .minutes(5))
 /// }
 /// ```
-///
-/// The block runs twice when the land is built: once on its own configuration, to find the
-/// settings it makes (a land makes each once, #796), then on the land's. So it must only set
-/// configuration, with no other effect.
 public func Lifetime<State: StateNodeProtocol>(
     fileID: String = #fileID,
     line: Int = #line,
@@ -592,10 +642,6 @@ public func Lifetime<State: StateNodeProtocol>(
 }
 
 /// Defines the lifetime and periodic behaviors of the Land using a result builder.
-///
-/// The block runs twice when the land is built: once on its own configuration, to find the
-/// settings it makes (a land makes each once, #796), then on the land's. So it must only set
-/// configuration, with no other effect.
 public func Lifetime<State: StateNodeProtocol>(
     fileID: String = #fileID,
     line: Int = #line,
@@ -633,7 +679,7 @@ public func Tick<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.tick, at: "\(fileID):\(line)")
+        guard config.claim(.tick, at: "\(fileID):\(line)") else { return }
         config.tickInterval = interval
         config.tickHandler = body
     }
@@ -659,7 +705,7 @@ public func Tick<State: StateNodeProtocol>(
     line: Int = #line
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.tick, at: "\(fileID):\(line)")
+        guard config.claim(.tick, at: "\(fileID):\(line)") else { return }
         config.tickInterval = interval
         config.tickHandler = nil
     }
@@ -697,7 +743,7 @@ public func StateSync<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.stateSync, at: "\(fileID):\(line)")
+        guard config.claim(.stateSync, at: "\(fileID):\(line)") else { return }
         config.syncInterval = interval
         config.syncHandler = body
     }
@@ -725,7 +771,7 @@ public func StateSync<State: StateNodeProtocol>(
     line: Int = #line
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.stateSync, at: "\(fileID):\(line)")
+        guard config.claim(.stateSync, at: "\(fileID):\(line)") else { return }
         config.syncInterval = interval
     }
 }
@@ -739,7 +785,7 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
     line: Int = #line
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.destroyWhenEmpty, at: "\(fileID):\(line)")
+        guard config.claim(.destroyWhenEmpty, at: "\(fileID):\(line)") else { return }
         config.destroyWhenEmptyAfter = duration
     }
 }
@@ -762,7 +808,7 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
     _ handler: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.destroyWhenEmpty, at: "\(fileID):\(line)")
+        guard config.claim(.destroyWhenEmpty, at: "\(fileID):\(line)") else { return }
         config.destroyWhenEmptyAfter = duration
         config.onDestroyWhenEmpty = handler
     }
@@ -778,7 +824,7 @@ public func PersistSnapshot<State: StateNodeProtocol>(
     line: Int = #line
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.persistSnapshot, at: "\(fileID):\(line)")
+        guard config.claim(.persistSnapshot, at: "\(fileID):\(line)") else { return }
         config.persistInterval = interval
     }
 }
@@ -791,7 +837,7 @@ private func initializeDirective<State: StateNodeProtocol>(
     onResolverFailure: InitializeResolverFailure
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.onInitialize, at: site)
+        guard config.claim(.onInitialize, at: site) else { return }
         config.onInitialize = handler
         config.onInitializeResolverExecutors = executors
         config.onInitializeResolverFailure = onResolverFailure
@@ -1061,7 +1107,7 @@ public func OnFinalize<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.onFinalize, at: "\(fileID):\(line)")
+        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
         config.onFinalize = body
     }
 }
@@ -1079,7 +1125,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver>(
 ) -> LifetimeDirective<State> {
     let executors = [ResolverExecutor.createExecutor(for: resolvers)]
     return { config in
-        config.claim(.onFinalize, at: "\(fileID):\(line)")
+        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
         config.onFinalize = body
         config.onFinalizeResolverExecutors = executors
     }
@@ -1097,7 +1143,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
         ResolverExecutor.createExecutor(for: resolvers.1)
     ]
     return { config in
-        config.claim(.onFinalize, at: "\(fileID):\(line)")
+        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
         config.onFinalize = body
         config.onFinalizeResolverExecutors = executors
     }
@@ -1116,7 +1162,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
         ResolverExecutor.createExecutor(for: resolvers.2)
     ]
     return { config in
-        config.claim(.onFinalize, at: "\(fileID):\(line)")
+        guard config.claim(.onFinalize, at: "\(fileID):\(line)") else { return }
         config.onFinalize = body
         config.onFinalizeResolverExecutors = executors
     }
@@ -1134,7 +1180,7 @@ public func AfterFinalize<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (State, LandContext) async -> Void
 ) -> LifetimeDirective<State> {
     return { config in
-        config.claim(.afterFinalize, at: "\(fileID):\(line)")
+        guard config.claim(.afterFinalize, at: "\(fileID):\(line)") else { return }
         config.afterFinalize = body
     }
 }
