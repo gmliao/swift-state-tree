@@ -149,6 +149,8 @@ struct DecimalRegistrationTests {
                 Register(DecimalCleanEvent.self)
             }
             Rules {
+                // Registered for the schema only; a registered client event needs a handler (#771).
+                HandleEvent(DecimalBidEvent.self) { _, _, _ in }
                 HandleAction(DecimalBuyAction.self) { (_: inout DecimalHiddenRoot, _: DecimalBuyAction, _: LandContext) in
                     DecimalBuyResponse(totals: [])
                 }
