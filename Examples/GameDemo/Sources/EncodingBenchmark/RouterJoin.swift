@@ -74,7 +74,7 @@ final class BenchmarkConnection: WebSocketConnection, @unchecked Sendable {
         self.room = room
     }
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         let op = SyncSequencePeek.stateOp(data)
         let seq = SyncSequencePeek.seq(data)
         lock.withLock {
