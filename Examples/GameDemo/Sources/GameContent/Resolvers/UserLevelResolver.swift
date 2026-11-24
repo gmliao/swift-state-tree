@@ -4,6 +4,7 @@ import SwiftStateTree
 // MARK: - UserLevel ResolverOutput
 
 /// Resolver output containing user level determined deterministically from PlayerID hash
+@PlainData
 public struct UserLevel: ResolverOutput {
     public let level: Int
     

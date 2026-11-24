@@ -4,13 +4,15 @@ import SwiftStateTree
 // MARK: - AsyncTest ResolverOutput
 
 /// Resolver output for testing async resolver behavior
+@PlainData
 public struct AsyncTestOutput: ResolverOutput {
     public let value: String
-    public let resolvedAt: Date
+    /// When the resolver ran, in milliseconds since 1970 (a `Date` isn't plain data)
+    public let resolvedAtMillis: Int64
     
-    public init(value: String, resolvedAt: Date) {
+    public init(value: String, resolvedAtMillis: Int64) {
         self.value = value
-        self.resolvedAt = resolvedAt
+        self.resolvedAtMillis = resolvedAtMillis
     }
 }
 
@@ -56,8 +58,8 @@ public struct AsyncTestResolver: ContextResolver {
         let value = "async-resolved-\(abs(hashValue) % 1000)"
         
         // Record resolution timestamp for verification
-        let resolvedAt = Date()
+        let resolvedAtMillis = Int64(Date().timeIntervalSince1970 * 1000)
         
-        return AsyncTestOutput(value: value, resolvedAt: resolvedAt)
+        return AsyncTestOutput(value: value, resolvedAtMillis: resolvedAtMillis)
     }
 }

@@ -71,33 +71,6 @@ export const SCHEMA = {
         }
       }
     },
-    "Any": {
-      "type": "object",
-      "x-stateTree": {
-        "nodeKind": "leaf"
-      }
-    },
-    "AnyCodable": {
-      "properties": {
-        "base": {
-          "additionalProperties": {
-            "$ref": "#/defs/Any"
-          },
-          "type": "object",
-          "x-stateTree": {
-            "keyType": "String",
-            "nodeKind": "map"
-          }
-        }
-      },
-      "required": [
-        "base"
-      ],
-      "type": "object",
-      "x-stateTree": {
-        "nodeKind": "leaf"
-      }
-    },
     "BaseState": {
       "properties": {
         "health": {
@@ -1107,13 +1080,13 @@ export const SCHEMA = {
           "type": "string"
         },
         "actualState": {
-          "$ref": "#/defs/AnyCodable"
+          "type": "string"
         },
         "expectedHash": {
           "type": "string"
         },
         "expectedState": {
-          "$ref": "#/defs/AnyCodable"
+          "type": "string"
         },
         "isMatch": {
           "type": "boolean"
@@ -2048,7 +2021,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "8e7825f3b64cf258",
+  "schemaHash": "1de90ab3b2f07bb3",
   "version": "0.1.0",
   "x-stateTree": {
     "atomicEncoding": "positional"
