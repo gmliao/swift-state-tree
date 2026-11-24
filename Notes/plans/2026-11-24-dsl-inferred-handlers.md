@@ -248,7 +248,7 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
      - `Land(_:using:)` takes `@LandDSL<State, NoServices>`;
      - D-Q5's answer: if (a), `buildExpression(_: [LandNode])`;
    - `Sources/SwiftStateTree/Land/LandBuilder.swift`: the `RulesNode` case (LB:57) deleted, since the builder flattens it;
-   - `Sources/SwiftStateTree/Land/LandMacros.swift` and `Sources/SwiftStateTreeMacros/LandMacro.swift`: the `@Land` doc and its body under D-Q5's answer, with the macro test updated;
+   - `Sources/SwiftStateTree/Land/LandMacros.swift` and `Sources/SwiftStateTreeMacros/LandMacro.swift`: the `@Land` doc and its body under D-Q5's answer, with the macro test updated. Under (a), the commit starts with the probe of §8 (does `memberAttribute` attaching `@LandDSL<S, NoServices>` to `body` work, and does a typealias work as the attribute?). It takes outcome (i) or (ii) and adds the matching `compiles` and must-not-compile snippets;
    - **the five standalone `Rules` sites**, typed `RulesNode<…, NoServices>` (§3.1):
      - PerSequenceResultTests.swift:107;
      - TransportAdapterSyncPhaseTests.swift:102;
@@ -349,6 +349,12 @@ If the probe holds, (a) goes into D1's builder commit. If probe 4's medians move
 
 The decision is the maintainer's (§8, D-Q5).
 
+**Under (a), who writes `@LandDSL<S, NoServices>` on `@Land`'s `body`: not known yet, a D1 check.** `@Land` is a `member` macro today (LandMacros.swift:31, `named(definition)`): it adds `definition` and leaves `body` as written. Two outcomes, decided by one probe at the start of D1's commit 2 (it needs the macro built, so it runs in the slot):
+- **(i) The macro writes it.** `@Land` gains the `memberAttribute` role and attaches `@LandDSL<S, NoServices>` to a static member named `body` only, with `S` taken from its first argument. The user writes `static var body: [LandNode] { … }`. It holds only if an attribute a macro adds makes `body` a builder body, with closures inferred as when it's written by hand. The compiles snippet is `@Land(GameState.self) struct GameLand { static var body: [LandNode] { Rules { OnJoin { state, _ in state.n += 1 } } } }`, and a macro-expansion test shows the attribute on `body` and on no other member.
+- **(ii) The user writes it.** `@Land` stays a `member` macro. The doc shows `@LandDSL<GameState, NoServices> static var body: [LandNode]`, and the typealias form if it works as a builder attribute: `typealias GameDSL = LandDSL<GameState, NoServices>`, then `@GameDSL static var body`. That form is the same one D-Q3 documents for helpers, and the same probe checks it. The compiles snippet has one `@Land` with the attribute spelled out, and one with the alias if it compiles.
+
+(i) is preferred if it works: the user names the State once, in `@Land(…)`. Either way, a `body` without the attribute under (ii), or a `body` that isn't `[LandNode]`, fails to compile at `Self.body` in the expansion. The must-not-compile snippet pins that error's fragment, so the failure is a documented one.
+
 ## 9. Revisions
 
 **Rev 2** folds in Review's GO notes on rev 1 (1ee8b88f: 5 should, 2 nits), and #769's R-Q1 (c):
@@ -375,3 +381,4 @@ The decision is the maintainer's (§8, D-Q5).
 - **the keeper's backstop** (LK:1252–1271) adds `clientEventMismatches`, with a mutant. Only lands that are registered or run fail without the no-op handler (§3.3, §5);
 - **D-Q5** (an array of nodes in a land body: D-Q3's helpers and the `@Land` macro), recommended (a) with a probe before D1 commits to it (§8).
 - **D1's commit list** (§6, after rev 2.3's findings): seven commits, the failing tests first, the 15 no-op handlers in their own commit, with the files and line numbers at 72c3a7b2. The codemod stays in D2.
+- **`@Land`'s `body` attribute** (§8 under D-Q5, §6 commit 2): either the macro attaches `@LandDSL<S, NoServices>` (`memberAttribute` role), or the user writes it or a typealias. This is a D1 check, with a snippet for each outcome.
