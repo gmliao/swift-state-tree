@@ -21,9 +21,9 @@ swift build
 ### Q: 系統要求是什麼？
 
 A: 
-- Swift 6.2+
+- Swift 6.4+
 - macOS 14.0+（開發環境）
-- 有 Swift 6.2+ toolchain 的平台（部署環境）
+- 有 Swift 6.4+ toolchain 的平台（部署環境）
 
 ### Q: 如何確認專案可以正常運行？
 

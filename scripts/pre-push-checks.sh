@@ -16,6 +16,12 @@
 #   image-pin   scripts/check-ci-image-pin.sh --self-test, then the repository: one Swift image
 #               digest in the workflows and the Dockerfiles, named by every SwiftPM cache key
 #               (CI: the Image pin workflow)
+#   variant-selection  scripts/check-variant-test-selection.sh --self-test, then the repository: the
+#               build job's variant runs read nothing the left-out tests could (a TransportAdapter
+#               built without transportEnvConfig outside the filtered targets, R1, and the rest of
+#               R1-R3 and E1-E5). Python, plus `swift package dump-package` for the test targets'
+#               dependencies, no build; fails, not skips, when `swift` is missing
+#               (CI: build › The variant runs left out can't read their variable)
 #   text-encoding  scripts/lint-text-encoding.py --self-test, then deep-research/ and scripts/:
 #               Python text I/O without encoding= (a non-UTF-8 locale, such as cp950 on Windows,
 #               breaks it). Not in CI yet.
@@ -80,6 +86,17 @@ wall_clock() {
   return $rc
 }
 
+# The check reads the package manifest with `swift package dump-package`: without Swift it can't
+# tell which test targets reach the transport, so the topic fails with that, as the ShellCheck
+# topic does without its pinned version, instead of passing on nothing.
+variant_selection() {
+  if ! swift --version > /dev/null 2>&1; then
+    echo "swift not found on PATH: check-variant-test-selection.sh reads the package manifest with \`swift package dump-package\` (CI runs it after \`swift --version\`)"
+    return 1
+  fi
+  scripts/check-variant-test-selection.sh --self-test && scripts/check-variant-test-selection.sh
+}
+
 shell_check() {
   local excluded version f
   version="$(shellcheck --version 2>/dev/null | sed -n 's/^version: //p')"
@@ -113,6 +130,7 @@ run gate-close bash -c 'scripts/gate-close-census.sh --self-test && scripts/gate
 run turns-doc-blocks bash -c 'python3 scripts/check-turns-doc-blocks.py --self-test && python3 scripts/check-turns-doc-blocks.py'
 run plan-index bash -c 'scripts/check-plan-index.sh --self-test && scripts/check-plan-index.sh'
 run image-pin bash -c 'scripts/check-ci-image-pin.sh --self-test && scripts/check-ci-image-pin.sh'
+run variant-selection variant_selection
 run text-encoding bash -c 'python3 scripts/lint-text-encoding.py --self-test && python3 scripts/lint-text-encoding.py'
 run classify python3 scripts/classify-golden-changes.py --self-test
 if touches '\.(sh|bash)$' || touches "^${workflow//./\\.}$"; then
