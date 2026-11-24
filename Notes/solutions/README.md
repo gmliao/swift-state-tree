@@ -196,3 +196,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-24 | [An extension macro can't attach to a local type](2026-11-24-an-extension-macro-cannot-attach-to-a-local-type.md) | swift, macros, extension-macro, testing, fixtures |
 | 2026-11-24 | [The Windows CRT `signal()` resets to the default on delivery: re-arm in the handler](2026-11-24-windows-crt-signal-resets-to-the-default-on-delivery.md) | windows, signals, crt, shutdown, ctrl-c |
 | 2026-11-24 | [Compare instants by their order, never by the sign of a wrapped difference](2026-11-24-compare-instants-by-order-not-by-a-wrapped-difference.md) | clock, overflow, instant, wrapping-arithmetic, sleep |
+| 2026-11-24 | [A depth limit checked after the tree is built bounds nothing](2026-11-24-a-depth-limit-checked-after-the-tree-is-built-bounds-nothing.md) | stack-overflow, depth-limit, recursion, anycodable, codable, debug-build, darwin |

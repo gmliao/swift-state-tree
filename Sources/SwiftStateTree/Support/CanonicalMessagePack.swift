@@ -26,9 +26,11 @@ import Foundation
 public enum CanonicalMessagePack {
     /// The deepest nesting of arrays and maps the decoder reads, so input from a file can't
     /// overflow the stack; the encoder refuses deeper values too, so it never writes what the
-    /// decoder refuses. Records nest a few levels; the limit also leaves room for the
-    /// `Decodable` types that recurse over the value (`AnyCodable` at 512 levels overflows a
-    /// test thread's stack in a debug build).
+    /// decoder refuses. The encoder checks the depth on the way down, before a value recurses
+    /// further, not after the tree is built (#802). Records nest a few levels; the limit also
+    /// leaves room for the `Codable` types that recurse over the value. `AnyCodable` takes
+    /// direct paths for that reason: through its own `Codable`, 128 levels took more than a
+    /// 544 KiB thread's stack in a debug build.
     public static let maxDepth = 128
 
     /// Encodes `value` canonically.
@@ -121,7 +123,22 @@ package final class CanonicalBufferMoves: @unchecked Sendable {
 extension CanonicalMessagePack {
     /// Tests (debug builds): counts the encoder's buffer moves in this task.
     @TaskLocal package static var bufferMovesForTesting: CanonicalBufferMoves?
+
+    /// Tests (debug builds): called for each value the encoder, the tree's finish, the writer, the
+    /// reader and the decoder visit, so a test can note how deep the stack gets (#802).
+    @TaskLocal package static var stackProbeForTesting: (@Sendable () -> Void)?
+
+    /// Tests (debug builds): `AnyCodable` takes its own `encode(to:)` / `init(from:)` instead of
+    /// the direct paths, to compare the two.
+    @TaskLocal package static var anyCodableGenericForTesting = false
 }
+
+/// Whether `AnyCodable` takes the direct paths (always, outside tests).
+private var anyCodableDirect: Bool {
+    !CanonicalMessagePack.anyCodableGenericForTesting
+}
+#else
+private let anyCodableDirect = true
 #endif
 
 public enum CanonicalMessagePackError: Error, Equatable, CustomStringConvertible {
@@ -319,6 +336,9 @@ private final class CanonicalSlot {
     var elementCount: Int { elements.count }
 
     func node() -> CanonicalNode {
+        #if DEBUG
+        CanonicalMessagePack.stackProbeForTesting?()
+        #endif
         switch kind {
         // A value that encoded nothing (an empty custom `encode(to:)`) is an empty map, as
         // `JSONEncoder` writes `{}`.
@@ -330,10 +350,54 @@ private final class CanonicalSlot {
     }
 }
 
-/// Errors from non-throwing container calls (`nestedContainer(forKey:)` with a repeated key),
-/// thrown when the encode finishes.
+/// Errors from non-throwing container calls (`nestedContainer(forKey:)` with a repeated key, or
+/// past the depth bound), thrown when the encode finishes.
 private final class CanonicalEncodingState {
     var deferredError: Error?
+}
+
+/// What `AnyCodable.encode(to:)` does with a base, in its order: an `NSNumber` from
+/// `JSONSerialization` by its kind, then `Void`, `Bool`, `Int`, `Double`, `String`, an array, a
+/// string-keyed dictionary, anything else `Encodable`; and nothing else encodes.
+private enum AnyCodableShape {
+    case node(CanonicalNode)
+    case array([Any])
+    case map([String: Any])
+    case encodable(any Encodable)
+    /// The base that doesn't encode: the innermost one, as the generic path reports it.
+    case invalid(Any)
+
+    @inline(never)
+    init(_ base: Any) {
+        // An `AnyCodable` holding an `AnyCodable` encodes its base at the same coding path, one
+        // `encode(to:)` inside the other. Unwrapping them here keeps a chain of them from
+        // recursing at one path, which the depth bound can't see, and a tree of nested
+        // `AnyCodable` values to one frame per level.
+        var base = base
+        while let inner = base as? AnyCodable { base = inner.base }
+        if let number = JSONSerializationNumber(base) {
+            switch number {
+            case .bool(let value): self = .node(.bool(value))
+            case .int(let value): self = .node(.int(Int64(value)))
+            case .unsigned(let value): self = .node(.uint(value))
+            case .double(let value): self = .node(.double(value))
+            }
+            return
+        }
+        switch base {
+        case is Void: self = .node(.null)
+        case let value as Bool: self = .node(.bool(value))
+        // `Int` before `Double` matters only on decode: here an `NSNumber` was taken above, and
+        // a native `Int` doesn't cast to `Double`, so the two cases never compete.
+        case let value as Int: self = .node(.int(Int64(value)))
+        case let value as Double: self = .node(.double(value))
+        case let value as String: self = .node(.string(value))
+        case let value as [Any]: self = .array(value)
+        case let value as [String: Any]: self = .map(value)
+        case let value as any Encodable: self = .encodable(value)
+        default: self = .invalid(base)
+        }
+    }
 }
 
 private struct CanonicalNodeEncoder: Encoder {
@@ -341,6 +405,16 @@ private struct CanonicalNodeEncoder: Encoder {
     let state: CanonicalEncodingState
     let codingPath: [CodingKey]
     var userInfo: [CodingUserInfoKey: Any] { [:] }
+
+    /// Whether a value or a container at `codingPath` is within the depth bound. A non-throwing
+    /// call (`nestedContainer`, `superEncoder`) past it records the error for the end of the
+    /// encode and writes into a detached slot, so the tree never grows past the bound, however
+    /// the value descends (#802): every way down passes this check.
+    static func withinDepth(_ codingPath: [CodingKey], state: CanonicalEncodingState) -> Bool {
+        if codingPath.count <= CanonicalMessagePack.maxDepth { return true }
+        if state.deferredError == nil { state.deferredError = CanonicalMessagePackError.nestingTooDeep }
+        return false
+    }
 
     /// Encodes `value` into a finished node.
     static func box<T: Encodable>(_ value: T, codingPath: [CodingKey]) throws -> CanonicalNode {
@@ -356,6 +430,20 @@ private struct CanonicalNodeEncoder: Encoder {
     static func encode<T: Encodable>(
         _ value: T, into slot: CanonicalSlot, state: CanonicalEncodingState, codingPath: [CodingKey]
     ) throws {
+        // The depth is checked on the way down, before the value recurses (#802): a value under
+        // more than `maxDepth` keys sits inside more than `maxDepth` arrays and maps, which the
+        // writer refuses anyway, and a deep enough value would overflow the stack before it got
+        // there. A value at `maxDepth` keys that opens a container is left to the writer.
+        guard codingPath.count <= CanonicalMessagePack.maxDepth else {
+            throw CanonicalMessagePackError.nestingTooDeep
+        }
+        #if DEBUG
+        CanonicalMessagePack.stackProbeForTesting?()
+        #endif
+        if T.self == AnyCodable.self, anyCodableDirect, let any = value as? AnyCodable {
+            try encodeAnyCodable(any.base, into: slot, state: state, codingPath: codingPath)
+            return
+        }
         if let date = value as? Date {
             slot.setValue(.string(try CanonicalDate.format(date)))
             return
@@ -375,6 +463,58 @@ private struct CanonicalNodeEncoder: Encoder {
             throw CanonicalMessagePackError.unorderedCollection(String(describing: T.self))
         }
         try value.encode(to: CanonicalNodeEncoder(slot: slot, state: state, codingPath: codingPath))
+    }
+
+    /// `AnyCodable.encode(to:)`, written into `slot` directly (#802). The generic path goes through
+    /// `AnyCodable`'s single-value container and `Array` / `Dictionary`'s own `encode(to:)`, about
+    /// 4 KB of stack per level in a debug build: a tree at the depth limit overflows a 544 KiB
+    /// thread. This takes the same cases in the same order (`AnyCodableShape`) and writes the same
+    /// nodes at the same coding paths, with the same key types (`Int` positions as
+    /// `CanonicalCodingKey`, as the unkeyed container names them; dictionary keys as `String`'s own
+    /// `codingKey`, as `Dictionary.encode(to:)` names them), so the bytes and the errors are the
+    /// same. Anything else `Encodable` takes the generic path, as `AnyCodable` does. The recursive
+    /// part holds containers only: the casts happen in `AnyCodableShape`, whose frame is gone
+    /// before the next level starts.
+    static func encodeAnyCodable(
+        _ base: Any, into slot: CanonicalSlot, state: CanonicalEncodingState, codingPath: [CodingKey]
+    ) throws {
+        guard codingPath.count <= CanonicalMessagePack.maxDepth else {
+            throw CanonicalMessagePackError.nestingTooDeep
+        }
+        #if DEBUG
+        CanonicalMessagePack.stackProbeForTesting?()
+        #endif
+        switch AnyCodableShape(base) {
+        case .node(let node):
+            slot.setValue(node)
+        case .array(let elements):
+            slot.becomeArray()
+            for index in elements.indices {
+                try encodeAnyCodable(
+                    elements[index], into: slot.appendChild(), state: state,
+                    codingPath: codingPath + [CanonicalCodingKey(intValue: index)]
+                )
+            }
+        case .map(let entries):
+            slot.becomeMap()
+            for (key, element) in entries {
+                // Keys of one dictionary are distinct strings, so distinct UTF-8 bytes too.
+                guard let child = slot.insertChild(CanonicalKey(key)) else {
+                    throw CanonicalMessagePackError.duplicateKey(key)
+                }
+                try encodeAnyCodable(
+                    element, into: child, state: state,
+                    codingPath: codingPath + [key.codingKey]
+                )
+            }
+        case .encodable(let value):
+            try encode(value, into: slot, state: state, codingPath: codingPath)
+        case .invalid(let invalid):
+            throw EncodingError.invalidValue(invalid, EncodingError.Context(
+                codingPath: codingPath,
+                debugDescription: "AnyCodable value cannot be encoded"
+            ))
+        }
     }
 
     func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
@@ -440,27 +580,34 @@ private struct CanonicalKeyedEncoder<Key: CodingKey>: KeyedEncodingContainerProt
         try CanonicalNodeEncoder.encode(value, into: child, state: state, codingPath: codingPath + [key])
     }
 
+    /// The slot a nested container or super encoder under `key` writes into: detached past the
+    /// depth bound.
+    private func nestedChild(for key: CodingKey) -> CanonicalSlot {
+        guard CanonicalNodeEncoder.withinDepth(codingPath + [key], state: state) else { return CanonicalSlot() }
+        return deferredChild(for: key)
+    }
+
     mutating func nestedContainer<NestedKey: CodingKey>(
         keyedBy keyType: NestedKey.Type, forKey key: Key
     ) -> KeyedEncodingContainer<NestedKey> {
-        let child = deferredChild(for: key)
+        let child = nestedChild(for: key)
         child.becomeMap()
         return KeyedEncodingContainer(CanonicalKeyedEncoder<NestedKey>(slot: child, state: state, codingPath: codingPath + [key]))
     }
 
     mutating func nestedUnkeyedContainer(forKey key: Key) -> UnkeyedEncodingContainer {
-        let child = deferredChild(for: key)
+        let child = nestedChild(for: key)
         child.becomeArray()
         return CanonicalUnkeyedEncoder(slot: child, state: state, codingPath: codingPath + [key])
     }
 
     mutating func superEncoder() -> Encoder {
         let key = CanonicalCodingKey(stringValue: "super")
-        return CanonicalNodeEncoder(slot: deferredChild(for: key), state: state, codingPath: codingPath + [key])
+        return CanonicalNodeEncoder(slot: nestedChild(for: key), state: state, codingPath: codingPath + [key])
     }
 
     mutating func superEncoder(forKey key: Key) -> Encoder {
-        CanonicalNodeEncoder(slot: deferredChild(for: key), state: state, codingPath: codingPath + [key])
+        CanonicalNodeEncoder(slot: nestedChild(for: key), state: state, codingPath: codingPath + [key])
     }
 }
 
@@ -472,6 +619,13 @@ private struct CanonicalUnkeyedEncoder: UnkeyedEncodingContainer {
     var count: Int { slot.elementCount }
 
     private func append() -> CanonicalSlot { slot.appendChild() }
+
+    /// The slot a nested container or super encoder at the next position writes into: detached
+    /// past the depth bound.
+    private func appendNested(at key: CodingKey) -> CanonicalSlot {
+        guard CanonicalNodeEncoder.withinDepth(codingPath + [key], state: state) else { return CanonicalSlot() }
+        return append()
+    }
 
     private func append(_ node: CanonicalNode) { append().setValue(node) }
 
@@ -500,21 +654,21 @@ private struct CanonicalUnkeyedEncoder: UnkeyedEncodingContainer {
 
     mutating func nestedContainer<NestedKey: CodingKey>(keyedBy keyType: NestedKey.Type) -> KeyedEncodingContainer<NestedKey> {
         let key = nextKey
-        let child = append()
+        let child = appendNested(at: key)
         child.becomeMap()
         return KeyedEncodingContainer(CanonicalKeyedEncoder<NestedKey>(slot: child, state: state, codingPath: codingPath + [key]))
     }
 
     mutating func nestedUnkeyedContainer() -> UnkeyedEncodingContainer {
         let key = nextKey
-        let child = append()
+        let child = appendNested(at: key)
         child.becomeArray()
         return CanonicalUnkeyedEncoder(slot: child, state: state, codingPath: codingPath + [key])
     }
 
     mutating func superEncoder() -> Encoder {
         let key = nextKey
-        return CanonicalNodeEncoder(slot: append(), state: state, codingPath: codingPath + [key])
+        return CanonicalNodeEncoder(slot: appendNested(at: key), state: state, codingPath: codingPath + [key])
     }
 }
 
@@ -569,6 +723,9 @@ private struct CanonicalWriter {
     private var depth = 0
 
     mutating func write(_ node: CanonicalNode) throws {
+        #if DEBUG
+        CanonicalMessagePack.stackProbeForTesting?()
+        #endif
         switch node {
         case .null:
             put(0xc0)
@@ -686,6 +843,9 @@ private struct CanonicalReader {
     }
 
     mutating func readValue() throws -> CanonicalNode {
+        #if DEBUG
+        CanonicalMessagePack.stackProbeForTesting?()
+        #endif
         let type = try readByte()
         switch type {
         case 0x00...0x7f: return .uint(UInt64(type))
@@ -794,6 +954,9 @@ private struct CanonicalNodeDecoder: Decoder {
     var userInfo: [CodingUserInfoKey: Any] { [:] }
 
     static func unbox<T: Decodable>(_ node: CanonicalNode, as type: T.Type, codingPath: [CodingKey], integralFloats: Bool) throws -> T {
+        #if DEBUG
+        CanonicalMessagePack.stackProbeForTesting?()
+        #endif
         if type == Date.self {
             guard case .string(let text) = node else {
                 throw CanonicalMessagePackError.typeMismatch(expected: "date string", path: pathString(codingPath))
@@ -802,7 +965,75 @@ private struct CanonicalNodeDecoder: Decoder {
         }
         if type == Double.self { return try unboxDouble(node, codingPath: codingPath, integralFloats: integralFloats) as! T }
         if type == Float.self { return try unboxFloat(node, codingPath: codingPath, integralFloats: integralFloats) as! T }
+        if type == AnyCodable.self, anyCodableDirect {
+            guard let base = anyCodableBase(node, integralFloats: integralFloats) else {
+                // `AnyCodable.init(from:)`'s error: its nested attempts are `try?`, so a value
+                // that fails anywhere inside fails here, at the outermost `AnyCodable`.
+                throw DecodingError.dataCorrupted(DecodingError.Context(
+                    codingPath: codingPath,
+                    debugDescription: "AnyCodable value cannot be decoded"
+                ))
+            }
+            return AnyCodable(base) as! T
+        }
         return try T(from: CanonicalNodeDecoder(node: node, codingPath: codingPath, integralFloats: integralFloats))
+    }
+
+    /// `AnyCodable.init(from:)` over a node, without a decoder (#802): the same attempts in the
+    /// same order (nil, `Bool`, `Int`, `Double`, `String`, an array, a string-keyed dictionary),
+    /// each matched as this decoder's single-value container matches it, and `nil` where
+    /// `AnyCodable` would throw. The generic path costs about 4 KB of stack per level in a debug
+    /// build; the reader has already bounded the node's depth. The recursive part holds
+    /// containers only; scalars are matched in `anyCodableScalar`.
+    ///
+    /// A map that holds two spellings of one key that `String` equates (NFC and NFD) gives a
+    /// dictionary with one of the two values, as `Dictionary.init(from:)` does: which one depends
+    /// on the map's iteration order, which differs between dictionaries, so neither path
+    /// determines it.
+    static func anyCodableBase(_ node: CanonicalNode, integralFloats: Bool) -> Any? {
+        #if DEBUG
+        CanonicalMessagePack.stackProbeForTesting?()
+        #endif
+        switch node {
+        case .array(let elements):
+            var bases: [Any] = []
+            bases.reserveCapacity(elements.count)
+            for index in elements.indices {
+                guard let base = anyCodableBase(elements[index], integralFloats: integralFloats) else { return nil }
+                bases.append(base)
+            }
+            return bases
+        case .map(let entries):
+            var bases: [String: Any] = [:]
+            for (key, value) in entries {
+                guard let base = anyCodableBase(value, integralFloats: integralFloats) else { return nil }
+                bases[key.string] = base
+            }
+            return bases
+        default:
+            return anyCodableScalar(node, integralFloats: integralFloats)
+        }
+    }
+
+    /// `anyCodableBase` for a node that isn't a container.
+    @inline(never)
+    static func anyCodableScalar(_ node: CanonicalNode, integralFloats: Bool) -> Any? {
+        switch node {
+        case .null:
+            return ()
+        case .bool(let value):
+            return value
+        case .int, .uint:
+            if let value = try? unboxInteger(node, as: Int.self, codingPath: []) { return value }
+            if let value = try? unboxDouble(node, codingPath: [], integralFloats: integralFloats) { return value }
+            return nil
+        case .double(let value):
+            return value
+        case .string(let value):
+            return value
+        case .array, .map:
+            return nil
+        }
     }
 
     static func unboxDouble(_ node: CanonicalNode, codingPath: [CodingKey], integralFloats: Bool) throws -> Double {
