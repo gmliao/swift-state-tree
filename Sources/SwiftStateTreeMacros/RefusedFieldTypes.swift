@@ -79,7 +79,8 @@ private final class RefusedTypeFinder: SyntaxVisitor {
 
 /// Reports every stored property of `structDecl` whose declared type `refusedSpelling` refuses,
 /// and returns whether there was one. `onlySynced` limits the check to `@Sync` properties
-/// (`@StateNodeBuilder`: `@Internal` fields aren't synced and may hold anything), and a
+/// (`@StateNodeBuilder`: `@Internal` fields aren't synced, and the compiler holds them to
+/// `PlainData`), and a
 /// `@Sync(.serverOnly)` property isn't checked for `Decimal`, since it isn't sent. `kinds`
 /// limits what is refused (`@Payload` refuses only `Decimal`: a payload may hold an
 /// `AnyCodable`).

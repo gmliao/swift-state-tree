@@ -30,8 +30,8 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
         case existentialField(path: String, typeName: String)
         /// A synced `Decimal` (#597): it has no sync form, so the conversion would read its private
         /// stored fields and throw at the land's first sync. `path` is the field, from the root
-        /// type (`Root.prices[*]`). A `.serverOnly` or `@Internal` field isn't synced and may
-        /// hold one.
+        /// type (`Root.prices[*]`). A `.serverOnly` field isn't synced and may hold one; an
+        /// `@Internal` field can't, since `Decimal` isn't `PlainData`.
         case decimalField(path: String)
         /// Two distinct types in the state share a name (#602), such as `A.Item` and `B.Item`.
         /// The schema and the atomic layout key each type by its name, so one would stand for

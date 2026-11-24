@@ -7,7 +7,9 @@
 #                extension that lists PlainData among its conformances, a typealias that names it,
 #                or a hand-written `_plainDataCheck` (PlainData's one requirement, which only
 #                `@PlainData` may write: with it, a class could conform through a refining protocol
-#                or a default in a protocol extension). A protocol may refine PlainData: a type
+#                or a default in a protocol extension). Any code use of the word `_plainDataCheck`
+#                counts, whatever its spelling around it (escaped, split over lines, glued to a
+#                comment), as does `@_implements` naming PlainData. A protocol may refine PlainData: a type
 #                conforming through it still needs the requirement. A constraint
 #                (`where T: PlainData`, `<T: PlainData>`) isn't a conformance.
 #   let-core     a type that conforms to TurnActor (in its declaration or in an extension, in any
@@ -96,7 +98,8 @@ strip() {  # path
         if (substr(line, i, 2) == "/*") {
           j = index(substr(line, i + 2), "*/")
           if (j == 0) break
-          i = i + 2 + j + 1; continue
+          # A space, so a comment between two tokens can not glue them into one.
+          out = out " "; i = i + 2 + j + 1; continue
         }
         out = out c; i++
       }
@@ -197,14 +200,6 @@ lint() {  # root
         next
       }
       list = conformances(text)
-      # On a protocol, `where Self: PlainData` refines PlainData just as `: PlainData` does.
-      if (kind == "protocol") {
-        wh = text; sub(/\{.*/, "", wh)
-        if (match(wh, /[ \t]where[ \t]/)) {
-          wh = substr(wh, RSTART + RLENGTH)
-          if (wh ~ /(^|[^A-Za-z0-9_])Self[ \t]*:[^,]*(^|[^A-Za-z0-9_])PlainData([^A-Za-z0-9_]|$)/) list = list ", PlainData"
-        }
-      }
       if (word(list, "PlainData") && kind != "protocol" && !allowed(allow, "plain-data"))
         print path ":" n ": [plain-data] a hand-written PlainData conformance; use @PlainData"
       if (word(list, "TurnActor")) {
@@ -228,9 +223,15 @@ lint() {  # root
         else markers[path]++
       }
       if (!core(path)) {
-        # plain-data: the requirement of PlainData, written by hand.
-        if (code ~ /(^|[^A-Za-z0-9_])func[ \t]+_plainDataCheck([^A-Za-z0-9_]|$)/ && !allowed(allow, "plain-data"))
-          print path ":" n ": [plain-data] a hand-written _plainDataCheck; only @PlainData writes it"
+        # plain-data: the requirement of PlainData, written by hand. The word anywhere in code, not
+        # a `func` followed by it: an escaped name, a line break after `func` or `@_implements`
+        # still writes the witness.
+        if (!allowed(allow, "plain-data")) {
+          if (word(code, "_plainDataCheck"))
+            print path ":" n ": [plain-data] a hand-written _plainDataCheck; only @PlainData writes it"
+          else if (code ~ /@_implements[ \t]*\([ \t]*([A-Za-z0-9_]+\.)?PlainData([^A-Za-z0-9_]|$)/)
+            print path ":" n ": [plain-data] a hand-written _plainDataCheck (@_implements); only @PlainData writes it"
+        }
         # machine-file
         if ((path in machineFile) && !allowed(allow, "machine-file") &&
             code ~ /(^|[^A-Za-z0-9_.])Task[ \t]*(\{|\(|<|\.init|\.detached|$)|nonisolated\(unsafe\)|@unchecked[ \t]+Sendable/)
@@ -429,6 +430,13 @@ struct Box<T: PlainData>: Sendable where T: PlainData {}
 func use<T>(_ value: T) where T: PlainData {}
 protocol Constrained where Self: Sendable {}
 typealias Pair = PlainPair<Int, Int>
+// A protocol may refine PlainData: its conformers still need the requirement.
+protocol Bridge: Sendable, PlainData {}
+protocol WhereBridge where Self: PlainData {}
+protocol WhereSplit
+    where Self: Sendable & PlainData
+{
+}
 actor Owner:
     TurnActor
 {
@@ -496,7 +504,7 @@ extension Other: Hashable, PlainData {}
 actor VarOwner: TurnActor {
     var core = makeCore()
 }
-protocol Bridge: Sendable, PlainData {}
+// (the refining protocols are in the passing fixture)
 typealias Alias = PlainData
 struct Wrapped:
     Hashable,
@@ -512,11 +520,11 @@ actor Elsewhere {
     var core = makeCore()
 }
 let x = 0 // lint-allow: turns-isolated: a marker outside Tests
-protocol WhereBridge where Self: PlainData {}
-protocol WhereSplit
-    where Self: Sendable & PlainData
-{
-}
+//
+//
+//
+//
+//
 enum A {
     actor Owner: TurnActor {
         let core = makeCore()
@@ -549,6 +557,13 @@ extension MailboxValue {
 }
 struct Handmade { static func _plainDataCheck() {} }
 extension Bridge { public static func _plainDataCheck() {} }
+struct Escaped { static func `_plainDataCheck`() {} }
+struct Split { static func
+    _plainDataCheck() {} }
+struct Glued { static func/*x*/_plainDataCheck() {} }
+struct Implements { @_implements(PlainData, _plainDataCheck()) static func anything() {} }
+struct ImplementsSplit { @_implements(SwiftStateTurns.PlainData,
+    _plainDataCheck()) static func other() {} }
 EOF
   cat > "$dir/Sources/App/BadConformance.swift" <<'EOF'
 extension Elsewhere: TurnActor {}
@@ -633,6 +648,12 @@ Bad.swift:47: [let-mailbox] a TurnActor'"'"'s mailbox is assigned from core.mail
 Bad.swift:52: [let-mailbox] a TurnActor'"'"'s mailbox is a nonisolated let
 Bad.swift:57: [plain-data] a hand-written _plainDataCheck
 Bad.swift:58: [plain-data] a hand-written _plainDataCheck
+Bad.swift:59: [plain-data] a hand-written _plainDataCheck
+Bad.swift:61: [plain-data] a hand-written _plainDataCheck
+Bad.swift:62: [plain-data] a hand-written _plainDataCheck
+Bad.swift:63: [plain-data] a hand-written _plainDataCheck
+Bad.swift:64: [plain-data] a hand-written _plainDataCheck (@_implements)
+Bad.swift:65: [plain-data] a hand-written _plainDataCheck
 BadMachine.swift:2: [machine-file]
 BadMachine.swift:4: [machine-file]
 BadMachine.swift:5: [machine-file]

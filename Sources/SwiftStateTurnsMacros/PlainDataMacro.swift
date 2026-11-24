@@ -31,18 +31,12 @@ public struct PlainDataMacro: ExtensionMacro {
         }
         if failed { return [] }
 
-        let constraints = (generics?.parameters ?? []).map { "\($0.name.text): PlainData" }
+        // The expansion names the core's module, so a namesake type in the user's module can't
+        // stand in for `PlainData` or `PlainDataCheck`.
+        let constraints = (generics?.parameters ?? []).map { "\($0.name.text): SwiftStateTurns.PlainData" }
         let whereClause = constraints.isEmpty ? "" : " where " + constraints.joined(separator: ", ")
-        let conformance = protocols.isEmpty ? "" : ": PlainData"
-        // The witness is as visible as the type: a public type's conformance needs a public one,
-        // and an internal type's can't have one when the extension carries internal requirements.
-        let access = declaration.modifiers.lazy.compactMap { modifier -> String? in
-            switch modifier.name.tokenKind {
-            case .keyword(.public), .keyword(.open): "public "
-            case .keyword(.package): "package "
-            default: nil
-            }
-        }.first ?? ""
+        let conformance = protocols.isEmpty ? "" : ": SwiftStateTurns.PlainData"
+        let access = witnessAccess(of: declaration, in: context)
         let decl: DeclSyntax = """
             extension \(type.trimmed)\(raw: conformance)\(raw: whereClause) {
                 /// Compiled, never called: each line fails to compile unless its type is PlainData.
@@ -53,6 +47,37 @@ public struct PlainDataMacro: ExtensionMacro {
             """
         guard let ext = decl.as(ExtensionDeclSyntax.self) else { return [] }
         return [ext]
+    }
+
+    /// The witness is as visible as the type: a public type's conformance needs a public one, and
+    /// an internal type's can't have one when the extension carries internal requirements. A
+    /// type with no access modifier of its own that is a member of an extension takes the
+    /// extension's (`public extension Outer { struct Inner }` makes `Inner` public), and a
+    /// `@usableFromInline` type's witness is `@usableFromInline` too.
+    private static func witnessAccess(of declaration: some DeclGroupSyntax, in context: some MacroExpansionContext) -> String {
+        let inlinable = declaration.attributes.contains {
+            $0.as(AttributeSyntax.self)?.attributeName.trimmedDescription == "usableFromInline"
+        }
+        let prefix = inlinable ? "@usableFromInline " : ""
+        if let own = explicitAccess(declaration.modifiers) { return prefix + own }
+        if let parent = context.lexicalContext.first?.as(ExtensionDeclSyntax.self),
+           let inherited = explicitAccess(parent.modifiers) {
+            return prefix + inherited
+        }
+        return prefix
+    }
+
+    /// The witness's modifier for an access modifier in `modifiers`, or nil if there is none.
+    private static func explicitAccess(_ modifiers: DeclModifierListSyntax) -> String? {
+        for modifier in modifiers {
+            switch modifier.name.tokenKind {
+            case .keyword(.public), .keyword(.open): return "public "
+            case .keyword(.package): return "package "
+            case .keyword(.internal), .keyword(.fileprivate), .keyword(.private): return ""
+            default: continue
+            }
+        }
+        return nil
     }
 
     /// One check per stored property (or associated value), in member order. A member inside an
@@ -125,7 +150,7 @@ public struct PlainDataMacro: ExtensionMacro {
     }
 
     private static func check(_ type: TypeSyntax) -> String {
-        "PlainDataCheck.field((\(type.trimmed)).self)"
+        "SwiftStateTurns.PlainDataCheck.field((\(type.trimmed)).self)"
     }
 
     /// The checks for one field's type, or nil after a diagnostic. A type with no `any` gets one
@@ -145,32 +170,78 @@ public struct PlainDataMacro: ExtensionMacro {
                 return nil
             }
             guard accept(existential.constraint, context) else { return nil }
-            return ["PlainDataCheck.existential((\(existential.trimmed)).self) { $0 }"]
+            // The type goes in the closure's parameter: `(any (P & Q)).self` doesn't parse as an
+            // expression, and the parameter takes every spelling.
+            return ["SwiftStateTurns.PlainDataCheck.existential { (value: \(existential.trimmed)) in value }"]
+        }
+        // A closure or a tuple holding an existential is refused as a closure or a tuple.
+        var bare = type
+        while let attributed = bare.as(AttributedTypeSyntax.self) { bare = attributed.baseType }
+        if bare.is(FunctionTypeSyntax.self) {
+            context.diagnose(Diagnostic(node: type, message: PlainDataDiagnostic.closure))
+            return nil
+        }
+        if bare.is(TupleTypeSyntax.self) {
+            context.diagnose(Diagnostic(node: type, message: PlainDataDiagnostic.tuple))
+            return nil
         }
         if let optional = type.as(OptionalTypeSyntax.self) { return checks(optional.wrappedType, context) }
         if let optional = type.as(ImplicitlyUnwrappedOptionalTypeSyntax.self) { return checks(optional.wrappedType, context) }
         if let array = type.as(ArrayTypeSyntax.self) { return checks(array.element, context) }
         if let dictionary = type.as(DictionaryTypeSyntax.self) { return pair(dictionary.key, dictionary.value, context) }
-        if let named = type.as(IdentifierTypeSyntax.self), let clause = named.genericArgumentClause {
-            let arguments: [TypeSyntax] = clause.arguments.compactMap {
-                if case .type(let argument) = $0.argument { return argument }
-                return nil
-            }
-            switch (named.name.text, arguments.count) {
-            case ("Optional", 1), ("Array", 1), ("ContiguousArray", 1): return checks(arguments[0], context)
-            case ("Dictionary", 2): return pair(arguments[0], arguments[1], context)
-            default: break
-            }
+        if let found = standardWrapper(type) {
+            guard let inner = wrapperChecks(found, context) else { return nil }
+            // A bare name can be the module's own type of that name; the identity check refuses
+            // anything but the standard library's. `Swift.Array` needs none.
+            guard found.bare else { return inner }
+            return inner + ["SwiftStateTurns.PlainDataCheck.same((\(type.trimmed)).self, (Swift.\(type.trimmed)).self)"]
         }
         context.diagnose(Diagnostic(node: type, message: PlainDataDiagnostic.existentialInGeneric))
         return nil
     }
 
-    /// A dictionary's checks: its key as a whole (an existential key isn't `Hashable`), its value
-    /// as above.
+    /// `Optional<…>`, `Array<…>`, `ContiguousArray<…>` or `Dictionary<…, …>` spelled out, bare or
+    /// as `Swift.…`: its name and arguments, and whether the name was bare.
+    private static func standardWrapper(_ type: TypeSyntax) -> (name: String, arguments: [TypeSyntax], bare: Bool)? {
+        let name: String
+        let clause: GenericArgumentClauseSyntax?
+        let bare: Bool
+        if let named = type.as(IdentifierTypeSyntax.self) {
+            (name, clause, bare) = (named.name.text, named.genericArgumentClause, true)
+        } else if let member = type.as(MemberTypeSyntax.self), member.baseType.trimmedDescription == "Swift" {
+            (name, clause, bare) = (member.name.text, member.genericArgumentClause, false)
+        } else {
+            return nil
+        }
+        guard let clause else { return nil }
+        let arguments: [TypeSyntax] = clause.arguments.compactMap {
+            if case .type(let argument) = $0.argument { return argument }
+            return nil
+        }
+        switch (name, arguments.count) {
+        case ("Optional", 1), ("Array", 1), ("ContiguousArray", 1), ("Dictionary", 2): return (name, arguments, bare)
+        default: return nil
+        }
+    }
+
+    private static func wrapperChecks(
+        _ wrapper: (name: String, arguments: [TypeSyntax], bare: Bool),
+        _ context: some MacroExpansionContext
+    ) -> [String]? {
+        wrapper.name == "Dictionary"
+            ? pair(wrapper.arguments[0], wrapper.arguments[1], context)
+            : checks(wrapper.arguments[0], context)
+    }
+
+    /// A dictionary's checks: its key as a whole, which can't hold an existential (an existential
+    /// key isn't `Hashable`), and its value as above.
     private static func pair(_ key: TypeSyntax, _ value: TypeSyntax, _ context: some MacroExpansionContext) -> [String]? {
-        guard let keyChecks = checks(key, context), let valueChecks = checks(value, context) else { return nil }
-        return keyChecks + valueChecks
+        if containsAny(key) {
+            context.diagnose(Diagnostic(node: key, message: PlainDataDiagnostic.existentialInGeneric))
+            return nil
+        }
+        guard accept(key, context), let valueChecks = checks(value, context) else { return nil }
+        return [check(key)] + valueChecks
     }
 
     private static func containsAny(_ type: TypeSyntax) -> Bool {
@@ -244,7 +315,22 @@ private final class RefusedTypeVisitor: SyntaxVisitor {
             refused.append((Syntax(node), .foundation(node.name.text, name)))
             return .skipChildren
         }
-        return .visitChildren
+        // The base names where the type is declared, not a type stored here: `Date.Part` in the
+        // module's own `enum Date` isn't Foundation's `Date`. Only generic arguments are stored.
+        walkArguments(of: node.baseType)
+        if let clause = node.genericArgumentClause { walk(clause) }
+        return .skipChildren
+    }
+
+    private func walkArguments(of base: TypeSyntax) {
+        if let member = base.as(MemberTypeSyntax.self) {
+            walkArguments(of: member.baseType)
+            if let clause = member.genericArgumentClause { walk(clause) }
+        } else if let named = base.as(IdentifierTypeSyntax.self) {
+            if let clause = named.genericArgumentClause { walk(clause) }
+        } else {
+            walk(base)
+        }
     }
 
     override func visit(_ node: TupleTypeSyntax) -> SyntaxVisitorContinueKind {

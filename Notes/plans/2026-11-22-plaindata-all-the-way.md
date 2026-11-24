@@ -1,6 +1,6 @@
 # PlainData all the way: no world in the turn core
 
-**Status:** rev 2: the maintainer decided Q1–Q6 (2026-11-22, §6 Decisions). P1 and P2 are implemented in one draft PR, stacked on #768's; Review checks this plan and that code together. P3–P5 are not started. Rev 1 was plan only, with no code. The maintainer's direction (2026-11-22): settle the `PlainData` question before #700 K1, and keep the turn core free of a world. #758 (a step-lent world) is on hold, and this plan doesn't design it.
+**Status:** rev 2: the maintainer decided Q1–Q6 (2026-11-22, §6 Decisions). P1 and P2 are implemented in #772 (based on `main`); Review checks this plan and that code together. P3–P5 are not started. Rev 1 was plan only, with no code. The maintainer's direction (2026-11-22): settle the `PlainData` question before #700 K1, and keep the turn core free of a world. #758 (a step-lent world) is on hold, and this plan doesn't design it.
 
 Code pointers are at main 2ef1c328.
 
