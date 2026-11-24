@@ -68,6 +68,11 @@ Every case has two verdicts: `behavior` (what the server echoed) and `behaviorCl
 connection ended). `summarize.py` takes the worse of the two, ordered FAILED, UNIMPLEMENTED,
 NON-STRICT, INFORMATIONAL, OK. INFORMATIONAL is a case the suite doesn't judge (here 7.1.6, 7.13.1 and 7.13.2); it is not a failure.
 
+`behaviorClose` can carry Autobahn's close-specific classes, which `summarize.py` maps before the
+comparison: `UNCLEAN` (Autobahn: `case_failed`) → FAILED; `WRONG CODE` (Autobahn:
+`case_non_strict`) → NON-STRICT; `FAILED BY CLIENT` (Autobahn: `case_almost`, reported here as
+NON-STRICT) → NON-STRICT.
+
 Sections run: 1 framing, 2 pings and pongs, 3 reserved bits, 4 opcodes, 5 fragmentation, 6 UTF-8
 handling, 7 close handling, 10 miscellaneous. Not run: 9 (limits and performance, long and
 dependent on the machine), 12 and 13 (permessage-deflate).

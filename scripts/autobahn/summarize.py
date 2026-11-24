@@ -6,8 +6,9 @@ closing handshake), in the order FAILED, UNIMPLEMENTED, NON-STRICT, INFORMATIONA
 `behaviorClose` can carry Autobahn's close-specific verdicts (`WRONG CODE`, `UNCLEAN`,
 `FAILED BY CLIENT`); these are normalized to their severity equivalents before the comparison.
 
-The script also validates the index: it exits non-zero unless the agent has exactly
-EXPECTED_CASE_COUNT cases and every case has both `behavior` and `behaviorClose`.
+The script also validates the index: it exits non-zero unless the index contains exactly one
+agent (EXPECTED_AGENT), that agent has exactly EXPECTED_CASE_COUNT cases, and every case has
+both `behavior` and `behaviorClose`.
 
 Usage: summarize.py <reports/servers/index.json> [--failed-only | --expected-failures]
 With --failed-only it prints just the FAILED case ids, one per line, sorted by section.
@@ -42,6 +43,8 @@ CLOSE_VERDICT_MAP = {
 
 # Cases that run today with the config in fuzzingclient.json (all except 9.*, 12.*, 13.*).
 EXPECTED_CASE_COUNT = 247
+# Agent name configured in fuzzingclient.json.
+EXPECTED_AGENT = "SwiftStateTreeNIO"
 
 
 def case_key(case_id: str):
@@ -102,6 +105,14 @@ def main(argv: list[str]) -> int:
         return 2
     with open(paths[0], encoding="utf-8") as f:
         index = json.load(f)
+
+    agents = list(index.keys())
+    if agents != [EXPECTED_AGENT]:
+        print(
+            f"summarize: expected one agent ({EXPECTED_AGENT!r}), got {agents!r}",
+            file=sys.stderr,
+        )
+        return 8
 
     for agent, cases in index.items():
         # Validate completeness before summarizing.
