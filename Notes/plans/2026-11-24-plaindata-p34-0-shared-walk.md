@@ -1,6 +1,6 @@
 # PlainData P3/4-0: one field walk for both macro targets
 
-**Status:** rev 3, plan only. Rev 1 (2af72dd2) was NOT GO on one must-fix, §2.0. The maintainer decided it on 2026-11-24 (re-export, #79), and rev 3 records that. Rev 2 (e1ebf6eb) folded in the rest of the review. The branch sits on #772's head and is merged forward: #772's fix round (3cd3a65c) is merged in now, and `main` will be merged in after #772 merges. The branch is never force-pushed. A slice of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§4), added so that P3 (payloads) and P4 (`State`) can run in parallel: it lands what both of them need, once.
+**Status:** rev 3, plan only, GO from Review (747ed740); its three nits are folded in. Rev 1 (2af72dd2) was NOT GO on one must-fix, §2.0. The maintainer decided it on 2026-11-24 (re-export, #79), and rev 3 records that. Rev 2 (e1ebf6eb) folded in the rest of the review. The branch sits on #772's head and is merged forward: #772's fix round (3cd3a65c) is merged in now, and `main` will be merged in after #772 merges. The branch is never force-pushed. A slice of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§4), added so that P3 (payloads) and P4 (`State`) can run in parallel: it lands what both of them need, once.
 
 ## 1. Why a slice before P3 and P4
 
@@ -14,7 +14,7 @@ P3 and P4 put `_plainDataCheck` into `@Payload` and `@StateNodeBuilder`. A user 
 
 **Decision (the maintainer, 2026-11-24, #79): (a), `SwiftStateTree` re-exports `SwiftStateTurns`.** Option (b), narrow typealiases plus a second `@PlainData` declaration in `SwiftStateTree`, is not taken. What this slice does:
 - **The re-export.** One file, `Sources/SwiftStateTree/Exports.swift`, holds `@_exported import SwiftStateTurns`. It goes in its own commit, the slice's only change to a public import. Expansions keep naming `SwiftStateTurns.PlainData` and `SwiftStateTurns.PlainDataCheck`, as #772's do. That module name resolves in every file that imports `SwiftStateTree`.
-- **Names that could collide.** A user file that imports `SwiftStateTree` now also sees the turn core's 25 public type names: `Abandonment`, `CallerCancellation`, `FollowUpArming`, `FollowUpTrigger`, `Generation`, `Hold`, `InputID`, `InputPolicy`, `MailTurn`, `PlainData`, `PlainDataCheck`, `PlainPair`, `RequestID`, `Turn`, `TurnActor`, `TurnClock`, `TurnCore`, `TurnDiagnostic`, `TurnError`, `TurnInstant`, `TurnMachine`, `TurnMailbox`, `TurnStats`, `TurnWork`, `WithdrawToken`, and the `@PlainData` macro. A grep of `Sources/`, `Examples/`, `Tests/` and `Tools/` found no other declaration of any of them. A user type of the same name still wins in its own module, and only an unqualified use in a file that sees both is ambiguous.
+- **Names that could collide.** A user file that imports `SwiftStateTree` now also sees the turn core's 25 public type names: `Abandonment`, `CallerCancellation`, `FollowUpArming`, `FollowUpTrigger`, `Generation`, `Hold`, `InputID`, `InputPolicy`, `MailTurn`, `PlainData`, `PlainDataCheck`, `PlainPair`, `RequestID`, `Turn`, `TurnActor`, `TurnClock`, `TurnCore`, `TurnDiagnostic`, `TurnError`, `TurnInstant`, `TurnMachine`, `TurnMailbox`, `TurnStats`, `TurnWork`, `WithdrawToken`, and the `@PlainData` macro. Those are all of its public top-level declarations: a grep for public top-level functions, `let`s, `var`s and operators in `Sources/SwiftStateTurns` finds none besides the macro. A grep of `Sources/`, `Examples/`, `Tests/` and `Tools/` found no other declaration of any of the names. A user type of the same name still wins in its own module, and only an unqualified use in a file that sees both is ambiguous.
 - **The docs.** docs/core/sync.md (and zh-TW) drops "`SwiftStateTree` doesn't re-export `SwiftStateTurns`, so … needs `import SwiftStateTurns`". A user's own type in `@Internal` needs only `@PlainData`. Other pages that tell a `SwiftStateTree` user to import `SwiftStateTurns` are changed the same way. Today that is only sync.md, by grep, and the slice greps again.
 - **Pinned by a snippet.** A new compiling snippet in `scripts/must-not-compile/` (the `SwiftStateTree` set, which imports only `SwiftStateTree`) declares a `@PlainData` struct and holds it in `@Internal`. Mutant: the re-export removed makes that snippet fail with "cannot find".
 - **The lint.** No exemption follows from (a). The narrow `named(_plainDataCheck)` exemption for the `@attached` declarations of `@Payload` and `@StateNodeBuilder` stays P3's (§3a).
@@ -58,7 +58,7 @@ The must-not-compile snippets whose `expect-error` matches the old field text mo
 - `internal-not-plain` and `internal-decimal`: `Internal`'s generic constraint, not a `field` call;
 - a machine without `PlainData`, and a class through a refining protocol;
 - an `any NotPlain`;
-- the shadowed wrapper, which fails at the `same` check.
+- the shadowed wrappers (a namesake `Array`, a module-level `enum Swift`, a `typealias Array`), which fail at the pinned helper (`PlainDataCheck.array` and its siblings) that #772 settles on.
 
 ### 2.4 `@PlainData` on the DeterministicMath types
 
@@ -112,7 +112,7 @@ A/B: none. The slice is compile time only: `_plainDataCheck` is never called, an
 
 ## 5. Public API
 
-- **Re-export (§2.0, decision (a)).** `SwiftStateTree` re-exports `SwiftStateTurns` (`@_exported import`). This is additive: a file that imports `SwiftStateTree` sees the turn core's public names and the `@PlainData` macro without its own import. It can still break source: a user type that shares a name with one of the 25 types listed in §2.0 becomes ambiguous where an unqualified use sees both, and qualifying the name with its module fixes that. None exists in this repository.
+- **Re-export (§2.0, decision (a)).** `SwiftStateTree` re-exports `SwiftStateTurns` (`@_exported import`). This is additive: a file that imports `SwiftStateTree` sees the turn core's public names and the `@PlainData` macro without its own import. It can still break source: a user type that shares a name with one of the 25 types listed in §2.0 becomes ambiguous where an unqualified use sees both, and qualifying the name with its module fixes that. The likely ones are the short, generic names: `Turn`, `Hold` and `Generation`. The ambiguity is only across modules: inside the user's own module, their type wins. None exists in this repository.
 
 The rest is additive and source compatible:
 - `PlainData` conformances on the DeterministicMath types in §2.4;
