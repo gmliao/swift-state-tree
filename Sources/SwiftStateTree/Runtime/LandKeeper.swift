@@ -73,6 +73,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case turnRecord
     /// The start of an action job's completion (`completeAction`), before its segment.
     case actionComplete
+    /// The start of an action job's task, before its resolvers run. The values were built in
+    /// the intake segment (#769 §3.2); a test changes the State here and checks they don't see it.
+    case actionJobStart
     /// The end of `submitAction`, before it returns or throws to its caller: its intake (and
     /// a job's registration) is done.
     case actionSubmitted
@@ -2446,7 +2449,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         actionSlots[sequence] = ActionSlot()
         actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input, abandonment: abandonment)
         actionJobsStarted += 1
+        // A copy, so the task doesn't hop to the keeper for it: with no hook it returns at once.
+        let holds = self.holds
         let task = Task { [weak self] in
+            await holds.at(.actionJobStart)
             let resolved: Result<[String: HeldResolverOutput], any Error>
             do {
                 let outputs = try await ResolverExecutor.executeResolvers(
