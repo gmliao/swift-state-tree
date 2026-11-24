@@ -57,10 +57,14 @@ struct DiffHeldResponse: ResponsePayload {
 @PlainData
 struct DiffHeldOutput: ResolverOutput {}
 
-struct DiffHeldResolver: ContextResolver {
+@PlainData
+struct DiffHeldResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = DiffHeldOutput
-    static func resolve(ctx: ResolverContext) async throws -> DiffHeldOutput {
-        let key = (ctx.actionPayload as? DiffHeldAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> DiffHeldOutput {
+        let key = key
         await DiffGates.gate(key).arrive()
         return DiffHeldOutput()
     }

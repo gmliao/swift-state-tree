@@ -102,11 +102,15 @@ private enum AdapterJobGates {
     static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> HeldGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
-struct AdapterJobHeldResolver: ContextResolver {
+@PlainData
+struct AdapterJobHeldResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = AdapterJobOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> AdapterJobOutput {
-        let key = (ctx.actionPayload as? AdapterJobHeldAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> AdapterJobOutput {
+        let key = key
         await AdapterJobGates.gate(key).arrive()
         return AdapterJobOutput()
     }

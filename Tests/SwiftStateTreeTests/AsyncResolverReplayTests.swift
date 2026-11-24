@@ -37,18 +37,20 @@ struct AsyncResolverTestResponse: ResponsePayload {
 // MARK: - Test Resolver with Async Delay
 
 /// Test resolver that simulates async I/O with configurable delay
-struct TestAsyncResolver: ContextResolver {
+@PlainData
+struct TestAsyncResolver: Resolver {
+    typealias Dependencies = NoServices
+    let playerID: PlayerID
+
     typealias Output = TestResolverOutput
     
-    static func resolve(
-        ctx: ResolverContext
-    ) async throws -> TestResolverOutput {
+    func resolve(_ deps: NoServices) async throws -> TestResolverOutput {
         // Simulate async I/O operation (e.g., database query)
         // Use a short delay to test async behavior without slowing tests too much
         try await Task.sleep(for: .milliseconds(10))
         
         // Generate deterministic value based on PlayerID (Swift Hashable is not deterministic)
-        let stable = DeterministicHash.stableInt32(ctx.playerID.rawValue)
+        let stable = DeterministicHash.stableInt32(playerID.rawValue)
         let value = "resolved-\(stable % 1000)"
         
         return TestResolverOutput(value: value)

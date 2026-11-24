@@ -700,9 +700,9 @@ func testOnInitializeWithResolver() async throws {
         using: DemoLandState.self
     ) {
         Lifetime {
-            OnInitialize(resolvers: TestOnInitializeWithResolverFixtures.ConfigResolver.self) { state, ctx in
-                // Access resolver output (ConfigResolver -> config)
-                if let config: TestOnInitializeWithResolverFixtures.ConfigInfo = ctx.config {
+            OnInitialize(resolvers: { _, _ in TestOnInitializeWithResolverFixtures.ConfigResolver() }) { state, config, _ in
+                // The resolver's output, after the State
+                if let config {
                     state.ticks = config.maxPlayers
                 }
             }
@@ -1037,9 +1037,9 @@ func testCanJoinWithResolver() async throws {
         using: DemoLandState.self
     ) {
         Rules {
-            CanJoin(resolvers: TestCanJoinWithResolverFixtures.UserLevelResolver.self) { state, session, ctx in
-                // Check resolver output (UserLevelResolver -> userLevel)
-                guard let userLevel: TestCanJoinWithResolverFixtures.UserLevelInfo = ctx.userLevel else {
+            CanJoin(resolvers: TestCanJoinWithResolverFixtures.UserLevelResolver.self) { state, session, userLevel, ctx in
+                // The resolver's output, after the session
+                guard let userLevel else {
                     throw JoinError.custom("Failed to load user level")
                 }
                 
@@ -1119,7 +1119,7 @@ private struct InitOrderGatedResolver: Resolver {
     }
 
     func resolve(_ deps: NoServices) async throws -> InitOrderOutput {
-        let gate = lock.withLock { current }
+        let gate = Self.lock.withLock { Self.current }
         await gate.enterAndWait()
         return InitOrderOutput(value: 1)
     }

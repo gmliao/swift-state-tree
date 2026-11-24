@@ -56,11 +56,15 @@ struct PerSequenceEvent: ServerEventPayload {
     let amount: Int
 }
 
-struct PerSequenceGatedResolver: ContextResolver {
+@PlainData
+struct PerSequenceGatedResolver: Resolver {
+    typealias Dependencies = NoServices
+    let amount: Int
+
     typealias Output = DeliveryResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> DeliveryResolverOutput {
-        let amount = (ctx.actionPayload as? PerSequenceGatedAction)?.amount ?? -1
+    func resolve(_ deps: NoServices) async throws -> DeliveryResolverOutput {
+        let amount = amount
         await DeliveryGates.gate(amount).enterAndWait()
         return DeliveryResolverOutput(value: amount)
     }

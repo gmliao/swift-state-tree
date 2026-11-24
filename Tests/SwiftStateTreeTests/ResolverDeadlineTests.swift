@@ -97,10 +97,14 @@ private func makeDeadlineDefinition(destroyWhenEmpty: Bool) -> LandDefinition<De
 
 /// OnInitialize: waits on `DeliveryGates` gate n of its land "deadline-init:<n>", a key from
 /// `freshKey()`, ignoring cancellation.
-struct DeadlineInitResolver: ContextResolver {
+@PlainData
+struct DeadlineInitResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = DeadlineResolverOutput
-    static func resolve(ctx: ResolverContext) async throws -> DeadlineResolverOutput {
-        let key = Int(ctx.landID.split(separator: ":").last ?? "") ?? 0
+    func resolve(_ deps: NoServices) async throws -> DeadlineResolverOutput {
+        let key = Int(landID.split(separator: ":").last ?? "") ?? 0
         await DeliveryGates.gate(key).enterAndWait()
         return DeadlineResolverOutput(value: 0)
     }

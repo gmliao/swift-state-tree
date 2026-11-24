@@ -64,11 +64,15 @@ private enum NewestWinsActionHold {
     static let gates = KeyedGates<ClientID, TestGate> { TestGate() }
 }
 
-struct NewestWinsActionResolver: ContextResolver {
+@PlainData
+struct NewestWinsActionResolver: Resolver {
+    typealias Dependencies = NoServices
+    let clientID: ClientID
+
     typealias Output = NewestWinsActionOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> NewestWinsActionOutput {
-        if let gate = NewestWinsActionHold.gates.registeredGate(ctx.clientID) {
+    func resolve(_ deps: NoServices) async throws -> NewestWinsActionOutput {
+        if let gate = NewestWinsActionHold.gates.registeredGate(clientID) {
             await gate.arrive()
         }
         return NewestWinsActionOutput()

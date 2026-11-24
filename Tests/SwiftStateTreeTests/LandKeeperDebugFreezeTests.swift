@@ -138,7 +138,7 @@ struct DebugFreezeGatedResolver: Resolver {
     static let gate = DebugFreezeGate(open: false)
 
     func resolve(_ deps: NoServices) async throws -> DebugFreezeGatedResolverOutput {
-        await gate.pass()
+        await Self.gate.pass()
         return DebugFreezeGatedResolverOutput(ok: true)
     }
 }
@@ -151,7 +151,7 @@ struct DebugFreezeStuckResolver: Resolver {
     static let gate = DebugFreezeGate(open: false)
 
     func resolve(_ deps: NoServices) async throws -> DebugFreezeGatedResolverOutput {
-        await gate.pass()
+        await Self.gate.pass()
         return DebugFreezeGatedResolverOutput(ok: true)
     }
 }

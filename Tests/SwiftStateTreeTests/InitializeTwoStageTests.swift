@@ -36,10 +36,14 @@ enum RoomSetupError: Error, Equatable {
 }
 
 /// Throws for a land ID that contains "missing"; otherwise a room for 4.
-struct RoomConfigResolver: ContextResolver {
+@PlainData
+struct RoomConfigResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = RoomConfigOutput
-    static func resolve(ctx: ResolverContext) async throws -> RoomConfigOutput {
-        if ctx.landID.contains("missing") { throw RoomSetupError.noConfig }
+    func resolve(_ deps: NoServices) async throws -> RoomConfigOutput {
+        if landID.contains("missing") { throw RoomSetupError.noConfig }
         return RoomConfigOutput(maxPlayers: 4)
     }
 }
@@ -109,13 +113,13 @@ private func makeReplayDefinition(voidForm: Bool = false, tickless: Bool = false
         }, apply: { state, ctx in
             openRoom(&state, maxPlayers: 2, ctx)
         })
-        : OnInitialize(resolvers: { _, ctx in RoomConfigResolver(landID: ctx.landID) }, validate: { _, roomConfig, ctx throws in
+        : (OnInitialize(resolvers: { _, ctx in RoomConfigResolver(landID: ctx.landID) }, validate: { _, roomConfig, ctx throws in
             try refuse(ctx)
             guard let config: RoomConfigOutput = roomConfig else { throw RoomSetupError.noConfig }
             return config.maxPlayers
         }, apply: { state, _, maxPlayers, ctx in
             openRoom(&state, maxPlayers: maxPlayers, ctx)
-        })
+        }) as ResolvingNode<LifetimeDirective<RoomState>, NoServices>).node
     if tickless {
         return Land("init-replay", using: RoomState.self) {
             ServerEvents { Register(RoomOpenedEvent.self) }
@@ -321,10 +325,14 @@ private func expectReplayRefusal(_ verdict: ReevaluationEngine.InitializeVerific
 
 /// OnInitialize's resolver, held at the gate keyed by the land ID's last part
 /// ("init-wait:<key>"), then a room for 4.
-struct GatedRoomConfigResolver: ContextResolver {
+@PlainData
+struct GatedRoomConfigResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = RoomConfigOutput
-    static func resolve(ctx: ResolverContext) async throws -> RoomConfigOutput {
-        let key = Int(ctx.landID.split(separator: ":").last ?? "") ?? 0
+    func resolve(_ deps: NoServices) async throws -> RoomConfigOutput {
+        let key = Int(landID.split(separator: ":").last ?? "") ?? 0
         await DeliveryGates.gate(key).enterAndWait()
         return RoomConfigOutput(maxPlayers: 4)
     }

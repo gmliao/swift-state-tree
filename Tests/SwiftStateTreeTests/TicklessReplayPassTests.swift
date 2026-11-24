@@ -68,11 +68,15 @@ enum PassGates {
     static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
-struct PassGatedResolver: ContextResolver {
+@PlainData
+struct PassGatedResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = PassResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> PassResolverOutput {
-        let key = (ctx.actionPayload as? PassGatedAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> PassResolverOutput {
+        let key = key
         await PassGates.gate(key).enterAndWait()
         return PassResolverOutput(key: key)
     }
@@ -128,7 +132,7 @@ private func makePassDefinition(initializeWithResolver: Bool = false) -> LandDef
         }
         }
     }
-    let onInitialize: LifetimeDirective<PassOrderState> = OnInitialize(resolvers: { _, _ in PassInitResolver() }) {
+    let onInitialize: ResolvingNode<LifetimeDirective<PassOrderState>, NoServices> = OnInitialize(resolvers: { _, _ in PassInitResolver() }) {
         state, _, ctx in
         appendEntry("init", to: &state, ctx: ctx)
     }

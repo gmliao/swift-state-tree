@@ -53,6 +53,18 @@ struct SlowDeterministicConsistencyResolver: ContextResolver {
     }
 }
 
+/// The action's form of the same resolver (#769): a value, built with the sender's ID.
+@PlainData
+struct SlowDeterministicConsistency: Resolver {
+    typealias Dependencies = NoServices
+    let playerID: PlayerID
+
+    func resolve(_ deps: NoServices) async throws -> SlowDeterministicConsistencyOutput {
+        try await Task.sleep(for: .milliseconds(25))
+        return SlowDeterministicConsistencyOutput(stableInt: DeterministicHash.stableInt32(playerID.rawValue))
+    }
+}
+
 @PlainData
 struct SlowDeterministicConsistencyOutput: ResolverOutput {
     let stableInt: Int32
@@ -71,9 +83,10 @@ private func createConsistencyTestLandDefinition() -> LandDefinition<AsyncResolv
                 state.playersJoined.removeValue(forKey: ctx.playerID.rawValue)
             }
 
-            HandleAction(IncrementCounterConsistencyAction.self, resolvers: SlowDeterministicConsistencyResolver.self) {
-                state, action, ctx in
-                let bias = Int((ctx.slowDeterministicConsistency as SlowDeterministicConsistencyOutput?)?.stableInt ?? 0) % 7
+            HandleAction(IncrementCounterConsistencyAction.self, resolvers: { _, _, ctx in
+                SlowDeterministicConsistency(playerID: ctx.playerID)
+            }) { state, action, slowDeterministicConsistency, _ in
+                let bias = Int(slowDeterministicConsistency?.stableInt ?? 0) % 7
                 state.counter += action.amount + bias
                 return IncrementCounterConsistencyResponse(newValue: state.counter)
             }

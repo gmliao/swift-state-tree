@@ -56,11 +56,15 @@ enum DeliveryGates {
     static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
-struct DeliveryGatedResolver: ContextResolver {
+@PlainData
+struct DeliveryGatedResolver: Resolver {
+    typealias Dependencies = NoServices
+    let amount: Int
+
     typealias Output = DeliveryResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> DeliveryResolverOutput {
-        let amount = (ctx.actionPayload as? DeliveryGatedAction)?.amount ?? -1
+    func resolve(_ deps: NoServices) async throws -> DeliveryResolverOutput {
+        let amount = amount
         await DeliveryGates.gate(amount).enterAndWait()
         return DeliveryResolverOutput(value: amount)
     }

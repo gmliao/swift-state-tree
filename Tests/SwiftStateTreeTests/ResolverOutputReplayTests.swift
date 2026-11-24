@@ -37,6 +37,13 @@ struct ResolverReplayStampResolver: ContextResolver {
     static func resolve(ctx: ResolverContext) async throws -> ResolverReplayStamp { output }
 }
 
+/// The action's and OnInitialize's form (#769): a value. It returns the join resolver's output.
+@PlainData
+struct ResolverReplayStampFetch: Resolver {
+    typealias Dependencies = NoServices
+    func resolve(_ deps: NoServices) async throws -> ResolverReplayStamp { ResolverReplayStampResolver.output }
+}
+
 @StateNodeBuilder
 struct ResolverReplayState: StateNodeProtocol {
     /// What each handler read: the description of each field, or "nil" when the read failed. One
@@ -47,7 +54,7 @@ struct ResolverReplayState: StateNodeProtocol {
     var seenAtJoin: [String] = []
     @Sync(.broadcast)
     var seenAtInit: [String] = []
-    /// What the action's handler read through the internal `getResolverOutput`.
+    /// What the action's handler read through the internal `resolverOutput(_:named:)`.
     @Sync(.broadcast)
     var seenViaGetter: [String] = []
     /// Whether the action's handler, asking for `ResolverReplayMismatch`, got a value.
@@ -110,11 +117,11 @@ private let resolverReplayLandID = "resolver-replay:local"
 func makeResolverReplayLand() -> LandDefinition<ResolverReplayState> {
     Land("resolver-replay", using: ResolverReplayState.self) {
         Rules {
-            HandleAction(ResolverReplayAction.self, resolvers: ResolverReplayStampResolver.self) {
-                state, _, ctx in
-                state.seen = resolverReplaySeen(ctx.resolverReplayStamp as ResolverReplayStamp?)
-                state.seenViaGetter = resolverReplaySeen(ctx.getResolverOutput(ResolverReplayStamp.self, forPropertyName: "resolverReplayStamp"))
-                state.mismatchRead = (ctx.resolverReplayStamp as ResolverReplayMismatch?) == nil ? "nil" : "value"
+            HandleAction(ResolverReplayAction.self, resolvers: { _, _, _ in ResolverReplayStampFetch() }) {
+                state, _, stamp, ctx in
+                state.seen = resolverReplaySeen(stamp)
+                state.seenViaGetter = resolverReplaySeen(ctx.resolverOutput(ResolverReplayStamp.self, named: "resolverReplayStampFetch"))
+                state.mismatchRead = ctx.resolverOutput(ResolverReplayMismatch.self, named: "resolverReplayStampFetch") == nil ? "nil" : "value"
                 return ResolverReplayResponse(ok: true)
             }
             OnJoin(resolvers: ResolverReplayStampResolver.self) { state, resolverReplayStamp, ctx in
@@ -122,8 +129,8 @@ func makeResolverReplayLand() -> LandDefinition<ResolverReplayState> {
             }
         }
         Lifetime {
-            OnInitialize(resolvers: ResolverReplayStampResolver.self) { state, ctx in
-                state.seenAtInit = resolverReplaySeen(ctx.resolverReplayStamp as ResolverReplayStamp?)
+            OnInitialize(resolvers: { _, _ in ResolverReplayStampFetch() }) { state, stamp, _ in
+                state.seenAtInit = resolverReplaySeen(stamp)
             }
             Tick(every: .seconds(3600)) { _, _ in }
         }
@@ -215,7 +222,7 @@ struct ResolverOutputReplayTests {
         let (path, live) = try await recordAction(form: form)
         let replayed = try await replayState(path: path)
         #expect(replayed.seen == live.seen, "\(form): the action")
-        #expect(replayed.seenViaGetter == live.seen, "\(form): the action, through getResolverOutput")
+        #expect(replayed.seenViaGetter == live.seen, "\(form): the action, through resolverOutput(_:named:)")
         #expect(replayed.seenAtJoin == live.seenAtJoin, "\(form): the join")
         #expect(replayed.seenAtInit == live.seenAtInit, "\(form): OnInitialize")
         #expect(![replayed.seen, replayed.seenAtJoin, replayed.seenAtInit].contains { $0.contains("nil") }, "\(form)")

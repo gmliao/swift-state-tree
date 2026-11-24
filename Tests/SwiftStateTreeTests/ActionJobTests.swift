@@ -48,11 +48,15 @@ enum ActionJobGates {
     static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
-struct ActionJobGatedResolver: ContextResolver {
+@PlainData
+struct ActionJobGatedResolver: Resolver {
+    typealias Dependencies = NoServices
+    let amount: Int
+
     typealias Output = ActionJobResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> ActionJobResolverOutput {
-        let amount = (ctx.actionPayload as? ActionJobGatedAction)?.amount ?? -1
+    func resolve(_ deps: NoServices) async throws -> ActionJobResolverOutput {
+        let amount = amount
         // Ignores cancellation, like a resolver blocked in a call that doesn't check it.
         await ActionJobGates.gate(amount).enterAndWait()
         return ActionJobResolverOutput(value: amount)

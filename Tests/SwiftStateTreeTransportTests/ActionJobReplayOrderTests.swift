@@ -99,11 +99,15 @@ private enum ReplayOrderGates {
 }
 
 /// Live: waits at its gate. Replay never runs resolvers: it reads the recorded output.
-struct ReplayOrderHeldResolver: ContextResolver {
+@PlainData
+struct ReplayOrderHeldResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = ReplayOrderOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> ReplayOrderOutput {
-        let key = (ctx.actionPayload as? ReplayOrderHeldAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> ReplayOrderOutput {
+        let key = key
         await ReplayOrderGates.gate(key).arrive()
         return ReplayOrderOutput(value: key)
     }

@@ -79,7 +79,7 @@ func makeClosedGateLand() -> LandDefinition<UntypedPayloadState> {
             state.round += 1
             return AnyCodable(["hp": 3] as [String: Int])
         },
-        resolverExecutors: []
+        resolvers: nil
     )
     return Land("closed-gate", using: UntypedPayloadState.self) {
         ServerEvents { Register(UntypedPayloadTypedEvent.self) }

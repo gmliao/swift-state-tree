@@ -59,7 +59,7 @@ struct DecodeOnceJobResolver: Resolver {
     /// inherit the binding).
     @TaskLocal static var hold: TestGate?
     func resolve(_ deps: NoServices) async throws -> DecodeOnceJobOutput {
-        await hold?.arrive()
+        await Self.hold?.arrive()
         return DecodeOnceJobOutput()
     }
 }

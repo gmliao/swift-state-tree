@@ -72,22 +72,30 @@ enum TicklessJobGates {
     static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
-struct TicklessJobGatedResolver: ContextResolver {
+@PlainData
+struct TicklessJobGatedResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = TicklessJobResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> TicklessJobResolverOutput {
-        let key = (ctx.actionPayload as? TicklessJobGatedAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> TicklessJobResolverOutput {
+        let key = key
         await TicklessJobGates.gate(key).enterAndWait()
         return TicklessJobResolverOutput(key: key)
     }
 }
 
 /// Waits at its gate, then fails.
-struct TicklessJobFailingResolver: ContextResolver {
+@PlainData
+struct TicklessJobFailingResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = TicklessJobResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> TicklessJobResolverOutput {
-        let key = (ctx.actionPayload as? TicklessJobFailingAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> TicklessJobResolverOutput {
+        let key = key
         await TicklessJobGates.gate(key).enterAndWait()
         throw TicklessJobResolverFailure()
     }

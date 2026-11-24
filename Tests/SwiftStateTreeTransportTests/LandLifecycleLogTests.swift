@@ -72,7 +72,7 @@ struct LifecycleLogStuckResolver: Resolver {
     typealias Output = LifecycleLogInitOutput
     static let gate = TestGate()
     func resolve(_ deps: NoServices) async throws -> LifecycleLogInitOutput {
-        await gate.arrive()
+        await Self.gate.arrive()
         return LifecycleLogInitOutput(value: 0)
     }
 }

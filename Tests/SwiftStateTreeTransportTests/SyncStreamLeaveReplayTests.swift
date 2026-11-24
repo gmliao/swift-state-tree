@@ -29,7 +29,7 @@ private let leaveReplayLandID = "leave-replay:local"
 /// and asks for a sync, so its turn records outputs a clear placed too early would precede.
 /// With `tick`, a tick advances `ticks`, emits an event and asks for a sync.
 private func makeLeaveReplayLand(tick: Bool) -> LandDefinition<TurnBoundaryState> {
-    let rule = HandleAction(TurnBoundaryAction.self) { state, action, ctx in
+    let rule = HandleAction(TurnBoundaryAction.self) { (state: inout TurnBoundaryState, action: TurnBoundaryAction, ctx: LandContext) in
         state.total += action.value
         state.scores[ctx.playerID] = action.value
         ctx.requestSyncNow()
@@ -37,7 +37,7 @@ private func makeLeaveReplayLand(tick: Bool) -> LandDefinition<TurnBoundaryState
         ctx.emitEvent(SyncStreamTestEvent(message: "all-\(action.value)"), to: .all)
         return SyncStreamSetResponse(ok: true)
     }
-    let leave = OnLeave { state, ctx in
+    let leave = OnLeave { (state: inout TurnBoundaryState, ctx: LandContext) in
         state.total += 100
         state.scores[ctx.playerID] = nil
         for playerID in state.scores.keys { state.scores[playerID, default: 0] += 1000 }

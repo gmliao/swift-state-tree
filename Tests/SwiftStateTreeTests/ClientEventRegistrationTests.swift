@@ -319,7 +319,7 @@ struct ClientEventRegistrationTests {
 
     @Test("A node the builder doesn't recognize (another State's, or an unknown type) is refused at registration and by a directly built keeper, not dropped")
     func unrecognizedNodesAreRefused() async throws {
-        let foreign = OnJoin { state, _ in state.count += 1 }
+        let foreign = OnJoin { (state: inout CEROtherState, _: LandContext) in state.count += 1 }
         let nodes: [LandNode] = [foreign, CERStrayNode()]
         func definition() -> LandDefinition<ClientEventRegistrationState> {
             LandBuilder.build(id: "cer-unrecognized", stateType: ClientEventRegistrationState.self, nodes: nodes)

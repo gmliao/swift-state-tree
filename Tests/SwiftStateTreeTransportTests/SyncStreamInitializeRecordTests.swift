@@ -34,11 +34,15 @@ struct InitRecordResolverOutput: ResolverOutput {
 private let initResolverGates = KeyedGates<String, TestGate> { TestGate() }
 
 /// Waits at the land's gate (if any), then resolves 7.
-struct GatedInitResolver: ContextResolver {
+@PlainData
+struct GatedInitResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = InitRecordResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> InitRecordResolverOutput {
-        let gate = initResolverGates.registeredGate(ctx.landID)
+    func resolve(_ deps: NoServices) async throws -> InitRecordResolverOutput {
+        let gate = initResolverGates.registeredGate(landID)
         await gate?.arrive()
         return InitRecordResolverOutput(value: 7)
     }

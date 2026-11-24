@@ -30,7 +30,7 @@ struct FailedInitStuckResolver: Resolver {
     typealias Output = FailedInitOutput
     static let gate = TestGate()
     func resolve(_ deps: NoServices) async throws -> FailedInitOutput {
-        await gate.arrive()
+        await Self.gate.arrive()
         return FailedInitOutput(value: 0)
     }
 }

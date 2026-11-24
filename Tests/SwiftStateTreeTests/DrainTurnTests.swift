@@ -50,21 +50,29 @@ private func landGateKey(landID: String) -> Int {
     Int(landID.split(separator: ":").last ?? "") ?? 0
 }
 
-struct DrainActionResolver: ContextResolver {
+@PlainData
+struct DrainActionResolver: Resolver {
+    typealias Dependencies = NoServices
+    let amount: Int
+
     typealias Output = DrainResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> DrainResolverOutput {
-        let amount = (ctx.actionPayload as? DrainGatedAction)?.amount ?? -1
+    func resolve(_ deps: NoServices) async throws -> DrainResolverOutput {
+        let amount = amount
         await DeliveryGates.gate(amount).enterAndWait()
         return DrainResolverOutput(value: amount)
     }
 }
 
-struct DrainFinalizeResolver: ContextResolver {
+@PlainData
+struct DrainFinalizeResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = DrainResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> DrainResolverOutput {
-        await DeliveryGates.gate(landGateKey(landID: ctx.landID)).enterAndWait()
+    func resolve(_ deps: NoServices) async throws -> DrainResolverOutput {
+        await DeliveryGates.gate(landGateKey(landID: landID)).enterAndWait()
         return DrainResolverOutput(value: 0)
     }
 }

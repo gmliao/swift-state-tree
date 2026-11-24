@@ -16,10 +16,14 @@ private struct InitFailureTestError: Error {}
 /// "throw-late" throws once the group has collected `InitOkResolver`'s output (`InitOrder`),
 /// "stuck" sleeps until
 /// cancelled; any other mode returns 7.
-struct InitFailureResolver: ContextResolver {
+@PlainData
+struct InitFailureResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = DeadlineResolverOutput
-    static func resolve(ctx: ResolverContext) async throws -> DeadlineResolverOutput {
-        let parts = ctx.landID.split(separator: ":")
+    func resolve(_ deps: NoServices) async throws -> DeadlineResolverOutput {
+        let parts = landID.split(separator: ":")
         switch parts.count > 1 ? String(parts[1]) : "" {
         case "throw":
             throw InitFailureTestError()
@@ -95,11 +99,10 @@ struct InitOkResolver: Resolver {
 /// OnInitialize logs "init:<output>" or "init:no-output"; OnJoin "join:<p>"; OnFinalize
 /// "finalize"; OnDestroyWhenEmpty "destroyWhenEmpty".
 private func makeDefinition(_ policy: InitializeResolverFailure?) -> LandDefinition<DeadlineTestState> {
-    let body: @Sendable (inout DeadlineTestState, LandContext) -> Void = { state, ctx in
-        let output: DeadlineResolverOutput? = ctx.initFailure
+    let body: @Sendable (inout DeadlineTestState, DeadlineResolverOutput?, LandContext) -> Void = { state, output, _ in
         state.log.append(output.map { "init:\($0.value)" } ?? "init:no-output")
     }
-    let onJoin = OnJoin { state, ctx in
+    let onJoin = OnJoin { (state: inout DeadlineTestState, ctx: LandContext) in
         state.log.append("join:\(ctx.playerID.rawValue)")
     }
     let onFinalize: LifetimeDirective<DeadlineTestState> = OnFinalize { state, _ in
@@ -356,12 +359,12 @@ struct InitializeResolverFailureTests {
         #expect(makeDefinition(.continue).lifetimeHandlers.onInitializeResolverFailure == .continue)
         let two = Land("init-failure-two", using: DeadlineTestState.self) {
             Lifetime {
-                OnInitialize(resolvers: { _, ctx in (InitFailureResolver(landID: ctx.landID), InitFailureResolver(landID: ctx.landID)) }) { _, _, _ in }
+                OnInitialize(resolvers: { _, ctx in (InitOkResolver(), InitFailureResolver(landID: ctx.landID)) }) { _, _, _ in }
             }
         }
         let three = Land("init-failure-three", using: DeadlineTestState.self) {
             Lifetime {
-                OnInitialize(resolvers: { _, ctx in (InitFailureResolver(landID: ctx.landID), InitFailureResolver(landID: ctx.landID), InitFailureResolver(landID: ctx.landID)) }, onResolverFailure: .continue) { _, _, _ in }
+                OnInitialize(resolvers: { _, ctx in (InitOkResolver(), InitFailureResolver(landID: ctx.landID), DeadlineInitResolver(landID: ctx.landID)) }, onResolverFailure: .continue) { _, _, _ in }
             }
         }
         #expect(two.lifetimeHandlers.onInitializeResolverFailure == .failLand)
