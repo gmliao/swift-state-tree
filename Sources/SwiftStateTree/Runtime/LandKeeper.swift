@@ -4468,8 +4468,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         continue
                     }
                     // Decoded once, here. A payload that doesn't decode is still queued: it fails
-                    // alone when it is applied, with the error a decode there would throw.
-                    let decoded = Result { try handler.decode(recorded.payload) }
+                    // alone when it is applied, with the error a decode there would throw. The
+                    // JSON view gets its integer-to-float allowance, as its resolver outputs do (#818).
+                    let decoded = Result { try handler.decode(recorded.payload, integralFloats: reevaluationSource is JSONReevaluationSource) }
                         .mapError { RecordedPayloadDecodeFailure($0) }
                     pendingItems.append(.serverInput(PendingServerInputItem(
                         sequence: recorded.sequence,
