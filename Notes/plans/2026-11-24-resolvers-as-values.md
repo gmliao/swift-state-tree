@@ -2,7 +2,7 @@
 
 **Status:** rev 1, plan only, no code. It follows the maintainer's 2026-11-22 decisions on #769 (the issue body, then three comments: `currentState` removed, the value form, and capability protocols for dependencies). Open questions are in §8.
 
-Code pointers are at main d4ce2317. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. The dependency probe in §3.4 is a one-file probe kept outside the repository. It passed on Swift 6.4.2 and 6.4.3, and slice R0 re-runs it on the pinned 6.2.4 before anything relies on it.
+Code pointers are at main d4ce2317. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. The dependency probe in §3.4 is a one-file probe kept outside the repository. It passed on Swift 6.4.2 and 6.4.3. **The pin is moving to 6.4.3** (a bump PR is in flight), so R0 probes on 6.4.3 as the target toolchain, in the pinned image once the bump lands. If the bump hasn't landed when R1 starts, R0 also probes on 6.2.4, since CI still gates on it.
 
 ## 1. What changes
 
@@ -83,7 +83,7 @@ HandleAction(A.self,
 - **It runs in the turn,** where today's code captures the snapshot (`startActionJob`, LK:2303). After K2 that is the admission step. It reads State, the typed input and a read-only context. It mutates nothing.
 - **The context is `ValidateContext`** (#586): read-only, with `landID`, `playerID`, `clientID`, `sessionID`, `deviceID`, `isGuest`, `metadata`, `tickId`. No new context type.
 - **`nil` means nothing is fetched,** and the handler gets `nil` for that output. That is today's cache check, made explicit.
-- **Several resolvers:** the closure returns a tuple of optionals, and the handler gets a tuple of optional outputs, in the same order. R0 probes a parameter pack (`repeat (each R)?` in, `repeat (each R).Output?` out) on 6.2.4. If it doesn't infer inside #771's generic builder, the arity overloads stay as today (one to three).
+- **Several resolvers:** the closure returns a tuple of optionals, and the handler gets a tuple of optional outputs, in the same order. R0 probes a parameter pack (`repeat (each R)?` in, `repeat (each R).Output?` out) on R0's toolchains. If it doesn't infer inside #771's generic builder, the arity overloads stay as today (one to three).
 - **Entries, with what their closure reads:**
   - `HandleAction`: State, the action, `ValidateContext`;
   - `CanJoin`: State, `PlayerSession`, `ValidateContext`;
@@ -146,7 +146,7 @@ The land's RNG is created by the keeper (LK:1012) and registered in `LandService
   - `HeroDefenseLand.swift`'s declaration changes.
 
   Examples go in their own commit.
-- **Docs** (bilingual, same commit per page): `docs/core/resolver.md`, `docs/programming-model.md`, `docs/quickstart.md`, `docs/FAQ.md`, each with its `.zh-TW.md`. `Sources/SwiftStateTree/Resolver/README.md` (in Chinese, inside `Sources/`) is rewritten in English or deleted. That file's language is a separate finding.
+- **Docs** (bilingual, same commit per page): `docs/core/resolver.md`, `docs/programming-model.md`, `docs/quickstart.md`, `docs/FAQ.md`, each with its `.zh-TW.md`. `Sources/SwiftStateTree/Resolver/README.md` (in Chinese, inside `Sources/`) is rewritten in English in R1 (agreed with Main, 2026-11-24).
 - **The schema:** resolver outputs aren't in the client schema today. Nothing changes there.
 
 ## 4. Public API
@@ -192,7 +192,7 @@ All breaking, with no deprecation path; there are no external users yet (the iss
 
 | Slice | Content | After | Measurement |
 |---|---|---|---|
-| **R0** | Probes on the pinned 6.2.4, in the pinned image: the dependency probe (positive and missing-capability cases), its combination with #771's generic builder and `D`'s inference through the builder closure's return, and the parameter pack of §3.2. Results go in this plan; no library code | now | none |
+| **R0** | Probes on 6.4.3, the pin after the bump (and on 6.2.4 too if the bump hasn't landed when R1 starts): the dependency probe (positive and missing-capability cases), its combination with #771's generic builder and `D`'s inference through the builder closure's return, and the parameter pack of §3.2. Results go in this plan; no library code | now | none |
 | **R1** | `Resolver`, the services type on the land (R-Q1), the builder closures and typed outputs, `ResolverContext` deleted, every call site migrated with #771's codemod, Examples, docs. Resolvers still run as today's jobs (the value replaces the snapshot) | P3, P4, R0, #771's builders | the resolver cell: an action with one resolver, live, A/B against main |
 | **R2** | The record and replay (§3.5), #765's regression. With K5, so the value is the keyed request's payload | R1, K1a, K5 | the record part of the goldens; frames none |
 | **R3** | CanJoin, OnJoin and OnLeave requests carry values, with K6 | R2, K6 | none beyond K6's |
