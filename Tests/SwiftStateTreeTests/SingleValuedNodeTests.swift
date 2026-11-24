@@ -198,6 +198,52 @@ private func branchedLand(_ useA: Bool) -> LandDefinition<OnceNodeState> {
     }
 }
 
+/// A resolver executor the tests only store and count; never run.
+struct OnceIdleExecutor: AnyResolverExecutor {
+    struct NeverRun: Error {}
+    func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput) { throw NeverRun() }
+}
+
+/// A closure-form `Lifetime` write to one of a setting's secondary fields alone, the setting it
+/// belongs to, and whether the land kept it.
+struct OnceSecondaryCase: Sendable, CustomTestStringConvertible {
+    let field: String
+    let setting: String
+    let write: @Sendable (inout LifetimeConfig<OnceNodeState>) -> Void
+    let kept: @Sendable (LandDefinition<OnceNodeState>) -> Bool
+    /// A DSL entry that makes the same setting, for the split case.
+    let entry: @Sendable () -> OnceRules
+
+    var testDescription: String { field }
+}
+
+let onceSecondaryCases: [OnceSecondaryCase] = [
+    OnceSecondaryCase(
+        field: "onInitializeResolverFailure", setting: "OnInitialize",
+        write: { $0.onInitializeResolverFailure = .continue },
+        kept: { $0.lifetimeHandlers.onInitializeResolverFailure == .continue },
+        entry: onInitializeA
+    ),
+    OnceSecondaryCase(
+        field: "onInitializeResolverExecutors", setting: "OnInitialize",
+        write: { $0.onInitializeResolverExecutors = [OnceIdleExecutor()] },
+        kept: { $0.lifetimeHandlers.onInitializeResolverExecutors.count == 1 },
+        entry: onInitializeA
+    ),
+    OnceSecondaryCase(
+        field: "onFinalizeResolverExecutors", setting: "OnFinalize",
+        write: { $0.onFinalizeResolverExecutors = [OnceIdleExecutor()] },
+        kept: { $0.lifetimeHandlers.onFinalizeResolverExecutors.count == 1 },
+        entry: onFinalizeA
+    ),
+    OnceSecondaryCase(
+        field: "onDestroyWhenEmptyResolverExecutors", setting: "DestroyWhenEmpty",
+        write: { $0.onDestroyWhenEmptyResolverExecutors = [OnceIdleExecutor()] },
+        kept: { $0.lifetimeHandlers.onDestroyWhenEmptyResolverExecutors.count == 1 },
+        entry: destroyWhenEmptyA
+    ),
+]
+
 @Suite("A node a land declares once is refused when declared twice (#796)")
 struct SingleValuedNodeTests {
     @Test("Declared by two rules helpers, it is refused at registration and by a directly built keeper, with both sites", arguments: onceNodeCases)
@@ -254,6 +300,27 @@ struct SingleValuedNodeTests {
             #expect(throws: Never.self) { try land.validateForRegistration(context: .encodingIndependent) }
             #expect(countAfter(land.lifetimeHandlers.onJoin) == (useA ? 1 : 2))
         }
+    }
+
+    @Test("A closure-form write to a setting's secondary field alone is kept", arguments: onceSecondaryCases)
+    func secondaryFieldAloneIsKept(_ c: OnceSecondaryCase) throws {
+        let write = c.write
+        let land = Land("once-secondary-\(c.field)", using: OnceNodeState.self) {
+            Lifetime { (config: inout LifetimeConfig<OnceNodeState>) in write(&config) }
+        }
+        #expect(land.duplicateHandlers.isEmpty)
+        #expect(c.kept(land))
+    }
+
+    @Test("A setting split across two blocks, its entry in one and a secondary field in the other, is refused", arguments: onceSecondaryCases)
+    func secondaryFieldSplitIsRefused(_ c: OnceSecondaryCase) throws {
+        let write = c.write, entry = c.entry
+        let land = Land("once-secondary-split-\(c.field)", using: OnceNodeState.self) {
+            entry()
+            Lifetime { (config: inout LifetimeConfig<OnceNodeState>) in write(&config) }
+        }
+        try expectOneDuplicate(try registrationError(land), of: c.setting)
+        #expect(!c.kept(land), "the first declaration, the entry's, is kept")
     }
 
     @Test("Every LifetimeConfig field belongs to one Lifetime setting, so the builder copies it")

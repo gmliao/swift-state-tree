@@ -568,10 +568,12 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
         switch setting {
         case .tick: tickInterval != nil || tickHandler != nil
         case .stateSync: syncInterval != nil || syncHandler != nil
-        case .destroyWhenEmpty: destroyWhenEmptyAfter != nil || onDestroyWhenEmpty != nil
+        case .destroyWhenEmpty:
+            destroyWhenEmptyAfter != nil || onDestroyWhenEmpty != nil || !onDestroyWhenEmptyResolverExecutors.isEmpty
         case .persistSnapshot: persistInterval != nil
-        case .onInitialize: onInitialize != nil
-        case .onFinalize: onFinalize != nil
+        case .onInitialize:
+            onInitialize != nil || !onInitializeResolverExecutors.isEmpty || onInitializeResolverFailure != .failLand
+        case .onFinalize: onFinalize != nil || !onFinalizeResolverExecutors.isEmpty
         case .afterFinalize: afterFinalize != nil
         }
     }
@@ -625,6 +627,10 @@ public enum LifetimeBuilder<State: StateNodeProtocol> {
 /// Defines the lifetime and periodic behaviors of the Land.
 ///
 /// Use this block to configure ticks, auto-destruction, and persistence.
+///
+/// The closure gets a fresh configuration, not the land's: it doesn't see what other
+/// `Lifetime` blocks set, and every field reads as its default until it writes it. Each setting
+/// it writes, any of its fields, is that setting's declaration (#796).
 ///
 /// Example:
 /// ```swift
