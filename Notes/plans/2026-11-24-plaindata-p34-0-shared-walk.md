@@ -1,6 +1,6 @@
 # PlainData P3/4-0: one field walk for both macro targets
 
-**Status:** rev 2, plan only. Rev 1 (2af72dd2) was NOT GO on one must-fix, §2.0, which waits for the maintainer; the rest of the review is folded in. The branch sits on #772's head and is merged forward: #772's fix round (3cd3a65c) is merged in now, and `main` will be merged in after #772 merges. The branch is never force-pushed. A slice of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§4), added so that P3 (payloads) and P4 (`State`) can run in parallel: it lands what both of them need, once.
+**Status:** rev 3, plan only. Rev 1 (2af72dd2) was NOT GO on one must-fix, §2.0. The maintainer decided it on 2026-11-24 (re-export, #79), and rev 3 records that. Rev 2 (e1ebf6eb) folded in the rest of the review. The branch sits on #772's head and is merged forward: #772's fix round (3cd3a65c) is merged in now, and `main` will be merged in after #772 merges. The branch is never force-pushed. A slice of [PlainData all the way](2026-11-22-plaindata-all-the-way.md) (§4), added so that P3 (payloads) and P4 (`State`) can run in parallel: it lands what both of them need, once.
 
 ## 1. Why a slice before P3 and P4
 
@@ -8,13 +8,16 @@ P3 makes `@Payload` emit `_plainDataCheck`, and P4 makes `@StateNodeBuilder` emi
 
 ## 2. Scope
 
-### 2.0 How an expansion in a `SwiftStateTree`-only file names `PlainData` (open: the maintainer decides)
+### 2.0 How an expansion in a `SwiftStateTree`-only file names `PlainData` (decided: re-export)
 
-P3 and P4 put `_plainDataCheck` into `@Payload` and `@StateNodeBuilder`. A user file that imports only `SwiftStateTree` then holds an expansion that names `SwiftStateTurns.PlainData` and `SwiftStateTurns.PlainDataCheck`. `SwiftStateTree` doesn't re-export `SwiftStateTurns`, so that file fails with "cannot find type" (Review's probe). The same gap makes a user add `import SwiftStateTurns` for `@PlainData` on their own types today (docs/core/sync.md). There are two options:
-- **(a)** `@_exported import SwiftStateTurns` in `SwiftStateTree`. Every `SwiftStateTree` user sees the turn core's public names, and expansions keep naming `SwiftStateTurns.PlainDataCheck`, as #772's do.
-- **(b)** Narrow typealiases plus a `@PlainData` macro declaration in `SwiftStateTree`. The expansions in `SwiftStateTree`'s macros would name `SwiftStateTree.…` aliases instead. Two declarations of one macro would point at one implementation.
+P3 and P4 put `_plainDataCheck` into `@Payload` and `@StateNodeBuilder`. A user file that imports only `SwiftStateTree` then holds an expansion that names `SwiftStateTurns.PlainData` and `SwiftStateTurns.PlainDataCheck`. Without a re-export, that file fails with "cannot find type" (Review's probe). The same gap makes a user add `import SwiftStateTurns` for `@PlainData` on their own types today (docs/core/sync.md, #772).
 
-Main recommends (a). This slice applies the decision. It is the only part of the slice that changes a public import, so it goes in its own commit, and its Public API entry is in §5.
+**Decision (the maintainer, 2026-11-24, #79): (a), `SwiftStateTree` re-exports `SwiftStateTurns`.** Option (b), narrow typealiases plus a second `@PlainData` declaration in `SwiftStateTree`, is not taken. What this slice does:
+- **The re-export.** One file, `Sources/SwiftStateTree/Exports.swift`, holds `@_exported import SwiftStateTurns`. It goes in its own commit, the slice's only change to a public import. Expansions keep naming `SwiftStateTurns.PlainData` and `SwiftStateTurns.PlainDataCheck`, as #772's do. That module name resolves in every file that imports `SwiftStateTree`.
+- **Names that could collide.** A user file that imports `SwiftStateTree` now also sees the turn core's 25 public type names: `Abandonment`, `CallerCancellation`, `FollowUpArming`, `FollowUpTrigger`, `Generation`, `Hold`, `InputID`, `InputPolicy`, `MailTurn`, `PlainData`, `PlainDataCheck`, `PlainPair`, `RequestID`, `Turn`, `TurnActor`, `TurnClock`, `TurnCore`, `TurnDiagnostic`, `TurnError`, `TurnInstant`, `TurnMachine`, `TurnMailbox`, `TurnStats`, `TurnWork`, `WithdrawToken`, and the `@PlainData` macro. A grep of `Sources/`, `Examples/`, `Tests/` and `Tools/` found no other declaration of any of them. A user type of the same name still wins in its own module, and only an unqualified use in a file that sees both is ambiguous.
+- **The docs.** docs/core/sync.md (and zh-TW) drops "`SwiftStateTree` doesn't re-export `SwiftStateTurns`, so … needs `import SwiftStateTurns`". A user's own type in `@Internal` needs only `@PlainData`. Other pages that tell a `SwiftStateTree` user to import `SwiftStateTurns` are changed the same way. Today that is only sync.md, by grep, and the slice greps again.
+- **Pinned by a snippet.** A new compiling snippet in `scripts/must-not-compile/` (the `SwiftStateTree` set, which imports only `SwiftStateTree`) declares a `@PlainData` struct and holds it in `@Internal`. Mutant: the re-export removed makes that snippet fail with "cannot find".
+- **The lint.** No exemption follows from (a). The narrow `named(_plainDataCheck)` exemption for the `@attached` declarations of `@Payload` and `@StateNodeBuilder` stays P3's (§3a).
 
 ### 2.1 One walk, used by both macro targets
 
@@ -95,7 +98,7 @@ Holds and events, never timing. Nothing here is concurrent.
 `scripts/lint-turns.sh` refuses any code use of `_plainDataCheck` outside `Sources/SwiftStateTurns/` and `Sources/SwiftStateTurnsMacros/` (#772). It strips comments and string literals first. For the paths this slice and P3/P4 add:
 - **`Sources/PlainDataMacroSupport/`.** The walk names `_plainDataCheck` only inside string literals, the generated code, so it needs no exemption. If a check of its own ever needs the word in code, the exemption is added then, with the path in the lint's core list.
 - **`Sources/SwiftStateTreeMacros/`.** The same: emission is in string literals.
-- **The macro declarations in `Sources/SwiftStateTree/`.** In P3 and P4, `@Payload` and `@StateNodeBuilder` gain `names: named(_plainDataCheck)` in their `@attached(…)` declarations. That is code, and the lint would refuse it. P3 (the first of the two to land) adds one narrow exemption: `named(_plainDataCheck)` inside an `@attached(` attribute, anywhere under `Sources/`. A role declaration names the member; it writes nothing. A self-test pins it: allowed in `@attached(extension, names: named(_plainDataCheck))`, refused in a `func`. Under option (b) of §2.0, the `@PlainData` declaration in `SwiftStateTree` needs the same exemption, so it lands with this slice instead.
+- **The macro declarations in `Sources/SwiftStateTree/`.** In P3 and P4, `@Payload` and `@StateNodeBuilder` gain `names: named(_plainDataCheck)` in their `@attached(…)` declarations. That is code, and the lint would refuse it. P3 (the first of the two to land) adds one narrow exemption: `named(_plainDataCheck)` inside an `@attached(` attribute, anywhere under `Sources/`. A role declaration names the member; it writes nothing. A self-test pins it: allowed in `@attached(extension, names: named(_plainDataCheck))`, refused in a `func`.
 
 ## 4. Verification
 
@@ -109,7 +112,9 @@ A/B: none. The slice is compile time only: `_plainDataCheck` is never called, an
 
 ## 5. Public API
 
-§2.0's decision adds an entry: under (a), `SwiftStateTree` re-exports `SwiftStateTurns` (additive, but every public name of the turn core becomes visible to `SwiftStateTree` users, and a user type that shares a name with one of them becomes ambiguous where both are visible); under (b), new typealiases and a second `@PlainData` declaration in `SwiftStateTree`. The rest is additive and source compatible:
+- **Re-export (§2.0, decision (a)).** `SwiftStateTree` re-exports `SwiftStateTurns` (`@_exported import`). This is additive: a file that imports `SwiftStateTree` sees the turn core's public names and the `@PlainData` macro without its own import. It can still break source: a user type that shares a name with one of the 25 types listed in §2.0 becomes ambiguous where an unqualified use sees both, and qualifying the name with its module fixes that. None exists in this repository.
+
+The rest is additive and source compatible:
 - `PlainData` conformances on the DeterministicMath types in §2.4;
 - `PlainDataCheck.field` gains a defaulted `StaticString` name parameter and an unavailable unconstrained overload. `PlainDataCheck` is public but documented "not for direct use".
 
