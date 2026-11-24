@@ -18,6 +18,7 @@ tags:
   - examples
 related:
   - "#775"
+  - "fa992e64"
 ---
 
 # A test product is a `<target>-test-runner` executable under the swift-build system
@@ -30,7 +31,7 @@ related:
 
 From Swift 6.4, SwiftPM builds with the swift-build system by default. On Linux its layout differs from the previous build system's in two ways that matter here:
 
-- Products land in `.build/out/Products/<Config>-linux-x86_64`. `.build/debug` and `.build/release` are symlinks to that directory.
+- Products land in `.build/out/Products/<Config>-linux-<arch>` (`x86_64` in CI; an arm64 host gets `aarch64`). `.build/debug` and `.build/release` are symlinks to that directory.
 - A test target is an executable `<target>-test-runner` in that directory (`GameContentTests-test-runner`), not a `.xctest` bundle. No argument of the test process has a `.xctest` component, so a lookup keyed to one finds nothing.
 
 `ReevaluationRunner` is built in the same directory as the test runner, which is why the directory of the runner argument is the right answer. On macOS, swift-build still produces the `.xctest` bundle (as seen in review of #775), so the old rule keeps working there.
