@@ -202,7 +202,7 @@ let core: TurnCore<Keeper>
 nonisolated let mailbox: TurnMailbox<Keeper.Mail>?
 
 init() {
-    let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
+    let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: SystemTurnClock())
     self.core = core
     // The core's own mailbox: a lint checks it's assigned from `core.mailbox`.
     self.mailbox = core.mailbox
@@ -235,7 +235,7 @@ A *batch* is the steps one entry into the actor causes: a `send`, a `sendAndWait
 ```swift
 queueLimit: 64,
 maxReleasesPerBatch: 16,
-clock: ContinuousTurnClock()
+clock: SystemTurnClock()
 ```
 
 API: ``TurnCore/init(_:queueLimit:maxReleasesPerBatch:clock:)``.

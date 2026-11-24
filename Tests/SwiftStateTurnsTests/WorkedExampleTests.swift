@@ -104,7 +104,7 @@ actor LobbyActor: TurnActor {
         Lobby(seats: [:], loading: [:], waiting: [:], late: 0),
         queueLimit: 64,
         maxReleasesPerBatch: 16,
-        clock: ContinuousTurnClock()
+        clock: SystemTurnClock()
     )
     nonisolated let profiles: any ProfileStore
     private(set) var sent: [String] = []
@@ -124,18 +124,6 @@ actor LobbyActor: TurnActor {
     /// The step's outputs, between steps: here, a list; in a server, the sends.
     func flush(_ outputs: consuming [String]) {
         sent.append(contentsOf: outputs)
-    }
-}
-// docs:end
-
-// docs:clock
-/// A production clock: instants from the process's origin, a sleep that returns no earlier
-/// than its instant, unless it is cancelled.
-struct ContinuousTurnClock: TurnClock {
-    var now: TurnInstant { TurnInstant(ContinuousClock.now) }
-
-    func sleep(until instant: TurnInstant) async {
-        try? await Task.sleep(until: instant.continuous, clock: .continuous)
     }
 }
 // docs:end
