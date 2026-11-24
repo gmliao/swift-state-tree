@@ -530,14 +530,22 @@ struct PlainDataMacroTests {
                     @PlainData
                     struct Counter {
                         var n: Int
+                        func identity(_ value: T) -> T { value }
+                        var doubled: U { fatalError() }
+                    }
+                    @PlainData
+                    enum Wrapped {
+                        case one(U)
                     }
                 }
             }
             """)
         #expect(messages.isEmpty)
         #expect(text.contains("Inner: SwiftStateTurns.PlainData where V: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData {"))
-        #expect(!text.contains("U: SwiftStateTurns.PlainData"))
+        #expect(!text.contains("Inner: SwiftStateTurns.PlainData where V: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData, U"))
+        // Only stored values count: a method's or a computed property's parameter adds nothing.
         #expect(text.contains("Counter: SwiftStateTurns.PlainData {"))
+        #expect(text.contains("Wrapped: SwiftStateTurns.PlainData where U: SwiftStateTurns.PlainData {"))
         // A parameter the nested type redeclares is its own, constrained once.
         let (shadow, _) = expand("""
             struct Outer<T> {
@@ -548,6 +556,16 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(shadow.contains("Inner: SwiftStateTurns.PlainData where T: SwiftStateTurns.PlainData {"))
+        // A keyword name is compared without its backticks and emitted with them.
+        let (keyword, _) = expand("""
+            struct Outer<`repeat`> {
+                @PlainData
+                struct Inner {
+                    var value: `repeat`
+                }
+            }
+            """)
+        #expect(keyword.contains("Inner: SwiftStateTurns.PlainData where `repeat`: SwiftStateTurns.PlainData {"))
     }
 
     @Test("A deprecated field or case is read inside a deprecated `check`, so the expansion doesn't warn")
