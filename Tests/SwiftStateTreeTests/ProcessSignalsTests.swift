@@ -1,3 +1,5 @@
+// POSIX-only: these tests use kill, posix_spawn and SIGUSR2, which Windows does not have.
+#if !os(Windows)
 import Foundation
 import Testing
 @testable import SwiftStateTree
@@ -70,3 +72,5 @@ private func closedPipeWriteEnd() -> Int32 {
     close(fds[0])
     return fds[1]
 }
+
+#endif

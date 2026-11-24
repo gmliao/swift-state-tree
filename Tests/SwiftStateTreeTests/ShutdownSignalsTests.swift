@@ -1,3 +1,5 @@
+// POSIX-only: these tests use kill, posix_spawn and SIGUSR2, which Windows does not have.
+#if !os(Windows)
 import Foundation
 import Testing
 @testable import SwiftStateTree
@@ -105,3 +107,5 @@ struct ShutdownSignalsTests {
         }
     }
 }
+
+#endif

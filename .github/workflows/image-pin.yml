@@ -1,0 +1,36 @@
+# The Swift image pin: every Swift container image in the workflows and every Swift `FROM` line of
+# the Dockerfiles (.devcontainer/ included) is one `swift:<tag>@sha256:<digest>`, and every SwiftPM
+# cache key holds that digest (scripts/check-ci-image-pin.sh).
+# It runs here, not in Swift Build & Test: that workflow ignores .devcontainer/**, and a change to
+# .devcontainer/Dockerfile alone is a change to a `FROM` line the check reads. No `paths:` filter
+# either: the check reads every workflow and every Dockerfile at any depth, so a filter would be a
+# second list of those files to keep in step, and the job (bash and python3, no Swift) takes seconds.
+name: Image pin
+
+on:
+  push:
+    branches: [ "main", "exp/**" ]
+  pull_request:
+    branches: [ "main", "exp/**" ]
+
+# As in the push workflows: a new push to a pull request cancels its run still in progress, and
+# every other run gets a group of its own.
+concurrency:
+  group: image-pin-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  image-pin:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@v4
+    # One digest for every Swift container image, named by every SwiftPM cache key. The self-test
+    # proves the check still finds what it looks for before the workflows are checked.
+    - name: Swift image pinned by one digest
+      run: |
+        scripts/check-ci-image-pin.sh --self-test
+        scripts/check-ci-image-pin.sh
