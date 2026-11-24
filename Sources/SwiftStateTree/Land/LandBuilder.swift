@@ -1,20 +1,5 @@
 import Foundation
 
-/// Thread-safe queue for warning messages to prevent concurrent write issues.
-private let warningQueue = DispatchQueue(label: "com.swiftstatetree.landbuilder.warnings")
-
-/// Helper function to warn when a handler is already defined (for LandBuilder)
-///
-/// Uses a serial dispatch queue to ensure thread-safe output, as multiple threads
-/// may call `LandBuilder.build` concurrently when creating different lands.
-/// Uses `sync` to ensure warnings are printed immediately and in order.
-private func warnIfHandlerAlreadyDefined(_ handlerName: String, landID: String) {
-    let message = "⚠️ [LandBuilder] \(handlerName) handler is already defined for land '\(landID)'. The previous handler will be replaced.\n"
-    warningQueue.sync {
-        writeStandardErrorDiagnostic(message)
-    }
-}
-
 /// Internal builder that processes the DSL nodes and constructs a `LandDefinition`.
 enum LandBuilder {
     /// Builds a `LandDefinition` from a list of `LandNode`s.
@@ -46,6 +31,18 @@ enum LandBuilder {
         // one is recorded and refused by registration (and by an unregistered keeper's
         // initialization).
         var duplicateHandlers: [DuplicateHandlerDeclaration] = []
+        // A node a land declares once (#796), by name: `AccessControl`, `CanJoin`, `OnJoin`,
+        // `OnLeave`, and each `Lifetime` setting. The first is kept; a later one is recorded in
+        // `duplicateHandlers` and refused the same way.
+        var onceSites: [String: String?] = [:]
+        func claimOnce(_ node: String, at site: String?) -> Bool {
+            if let first = onceSites[node] {
+                duplicateHandlers.append(DuplicateHandlerDeclaration(node: node, firstSite: first, duplicateSite: site))
+                return false
+            }
+            onceSites[node] = site
+            return true
+        }
         var clientEventRegistrations: [Any.Type] = []
         var serverEventRegistrations: [Any.Type] = []
         // A node no case below matches: another State's node, or a type the builder doesn't
@@ -57,24 +54,26 @@ enum LandBuilder {
             for node in nodes {
                 switch node {
                 case let access as AccessControlNode:
-                    accessControl = access.config
+                    if claimOnce("AccessControl", at: access.site) {
+                        accessControl = access.config
+                    }
                 case let allowed as AllowedClientEventsNode:
                     allowedClientEvents.formUnion(allowed.allowed)
                 case let canJoinNode as CanJoinNode<State>:
-                    canJoin = canJoinNode.handler
-                    canJoinResolverExecutors = canJoinNode.resolverExecutors
+                    if claimOnce("CanJoin", at: canJoinNode.site) {
+                        canJoin = canJoinNode.handler
+                        canJoinResolverExecutors = canJoinNode.resolverExecutors
+                    }
                 case let join as OnJoinNode<State>:
-                    if onJoin != nil {
-                        warnIfHandlerAlreadyDefined("OnJoin", landID: id)
+                    if claimOnce("OnJoin", at: join.site) {
+                        onJoin = join.handler
+                        onJoinResolverExecutors = join.resolverExecutors
                     }
-                    onJoin = join.handler
-                    onJoinResolverExecutors = join.resolverExecutors
                 case let leave as OnLeaveNode<State>:
-                    if onLeave != nil {
-                        warnIfHandlerAlreadyDefined("OnLeave", landID: id)
+                    if claimOnce("OnLeave", at: leave.site) {
+                        onLeave = leave.handler
+                        onLeaveResolverExecutors = leave.resolverExecutors
                     }
-                    onLeave = leave.handler
-                    onLeaveResolverExecutors = leave.resolverExecutors
                 case let action as AnyActionHandler<State>:
                     if let first = actionHandlers.first(where: { $0.canHandle(action.handledType) }) {
                         duplicateHandlers.append(DuplicateHandlerDeclaration(
@@ -125,6 +124,14 @@ enum LandBuilder {
                         serverInputHandlers[handler.typeIdentifier] = handler
                     }
                 case let lifetime as LifetimeNode<State>:
+                    // The block on its own config first: the settings it makes, and any it
+                    // makes twice. A setting another block made is a duplicate too (#796).
+                    var own = LifetimeConfig<State>()
+                    lifetime.configure(&own)
+                    duplicateHandlers += own.repeatedSettings
+                    for setting in LifetimeSetting.allCases where own.holds(setting) {
+                        _ = claimOnce(setting.rawValue, at: own.settingSites[setting] ?? lifetime.site)
+                    }
                     var cfg = lifetimeConfig
                     lifetime.configure(&cfg)
                     lifetimeConfig = cfg

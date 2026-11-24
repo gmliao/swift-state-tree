@@ -36,7 +36,7 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// client schema.
     let serverInputHandlers: [String: AnyServerInputHandler<State>]
     /// Handlers declared for an action, client-event or server-input type that already had one
-    /// (#586).
+    /// (#586), and nodes a land declares once declared again (#796).
     /// Registration refuses such a land (`LandRegistrationError.duplicateHandlers`), and so does
     /// a keeper built without registration, at initialization.
     package let duplicateHandlers: [DuplicateHandlerDeclaration]
@@ -470,7 +470,8 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
 /// handler per type and gives each type its own name.
 public struct DuplicateHandlerDeclaration: Sendable, Equatable, CustomStringConvertible {
     /// `"action"`, `"client event"`, `"server input"` or `"server event"` (a registered server
-    /// event type, named on the wire like a client event).
+    /// event type, named on the wire like a client event); or `"node"`, a node a land declares
+    /// once, declared again (#796), with the node's name in `typeName`.
     public let kind: String
     /// The type's name: the duplicate's, or for a shared wire name the second type's.
     public let typeName: String
@@ -499,8 +500,17 @@ public struct DuplicateHandlerDeclaration: Sendable, Equatable, CustomStringConv
         self.duplicateSite = duplicateSite
     }
 
+    /// A node a land declares once, declared again (#796): `AccessControl`, `CanJoin`,
+    /// `OnJoin`, `OnLeave`, or a `Lifetime` setting such as `Tick`.
+    package init(node: String, firstSite: String?, duplicateSite: String?) {
+        self.init(kind: "node", typeName: node, firstSite: firstSite, duplicateSite: duplicateSite)
+    }
+
     public var description: String {
         let sites = "at \(firstSite ?? "unknown") and \(duplicateSite ?? "unknown")"
+        if kind == "node" {
+            return "\(typeName) is declared twice (\(sites)); a land declares it once"
+        }
         if let wireName {
             // Event registrations carry no declaration site.
             let located = firstSite == nil && duplicateSite == nil ? "" : " (\(sites))"
