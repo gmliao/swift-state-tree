@@ -114,7 +114,7 @@ actor LobbyActor: TurnActor {
         Lobby(seats: [:], loading: [:], waiting: [:], late: 0),
         queueLimit: 64,
         maxReleasesPerBatch: 16,
-        clock: ContinuousTurnClock()
+        clock: SystemTurnClock()
     )
     nonisolated let profiles: any ProfileStore
     private(set) var sent: [String] = []
@@ -150,21 +150,7 @@ Limit: `@concurrent` can't be used alone here. Without `nonisolated`, the method
 
 ## The clock
 
-The core reads time and sleeps through an injected ``TurnClock``. There is no default clock. A production clock measures from ``TurnInstant/processOrigin``, and its sleep returns no earlier than the instant it was given, unless it is cancelled. The core fires what is due at that instant without reading the clock again, so a sleep that returned early would fire entries early:
-
-```swift
-/// A production clock: instants from the process's origin, a sleep that returns no earlier
-/// than its instant, unless it is cancelled.
-struct ContinuousTurnClock: TurnClock {
-    var now: TurnInstant { TurnInstant(ContinuousClock.now) }
-
-    func sleep(until instant: TurnInstant) async {
-        try? await Task.sleep(until: instant.continuous, clock: .continuous)
-    }
-}
-```
-
-An adopter in this repository sleeps with its safe sleep helper instead of `Task.sleep`. A test passes a clock it moves by hand.
+The core reads time and sleeps through an injected ``TurnClock``. There is no default clock. ``SystemTurnClock`` is the production one: its instants are measured from ``TurnInstant/processOrigin``, and its sleep returns no earlier than the instant it was given, unless it is cancelled. The core fires what is due at that instant without reading the clock again, so a sleep that returned early would fire entries early. The actor above passes `SystemTurnClock()`. A test passes a clock it moves by hand.
 
 ## Using it
 

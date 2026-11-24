@@ -368,7 +368,7 @@ actor KeeperActor: TurnActor {
     nonisolated let mailbox: TurnMailbox<Keeper.Mail>?
 
     init() {
-        let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
+        let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: SystemTurnClock())
         self.core = core
         // The core's own mailbox: a lint checks it's assigned from `core.mailbox`.
         self.mailbox = core.mailbox
