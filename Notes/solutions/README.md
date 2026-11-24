@@ -187,3 +187,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-22 | [A tombstone count reset while popped entries are outside the heap](2026-11-22-a-tombstone-count-reset-while-popped-entries-are-outside-the-heap.md) | heap, lazy-deletion, tombstones, compaction, timers, turns |
 | 2026-11-22 | [A check placed at one replay site misses the other](2026-11-22-a-check-placed-at-one-replay-site-misses-the-other.md) | replay, reevaluation, initialize, verifier |
 | 2026-11-22 | [A stricter check missed callers in the example packages](2026-11-22-a-stricter-check-missed-callers-in-the-example-packages.md) | testing, shell, examples, assertion |
+| 2026-11-24 | [A `rejected` assertion is vacuous on a tickless frame](2026-11-24-a-rejected-assertion-is-vacuous-on-a-tickless-frame.md) | replay, tickless, rejected, mutant, testing |
