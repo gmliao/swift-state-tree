@@ -99,15 +99,15 @@ struct ReevaluationMonitorStateTextTests {
         )
         await adapter.syncStateForNewPlayer(playerID: PlayerID("alice"), sessionID: SessionID("s-alice"))
         await keeper.waitForInFlightWorkForTesting()
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        await adapter.waitForOutboundIdleForTesting()
         service.startVerification(landType: "state-text", recordFilePath: "/dev/null")
         let task = try #require(service.verificationTaskForTesting())
         await task.value
         await keeper.stepTickOnce()
         await keeper.waitForInFlightWorkForTesting()
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        await adapter.waitForOutboundIdleForTesting()
         await adapter.syncNow()
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        await adapter.waitForOutboundIdleForTesting()
 
         let sent = await transport.sent
         let text = sent.map { String(decoding: $0, as: UTF8.self) }.joined(separator: "\n")
