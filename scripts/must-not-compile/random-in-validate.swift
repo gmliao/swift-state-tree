@@ -1,6 +1,5 @@
-// expect-error: cannot convert value of type 'T?' to specified type 'DeterministicRngService'
+// expect-error: value of type 'ValidateContext' has no member 'random'
 // validate's context has no random source (#586): replay reruns validate.
-// Only the resolver-output lookup answers the name, so its value can't be the member's type.
 import SwiftStateTree
 
 let randomInValidate = Land("snippet", using: SnippetState.self) {

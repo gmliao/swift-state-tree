@@ -1,6 +1,5 @@
-// expect-error: cannot convert value of type 'T?' to specified type '(any ServerEventPayload, EventTarget) -> Void'
+// expect-error: value of type 'ValidateContext' has no member 'emitEvent'
 // validate's context can't emit (#586): a refused input emits nothing.
-// Only the resolver-output lookup answers the name, so its value can't be the member's type.
 import SwiftStateTree
 
 let emitInValidate = Land("snippet", using: SnippetState.self) {
