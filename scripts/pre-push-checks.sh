@@ -20,7 +20,8 @@
 #               build job's variant runs read nothing the left-out tests could (a TransportAdapter
 #               built without transportEnvConfig outside the filtered targets, R1, and the rest of
 #               R1-R3 and E1-E5). Python, plus `swift package dump-package` for the test targets'
-#               dependencies, no build; fails, not skips, when `swift` is missing
+#               dependencies: that compiles Package.swift with swiftc (a few seconds), builds no
+#               target and needs no build slot; fails, not skips, when `swift` is missing
 #               (CI: build › The variant runs left out can't read their variable)
 #   text-encoding  scripts/lint-text-encoding.py --self-test, then deep-research/ and scripts/:
 #               Python text I/O without encoding= (a non-UTF-8 locale, such as cp950 on Windows,
