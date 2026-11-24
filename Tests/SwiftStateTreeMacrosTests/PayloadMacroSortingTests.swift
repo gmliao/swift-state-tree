@@ -65,6 +65,18 @@ final class PayloadMacroSortingTests: XCTestCase {
                     [:]
                 }
             }
+
+            extension TestPayload {
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the @PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value.z)
+                        SwiftStateTurns.PlainDataCheck.field(value.a)
+                        SwiftStateTurns.PlainDataCheck.field(value.m)
+                    }
+                }
+            }
             """,
             macros: testMacros
         )
