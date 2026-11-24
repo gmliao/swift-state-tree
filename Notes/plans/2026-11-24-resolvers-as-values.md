@@ -1,6 +1,6 @@
 # #769: a resolver is a PlainData value
 
-**Status:** rev 2, plan only, no code. It follows the maintainer's 2026-11-22 decisions on #769 (the issue body, then three comments: `currentState` removed, the value form, and capability protocols for dependencies), and R-Q1 as decided 2026-11-24 (§3.4). Rev 2 answers Review's NOT GO on rev 1 (1ee8b88f); what changed is listed in §9. Open questions are in §8.
+**Status:** rev 2.1, plan only, no code. Rev 2 is GO (659cd242); 2.1 folds in its notes (§9). It follows the maintainer's 2026-11-22 decisions on #769 (the issue body, then three comments: `currentState` removed, the value form, and capability protocols for dependencies), and R-Q1 as decided 2026-11-24 (§3.4). Rev 2 answers Review's NOT GO on rev 1 (1ee8b88f); what changed is listed in §9. Open questions are in §8.
 
 Code pointers are at main c9f149ad. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`. The dependency probe in §3.4 is a one-file probe kept outside the repository. It passed on Swift 6.4.2 and 6.4.3, without the real `@PlainData` (§3.1.1). **The pin is moving to 6.4.3** (a bump PR is in flight), so R0 probes on 6.4.3 as the target toolchain, in the pinned image once the bump lands. If the bump hasn't landed when R1 starts, R0 also probes on 6.2.4, since CI still gates on it.
 
@@ -146,7 +146,14 @@ HandleAction(A.self,
   - the replay factory (`GameReevaluationFactory.swift`, `ReevaluationRunner/main.swift`), `SchemaGen/main.swift` and the schema fingerprint test add `.definition`. A replay never calls `resolve` (§3.5), so a replay keeper needs no `Services`;
   - the live keepers in `ResolverTestLandTests.swift` (3) and `TickProbeTests.swift` (1) need the services value. They use a typed keeper initializer, `LandKeeper(land: TypedLand<State, S>, resolverServices: S, …)`.
   
-  A live keeper built from `.definition` alone, for a land that declares services, is refused when it's created: a precondition naming the land and its services type. That is the one run-time check left, and only a hand-built keeper reaches it. R0 probes the typed initializer next to the registration.
+  **What the definition stores so the check can know:** `LandDefinition<State>` gains `servicesType: Any.Type?`, erased. `Land(_:using:services:)` sets it to `Services.self`, and `Land(_:using:)` leaves it nil. A `TypedLand` and its `.definition` always agree, since one builds the other.
+
+  **A services land without its services is an error, not a crash.** The check goes in `validateForRegistration` (LandRegistration.swift:141), as a new `LandRegistrationError` case naming the land and its services type. It fails when `servicesType` is set and the entry point brought no services value:
+  - the no-services `register(landType:land:…)` given a services land's `.definition` throws it at registration, as every registration error does;
+  - a live keeper built from `.definition` alone gets it as its `LandInitializationError`. A keeper built directly already runs the registration check that no entry point ran, and holds its error as the initialization failure (LandInitializationError.swift:5–6, #535). Every join, leave, action and client event then throws it;
+  - a reevaluation keeper is exempt: replay never calls `resolve` (§3.5).
+
+  It is tested in-process, with no exit test: a live keeper from `.definition` refuses its first join with the error, and the no-services registration throws it. That is the one run-time check left, and only a hand-built keeper or a `.definition` passed to the untyped registration reaches it. R0 probes the typed initializer next to the registration.
 - **The builders are generic over `Services` too:** #771 makes them `RulesBuilder<State>`, and this plan adds a second parameter, `<State, Services>`, so each entry knows the land's services type.
 - **The declaration requires `R.Dependencies == Services`.** So `D` is inferred at the declaration: the user writes `ProductInfo(productID:)`, never `ProductInfo<AppServices>`. A missing capability fails to compile there: "generic struct 'ProductInfo' requires that 'ThinServices' conform to 'HasPriceCache'" (the probe's text on 6.4.2).
 - **A resolver sees only what it declares.** `resolve` gets `D`, constrained to the protocols it lists with `&`. Its body can use those members only.
@@ -183,7 +190,7 @@ HandleAction(A.self,
 - **R1 keeps today's record.** R1 changes how outputs reach the handler, not the record. So until R2:
   - R1 writes each output under the derived name of the resolver's base type name, as today (`convertResolverTypeToPropertyName` of `ProductInfo`, not of `ProductInfo<AppServices>`). Goldens don't change in R1;
   - R1's replay maps each recorded name to the declaration's position;
-  - two resolvers of the same base type in one declaration would collide under one name, as they do today. R1 refuses that at registration, until R2's positions make it possible.
+  - two resolvers of the same base type in one declaration would collide under one name, as they do today. R1 refuses that at registration (a `LandRegistrationError`), until R2's positions make it possible. It is a new refusal (§4). Two declarations on main do it, both in `InitializeResolverFailureTests.swift` (lines 357 and 362, `InitFailureResolver` twice and three times, to test the failure policy with several resolvers). R1 gives them distinct resolver types.
 
   The derived-name code goes in R2, with the new format.
 - **Failures** are recorded as today: a group that fails or times out refuses the input before its record, and the init failure policy (`2026-11-07-init-resolver-failure-policy.md`) is unchanged.
@@ -218,6 +225,9 @@ All breaking, with no deprecation path; there are no external users yet (the iss
 - `LandContext`'s dynamic member subscript for outputs is removed;
 - `Land(_:using:services:)`, `TypedLand<State, Services>`, `NoServices`, `register(_: TypedLand, services:)` and `LandKeeper(land:resolverServices:…)` are added (§3.4);
 - `ReevaluationRecordedResolverOutput` and the record's resolver fields change in R2 (R-Q2).
+- **Behavior, new refusals at registration** (`LandRegistrationError`, so a directly built keeper gets them as its initialization failure):
+  - a land that declares services, registered or run live without a services value (§3.4);
+  - from R1 until R2, two resolvers of the same base type in one declaration (§3.5). Two test declarations on main do it, and R1 changes them.
 
 ## 5. Tests
 
@@ -244,7 +254,8 @@ All breaking, with no deprecation path; there are no external users yet (the iss
 - replay decode (§3.3): one good output and one bad. The handler isn't called, State is unchanged, and the mismatch names position 1;
 - replay feeds recorded outputs: `resolve` is never called during replay (a counter in the fake);
 - #765's regression (§3.6);
-- a live keeper built from `.definition` of a land with services is refused at creation (§3.4);
+- a live keeper built from `.definition` of a land with services refuses its first join with the registration error, and the no-services registration throws it (§3.4); a reevaluation keeper from `.definition` replays;
+- two resolvers of the same base type in one declaration are refused at registration, from R1 until R2 (§3.5);
 - deadlines, abandonment and failure policy: today's suites (`ResolverDeadline*`, `ResolverFeasibilityTests`, the init failure policy tests) ported to the new form and unchanged in what they assert.
 
 **Mutants:**
@@ -298,3 +309,8 @@ R1 doesn't depend on #700 and could go before K1a. That is **R-Q4**.
 - **Should, eager decode:** §3.3. Every output is decoded before the handler runs; a failure is a pass mismatch at that point, and nothing is applied. Test with one good and one bad output; M6.
 - **Nit:** the base type name without generic arguments is pinned for the record's name field too (§3.1, §3.5).
 - **R-Q1 (c)**, decided: §3.4. It counts the lands that declare services (one, GameDemo's, 10 call sites), and adds a typed keeper initializer for live keepers built in tests.
+
+**Rev 2.1** folds in Review's notes on rev 2 (GO at 659cd242: 2 should, 1 nit):
+- **S1** (what the definition stores so the keeper can know it needs services): `servicesType: Any.Type?`, set by `Land(_:using:services:)` (§3.4).
+- **S2** (a precondition can only be tested by an exit test): the check is a `LandRegistrationError` in `validateForRegistration`. Registration throws it, and a directly built keeper holds it as its initialization failure, as #535's check does. Tested in-process (§3.4, §5).
+- **Nit** (same base type twice is a new refusal): named in §4 under behavior, with the two declarations on main that do it (§3.5).
