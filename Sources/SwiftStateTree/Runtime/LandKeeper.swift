@@ -1297,16 +1297,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private func performInitialization() async {
         // The backstop for a keeper no registration checked (#535 §4): a state type that fails
-        // the synced-state rows, or a definition with two handlers for one client-event or
-        // server-input type (#586), fails initialization, as an OnInitialize resolver timeout
-        // does, before any handler runs. One cached lookup per state type.
+        // the synced-state rows, a definition with two handlers for one client-event or
+        // server-input type (#586), one whose client event registrations and handlers disagree
+        // (#771), or one holding a node its builder doesn't recognize (#794), fails initialization, as an OnInitialize resolver timeout does, before
+        // any handler runs. One cached lookup per state type.
         let problems = SyncRegistration.cachedProblems(State.self)
-        if !problems.isEmpty || !definition.duplicateHandlers.isEmpty {
+        if !problems.isEmpty || !definition.duplicateHandlers.isEmpty || !definition.clientEventMismatches.isEmpty
+            || !definition.unrecognizedNodes.isEmpty {
             let error = LandRegistrationError(
                 landType: definition.id,
                 payload: nil,
                 sync: problems.isEmpty ? nil : SyncRegistrationError(problems: problems),
-                duplicateHandlers: definition.duplicateHandlers
+                duplicateHandlers: definition.duplicateHandlers,
+                clientEventMismatches: definition.clientEventMismatches,
+                unrecognizedNodes: definition.unrecognizedNodes
             )
             logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
                 "error": .string(error.description),
@@ -5980,12 +5984,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 sessionID: systemSessionID
             )
             await afterFinalizeHandler(snapshot, ctx)
-        }
-
-        // Legacy OnShutdown handler (deprecated)
-        if let handler = definition.lifetimeHandlers.onShutdown {
-            let snapshot = state
-            await handler(snapshot)
         }
 
         // Notify transport that land has been destroyed

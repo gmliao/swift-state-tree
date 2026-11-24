@@ -4,9 +4,17 @@ import Foundation
 
 /// A marker protocol for all components within the Land DSL.
 ///
-/// Any element that can be used inside a `@LandDSL` block (or its sub-blocks) must conform to this protocol.
-/// The `LandBuilder` uses this to recursively traverse and collect configuration.
+/// A land body's builder (`LandDSL<State, Services>`) takes each node through a typed
+/// `buildExpression`, so a node for another State is refused where it is written, and the
+/// handler closures in it get their types from the land (#771). The `LandBuilder` collects the
+/// nodes into the definition.
 public protocol LandNode: Sendable {}
+
+/// The services type of a land that declares none: `Land(_:using:)`'s, and a helper's under
+/// `@LandDSL<State, NoServices>`.
+public struct NoServices: Sendable {
+    public init() {}
+}
 
 // MARK: - Access Control
 
@@ -71,7 +79,12 @@ public func MaxPlayers(_ value: Int) -> AccessControlDirective {
 
 // MARK: - Rules
 
-public struct RulesNode: LandNode {
+/// Part of a land's rules, in the game sense: who can join, how inputs change the state, how time
+/// advances, which events exist. A `Rules { … }` block, a helper such as `chatRules()` (the chat
+/// rules) and an `@Land` body return one, typed by the land's `State` and `Services`. The land's
+/// builder splices it into the land only where those types are the land's, and flattens it, so
+/// it isn't a `LandNode` itself and never reaches the `LandBuilder` (#771 §3.1, #794).
+public struct LandRules<State: StateNodeProtocol, Services: Sendable>: Sendable {
     public let nodes: [LandNode]
 }
 
@@ -86,8 +99,13 @@ public struct RulesNode: LandNode {
 ///     HandleAction(Move.self) { ... }
 /// }
 /// ```
-public func Rules(@LandDSL _ content: () -> [LandNode]) -> RulesNode {
-    RulesNode(nodes: content())  // Single-expression: omit return
+///
+/// Inside a land, `Rules` takes the land's `State` and `Services`. Outside one (a helper, a
+/// local), name them: `-> LandRules<GameState, NoServices>`.
+public func Rules<State: StateNodeProtocol, Services: Sendable>(
+    @LandDSL<State, Services> _ content: () -> [LandNode]
+) -> LandRules<State, Services> {
+    LandRules(nodes: content())  // Single-expression: omit return
 }
 
 public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
@@ -426,11 +444,7 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     
     /// Resolver executors for the onDestroyWhenEmpty handler.
     public var onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = []
-    
-    /// Handler called when the Land is shutting down.
-    ///
-    /// **Deprecated**: Use `OnFinalize` (sync, supports resolvers) and `AfterFinalize` (async) instead.
-    public var onShutdown: (@Sendable (State) async -> Void)?
+
 
     public init(
         tickInterval: Duration? = nil,
@@ -438,8 +452,7 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
         persistInterval: Duration? = nil,
         tickHandler: (@Sendable (inout State, LandContext) -> Void)? = nil,
         syncInterval: Duration? = nil,
-        syncHandler: (@Sendable (State, LandContext) -> Void)? = nil,
-        onShutdown: (@Sendable (State) async -> Void)? = nil
+        syncHandler: (@Sendable (State, LandContext) -> Void)? = nil
     ) {
         self.tickInterval = tickInterval
         self.destroyWhenEmptyAfter = destroyWhenEmptyAfter
@@ -447,7 +460,6 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
         self.tickHandler = tickHandler
         self.syncInterval = syncInterval
         self.syncHandler = syncHandler
-        self.onShutdown = onShutdown
     }
 }
 
@@ -456,10 +468,14 @@ public typealias LifetimeDirective<State: StateNodeProtocol> =
 
 @resultBuilder
 public enum LifetimeBuilder<State: StateNodeProtocol> {
-    public static func buildBlock(_ components: LifetimeDirective<State>...) -> [LifetimeDirective<
-        State
-    >] {
-        components
+    /// Typed, so a directive's closures (`Tick(every:) { state, ctx in }`) get the land's State
+    /// without annotations (#771 D0 result 2).
+    public static func buildExpression(_ directive: @escaping LifetimeDirective<State>) -> [LifetimeDirective<State>] {
+        [directive]
+    }
+
+    public static func buildBlock(_ components: [LifetimeDirective<State>]...) -> [LifetimeDirective<State>] {
+        components.flatMap { $0 }
     }
 }
 
@@ -956,25 +972,58 @@ public func AfterFinalize<State: StateNodeProtocol>(
     }
 }
 
-/// Registers a handler called when the Land is shutting down.
-///
-/// **Deprecated**: Use `OnFinalize` (sync, supports resolvers) and `AfterFinalize` (async) instead.
-///
-/// - Parameter body: The async closure to execute.
-public func OnShutdown<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (State) async -> Void
-) -> LifetimeDirective<State> {
-    return { config in
-        config.onShutdown = body
-    }
-}
-
 // MARK: - Land DSL Builder
 
+/// A land body's builder, generic over the land's `State` and `Services` (#771 §3.1). Each node
+/// type has its own `buildExpression`, so the closures in a node get the land's types, and a
+/// node for another State doesn't compile.
+///
+/// A helper that returns handlers for a land is written under the builder by name and returns
+/// `LandRules<State, Services>`, which the builder builds from its body. It is spliced into a land
+/// or a `Rules` like a node, and only where its `State` and `Services` are the land's (#794):
+///
+/// ```swift
+/// @LandDSL<GameState, NoServices>
+/// func movementRules() -> LandRules<GameState, NoServices> {
+///     HandleAction(Move.self) { state, action, ctx in ... }
+/// }
+/// ```
+///
+/// A helper for several lands is generic: over a protocol its states share
+/// (`@LandDSL<S, NoServices> func chatRules<S: HasChat>() -> LandRules<S, NoServices>`), or over
+/// `Services`, so lands with any services can use it.
 @resultBuilder
-public enum LandDSL {
-    public static func buildBlock(_ components: LandNode...) -> [LandNode] {
-        components
+public enum LandDSL<State: StateNodeProtocol, Services: Sendable> {
+    public static func buildExpression(_ node: AnyActionHandler<State>) -> [LandNode] { [node] }
+    public static func buildExpression(_ node: AnyClientEventHandler<State>) -> [LandNode] { [node] }
+    public static func buildExpression(_ node: AnyServerInputHandler<State>) -> [LandNode] { [node] }
+    public static func buildExpression(_ node: CanJoinNode<State>) -> [LandNode] { [node] }
+    public static func buildExpression(_ node: OnJoinNode<State>) -> [LandNode] { [node] }
+    public static func buildExpression(_ node: OnLeaveNode<State>) -> [LandNode] { [node] }
+    public static func buildExpression(_ node: LifetimeNode<State>) -> [LandNode] { [node] }
+    /// Flattened here: a `Rules` block's nodes become the enclosing block's.
+    public static func buildExpression(_ node: LandRules<State, Services>) -> [LandNode] { node.nodes }
+    public static func buildExpression(_ node: AccessControlNode) -> [LandNode] { [node] }
+    public static func buildExpression(_ node: AllowedClientEventsNode) -> [LandNode] { [node] }
+    public static func buildExpression(_ node: ClientEventsNode) -> [LandNode] { [node] }
+    public static func buildExpression(_ node: ServerEventsNode) -> [LandNode] { [node] }
+    /// An array of nodes has lost its State and Services, so it isn't spliced: a node built for
+    /// another State would reach `LandBuilder` unchecked (#794). A helper or an `@Land` body
+    /// returns `LandRules<State, Services>` instead.
+    @available(*, unavailable, message: "a helper or @Land body returns LandRules<State, Services>, so its State and Services are checked")
+    public static func buildExpression(_ nodes: [LandNode]) -> [LandNode] { nodes }
+
+    /// A land's or a `Rules` block's own closure: its nodes.
+    public static func buildFinalResult(_ nodes: [LandNode]) -> [LandNode] { nodes }
+
+    /// A helper's or an `@Land` body's result: its nodes, typed by the builder's `State` and
+    /// `Services`, which the typed `buildExpression` checks where it is spliced.
+    public static func buildFinalResult(_ nodes: [LandNode]) -> LandRules<State, Services> {
+        LandRules(nodes: nodes)
+    }
+
+    public static func buildBlock(_ components: [LandNode]...) -> [LandNode] {
+        components.flatMap { $0 }
     }
 
     public static func buildArray(_ components: [[LandNode]]) -> [LandNode] {
@@ -1249,29 +1298,6 @@ public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
 
 // MARK: - Server Event Registration
 
-/// Land node that represents a registered server event payload type.
-/// @deprecated: Use ServerEvents { Register(...) } instead.
-public struct ServerEventNode: LandNode {
-    public let type: Any.Type
-    
-    public init(type: Any.Type) {
-        self.type = type
-    }
-}
-
-/// Register a server event payload type for schema/code generation.
-/// @deprecated: Use ServerEvents { Register(...) } instead.
-///
-/// Example:
-/// ```swift
-/// ServerEvent(DemoServerEvent.self)
-/// ```
-public func ServerEvent<E: ServerEventPayload>(
-    _ type: E.Type
-) -> ServerEventNode {
-    ServerEventNode(type: type)  // Single-expression: omit return
-}
-
 // MARK: - Server Events Registration DSL
 
 /// Land node that represents a registered server event type.
@@ -1405,11 +1431,41 @@ public func ClientEvents(
 public func Land<State: StateNodeProtocol>(
     _ id: String,
     using stateType: State.Type,
-    @LandDSL _ content: () -> [LandNode]
+    @LandDSL<State, NoServices> _ content: () -> [LandNode]
 ) -> LandDefinition<State> {
     LandBuilder.build(
         id: id,
         stateType: stateType,
         nodes: content()
     )  // Single-expression: omit return
+}
+
+/// A land that declares the services its handlers use (#769 §3.4, #771 §3.1). Its body's builder
+/// is `LandDSL<State, Services>`, and `definition` records the services type.
+///
+/// Until #769 R1 nothing reads the services type: register `definition` as any other land's.
+public struct TypedLand<State: StateNodeProtocol, Services: Sendable>: Sendable {
+    public let definition: LandDefinition<State>
+}
+
+/// Defines a land that declares its services type.
+///
+/// - Parameters:
+///   - id: The unique identifier for this Land.
+///   - stateType: The type of the root state node.
+///   - services: The type of the services value the land's handlers use.
+///   - content: The DSL block, under `LandDSL<State, Services>`.
+/// - Returns: The land, typed by its State and Services.
+public func Land<State: StateNodeProtocol, Services: Sendable>(
+    _ id: String,
+    using stateType: State.Type,
+    services: Services.Type,
+    @LandDSL<State, Services> _ content: () -> [LandNode]
+) -> TypedLand<State, Services> {
+    TypedLand(definition: LandBuilder.build(
+        id: id,
+        stateType: stateType,
+        nodes: content(),
+        servicesType: services
+    ))
 }

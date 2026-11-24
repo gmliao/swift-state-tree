@@ -70,6 +70,8 @@ func testLandBuilderCollectsNodes() {
         }
 
         Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(DemoChatEvent.self) { _, _, _ in }
             HandleAction(JoinAction.self) { (state: inout DemoLandState, action: JoinAction, ctx: LandContext) in
                 state.players[ctx.playerID] = action.name
                 return JoinResult(ok: true)
@@ -182,6 +184,8 @@ func testLandKeeperAllowedEvents() async throws {
         }
         
         Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(DemoChatEvent.self) { _, _, _ in }
             HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
                 // Synchronous handler: mutate state directly
                 state.spawnedTaskCount += 1
@@ -472,7 +476,11 @@ func testClientEventsRegister() {
             Register(TestClientEventsRegisterFixtures.TestEvent1.self)
             Register(TestClientEventsRegisterFixtures.TestEvent2.self)
         }
-        Rules { }
+        Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(TestClientEventsRegisterFixtures.TestEvent1.self) { _, _, _ in }
+            HandleEvent(TestClientEventsRegisterFixtures.TestEvent2.self) { _, _, _ in }
+        }
     }
     
     // Verify client events are registered
@@ -583,7 +591,10 @@ func testEventRegistryIsRegistered() {
         ClientEvents {
             Register(TestEventRegistryIsRegisteredFixtures.TestRegisteredEvent.self)
         }
-        Rules { }
+        Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(TestEventRegistryIsRegisteredFixtures.TestRegisteredEvent.self) { _, _, _ in }
+        }
     }
     
     // Test registered event
@@ -618,7 +629,10 @@ func testBothClientAndServerEvents() {
         ServerEvents {
             Register(TestBothClientAndServerEventsFixtures.ServerEvent.self)
         }
-        Rules { }
+        Rules {
+            // Registered for the schema only; a registered client event needs a handler (#771).
+            HandleEvent(TestBothClientAndServerEventsFixtures.ClientEvent.self) { _, _, _ in }
+        }
     }
     
     // Verify both registries are populated

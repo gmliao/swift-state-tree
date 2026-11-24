@@ -425,12 +425,12 @@ enum AdminError: Error {
 
 // Use in handler: validate reads the resolver output and refuses; apply does the work
 HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self,
-    validate: { (state: GameState, action: AdminAction, ctx: ValidateContext) throws in
+    validate: { state, action, ctx in
         guard let permission: UserPermission = ctx.userPermission, permission.isAdmin else {
             throw AdminError.adminRequired  // nothing is written
         }
     },
-    apply: { (state: inout GameState, action: AdminAction, ctx: LandContext) -> AdminResponse in
+    apply: { state, action, ctx in
         // Execute admin operations
         return AdminResponse()
     })

@@ -91,7 +91,7 @@ enum TwoPhaseRefusals {
 }
 
 private func makeTwoPhaseDefinition(tick: Bool) -> LandDefinition<TwoPhaseState> {
-    let rules = Rules {
+    let rules: LandRules<TwoPhaseState, NoServices> = Rules {
         HandleAction(TwoPhaseAddAction.self, validate: { (_: TwoPhaseState, action: TwoPhaseAddAction, _: ValidateContext) in
             if TwoPhaseRefusals.isRefused(action.key) { throw TwoPhaseRefused(reason: "key \(action.key)") }
         }, apply: { (state: inout TwoPhaseState, action: TwoPhaseAddAction, ctx: LandContext) in

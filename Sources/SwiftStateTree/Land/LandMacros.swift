@@ -2,11 +2,16 @@
 
 /// Macro for defining a Land using struct-based syntax.
 ///
-/// This macro generates a static `definition` property that returns a `LandDefinition`.
-/// The struct must contain a static `body` property with the DSL content.
+/// This macro generates a static `definition` property that returns a `LandDefinition`, built
+/// from the struct's `static var body: LandRules<State, NoServices>`. It also puts `body` under
+/// the land's builder, `@LandDSL<State, NoServices>`, so its handler closures get the land's
+/// types without annotations, as in `Land(_:using:)`, and the definition checks the body's
+/// `State` against the land's. A `body` with any attribute other than `@available` is left as
+/// written (a hand-written `@LandDSL<…>`, or an alias of it). The builder is attached only to a
+/// computed `static var body`; a stored `body` (`static let body = Rules { … }`) is used as it is.
 ///
-/// Client and server events are now registered via `ClientEvents { Register(...) }` and
-/// `ServerEvents { Register(...) }` DSL blocks in the body.
+/// `@Land` makes a land without services. A land with services is written with
+/// `Land(_:using:services:)`.
 ///
 /// - Parameters:
 ///   - state: The StateNodeProtocol type for this Land.
@@ -16,19 +21,21 @@
 /// ```swift
 /// @Land(GameState.self)
 /// struct GameLand {
-///     static var body: some LandDSL {
+///     static var body: LandRules<GameState, NoServices> {
 ///         ClientEvents {
 ///             Register(ChatEvent.self)
 ///         }
 ///         ServerEvents {
 ///             Register(WelcomeEvent.self)
 ///         }
-///         AccessControl { ... }
-///         Rules { ... }
+///         Rules {
+///             HandleEvent(ChatEvent.self) { state, event, ctx in ... }
+///         }
 ///     }
 /// }
 /// ```
 @attached(member, names: named(definition))
+@attached(memberAttribute)
 public macro Land(
     _ state: Any.Type,
     id: String? = nil

@@ -69,7 +69,8 @@ struct ReplayShownState: StateNodeProtocol, StateFromSnapshotDecodable {
     public init() {}
 }
 
-/// A type that isn't a `ServerEventPayload`: given to the deprecated `ServerEventNode(type:)`.
+/// A type that isn't a `ServerEventPayload`: registered through a descriptor built with the
+/// public `AnyEventDescriptor` init, which has no decoder.
 struct ReplayNotAPayload: Codable, Sendable {
     let value: Int
 }
@@ -115,8 +116,15 @@ private func makeUndecodableEventLand() -> LandDefinition<ReplayEventDecodeState
                 state.ticks += 1
             }
         }
-        ServerEventNode(type: ReplayNotAPayload.self)
     }
+    .replacingServerEventRegistry(undecodableServerEvents(ReplayNotAPayload.self))
+}
+
+/// A server event registry holding `type` through the public descriptor init: no decoder (EV8).
+private func undecodableServerEvents(_ type: Any.Type) -> EventRegistry<AnyServerEvent> {
+    EventRegistry(registered: [
+        AnyEventDescriptor(type: type, eventName: EventRegistry<AnyServerEvent>.eventName(for: type), direction: .server)
+    ])
 }
 
 /// Each tick sets `ratio` to NaN.

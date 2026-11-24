@@ -29,8 +29,9 @@ struct FingerprintHostEvent: ServerEventPayload {
     let inner: FingerprintHostInner
 }
 
-/// Registered through `ServerEventNode(type:)`, not `Register`: a server event type with no
-/// decoder, which a replay can't decode (EV8). Fieldless, so the fingerprint can list it.
+/// Registered through a descriptor built with the public `AnyEventDescriptor` init, not
+/// `Register`: a server event type with no decoder, which a replay can't decode (EV8). Fieldless,
+/// so the fingerprint can list it.
 struct FingerprintHostNotAPayload: Codable, Sendable {}
 
 @Suite("NIOLandHost record schema fingerprint")
@@ -106,8 +107,14 @@ struct RecordSchemaFingerprintRegistrationTests {
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, adminAPIKey: "test-admin-key"))
         let land = Land("fingerprint-ev8", using: FingerprintHostState.self) {
             Rules {}
-            ServerEventNode(type: FingerprintHostNotAPayload.self)
         }
+        .replacingServerEventRegistry(EventRegistry(registered: [
+            AnyEventDescriptor(
+                type: FingerprintHostNotAPayload.self,
+                eventName: EventRegistry<AnyServerEvent>.eventName(for: FingerprintHostNotAPayload.self),
+                direction: .server
+            )
+        ]))
         // Recording off: `register` alone wouldn't run EV8, so this pins the helpers' forced flag.
         let configuration = NIOLandServerConfiguration(transportEncoding: .json)
         let probe = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, adminAPIKey: "test-admin-key"))
