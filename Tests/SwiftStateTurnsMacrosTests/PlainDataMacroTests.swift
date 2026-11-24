@@ -226,21 +226,27 @@ struct PlainDataMacroTests {
                 var plain: Optional<Array<any Payload>>
                 var grouped: any (Payload & Sendable)
                 var qualified: Swift.Optional<any Payload>
+                var spelled: Dictionary<String, any Payload>
             }
             """)
         #expect(messages.isEmpty)
         #expect(text.contains("SwiftStateTurns.PlainDataCheck.field((String).self)"))
-        // One closure check per existential; no check for a wrapper, which can't conform.
-        #expect(text.components(separatedBy: "SwiftStateTurns.PlainDataCheck.existential { (value: any Payload) in value }").count - 1 == 7)
+        // One closure check per existential; no `field` check for a wrapper, which can't conform.
+        #expect(text.components(separatedBy: "SwiftStateTurns.PlainDataCheck.existential { (value: any Payload) in value }").count - 1 == 8)
         #expect(text.contains("SwiftStateTurns.PlainDataCheck.existential { (value: any Payload & Sendable) in value }"))
         #expect(text.contains("SwiftStateTurns.PlainDataCheck.existential { (value: any (Payload & Sendable)) in value }"))
-        #expect(text.components(separatedBy: "PlainDataCheck.field").count - 1 == 1)
-        // A wrapper spelled by name is checked to be the standard library's, each layer; one
-        // spelled `Swift.` or as sugar needs no check.
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.same((ContiguousArray<any Payload>).self, (Swift.ContiguousArray<any Payload>).self)"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.same((Optional<Array<any Payload>>).self, (Swift.Optional<Array<any Payload>>).self)"))
-        #expect(text.contains("SwiftStateTurns.PlainDataCheck.same((Array<any Payload>).self, (Swift.Array<any Payload>).self)"))
-        #expect(text.components(separatedBy: "PlainDataCheck.same").count - 1 == 3)
+        #expect(text.components(separatedBy: "PlainDataCheck.field").count - 1 == 2)
+        // A wrapper spelled out, bare or `Swift.`-qualified, is pinned to the standard library's
+        // type at each layer; one spelled as sugar needs no check.
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.contiguousArray((ContiguousArray<any Payload>).self)"))
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.optional((Optional<Array<any Payload>>).self)"))
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.array((Array<any Payload>).self)"))
+        #expect(text.contains("SwiftStateTurns.PlainDataCheck.optional((Swift.Optional<any Payload>).self)"))
+        #expect(!text.contains("PlainDataCheck.same"))
+        let pinned = ["optional(", "array(", "contiguousArray(", "dictionary("].map {
+            text.components(separatedBy: "PlainDataCheck.\($0)").count - 1
+        }
+        #expect(pinned == [2, 1, 1, 1])
     }
 
     @Test("The expansion names the core's module for the conformance and a generic's constraint")

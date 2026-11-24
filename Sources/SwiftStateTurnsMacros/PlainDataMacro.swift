@@ -191,25 +191,24 @@ public struct PlainDataMacro: ExtensionMacro {
         if let dictionary = type.as(DictionaryTypeSyntax.self) { return pair(dictionary.key, dictionary.value, context) }
         if let found = standardWrapper(type) {
             guard let inner = wrapperChecks(found, context) else { return nil }
-            // A bare name can be the module's own type of that name; the identity check refuses
-            // anything but the standard library's. `Swift.Array` needs none.
-            guard found.bare else { return inner }
-            return inner + ["SwiftStateTurns.PlainDataCheck.same((\(type.trimmed)).self, (Swift.\(type.trimmed)).self)"]
+            // The name, bare or `Swift.`-qualified, can be the module's own type (a namesake, a
+            // typealias, or a module-level `enum Swift`). The helper's parameter is the standard
+            // library's type, spelled inside SwiftStateTurns, so only that type compiles.
+            return inner + ["SwiftStateTurns.PlainDataCheck.\(found.helper)((\(type.trimmed)).self)"]
         }
         context.diagnose(Diagnostic(node: type, message: PlainDataDiagnostic.existentialInGeneric))
         return nil
     }
 
     /// `Optional<…>`, `Array<…>`, `ContiguousArray<…>` or `Dictionary<…, …>` spelled out, bare or
-    /// as `Swift.…`: its name and arguments, and whether the name was bare.
-    private static func standardWrapper(_ type: TypeSyntax) -> (name: String, arguments: [TypeSyntax], bare: Bool)? {
+    /// as `Swift.…`: its name, its arguments, and the `PlainDataCheck` helper that pins it.
+    private static func standardWrapper(_ type: TypeSyntax) -> (name: String, arguments: [TypeSyntax], helper: String)? {
         let name: String
         let clause: GenericArgumentClauseSyntax?
-        let bare: Bool
         if let named = type.as(IdentifierTypeSyntax.self) {
-            (name, clause, bare) = (named.name.text, named.genericArgumentClause, true)
+            (name, clause) = (named.name.text, named.genericArgumentClause)
         } else if let member = type.as(MemberTypeSyntax.self), member.baseType.trimmedDescription == "Swift" {
-            (name, clause, bare) = (member.name.text, member.genericArgumentClause, false)
+            (name, clause) = (member.name.text, member.genericArgumentClause)
         } else {
             return nil
         }
@@ -219,13 +218,16 @@ public struct PlainDataMacro: ExtensionMacro {
             return nil
         }
         switch (name, arguments.count) {
-        case ("Optional", 1), ("Array", 1), ("ContiguousArray", 1), ("Dictionary", 2): return (name, arguments, bare)
+        case ("Optional", 1): return (name, arguments, "optional")
+        case ("Array", 1): return (name, arguments, "array")
+        case ("ContiguousArray", 1): return (name, arguments, "contiguousArray")
+        case ("Dictionary", 2): return (name, arguments, "dictionary")
         default: return nil
         }
     }
 
     private static func wrapperChecks(
-        _ wrapper: (name: String, arguments: [TypeSyntax], bare: Bool),
+        _ wrapper: (name: String, arguments: [TypeSyntax], helper: String),
         _ context: some MacroExpansionContext
     ) -> [String]? {
         wrapper.name == "Dictionary"

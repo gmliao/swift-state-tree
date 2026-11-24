@@ -37,10 +37,25 @@ public enum PlainDataCheck {
     @inlinable @inline(__always)
     public static func existential<E>(_ upcast: (E) -> any PlainData) {}
 
-    /// Compiles only when both are the same type: a wrapper spelled `Array<…>` (or `Optional`,
-    /// `ContiguousArray`, `Dictionary`) is the standard library's, not a namesake in the module.
+    // A wrapper spelled `Array<…>` (or `Optional`, `ContiguousArray`, `Dictionary`), bare or
+    // `Swift.`-qualified, compiles only when it is the standard library's: each parameter names
+    // the type here, where the user's module can't rebind `Swift` or the type's name.
+
+    /// Compiles only for the standard library's `Optional`.
     @inlinable @inline(__always)
-    public static func same<T>(_: T.Type, _: T.Type) {}
+    public static func optional<Wrapped>(_: Swift.Optional<Wrapped>.Type) {}
+
+    /// Compiles only for the standard library's `Array`.
+    @inlinable @inline(__always)
+    public static func array<Element>(_: Swift.Array<Element>.Type) {}
+
+    /// Compiles only for the standard library's `ContiguousArray`.
+    @inlinable @inline(__always)
+    public static func contiguousArray<Element>(_: Swift.ContiguousArray<Element>.Type) {}
+
+    /// Compiles only for the standard library's `Dictionary`.
+    @inlinable @inline(__always)
+    public static func dictionary<Key, Value>(_: Swift.Dictionary<Key, Value>.Type) {}
 }
 
 extension Bool: PlainData { public static func _plainDataCheck() {} }
