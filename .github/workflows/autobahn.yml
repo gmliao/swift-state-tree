@@ -1,0 +1,113 @@
+# The Autobahn|Testsuite WebSocket conformance run against the NIO server (#798).
+#
+# Not a gate: the server fails many cases today (scripts/autobahn/expected-failures.txt), so the
+# run reports them and stays green. It fails only when the harness doesn't start or the suite
+# doesn't run (scripts/autobahn/run.sh exits non-zero then).
+#
+# Two jobs, because GitHub can't run a job in a container and also give it Docker: `build` builds
+# the echo harness in the pinned Swift image, as a binary with the Swift runtime linked in;
+# `run` takes that binary to a plain runner, where run.sh starts it and runs the suite's Docker
+# image against it.
+name: Autobahn
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Package.swift'
+      - 'Package.resolved'
+      - 'Sources/SwiftStateTreeTransport/**'
+      - 'Sources/SwiftStateTreeNIO/**'
+      - 'Tools/AutobahnEcho/**'
+      - 'scripts/autobahn/**'
+      - '.github/workflows/autobahn.yml'
+
+# A new push to a pull request cancels its run still in progress; every other run gets a group of
+# its own.
+concurrency:
+  group: autobahn-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build harness
+    runs-on: ubuntu-22.04
+    container:
+      image: swift:6.4.3-noble@sha256:4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # SwiftPM's shared cache, keyed as in Swift Build & Test: by the image digest and the
+    # harness's Package.resolved.
+    - name: SwiftPM shared cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/org.swift.swiftpm
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-${{ hashFiles('Package.resolved', 'Tools/AutobahnEcho/Package.resolved') }}
+        restore-keys: |
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a-
+
+    - name: Show toolchain
+      run: swift --version
+
+    # Release, with the Swift runtime linked in, so the binary runs on a runner without Swift.
+    - name: Build the harness
+      working-directory: Tools/AutobahnEcho
+      run: swift build -c release --static-swift-stdlib
+
+    - name: Collect the binary
+      run: |
+        bin_path="$(cd Tools/AutobahnEcho && swift build -c release --static-swift-stdlib --show-bin-path)"
+        mkdir -p harness
+        cp "$bin_path/AutobahnEcho" harness/AutobahnEcho
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: autobahn-echo-harness
+        path: harness/AutobahnEcho
+        if-no-files-found: error
+        retention-days: 1
+
+  run:
+    name: Autobahn suite
+    needs: build
+    # Noble, the image's own release, so the binary finds the glibc it was linked against.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: autobahn-echo-harness
+        path: harness
+
+    - name: Run the suite
+      env:
+        AUTOBAHN_ECHO_BIN: ${{ github.workspace }}/harness/AutobahnEcho
+      run: |
+        chmod +x "$AUTOBAHN_ECHO_BIN"
+        scripts/autobahn/run.sh
+
+    # The per-case reports (JSON and HTML) and the summary. Also when the suite found failures:
+    # run.sh exits 0 then, and a step that did fail should still leave what it wrote.
+    - name: Upload the reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: autobahn-reports
+        path: scripts/autobahn/reports/
+        if-no-files-found: warn
+
+    - name: Summary
+      if: always()
+      run: |
+        if [[ -f scripts/autobahn/reports/summary.txt ]]; then
+          { echo '```'; cat scripts/autobahn/reports/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        fi
