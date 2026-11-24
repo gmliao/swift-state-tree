@@ -526,7 +526,7 @@ struct TransportAdapterGenerationCloseTests {
         let (adapter, _, transport) = await makeAdapter()
         let withFrame = SessionID("timed-out-frame"), withoutFrame = SessionID("timed-out")
         #expect(await adapter.endJoinBeforeAdmission(
-            withFrame, finalFrame: Data("error".utf8), attemptEnd: JoinAttemptEnd(), connectionGeneration: 4
+            withFrame, finalFrame: EncodedFrame(data: Data("error".utf8), kind: .text), attemptEnd: JoinAttemptEnd(), connectionGeneration: 4
         ))
         #expect(await adapter.endJoinBeforeAdmission(
             withoutFrame, finalFrame: nil, attemptEnd: JoinAttemptEnd(), connectionGeneration: 8

@@ -1319,7 +1319,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionHandshakePhase[sessionID] = .joining(current)
         let ended = await adapter.endJoinBeforeAdmission(
             sessionID,
-            finalFrame: errorData(.admission),
+            finalFrame: errorData(.admission).map { EncodedFrame(data: $0, kind: .text) },
             attemptEnd: current.end,
             connectionGeneration: sessionToConnectionGeneration[sessionID]
         )

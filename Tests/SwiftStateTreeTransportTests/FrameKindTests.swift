@@ -21,6 +21,17 @@ struct FrameKindTestEvent: ServerEventPayload {
     let n: Int
 }
 
+@Payload
+struct FrameKindTestReply: ResponsePayload {
+    let n: Int
+}
+
+@Payload
+struct FrameKindTestAction: ActionPayload {
+    typealias Response = FrameKindTestReply
+    let n: Int
+}
+
 /// The encodings a land can run with, a hybrid included.
 enum FrameKindEncoding: String, CaseIterable, Sendable, CustomStringConvertible {
     case json
@@ -132,6 +143,85 @@ struct FrameKindTests {
         }
         if encoding == .hybrid {
             #expect(Set(kinds) == [.text, .binary], "hybrid: one connection carries both types")
+        }
+    }
+
+    @Test("A router error before the join, an action response after it, and the opcode 107 frame each go out in the frame type of their bytes",
+          arguments: FrameKindEncoding.allCases)
+    func routerErrorsResponsesAndMergedFrames(encoding: FrameKindEncoding) async throws {
+        let definition = Land("frame-kind-action", using: FrameKindTestState.self) {
+            ServerEvents { Register(FrameKindTestEvent.self) }
+            Rules {
+                HandleAction(FrameKindTestAction.self) {
+                    (state: inout FrameKindTestState, action: FrameKindTestAction, ctx: LandContext) in
+                    state.players[ctx.playerID] = "n\(action.n)"
+                    ctx.requestSyncNow()
+                    return FrameKindTestReply(n: action.n)
+                }
+            }
+        }
+        let transport = WebSocketTransport()
+        let registry = try LandTypeRegistry(
+            landFactory: { _, _ in definition },
+            initialStateFactory: { _, _ in FrameKindTestState() }
+        )
+        let manager = LandManager<FrameKindTestState>(
+            landFactory: { _ in definition },
+            initialStateFactory: { _ in FrameKindTestState() },
+            transport: transport,
+            transportEncoding: encoding.config
+        )
+        let router = LandRouter<FrameKindTestState>(
+            landManager: manager,
+            landTypeRegistry: registry,
+            transport: transport,
+            allowAutoCreateOnJoin: true,
+            transportEncoding: encoding.config
+        )
+        await transport.setDelegate(router)
+        let session = SessionID("kind-action")
+        let connection = RecordingConnection()
+        await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
+
+        // Before the join: a frame the router can't read gets a JSON error.
+        await transport.handleIncomingMessage(sessionID: session, data: Data("not a message".utf8), kind: .text)
+        #expect(await connection.waitUntilRawFrames { !$0.isEmpty }, "\(encoding): the router's error")
+        #expect(await connection.kinds.first == .text, "\(encoding): the error before the join is JSON")
+
+        let join = try JSONEncoder().encode(TransportMessage.join(
+            requestID: "join-1", landType: "frame-kind-action", landInstanceId: "one",
+            playerID: "p1", deviceID: nil, metadata: nil
+        ))
+        await transport.handleIncomingMessage(sessionID: session, data: join, kind: .text)
+        #expect(await withinHangBound { await router.waitForNoPendingFlipForTesting() }, "\(encoding): the join's flip never ended")
+
+        // After the join: an action in the land's message encoding; its response and the sync it
+        // requests.
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: FrameKindTestAction.self),
+            payload: AnyCodable(FrameKindTestAction(n: 7))
+        )
+        let action = try encoding.config.makeCodec().encode(TransportMessage.action(requestID: "act-1", action: envelope))
+        await transport.handleIncomingMessage(sessionID: session, data: action, kind: encoding.config.message.frameKind)
+        let requestID = Data("act-1".utf8)
+        #expect(await connection.waitUntilRawFrames { $0.contains { $0.range(of: requestID) != nil } }, "\(encoding): the action's response")
+        // Opcode 107: a MessagePack array of three whose first element is 107.
+        let mergedPrefix: [UInt8] = [0x93, 0x6B]
+        let merges = encoding.config.stateUpdate == .opcodeMessagePack
+        if merges {
+            #expect(await connection.waitUntilRawFrames { $0.contains { Array($0.prefix(2)) == mergedPrefix } }, "\(encoding): the opcode 107 frame")
+        }
+
+        let frames = await connection.frames
+        let kinds = await connection.kinds
+        for (data, kind) in zip(frames, kinds) {
+            #expect(isJSON(data) == (kind == .text), "\(encoding): a \(kind) frame's bytes: \(data.prefix(16).map { String(format: "%02x", $0) })")
+        }
+        let responseKind = zip(frames, kinds).first { $0.0.range(of: requestID) != nil }?.1
+        #expect(responseKind == encoding.config.message.frameKind, "\(encoding): the action response")
+        if merges {
+            let mergedKinds = zip(frames, kinds).filter { Array($0.0.prefix(2)) == mergedPrefix }.map(\.1)
+            #expect(!mergedKinds.isEmpty && mergedKinds.allSatisfy { $0 == .binary }, "\(encoding): opcode 107 frames are binary")
         }
     }
 }

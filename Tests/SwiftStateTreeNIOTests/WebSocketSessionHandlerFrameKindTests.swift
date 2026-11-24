@@ -116,4 +116,36 @@ struct WebSocketSessionHandlerFrameKindTests {
         }
         #expect(opcodes == [.text, .binary])
     }
+
+    @Test("A ping between a text opener and its continuation is answered, and the message arrives once, as text (RFC 6455 §5.4)")
+    func pingInsideAFragmentedMessage() async throws {
+        let delegate = KindRecordingDelegate()
+        let (channel, handler) = try await makeHandler("kind-ping", delegate: delegate)
+        try channel.writeInbound(frame(fin: false, .text, Array("{\"a\":".utf8)))
+        try channel.writeInbound(frame(.ping, Array("p".utf8)))
+        try channel.writeInbound(frame(.continuation, Array("1}".utf8)))
+        channel.embeddedEventLoop.run()
+        var written: [WebSocketFrame] = []
+        while let next = try channel.readOutbound(as: WebSocketFrame.self) { written.append(next) }
+        #expect(written.map(\.opcode) == [.pong], "only the pong is written")
+        #expect(written.first.map { Array($0.unmaskedData.readableBytesView) } == Array("p".utf8), "the pong echoes the ping's payload")
+        await handler.waitForInboundIdle()
+        let messages = delegate.messages
+        #expect(messages.count == 1)
+        #expect(messages.first?.0 == Data("{\"a\":1}".utf8))
+        #expect(messages.first?.1 == .text)
+        #expect(channel.isActive)
+    }
+
+    @Test("NIOWebSocketConnection.send(_:kind:) writes the frame type it is given")
+    func connectionSendsTheKind() async throws {
+        let (channel, handler) = try await makeHandler("kind-conn", delegate: KindRecordingDelegate())
+        let connection = NIOWebSocketConnection(channel: channel, handler: handler)
+        try await connection.send(Data("{}".utf8), kind: .text)
+        try await connection.send(Data([0x90]), kind: .binary)
+        channel.embeddedEventLoop.run()
+        var opcodes: [WebSocketOpcode] = []
+        while let written = try channel.readOutbound(as: WebSocketFrame.self) { opcodes.append(written.opcode) }
+        #expect(opcodes == [.text, .binary])
+    }
 }

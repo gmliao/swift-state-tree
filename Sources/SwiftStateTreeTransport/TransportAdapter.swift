@@ -1783,7 +1783,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///   close carry this one, and act only on that connection (#531). Nil: by ID.
     func endJoinBeforeAdmission(
         _ sessionID: SessionID,
-        finalFrame: Data?,
+        finalFrame: EncodedFrame?,
         attemptEnd: JoinAttemptEnd,
         connectionGeneration: UInt64? = nil
     ) -> Bool {
@@ -1795,8 +1795,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // queued while thousands of the land's sessions end.
         attemptEnd.markEnded()
         if let finalFrame {
-            // The router's join error: JSON, as in the handshake (`LandRouter.joinErrorData`).
-            sendFinalFrameAndClose(finalFrame, kind: .text, to: sessionID, generation: connectionGeneration)
+            // The router's join error, with the kind of the encoder that wrote it.
+            sendFinalFrameAndClose(finalFrame.data, kind: finalFrame.kind, to: sessionID, generation: connectionGeneration)
         } else {
             endedSessions.insert(sessionID)
             closeSessionDetached(sessionID, generation: connectionGeneration)
