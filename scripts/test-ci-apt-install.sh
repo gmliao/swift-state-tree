@@ -10,8 +10,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp=""
 # A stub the helper failed to stop (a regression, or a `stubborn` one without KILL) outlives the
 # deadline, and so can its child (`sleep`), whose command line names no stub. `timeout` starts its
-# command in a process group of its own, so each stub records its group in its case's `groups`
-# file. Each case ends its own groups as soon as the helper returns, children included, and drops
+# command in a process group of its own, so each stub that waits records its group in its case's
+# `groups` file. Each case ends its own groups as soon as the helper returns, children included, and drops
 # the file, so no group is signalled after its case (a group id can be reused). Never this script's
 # own group.
 end_groups() {
@@ -44,17 +44,24 @@ for tool in apt-get dpkg; do
   cat > "$tmp/bin/$tool" <<'STUB'
 #!/usr/bin/env bash
 # TERM is ignored from the first line, so a `stubborn` stub ignores a TERM that arrives while it
-# reads its plan; the other words restore it before they wait or exit.
+# reads its plan; the other words restore it before they wait or exit. Until the word is known the
+# stub runs builtins only and records its call first: a bound of 1 s must not end an `ok` stub
+# that is slow to fork on a loaded runner (#821).
 trap '' TERM
-tool=$(basename "$0")
-ps -o pgid= $$ | tr -d ' ' >> "$APT_STUB_GROUPS"
-n=$(( $(cat "$APT_STUB_DIR/$tool.calls") + 1 ))
-echo "$n" > "$APT_STUB_DIR/$tool.calls"
+tool=${0##*/}
 echo "$tool $*" >> "$APT_STUB_DIR/log"
-case "$(sed -n "${n}p" "$APT_STUB_DIR/$tool.plan")" in
+read -r n < "$APT_STUB_DIR/$tool.calls"
+n=$((n + 1))
+echo "$n" > "$APT_STUB_DIR/$tool.calls"
+word= i=0
+while IFS= read -r line; do
+  i=$((i + 1))
+  if [ "$i" -eq "$n" ]; then word=$line; break; fi
+done < "$APT_STUB_DIR/$tool.plan"
+case "$word" in
   ok) exit 0 ;;
-  hang) trap - TERM; exec sleep 600 ;;
-  stubborn) while :; do sleep 1; done ;;
+  hang) ps -o pgid= $$ | tr -d ' ' >> "$APT_STUB_GROUPS"; trap - TERM; exec sleep 600 ;;
+  stubborn) ps -o pgid= $$ | tr -d ' ' >> "$APT_STUB_GROUPS"; while :; do sleep 1; done ;;
   *) exit 100 ;;
 esac
 STUB
