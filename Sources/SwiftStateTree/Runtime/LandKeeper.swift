@@ -138,9 +138,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package struct PendingServerInputItem: Sendable {
         package let sequence: Int64
         package let typeIdentifier: String
-        /// The record form: what the record writes, never a re-encode of `decoded`, which can
-        /// differ from it.
-        package let payload: AnyCodable
+        /// The record form's canonical MessagePack bytes: what the record writes, never a
+        /// re-encode of `decoded`, which can differ from it (#700 K1a, K1-Q4 (a)).
+        package let bytes: Data
         /// `payload` decoded as the handler's type, once: at submit live (where a failure is
         /// refused, so live holds a value), when the item is built in replay (where a failure is
         /// kept, and thrown when the item is applied).
@@ -1466,7 +1466,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if let source = reevaluationSource, let metadata = try? await source.getMetadata() {
                 replayHeaderPayloadEncoding = metadata.effectivePayloadEncoding
                 do {
-                    try payloadDecoders.check(replayHeaderPayloadEncoding)
+                    try await payloadDecoders.check(source)
                 } catch {
                     logger.error("❌ The record's payloads can't be decoded by this replay: the land is torn down", metadata: [
                         "error": .string(String(describing: error)),
@@ -3447,9 +3447,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         else { return .refused(.unknownType) }
         guard !isDraining else { return .refused(.draining) }
         // Live applies the form the record holds, so replay applies the same value (#387).
-        let payload: AnyCodable
+        let bytes: Data
         do {
-            payload = try ServerInputCodec.recordedForm(of: input)
+            bytes = try ServerInputCodec.recordedForm(of: input)
         } catch {
             logger.error("Server input refused: its payload has no record form", metadata: [
                 "landID": .string(actualLandID ?? definition.id),
@@ -3472,7 +3472,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // a refused input leaves no gap in it.
         let decoded: any ServerInputPayload
         do {
-            decoded = try handler.decode(payload)
+            decoded = try handler.decode(bytes)
         } catch {
             logger.error("Server input refused: its record form doesn't decode back to its type", metadata: [
                 "landID": .string(actualLandID ?? definition.id),
@@ -3486,7 +3486,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let item = PendingItem.serverInput(PendingServerInputItem(
             sequence: sequence,
             typeIdentifier: typeIdentifier,
-            payload: payload,
+            bytes: bytes,
             decoded: .success(decoded),
             resolvedAtTick: lastCommittedTickId
         ))
@@ -3956,7 +3956,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let recorded = ReevaluationRecordedServerInput(
                 sequence: inputItem.sequence,
                 typeIdentifier: inputItem.typeIdentifier,
-                payload: inputItem.payload,
+                payload: inputItem.bytes,
                 resolvedAtTick: inputItem.resolvedAtTick
             )
             applied.recordedServerInputs.append(recorded)
@@ -4698,15 +4698,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         ])
                         continue
                     }
-                    // Decoded once, here. A payload that doesn't decode is still queued: it fails
-                    // alone when it is applied, with the error a decode there would throw. The
-                    // JSON view gets its integer-to-float allowance, as its resolver outputs do (#818).
-                    let decoded = Result { try handler.decode(recorded.payload, integralFloats: reevaluationSource?.readsJSONRecord ?? false) }
+                    // Decoded once, here, from the recorded bytes (canonical MessagePack in every
+                    // record, #700 K1a). A payload that doesn't decode is still queued: it fails
+                    // alone when it is applied, with the error a decode there would throw.
+                    let decoded = Result { try handler.decode(recorded.payload) }
                         .mapError { RecordedPayloadDecodeFailure($0) }
                     pendingItems.append(.serverInput(PendingServerInputItem(
                         sequence: recorded.sequence,
                         typeIdentifier: recorded.typeIdentifier,
-                        payload: recorded.payload,
+                        bytes: recorded.payload,
                         decoded: decoded,
                         resolvedAtTick: recorded.resolvedAtTick
                     )))

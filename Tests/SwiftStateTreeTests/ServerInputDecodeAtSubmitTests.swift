@@ -200,7 +200,7 @@ struct ServerInputDecodeAtSubmitTests {
         #expect(decodes.count == 1, "decoded when the item is built, not again at apply")
     }
 
-    @Test("The record holds the tree the input was decoded from, byte for byte, even where the decoded value re-encodes differently")
+    @Test("The record holds the canonical bytes of the tree the input was decoded from, even where the decoded value re-encodes differently")
     func serverInputRecordFormUnchanged() async throws {
         let keeper = try await makeDecodeKeeper()
         let inputs: [(name: String, input: any ServerInputPayload, reencodeDiffers: Bool)] = [
@@ -210,12 +210,13 @@ struct ServerInputDecodeAtSubmitTests {
         ]
         var expected: [[UInt8]] = []
         for (name, input, reencodeDiffers) in inputs {
-            let tree = try ServerInputCodec.recordedForm(of: input)
+            let tree = try CanonicalMessagePack.decode(AnyCodable.self, from: CanonicalMessagePack.encode(AnyCodable(input)))
             let treeBytes = try CanonicalMessagePack.encode(tree)
+            #expect(Array(try ServerInputCodec.recordedForm(of: input)) == treeBytes, "\(name)")
             if reencodeDiffers {
                 // The fixture can tell a record of the tree from a record of the re-encoded value.
                 let handler = try #require(makeDecodeDefinition().serverInputHandlers[String(describing: type(of: input))])
-                let reencoded = try CanonicalMessagePack.encode(AnyCodable(try handler.decode(tree)))
+                let reencoded = try CanonicalMessagePack.encode(AnyCodable(try handler.decode(Data(treeBytes))))
                 #expect(reencoded != treeBytes, "\(name): the re-encode equals the tree")
             }
             expected.append(treeBytes)
@@ -223,8 +224,35 @@ struct ServerInputDecodeAtSubmitTests {
         }
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().log == ["progress:p", "dated:abc", "maybe:nil"])
-        let recorded = try await recordedServerInputs(keeper).map { try CanonicalMessagePack.encode($0.payload) }
+        // A keeper without a transport has a `json` header: the bytes are MessagePack anyway
+        // (K1-Q4 (a)).
+        let recorded = try await recordedServerInputs(keeper).map { Array($0.payload) }
         #expect(recorded == expected)
+    }
+
+    @Test("A normalizing Codable replays from a saved record to the value live applied")
+    func normalizingInputReplaysLiveValue() async throws {
+        let keeper = try await makeDecodeKeeper()
+        _ = try sequence(await keeper.submitServerInput(SIDated(label: SILowered("ABC"), ratio: 2.0, count: 3)))
+        await keeper.stepTickOnce()
+        let live = await keeper.currentState().log
+        #expect(live == ["dated:abc"])
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("si-normalizing-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try await recorder.save(to: path)
+        let source = try ReevaluationRecordFile.openSource(filePath: path)
+        let replay = LandKeeper<ServerInputTestState>(
+            definition: makeDecodeDefinition(),
+            initialState: ServerInputTestState(),
+            mode: .reevaluation,
+            reevaluationSource: source,
+            autoStartLoops: false
+        )
+        let maxTickId = try await source.getMaxTickId()
+        for _ in 0...max(maxTickId, 0) { await replay.stepTickOnce() }
+        #expect(await replay.currentState().log == live)
     }
 
     @Test("A failed decode is kept with its error and rebuilt when the input is applied")
@@ -233,7 +261,7 @@ struct ServerInputDecodeAtSubmitTests {
         let wrongType = AnyCodable(["tag": "bad", "n": "five"] as [String: Any])
         var thrown: (any Error)?
         do {
-            _ = try ServerInputCodec.decode(ReplaySIDecodeInput.self, from: wrongType)
+            _ = try ServerInputCodec.decode(ReplaySIDecodeInput.self, from: Data(try CanonicalMessagePack.encode(wrongType)))
         } catch {
             thrown = error
         }

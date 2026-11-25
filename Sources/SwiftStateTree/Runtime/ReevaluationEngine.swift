@@ -272,7 +272,7 @@ public enum ReevaluationEngine {
         try ReevaluationSchemaFingerprint.checkRecord(metadata, against: definition)
         // A record whose payloads these decoders can't read is refused before anything is
         // replayed (#700 K1a).
-        try payloadDecoders.check(metadata.effectivePayloadEncoding)
+        try await payloadDecoders.check(source)
         // The rows that hold for a land whose records replay (EV8, #521 PR 1b), after the
         // record's own checks: a bad file, version or fingerprint is the more basic error.
         try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))

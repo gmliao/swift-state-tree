@@ -683,24 +683,33 @@ final class DiffRun: @unchecked Sendable {
     /// record's tree has, and the entry's `payloadEncoding` is left out. Canonical JSON bytes are
     /// the same within one toolchain only, so off the pinned image the view must not hold a
     /// payload's spelling; the byte comparison on the pinned image still sees the bytes.
+    ///
+    /// Leaving `payloadEncoding` out is on purpose: the view compares what a payload holds, so a
+    /// JSON and a MessagePack payload holding the same value compare equal in decoded-only mode.
+    /// The header's `payloadEncoding` is still compared, and the bytes are, on the pinned image.
     static func payloadsAsTrees(_ view: DiffValue) throws -> DiffValue {
         guard case .object(var root) = view, case .array(let frames)? = root["frames"] else { return view }
         root["frames"] = .array(try frames.map { frame in
             guard case .object(var fields) = frame else { return frame }
-            for key in ["actions", "clientEvents"] {
+            for key in ["actions", "clientEvents", "serverInputs"] {
                 guard case .array(let entries)? = fields[key] else { continue }
-                fields[key] = .array(try entries.map(payloadAsTree))
+                // A server input's bytes are MessagePack whatever the header says (K1-Q4 (a)).
+                let encoding: RecordPayloadEncoding? = key == "serverInputs" ? .messagepack : nil
+                fields[key] = .array(try entries.map { try payloadAsTree($0, encoding: encoding) })
             }
             return .object(fields)
         })
         return .object(root)
     }
 
-    private static func payloadAsTree(_ entry: DiffValue) throws -> DiffValue {
-        guard case .object(var fields) = entry, case .string(let base64)? = fields["payload"],
-              let bytes = Data(base64Encoded: base64) else { return entry }
-        var encoding: RecordPayloadEncoding?
-        if case .string(let name)? = fields["payloadEncoding"] { encoding = RecordPayloadEncoding(rawValue: name) }
+    private static func payloadAsTree(_ entry: DiffValue, encoding fixed: RecordPayloadEncoding?) throws -> DiffValue {
+        guard case .object(var fields) = entry, case .string(let base64)? = fields["payload"] else { return entry }
+        // A 3.7 payload is base64 in the view; anything else is a record this rule can't show.
+        guard let bytes = Data(base64Encoded: base64) else {
+            throw DiffRunFailure("a recorded payload in the record view isn't base64: \(base64.prefix(40))")
+        }
+        var encoding = fixed
+        if encoding == nil, case .string(let name)? = fields["payloadEncoding"] { encoding = RecordPayloadEncoding(rawValue: name) }
         let tree = try RecordedPayloadTree.tree(bytes, encoding: encoding)
         fields["payload"] = try DiffValue.fromJSON(JSONEncoder().encode(tree))
         fields["payloadEncoding"] = nil

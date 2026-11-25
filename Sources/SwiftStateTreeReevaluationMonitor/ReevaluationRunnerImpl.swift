@@ -195,7 +195,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
         // A record whose payloads these decoders can't read is refused before anything is
         // replayed (#700 K1a).
-        try payloadDecoders.check(metadata.effectivePayloadEncoding)
+        try await payloadDecoders.check(source)
         // EV8 (#521 PR 1b), after the record's own checks: every recorded server event is
         // decoded in `step()`, so a server event type without a decoder can't replay.
         try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
@@ -279,7 +279,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
         // A record whose payloads these decoders can't read is refused before anything is
         // replayed (#700 K1a).
-        try payloadDecoders.check(metadata.effectivePayloadEncoding)
+        try await payloadDecoders.check(source)
         // EV8 (#521 PR 1b), after the record's own checks: every recorded server event is
         // decoded in `step()`, so a server event type without a decoder can't replay.
         try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
@@ -628,5 +628,6 @@ struct FaultingReevaluationSource: ReevaluationSource {
     func getInitializeRecord() async throws -> ReevaluationRecordedInitialize? { try await base.getInitializeRecord() }
     func getRecordCompleteness() async throws -> ReevaluationRecordCompleteness { try await base.getRecordCompleteness() }
     func getHoldsNonNFCText() async throws -> Bool { try await base.getHoldsNonNFCText() }
+    func getPayloadEncodings() async throws -> Set<RecordPayloadEncoding> { try await base.getPayloadEncodings() }
     nonisolated var readsJSONRecord: Bool { base.readsJSONRecord }
 }

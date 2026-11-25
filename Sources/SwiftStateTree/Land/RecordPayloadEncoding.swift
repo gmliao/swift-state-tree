@@ -107,6 +107,15 @@ public struct RecordPayloadDecoders: Sendable {
         guard encodings.contains(encoding) else { throw ReevaluationRecordPayloadError.noDecoder(encoding: encoding) }
     }
 
+    /// Refuses `source`'s record when these decoders don't read its header's encoding or an
+    /// entry's (`ReevaluationSource.getPayloadEncodings`), before any input is applied.
+    package func check(_ source: any ReevaluationSource) async throws {
+        try check(try await source.getMetadata().effectivePayloadEncoding)
+        for encoding in try await source.getPayloadEncodings().sorted(by: { $0.rawValue < $1.rawValue }) {
+            try check(encoding)
+        }
+    }
+
     /// JSON only. A record whose payloads are MessagePack is refused with
     /// `ReevaluationRecordPayloadError.noDecoder(encoding: .messagepack)`.
     public static let jsonOnly = RecordPayloadDecoders(encodings: [.json]) { bytes, encoding in

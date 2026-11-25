@@ -28,11 +28,14 @@ extension RecordedPayloadTree {
     /// payload that is already a tree is kept.
     package static func treeForm(frameJSON: Data) throws -> Data {
         guard var frame = try JSONSerialization.jsonObject(with: frameJSON) as? [String: Any] else { return frameJSON }
-        for key in ["actions", "clientEvents"] {
+        for key in ["actions", "clientEvents", "serverInputs"] {
             guard let entries = frame[key] as? [[String: Any]] else { continue }
             frame[key] = try entries.map { entry -> [String: Any] in
                 guard let base64 = entry["payload"] as? String, let bytes = Data(base64Encoded: base64) else { return entry }
-                let encoding = (entry["payloadEncoding"] as? String).flatMap(RecordPayloadEncoding.init(rawValue:))
+                // A server input's bytes are MessagePack whatever the header says (K1-Q4 (a)).
+                let encoding = key == "serverInputs"
+                    ? .messagepack
+                    : (entry["payloadEncoding"] as? String).flatMap(RecordPayloadEncoding.init(rawValue:))
                 var treeEntry = entry
                 treeEntry["payload"] = try JSONSerialization.jsonObject(
                     with: JSONEncoder().encode(tree(bytes, encoding: encoding)), options: .fragmentsAllowed

@@ -50,7 +50,7 @@ private let recordBoundaryPaths: Set<String> = [
     "frames[].actions[].resolverOutputs[].value",
     "frames[].initialize.serverEvents[].payload",
     "frames[].lifecycleEvents[].resolverOutputs[].value", "frames[].serverEvents[].payload",
-    "frames[].serverInputs[].payload", "frames[].syncOutputs[].patches[][].value",
+    "frames[].syncOutputs[].patches[][].value",
     "metadata.extensions[]", "metadata.landConfig[]", "metadata.ruleParams[]",
 ]
 

@@ -7,8 +7,8 @@
 // - a field of the wrong type (`n` holds a string);
 // - a tree nested past the record codec's depth, under a key the type doesn't read;
 // - a good one.
-// The frame is built in memory: a record file can't hold the deep tree, since the loader refuses
-// a tree that deep before replay builds its items.
+// The frame is built in memory. From 3.7 (#700 K1a) each payload is its canonical MessagePack
+// bytes; the deep one is written by hand, since the encoder refuses a tree that deep.
 //
 // Decoding the deep tree boxes it recursively, about 4 KB of stack per level in a debug build,
 // before the codec's depth check refuses it. Darwin's 544 KiB cooperative-pool thread has no room
@@ -127,16 +127,17 @@ struct ReplayServerInputDecodeFailureTests {
         )
     }
 
-    /// `tag` and `n` with the given values, and under `extra` an array nested `depth` levels.
-    /// Plain `[String: Any]` and `[Any]`, the shape the record loader produces.
-    static func tree(tag: Any, n: Any, depth: Int = 0) -> AnyCodable {
-        var fields: [String: Any] = ["tag": tag, "n": n]
+    /// The canonical MessagePack bytes of a map of `tag` and `n` with the given values, and under
+    /// `extra` an array nested `depth` levels, written by hand (keys in byte order).
+    static func tree(tag: Any, n: Any, depth: Int = 0) -> Data {
+        func key(_ name: String) -> [UInt8] { [0xa0 | UInt8(name.utf8.count)] + Array(name.utf8) }
+        var bytes: [UInt8] = [depth > 0 ? 0x83 : 0x82]
         if depth > 0 {
-            var nested: Any = [Any]()
-            for _ in 1..<depth { nested = [nested] as [Any] }
-            fields["extra"] = nested
+            bytes += key("extra") + [UInt8](repeating: 0x91, count: depth - 1) + [0x90]
         }
-        return AnyCodable(fields)
+        bytes += key("n") + (try! CanonicalMessagePack.encode(AnyCodable(n)))
+        bytes += key("tag") + (try! CanonicalMessagePack.encode(AnyCodable(tag)))
+        return Data(bytes)
     }
 
     static let wrongType = tree(tag: "bad", n: "five")
@@ -151,7 +152,7 @@ struct ReplayServerInputDecodeFailureTests {
 
     /// Replays tick 0 of a frame holding `payloads` as server inputs (sequence = index), comparing
     /// the inputs replay refuses with the frame's `rejected` list.
-    static func replay(_ payloads: [AnyCodable], rejected: [Int64], probe: ReplaySIStackProbe? = nil) async throws -> Replayed {
+    static func replay(_ payloads: [Data], rejected: [Int64], probe: ReplaySIStackProbe? = nil) async throws -> Replayed {
         let inputs = payloads.enumerated().map { index, payload in
             ReevaluationRecordedServerInput(
                 sequence: Int64(index),

@@ -123,6 +123,55 @@ struct RecordPayloadFormatTests {
         #expect(keeperResult.maxTickId == 0)
     }
 
+    @Test("A 3.7 JSON record whose payload isn't base64 is refused when it is read")
+    func record37WithTreePayloadIsRefused() throws {
+        let path = try jsonRecord(version: ReevaluationRecordVersion.current, payloadJSON: #""not base64!""#)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        #expect(throws: ReevaluationRecordContentError.payloadNotBytes(tickId: 0, sequence: 0)) {
+            _ = try ReevaluationRecordFile.openSource(filePath: path)
+        }
+        // The same entry in a 3.6 record is its tree, and is read.
+        let old = try jsonRecord(version: "3.6", payloadJSON: #""not base64!""#)
+        defer { try? FileManager.default.removeItem(atPath: old) }
+        _ = try ReevaluationRecordFile.openSource(filePath: old)
+    }
+
+    @Test("A 3.7 binary record holding a payload tree is refused when it is read")
+    func binaryRecord37WithTreePayloadIsRefused() async throws {
+        let recorder = ReevaluationRecorder()
+        await recorder.setMetadata(try formatMetadata(payloadEncoding: nil))
+        let tree = ReevaluationRecordedAction(
+            kind: "action", sequence: 0, typeIdentifier: String(describing: PayloadFormatAction.self),
+            payload: Data(), payloadEncoding: nil, legacyPayload: AnyCodable(["label": "x"] as [String: Any]),
+            playerID: "p", clientID: "c", sessionID: "s", resolverOutputs: [:], resolvedAtTick: 0
+        )
+        await recorder.record(tickId: 0, actions: [tree], clientEvents: [], lifecycleEvents: [])
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("payload-format-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try await recorder.save(to: path)
+        #expect(throws: ReevaluationRecordContentError.payloadNotBytes(tickId: 0, sequence: 0)) {
+            _ = try ReevaluationRecordFile.openSource(filePath: path)
+        }
+    }
+
+    @Test("A MessagePack entry under a JSON header is refused by a JSON-only replay before any input")
+    func messagePackEntryUnderJSONHeaderIsRefused() async throws {
+        // A host that sets the recorder's metadata itself without `payloadEncoding` over a
+        // MessagePack transport writes this: the header says `json`, the entries MessagePack.
+        let bytes = Data(try CanonicalMessagePack.encode(PayloadFormatAction(label: "x")))
+        let entry = #""\#(bytes.base64EncodedString())","payloadEncoding":"messagepack""#
+        let path = try jsonRecord(version: ReevaluationRecordVersion.current, payloadJSON: entry)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        #expect(try await ReevaluationRecordFile.openSource(filePath: path).getPayloadEncodings() == [.json, .messagepack])
+        await #expect(throws: ReevaluationRecordPayloadError.noDecoder(encoding: .messagepack)) {
+            _ = try await ReevaluationEngine.run(definition: makePayloadFormatLand(), initialState: PayloadFormatState(), recordFilePath: path)
+        }
+        let result = try await ReevaluationEngine.run(
+            definition: makePayloadFormatLand(), initialState: PayloadFormatState(), recordFilePath: path, payloadDecoders: .standard
+        )
+        #expect(result.maxTickId == 0)
+    }
+
     @Test("A replay with JSON decoders only refuses a record whose header says MessagePack, before any input; the standard decoders replay it")
     func jsonOnlyRefusesMessagePackHeader() async throws {
         let bytes = Data(try CanonicalMessagePack.encode(PayloadFormatAction(label: "x")))

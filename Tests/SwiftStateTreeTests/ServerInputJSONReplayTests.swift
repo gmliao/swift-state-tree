@@ -109,12 +109,13 @@ private func rewriteRatioAsInteger(atPath path: String) throws {
         var record = try CanonicalMessagePack.decode(
             ReevaluationLogRecord.self, from: Array(bytes[offset + 4..<offset + 4 + length]))
         if let inputs = record.serverInputs {
+            let integerRatio = Data(try CanonicalMessagePack.encode(AnyCodable(["ratio": AnyCodable(2), "n": AnyCodable(3)] as [String: AnyCodable])))
             record.serverInputs = inputs.map { input in
                 rewritten += 1
                 return ReevaluationRecordedServerInput(
                     sequence: input.sequence,
                     typeIdentifier: input.typeIdentifier,
-                    payload: AnyCodable(["ratio": AnyCodable(2), "n": AnyCodable(3)] as [String: AnyCodable]),
+                    payload: integerRatio,
                     resolvedAtTick: input.resolvedAtTick
                 )
             }
@@ -166,12 +167,14 @@ struct ServerInputJSONReplayTests {
         }
     }
 
-    @Test("The decode allowance is the JSON view's only: a saved record's integer stays refused where a Double is declared")
+    @Test("The decode is strict: a recorded integer is refused where a Double is declared, and a recorded 2.0 is read")
     func savedRecordStaysStrict() throws {
+        // From 3.7 (#700 K1a) every record holds a server input's MessagePack bytes, a JSON view
+        // included (base64), so the view keeps the float/integer split and needs no allowance.
         let handler = try #require(makeSIJSONReplayLand().serverInputHandlers[String(describing: SIJSONRatio.self)])
-        let tree = AnyCodable(["ratio": AnyCodable(2), "n": AnyCodable(3)] as [String: AnyCodable])
-        #expect(throws: (any Error).self, "strict") { _ = try handler.decode(tree) }
-        let allowed = try handler.decode(tree, integralFloats: true)
-        #expect((allowed as? SIJSONRatio)?.ratio == 2.0)
+        let integer = Data(try CanonicalMessagePack.encode(AnyCodable(["ratio": AnyCodable(2), "n": AnyCodable(3)] as [String: AnyCodable])))
+        #expect(throws: (any Error).self, "strict") { _ = try handler.decode(integer) }
+        let float = Data(try CanonicalMessagePack.encode(SIJSONRatio(ratio: 2.0, n: 3)))
+        #expect((try handler.decode(float) as? SIJSONRatio)?.ratio == 2.0)
     }
 }

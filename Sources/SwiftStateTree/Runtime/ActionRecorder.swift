@@ -904,15 +904,49 @@ public struct ReevaluationRecordedServerInput: Codable, Sendable, Equatable {
     public let kind: String // "serverInput"
     public let sequence: Int64
     public let typeIdentifier: String
-    public let payload: AnyCodable
+    /// The payload's canonical MessagePack bytes, the bytes live decoded (#700 K1a, K1-Q4 (a)),
+    /// whatever the header's `payloadEncoding` says: `bin` in the record, base64 in its JSON view.
+    /// Empty in a record before 3.7, whose payload is a tree (`legacyPayload`).
+    public let payload: Data
+    /// The payload tree of a record before 3.7: read and listed, never replayed.
+    package let legacyPayload: AnyCodable?
     public let resolvedAtTick: Int64
 
-    public init(sequence: Int64, typeIdentifier: String, payload: AnyCodable, resolvedAtTick: Int64) {
+    public init(sequence: Int64, typeIdentifier: String, payload: Data, resolvedAtTick: Int64) {
+        self.init(sequence: sequence, typeIdentifier: typeIdentifier, payload: payload, legacyPayload: nil, resolvedAtTick: resolvedAtTick)
+    }
+
+    package init(sequence: Int64, typeIdentifier: String, payload: Data, legacyPayload: AnyCodable?, resolvedAtTick: Int64) {
         self.kind = "serverInput"
         self.sequence = sequence
         self.typeIdentifier = typeIdentifier
         self.payload = payload
+        self.legacyPayload = legacyPayload
         self.resolvedAtTick = resolvedAtTick
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, sequence, typeIdentifier, payload, resolvedAtTick
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let payload = try RecordedPayloadField.decode(from: c, forKey: .payload)
+        self.kind = try c.decode(String.self, forKey: .kind)
+        self.sequence = try c.decode(Int64.self, forKey: .sequence)
+        self.typeIdentifier = try c.decode(String.self, forKey: .typeIdentifier)
+        self.payload = payload.bytes
+        self.legacyPayload = payload.legacy
+        self.resolvedAtTick = try c.decode(Int64.self, forKey: .resolvedAtTick)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(sequence, forKey: .sequence)
+        try c.encode(typeIdentifier, forKey: .typeIdentifier)
+        try RecordedPayloadField.encode(bytes: payload, legacy: legacyPayload, into: &c, forKey: .payload)
+        try c.encode(resolvedAtTick, forKey: .resolvedAtTick)
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {

@@ -210,7 +210,7 @@ struct ReplayJSONAllowanceKeeperTests {
         }
     }
 
-    @Test("A recorded server input holding an integer where the type declares Double: applied when the source reads JSON, refused with the state untouched when it doesn't",
+    @Test("A recorded server input whose type declares Double replays live's value whatever the flag says: its bytes keep the Double (#700 K1a)",
           arguments: ReplaySourceFlag.allCases)
     func serverInputFollowsTheFlag(flag: ReplaySourceFlag) async throws {
         let (base, live) = try await recordServerInput()
@@ -227,10 +227,8 @@ struct ReplayJSONAllowanceKeeperTests {
         )
         await keeper.stepTickOnce()
         let replayed = await keeper.currentState()
-        if flag.readsJSON {
-            #expect(replayed.seen == live.seen, "\(flag): applied with the live value")
-        } else {
-            #expect(replayed.seen == [], "\(flag): refused, the state is untouched")
-        }
+        // From 3.7 a server input's payload is its MessagePack bytes, base64 in the JSON view, so
+        // the view holds the Double live applied and no allowance is needed.
+        #expect(replayed.seen == live.seen, "\(flag): applied with the live value")
     }
 }

@@ -192,7 +192,7 @@ struct ReplayJSONAllowanceTests {
                 ReevaluationRecordedServerInput(
                     sequence: 0,
                     typeIdentifier: String(describing: JSONAllowanceSIInput.self),
-                    payload: AnyCodable(["ratio": AnyCodable(2)] as [String: AnyCodable]),
+                    payload: Data(try CanonicalMessagePack.encode(AnyCodable(["ratio": AnyCodable(2)] as [String: AnyCodable]))),
                     resolvedAtTick: 0
                 )
             ]

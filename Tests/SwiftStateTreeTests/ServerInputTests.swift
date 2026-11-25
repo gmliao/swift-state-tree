@@ -797,7 +797,7 @@ struct ServerInputTests {
         #expect(!json.contains("serverInputs"))
 
         let input = ReevaluationRecordedServerInput(
-            sequence: 9, typeIdentifier: "SIProgress", payload: AnyCodable(SIProgress(tag: "z")), resolvedAtTick: 2
+            sequence: 9, typeIdentifier: "SIProgress", payload: Data(try CanonicalMessagePack.encode(SIProgress(tag: "z"))), resolvedAtTick: 2
         )
         let withInput = ReevaluationTickFrame(tickId: 3, actions: [], clientEvents: [], lifecycleEvents: [], serverInputs: [input])
         let decoded = try JSONDecoder().decode(ReevaluationTickFrame.self, from: JSONEncoder().encode(withInput))
