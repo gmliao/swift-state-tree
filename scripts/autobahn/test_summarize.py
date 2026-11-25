@@ -98,6 +98,13 @@ class GateTests(unittest.TestCase):
         self.assertIn("1.1.9", result.stderr)
         self.assertNotIn("1.1.5", result.stderr)
 
+    def test_comments_and_blank_lines_are_not_cases(self):
+        # A comment is not a listed id: no warning that something "listed" isn't FAILED.
+        result = self.check(self.index({"1.1.5": ("FAILED", "OK")}),
+                            self.expected("# a comment\n\n1.1.5 other\n   \n"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
     def test_a_partial_index_is_not_a_pass(self):
         path = self.index()
         with open(path, encoding="utf-8") as f:
