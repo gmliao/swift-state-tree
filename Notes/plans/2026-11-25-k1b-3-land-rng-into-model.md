@@ -1,6 +1,6 @@
 # K1b-3: the land RNG moves into the keeper's state (#700, #765)
 
-**Status:** rev 1.1, plan only. Rev 1.1 corrects the keeper's line numbers, which rev 1 took from main's `LandKeeper.swift` instead of 5baa1887's; the sites and their shape are the same. Read at #835's head 5baa1887 (K1a), without the LSP. The implementation re-checks every site with the LSP on its base: #835's branch after Code-2's shoulds push, then main once #835 merges. K1b-Q2 is decided (a) (Main, 2026-11-25; `2026-11-22-keeper-on-turncore.md` §9). K1b-3 needs K1a only (K1b-Q3).
+**Status:** rev 1.2, plan only. Rev 1.2 folds in the LSP pre-read (§3.5): the destroy handlers aren't replayed either, so they draw detached, and no step nests, so the helper asserts instead of sharing. Rev 1.1 corrects the keeper's line numbers, which rev 1 took from main's `LandKeeper.swift` instead of 5baa1887's; the sites and their shape are the same. Read at #835's head 5baa1887 (K1a), without the LSP. The implementation re-checks every site with the LSP on its base: #835's branch after Code-2's shoulds push, then main once #835 merges. K1b-Q2 is decided (a) (Main, 2026-11-25; `2026-11-22-keeper-on-turncore.md` §9). K1b-3 needs K1a only (K1b-Q3).
 
 ## 1. Goal
 
@@ -63,7 +63,8 @@ Afterwards no code outside a step can move the land's RNG. That closes #765's cl
   }
   ```
   - The body is synchronous, so the read and the write-back of `landRandom` happen in one segment. No turn can run between them.
-  - **Nesting.** An inner call shares the outer step's generator; only the outermost call writes back. A second service would repeat the outer's draws, and its write-back would be overwritten. The implementation checks with the LSP whether any nesting exists; if none does, it adds a debug assertion instead of the sharing branch. Review's call.
+  - **Nesting: none (§3.5).** The helper asserts that no step is open (`assert(stepRandom == nil)`) instead of sharing the outer one. A nested call would repeat the outer step's draws, and its write-back would be overwritten. The `if let open` branch above goes.
+  - **A detached mode** for `runDestroyHandler`: `withHandlerStep(ctx, random: .detached)` mutates state as today, but builds the service from a copy and writes nothing back.
   - **Draws before a throw are kept.** The `defer` writes them back. Handlers throw only from `validate`, before they write state. Live and replay both run `validate`, so either choice replays. Kept is the simpler one, and a test pins it.
 
 ### 3.3 The sites
@@ -78,7 +79,7 @@ The keeper calls handlers at 14 places (5baa1887):
 | 3917, 3919 `applyPendingItem` | client event (decoded / undecoded) | yes | step (helper) |
 | 3969 `applyPendingItem` | server input | yes | step (helper) |
 | 4061, 4084, 4107 `applyLifecycleItem` | OnJoin, OnLeave and the other lifecycle handlers | yes | step (helper) |
-| 6322 `runDestroyHandler` | OnFinalize | yes, if replay runs destroy; the implementation checks | step (helper) |
+| 6322 `runDestroyHandler` | OnDestroyWhenEmpty, OnFinalize | **no**: only the live drain calls it (§3.5) | **detached**, through the helper's `random: .detached` |
 | 5022 `runTickTurn` | tick | yes | step: wrap the call in the helper |
 | 2103 `joinReportingAdmission` | CanJoin | **no**: admission isn't recorded; the join's lifecycle item is | **detached** (below) |
 | 6098 `runSync` | the read-only sync handler | **no**: it runs on the sync loop, outside the record | **detached** |
@@ -96,13 +97,32 @@ The keeper calls handlers at 14 places (5baa1887):
 - **The record format.** The seed is still in the header, and existing records replay with 0 mismatch.
 - **Public signatures.**
 
+### 3.5 LSP pre-read (rev 1.2)
+
+Read in the clone at main plus P4 (the code K1b-3 touches is the same as at 5baa1887 apart from line numbers).
+
+- **The 9 `withMutableStateSync` callers** (incoming calls): `applyLifecycleItem` ×3, `applyPendingItem` ×3, `performInitialization`, `replayInitializeBeforeTickZero` and `runDestroyHandler`. None of them is reached from inside another one's body, so no step nests.
+- **What replay repeats.**
+  - `applyPendingItem` and `applyLifecycleItem` are reached through `applyInputs`, whose callers include `replayRecordedPasses`.
+  - The tick turn is reached through `runTick` ← `stepTickOnce`, which `ReevaluationEngine` (:388) and `ReevaluationRunnerImpl` (:388) call.
+  - OnInitialize has its replay path (`replayInitializeBeforeTickZero`).
+- **What replay doesn't repeat.**
+  - `joinReportingAdmission` (CanJoin) is called only by `join` and `TransportAdapter.performJoinQueued`.
+  - `runSync` (the sync handler) is called by `configureSyncLoop` and two test hooks.
+  - `runDestroyHandler` (OnDestroyWhenEmpty, OnFinalize) is called only by `drainAfterIdleCheck`, and so is AfterFinalize.
+- **`LandContext.random`'s references.**
+  - In the package: `ReplayRecordedRngSeedTests`.
+  - In the GameDemo (its own package, by grep): the tick handler (`HeroDefenseLand`, `MonsterSystem`) and OnJoin. Both are replayed steps.
+  - No resolver, CanJoin, sync or destroy handler draws.
+- **`DeterministicRngService`'s references** are the keeper's registration and `getRngSeed`, `LandContext.random`, the two replay seeders, and `ReplayRecordedRngSeedTests`. None reaches it through `ResolverContext`.
+
 ## 4. Public API
 
 - **Additions:** `DeterministicRng: PlainData`.
 - **Behavior changes** (no signature changes):
   - the land's `DeterministicRngService` is no longer in `ctx.services` or `ResolverContext.services`. A handler uses `ctx.random`, and a resolver gets no land RNG (#765's direction);
   - a `ctx.random` kept past its step no longer moves the land;
-  - CanJoin, the sync handler and AfterFinalize draw from a detached copy.
+  - CanJoin, the sync handler and the destroy handlers (OnDestroyWhenEmpty, OnFinalize, AfterFinalize) draw from a detached copy.
 - **Not a break by the repository's census:** no resolver, CanJoin or sync handler in Sources, Tests or Examples draws. The implementation re-checks this with the LSP's references to `DeterministicRngService` and `random`.
 - Main approves additive public API. The behavior changes go in the PR's Public API list.
 
@@ -128,6 +148,7 @@ The keeper calls handlers at 14 places (5baa1887):
 | R-M2 | one long-lived service, reset each step (option (b)) | 3 |
 | R-M3 | the keeper still registers the service in `services` | 2 |
 | R-M4 | CanJoin bound to the step (written back) | 4 |
+| R-M8 | `runDestroyHandler` written back | 4 (a drawing OnFinalize, then the land's next draw in a test that keeps the keeper) |
 | R-M5 | the write-back skipped on a throw (not in `defer`) | 5 |
 | R-M6 | `getRngSeed()` reads `services` again | 6 (a custom seed is lost from the header) |
 | R-M7 | the tick call left unwrapped (`random` falls back to `services`, which is empty → crash) | 1 |
@@ -158,6 +179,9 @@ If it shows:
 - One PR, on #835's branch until #835 merges.
 
 ## 10. For Review
+
+Rev 1.2 answers the first two points below by the LSP (§3.5); they stay listed for Review to confirm.
+
 
 - **§3.3 "replayed?" column.** Confirm with the LSP on the base: whether replay runs OnFinalize, and that CanJoin never runs in replay.
 - **§3.2 nesting.** Is there a nested call?
