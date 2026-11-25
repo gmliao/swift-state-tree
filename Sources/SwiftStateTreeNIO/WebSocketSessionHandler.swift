@@ -151,6 +151,9 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     var closeGraceDeadlineForTesting: Scheduled<Void>? { closeGraceDeadline }
     /// Data frames read and discarded during a close grace (tests).
     private(set) var closeGraceDiscardedFramesForTesting = 0
+    /// Set when a NIO frame-decoder error reaches `errorCaught`: the decoder can no longer deliver
+    /// the peer's close frame, so no grace should start (or any running grace should end).
+    private var decoderFailed = false
     /// Counts pong-timeout closes when transport profiling is on.
     private let profilerCounters: TransportProfilerCounters?
     /// The lifecycle log's `sessionClosed` line (off unless `LAND_LIFECYCLE_LOG_PATH` is set).
@@ -469,6 +472,14 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         )
 
         if let decoderError = error as? NIOWebSocket.NIOWebSocketError {
+            decoderFailed = true
+            if isInCloseGrace {
+                closeGraceDeadline?.cancel()
+                closeGraceDeadline = nil
+                guard !channelCloseRequested else { return }
+                closeChannel(context)
+                return
+            }
             failConnection(code: Self.closeCode(for: decoderError))
             return
         }
@@ -960,7 +971,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             self.closeFrameDeadline?.cancel()
             self.closeFrameDeadline = nil
             guard !self.channelCloseRequested else { return }
-            if case .success = result, let grace, grace > .zero, !self.peerCloseReceived, self.context != nil {
+            if case .success = result, let grace, grace > .zero, !self.peerCloseReceived, self.context != nil, !self.decoderFailed {
                 self.beginCloseGrace(grace, context: context)
             } else {
                 self.closeChannel(context)

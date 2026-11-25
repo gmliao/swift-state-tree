@@ -247,6 +247,70 @@ struct WebSocketSessionHandlerDecoderErrorTests {
         #expect(codes == [1000], "expected exactly the initial 1000 close frame, got \(codes)")
     }
 
+    // MARK: 4d. First decoder error during grace, no later read → grace cancelled, channel closes
+
+    @Test("A first decoder error during a close grace (no later reads) cancels the grace via real decoder")
+    func decoderErrorDuringGraceNoLaterRead() throws {
+        let (channel, handler, _) = try makeDecoderPipeline(
+            maxFrameSize: 10,
+            sessionID: "dec-grace-nolater"
+        )
+
+        // Start a close with a long grace so the deadline doesn't fire during the test.
+        handler.close(code: .normalClosure, grace: .seconds(60))
+        channel.embeddedEventLoop.run()
+
+        #expect(handler.isInCloseGrace, "grace should be active after close frame written")
+        #expect(handler.closeGraceDeadlineForTesting != nil)
+
+        // Feed a real oversized frame through the decoder — the first error from the decoder,
+        // with no subsequent reads. The decoderFailed flag must end the grace immediately.
+        var buf = channel.allocator.buffer(capacity: 2)
+        buf.writeBytes([0x82, 0x0B])   // binary FIN, length 11 > maxFrameSize 10
+        try channel.writeInbound(buf)
+        channel.embeddedEventLoop.run()
+
+        #expect(handler.closeGraceDeadlineForTesting == nil, "grace deadline must be cancelled")
+        #expect(!channel.isActive)
+        // The initial server close frame is in the buffer; no second one was added.
+        let codes = try outboundCloseCodes(channel)
+        #expect(codes == [1000], "expected exactly the initial 1000 close frame, got \(codes)")
+    }
+
+    // MARK: 4e. Decoder error while graceful close write is in flight → no grace starts
+
+    @Test("A decoder error while a graceful close's write is in flight prevents the grace from starting")
+    func decoderErrorDuringCloseFlushHeldNoGrace() throws {
+        let (channel, handler, hold) = try makeDecoderPipeline(
+            maxFrameSize: 10,
+            sessionID: "dec-grace-held",
+            includeFlushHold: true
+        )
+        let h = try #require(hold)
+
+        // Request a close with a long grace; the flush is held, so the write hasn't completed.
+        handler.close(code: .normalClosure, grace: .seconds(60))
+        channel.embeddedEventLoop.run()
+        #expect(channel.isActive, "channel is still open: flush is held")
+        #expect(!handler.isInCloseGrace, "grace not started yet: write hasn't completed")
+
+        // Feed an oversized frame through the real decoder while the write is in flight.
+        var buf = channel.allocator.buffer(capacity: 2)
+        buf.writeBytes([0x82, 0x0B])   // binary FIN, length 11 > maxFrameSize 10
+        try channel.writeInbound(buf)
+        channel.embeddedEventLoop.run()
+
+        // Release the flush: the write completes, but decoderFailed is set, so no grace starts.
+        h.holding = false
+        channel.flush()
+        channel.embeddedEventLoop.run()
+
+        #expect(!handler.isInCloseGrace, "grace must not start when decoderFailed is set")
+        #expect(!channel.isActive)
+        let codes = try outboundCloseCodes(channel)
+        #expect(codes == [1000], "expected exactly one 1000 close frame, got \(codes)")
+    }
+
     // MARK: 5. IOError(ECONNRESET) → .connectionLost, no close frame
 
     @Test("An IOError(ECONNRESET) gives .connectionLost and sends no close frame")
