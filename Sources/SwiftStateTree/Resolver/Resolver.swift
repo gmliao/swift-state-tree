@@ -59,6 +59,19 @@ extension ResolverExecutor {
         guard let generic = name.firstIndex(of: "<") else { return name }
         return String(name[..<generic])
     }
+
+    /// The name a `Resolver`'s output is stored and recorded under: `convertResolverTypeToPropertyName`
+    /// of its base type name. Distinct types can share it (`Price` and `PriceResolver` are both
+    /// `price`), so registration compares this, not the type name.
+    package static func outputName(forBaseTypeName name: String) -> String {
+        convertResolverTypeToPropertyName(name)
+    }
+}
+
+/// An executor that knows, without running, the name its output is stored under. Registration
+/// uses it to refuse two resolvers of one entry that would write the same output.
+package protocol ResolverOutputNaming {
+    var outputName: String { get }
 }
 
 /// Runs one resolver value with the land's services (#769). The keeper builds it at the point
@@ -77,8 +90,12 @@ struct ResolverValueExecutor<R: Resolver>: AnyResolverExecutor {
             )
         }
         let output = try await value.resolve(deps)
-        return (ResolverExecutor.convertResolverTypeToPropertyName(resolverName), output)
+        return (outputName, output)
     }
+}
+
+extension ResolverValueExecutor: ResolverOutputNaming {
+    package var outputName: String { ResolverExecutor.outputName(forBaseTypeName: resolverName) }
 }
 
 /// An entry's resolvers, as the node holds them until the keeper admits an input (#769 §3.2).
@@ -87,9 +104,9 @@ struct ResolverValueExecutor<R: Resolver>: AnyResolverExecutor {
 /// context, mutates nothing, and returns one executor per value the closure built: a `nil`
 /// value is skipped, and the handler gets `nil` for that output.
 package struct ResolverDeclaration<Input>: Sendable {
-    /// The resolvers' base type names, in declaration order. Two of the same base type in one
-    /// declaration are refused at registration until the record keys outputs by position (#769
-    /// §3.5).
+    /// The resolvers' base type names, in declaration order. Two that store their outputs under
+    /// one name (`ResolverExecutor.outputName(forBaseTypeName:)`) in one declaration are refused
+    /// at registration until the record keys outputs by position (#769 §3.5).
     package let names: [String]
     /// The services type every resolver in the declaration depends on: the land's.
     package let servicesType: Any.Type
@@ -129,6 +146,6 @@ func resolverExecutor<R: Resolver>(_ value: R?) -> [any AnyResolverExecutor] {
 func resolverOutput<R: Resolver>(_ type: R.Type, in ctx: LandContext) -> R.Output? {
     ctx.resolverOutput(
         R.Output.self,
-        named: ResolverExecutor.convertResolverTypeToPropertyName(ResolverExecutor.baseTypeName(R.self))
+        named: ResolverExecutor.outputName(forBaseTypeName: ResolverExecutor.baseTypeName(R.self))
     )
 }

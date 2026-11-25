@@ -25,8 +25,15 @@ extension AnyResolverExecutor {
 public struct ResolverExecutorWrapper<R: ContextResolver>: AnyResolverExecutor {
     public func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput) {
         let output = try await R.resolve(ctx: ctx)
-        let propertyName = ResolverExecutor.convertResolverTypeToPropertyName(String(describing: R.self))
-        return (propertyName, output)
+        return (outputName, output)
+    }
+}
+
+extension ResolverExecutorWrapper: ResolverOutputNaming {
+    /// The full type name converted, generic arguments included, as the output has always been
+    /// stored under.
+    package var outputName: String {
+        ResolverExecutor.convertResolverTypeToPropertyName(String(describing: R.self))
     }
 }
 

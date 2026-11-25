@@ -171,23 +171,50 @@ enum LandBuilder {
         }
 
         // #769: each declaration's resolvers depend on the land's services, and no two in one
-        // declaration share a base type (the record names an output by it until R2 keys them by
-        // position).
+        // declaration store their outputs under one name: the handler and the record read an
+        // output by that name until R2 keys them by position, so a second writer would replace
+        // the first, or fill a slot whose own value was skipped. The name drops a `Resolver`
+        // suffix, so `Price` and `PriceResolver` share one.
         let landServices = servicesType ?? NoServices.self
         var resolverDeclarationProblems: [String] = []
+        func checkOutputNames(_ entry: String, _ resolvers: [(type: String, outputName: String)]) {
+            var firstByOutput: [String: String] = [:]
+            for resolver in resolvers {
+                guard let first = firstByOutput[resolver.outputName] else {
+                    firstByOutput[resolver.outputName] = resolver.type
+                    continue
+                }
+                let pair = first == resolver.type
+                    ? "two resolvers of type \(first)"
+                    : "resolvers \(first) and \(resolver.type)"
+                resolverDeclarationProblems.append(
+                    "\(entry): \(pair) both store their output as `\(resolver.outputName)`; one declaration resolves each output once"
+                )
+            }
+        }
         func check(_ entry: String, _ names: [String], _ services: Any.Type, _ site: String) {
             if ObjectIdentifier(services) != ObjectIdentifier(landServices) {
                 resolverDeclarationProblems.append(
                     "\(entry) at \(site): its resolvers depend on \(String(reflecting: services)), the land's services are \(String(reflecting: landServices))"
                 )
             }
-            var seen: Set<String> = []
-            for name in names where !seen.insert(name).inserted {
-                resolverDeclarationProblems.append(
-                    "\(entry) at \(site): two resolvers of type \(name); one declaration resolves each type once"
-                )
-            }
+            checkOutputNames(
+                "\(entry) at \(site)",
+                names.map { ($0, ResolverExecutor.outputName(forBaseTypeName: $0)) }
+            )
         }
+        /// The `ContextResolver` groups (CanJoin, OnJoin, OnLeave, OnDestroyWhenEmpty, until R3)
+        /// have the same collision. An executor that can't name its output without running is
+        /// left out.
+        func checkContextResolvers(_ entry: String, _ executors: [any AnyResolverExecutor]) {
+            checkOutputNames(entry, executors.compactMap { executor in
+                (executor as? any ResolverOutputNaming).map { (executor.resolverName, $0.outputName) }
+            })
+        }
+        checkContextResolvers("CanJoin", canJoinResolverExecutors)
+        checkContextResolvers("OnJoin", onJoinResolverExecutors)
+        checkContextResolvers("OnLeave", onLeaveResolverExecutors)
+        checkContextResolvers("OnDestroyWhenEmpty", lifetimeConfig.onDestroyWhenEmptyResolverExecutors)
         for handler in actionHandlers {
             if let declaration = handler.resolvers {
                 check("HandleAction(\(String(describing: handler.handledType)))", declaration.names, declaration.servicesType, declaration.site)

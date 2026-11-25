@@ -124,6 +124,29 @@ struct Third: Resolver {
 
 struct ResolverValueFailure: Error, Equatable {}
 
+/// `Shared` and `SharedResolver` are distinct types whose outputs are both stored as `shared`.
+@PlainData
+struct Shared: Resolver {
+    typealias Dependencies = NoServices
+    func resolve(_ deps: NoServices) async throws -> TaggedOutput { TaggedOutput(value: 10) }
+}
+
+@PlainData
+struct SharedResolver: Resolver {
+    typealias Dependencies = NoServices
+    func resolve(_ deps: NoServices) async throws -> TaggedOutput { TaggedOutput(value: 20) }
+}
+
+/// The `ContextResolver` pair with one output name: `legacyShared`.
+struct LegacyShared: ContextResolver {
+    static func resolve(ctx: ResolverContext) async throws -> TaggedOutput { TaggedOutput(value: 1) }
+}
+
+struct LegacySharedResolver: ContextResolver {
+    static func resolve(ctx: ResolverContext) async throws -> TaggedOutput { TaggedOutput(value: 2) }
+}
+
+
 /// Generic over what it doesn't store: its errors name the base type, `Failing`.
 @PlainData
 struct Failing<D: Sendable>: Resolver {
@@ -351,7 +374,50 @@ struct ResolverValueTests {
             Issue.record("Expected the land to be refused")
         } catch let error as LandRegistrationError {
             #expect(error.resolverDeclarations.count == 1)
-            #expect(error.resolverDeclarations.first?.contains("two resolvers of type First") == true)
+            #expect(error.resolverDeclarations.first?.contains("two resolvers of type First both store their output as `first`") == true)
+        }
+    }
+
+    @Test("Two resolver types that store their outputs under one name are refused, a skipped one too")
+    func sharedOutputNameRefused() throws {
+        // Without the refusal, the skipped `Shared` slot would read `SharedResolver`'s output.
+        let definition = Land("resolver-shared-output", using: ResolverValueState.self) {
+            Rules {
+                HandleAction(
+                    PairAction.self,
+                    resolvers: { _, _, _ -> (Shared?, SharedResolver?) in (nil, SharedResolver()) }
+                ) { _, _, _, _ in
+                    ResolverValueAck(ok: true)
+                }
+            }
+        }
+        do {
+            try definition.validateForRegistration(context: .encodingIndependent)
+            Issue.record("Expected the land to be refused")
+        } catch let error as LandRegistrationError {
+            #expect(error.resolverDeclarations.count == 1)
+            #expect(error.resolverDeclarations.first?.contains("resolvers Shared and SharedResolver both store their output as `shared`") == true)
+        }
+    }
+
+    @Test("The ContextResolver groups refuse two types that store their outputs under one name")
+    func contextResolverSharedOutputNameRefused() throws {
+        let definition = Land("resolver-shared-output-join", using: ResolverValueState.self) {
+            Rules {
+                CanJoin(resolvers: (LegacyShared.self, LegacySharedResolver.self)) { _, session, _, _ in
+                    .allow(playerID: PlayerID(session.playerID))
+                }
+                OnJoin(resolvers: (LegacyShared.self, LegacySharedResolver.self)) { _, _, _ in }
+                OnLeave(resolvers: (LegacyShared.self, LegacySharedResolver.self)) { _, _, _ in }
+            }
+        }
+        do {
+            try definition.validateForRegistration(context: .encodingIndependent)
+            Issue.record("Expected the land to be refused")
+        } catch let error as LandRegistrationError {
+            #expect(error.resolverDeclarations == ["CanJoin", "OnJoin", "OnLeave"].map {
+                "\($0): resolvers LegacyShared and LegacySharedResolver both store their output as `legacyShared`; one declaration resolves each output once"
+            })
         }
     }
 
