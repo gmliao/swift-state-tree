@@ -23,6 +23,7 @@ Macros execute at compile time, providing the following advantages:
 - **Generate sync metadata**: Generate `getSyncFields()` method
 - **Generate dirty tracking**: Generate `isDirty()`, `getDirtyFields()`, `clearDirty()` methods
 - **Generate snapshot methods**: Generate `snapshot(for:)` and `broadcastSnapshot()` methods
+- **Plain data**: Writes the [`PlainData`](../turns/README.md#what-counts-as-plain-data) witness `StateNodeProtocol` requires, one check per `@Sync` and `@Internal` field; a field can't hold a class, a closure, a tuple, `Any`, an existential, `Date`, `UUID`, `URL`, `Decimal` or a type that isn't `PlainData` ([details](state-node-builder.md#nested-value-types-and-generic-nodes))
 
 ### Use Cases
 
@@ -73,6 +74,7 @@ struct GameState: StateNodeProtocol {
 - ✅ **Stored properties**: Must be marked with `@Sync` or `@Internal`
 - ✅ **Computed properties**: Automatically skip validation
 - ❌ **Unmarked stored properties**: Compile error
+- ❌ **A field whose value isn't `PlainData`**: Compile error
 
 ### Common Errors
 
@@ -111,6 +113,22 @@ class GameState: StateNodeProtocol {
 ```
 
 **Solution**: Use `struct` instead of `class`.
+
+#### Error 3: A nested type that isn't PlainData
+
+```swift
+struct Card: Codable, Equatable, Sendable {
+    var rank: Int
+}
+
+@StateNodeBuilder
+struct GameState: StateNodeProtocol {
+    @Sync(.serverOnly)
+    var hiddenDeck: [Card] = []  // ❌ Compile error: Card isn't PlainData
+}
+```
+
+**Solution**: Mark `Card` with `@PlainData`, or with `@SnapshotConvertible`, which writes the same conformance.
 
 ### Best Practices
 
@@ -248,6 +266,7 @@ struct JoinAction: ActionPayload {
 - **Auto-generate conversion methods**: Generate `toSnapshotValue()` method
 - **Avoid runtime reflection**: Don't use Mirror, significantly improve performance
 - **Support nested structures**: Automatically handle nested `@SnapshotConvertible` types
+- **Plain data**: Makes the type [`PlainData`](../turns/README.md#what-counts-as-plain-data), with the checks `@PlainData` writes, so it can be stored in state; every stored property needs a type annotation. Beside `@PlainData` it writes no checks of its own, and beside `@StateNodeBuilder` only the conformance
 
 ### Use Cases
 

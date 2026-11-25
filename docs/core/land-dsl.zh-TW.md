@@ -126,7 +126,7 @@ HandleAction(BuyAction.self,
 #### 編譯器擋不住的事
 
 - 不具決定性的 `validate`：讀取全域可變狀態或時鐘，或呼叫遵循 `ReadOnlyLandService` 卻不守約定的 service。Replay 再執行 `validate` 時可能做出不同決定。
-- 透過狀態中持有的 class 參照寫入。同步狀態不能放 class（#464，[Sync](sync.zh-TW.md#同步狀態只能由-value-type-組成)）。
+- 透過狀態中持有的 class 參照寫入。state 不能放 class：state 欄位的值是 `PlainData`，在編譯期檢查（#464，[Sync](sync.zh-TW.md#同步狀態只能由-value-type-組成)）。
 - `validate` 中的副作用，例如寫 log：replay 會重複它們。
 
 ### Join 檢查

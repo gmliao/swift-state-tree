@@ -69,8 +69,20 @@ extension GameState {
     func isDirty() -> Bool { ... }
     func getDirtyFields() -> Set<String> { ... }
     mutating func clearDirty() { ... }
+
+    // The PlainData witness: compiled, never called. Each line compiles only
+    // when the field's value is PlainData.
+    static func _plainDataCheck() {
+        func check(_ value: inout Self) {
+            PlainDataCheck.field(value.players)
+            PlainDataCheck.field(value.hands)
+            PlainDataCheck.field(value.hiddenDeck)
+        }
+    }
 }
 ```
+
+`StateNodeProtocol` refines `PlainData` ([what counts as plain data](../turns/README.md#what-counts-as-plain-data)), and `_plainDataCheck` is the witness. It has one line per `@Sync` and `@Internal` field, `#if` members included, so a field that holds a class, a closure, `Any` or a type that isn't `PlainData` fails to compile on that line.
 
 ## Validation Rules
 
@@ -114,9 +126,12 @@ error: Stored property 'score' in GameState must be marked with @Sync or @Intern
 
 ### Validation Rules Explained
 
-1. **Stored properties**: Must be explicitly marked with `@Sync` or `@Internal`
+1. **Stored properties**: Must be explicitly marked with `@Sync` or `@Internal`, inside `#if` too
 2. **Computed properties**: Automatically skip validation, no marking needed
 3. **Unmarked stored properties**: Compile error
+4. **Field values are `PlainData`**: every `@Sync` and `@Internal` field, `.serverOnly` included ([Sync](../core/sync.md#synced-state-is-made-of-value-types))
+5. **No other property wrapper on a field**: the `PlainData` check reads only `@Sync` and `@Internal` fields
+6. **No `@PlainData` beside `@StateNodeBuilder`**: the macro already writes the witness. `@SnapshotConvertible` beside it is fine
 
 ## Generated Methods
 
@@ -231,6 +246,26 @@ When generating snapshots, nested structures are processed recursively:
 // Will recursively process each PlayerState in players dictionary
 let snapshot = try gameState.snapshot(for: playerID)
 ```
+
+### Nested Value Types and Generic Nodes
+
+A struct or enum that a field holds, and that isn't a state node, needs `@PlainData` (or `@SnapshotConvertible`, which writes the same conformance). A generic node's parameter needs `PlainData`, because its fields hold values of that type:
+
+```swift
+@PlainData
+struct Position: Codable, Equatable, Sendable {
+    var x: Int
+    var y: Int
+}
+
+@StateNodeBuilder
+struct Slot<Item: PlainData & Codable & Equatable & Sendable>: StateNodeProtocol {
+    @Sync(.broadcast)
+    var item: Item? = nil
+}
+```
+
+A state node that conforms to `StateNodeProtocol` by hand, without `@StateNodeBuilder`, adds `@PlainData`.
 
 ## Common Questions
 

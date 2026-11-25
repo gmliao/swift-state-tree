@@ -126,7 +126,7 @@ A land declares one `HandleAction` per action type, one `HandleEvent` per client
 #### What the Compiler Can't Stop
 
 - A `validate` that isn't deterministic: one that reads global mutable state or a clock, or calls a service that conforms to `ReadOnlyLandService` but doesn't keep its contract. Replay runs `validate` again and can decide differently.
-- A write through a class reference held in the state. Synced state can't hold classes (#464, [Sync](sync.md#synced-state-is-made-of-value-types)).
+- A write through a class reference held in the state. State can't hold classes: a state field's value is `PlainData`, checked at compile time (#464, [Sync](sync.md#synced-state-is-made-of-value-types)).
 - Side effects in `validate`, such as logging: replay repeats them.
 
 ### Join Checks

@@ -69,8 +69,20 @@ extension GameState {
     func isDirty() -> Bool { ... }
     func getDirtyFields() -> Set<String> { ... }
     mutating func clearDirty() { ... }
+
+    // PlainData 的 witness：會編譯，但從不呼叫。每一行只有在欄位的值
+    // 是 PlainData 時才能編譯。
+    static func _plainDataCheck() {
+        func check(_ value: inout Self) {
+            PlainDataCheck.field(value.players)
+            PlainDataCheck.field(value.hands)
+            PlainDataCheck.field(value.hiddenDeck)
+        }
+    }
 }
 ```
+
+`StateNodeProtocol` 繼承 `PlainData`（[什麼算純資料](../turns/README.zh-TW.md#什麼算純資料)），`_plainDataCheck` 就是它的 witness。每個 `@Sync` 與 `@Internal` 欄位各一行（包含 `#if` 裡的成員），因此存放 class、closure、`Any` 或非 `PlainData` 型別的欄位，會在那一行編譯失敗。
 
 ## 驗證規則
 
@@ -114,9 +126,12 @@ error: Stored property 'score' in GameState must be marked with @Sync or @Intern
 
 ### 驗證規則詳解
 
-1. **Stored properties**：必須明確標記 `@Sync` 或 `@Internal`
+1. **Stored properties**：必須明確標記 `@Sync` 或 `@Internal`，`#if` 裡的也一樣
 2. **Computed properties**：自動跳過驗證，不需要標記
 3. **未標記的 stored property**：編譯錯誤
+4. **欄位的值是 `PlainData`**：每個 `@Sync` 與 `@Internal` 欄位，包含 `.serverOnly`（[同步](../core/sync.zh-TW.md#同步狀態只能由-value-type-組成)）
+5. **欄位上不能有其他 property wrapper**：`PlainData` 檢查只讀 `@Sync` 與 `@Internal` 欄位
+6. **`@StateNodeBuilder` 旁邊不能加 `@PlainData`**：這個 macro 已經寫出 witness。旁邊加 `@SnapshotConvertible` 沒有問題
 
 ## 生成的方法
 
@@ -231,6 +246,26 @@ struct GameState: StateNodeProtocol {
 // 會遞迴處理 players 字典中的每個 PlayerState
 let snapshot = try gameState.snapshot(for: playerID)
 ```
+
+### 巢狀值型別與 generic node
+
+欄位存放的 struct 或 enum 若不是 state node，就需要 `@PlainData`（或寫出同樣 conformance 的 `@SnapshotConvertible`）。generic node 的型別參數必須是 `PlainData`，因為它的欄位存放該型別的值：
+
+```swift
+@PlainData
+struct Position: Codable, Equatable, Sendable {
+    var x: Int
+    var y: Int
+}
+
+@StateNodeBuilder
+struct Slot<Item: PlainData & Codable & Equatable & Sendable>: StateNodeProtocol {
+    @Sync(.broadcast)
+    var item: Item? = nil
+}
+```
+
+不用 `@StateNodeBuilder`、手寫 `StateNodeProtocol` conformance 的 state node 要加上 `@PlainData`。
 
 ## 常見問題
 

@@ -23,6 +23,7 @@ Macros 在編譯期執行，提供以下優勢：
 - **生成 sync metadata**：產生 `getSyncFields()` 方法
 - **生成 dirty tracking**：產生 `isDirty()`、`getDirtyFields()`、`clearDirty()` 方法
 - **生成 snapshot 方法**：產生 `snapshot(for:)` 和 `broadcastSnapshot()` 方法
+- **純資料**：寫出 `StateNodeProtocol` 要求的 [`PlainData`](../turns/README.zh-TW.md#什麼算純資料) witness，每個 `@Sync` 與 `@Internal` 欄位一個檢查；欄位不能放 class、closure、tuple、`Any`、existential、`Date`、`UUID`、`URL`、`Decimal` 或非 `PlainData` 的型別（[詳細說明](state-node-builder.zh-TW.md#巢狀值型別與-generic-node)）
 
 ### 使用場景
 
@@ -73,6 +74,7 @@ struct GameState: StateNodeProtocol {
 - ✅ **Stored properties**：必須標記 `@Sync` 或 `@Internal`
 - ✅ **Computed properties**：自動跳過驗證
 - ❌ **未標記的 stored property**：編譯錯誤
+- ❌ **值不是 `PlainData` 的欄位**：編譯錯誤
 
 ### 常見錯誤
 
@@ -111,6 +113,22 @@ class GameState: StateNodeProtocol {
 ```
 
 **解決方案**：使用 `struct` 而非 `class`。
+
+#### 錯誤 3：巢狀型別不是 PlainData
+
+```swift
+struct Card: Codable, Equatable, Sendable {
+    var rank: Int
+}
+
+@StateNodeBuilder
+struct GameState: StateNodeProtocol {
+    @Sync(.serverOnly)
+    var hiddenDeck: [Card] = []  // ❌ 編譯錯誤：Card 不是 PlainData
+}
+```
+
+**解決方案**：在 `Card` 加上 `@PlainData`，或加上寫出同樣 conformance 的 `@SnapshotConvertible`。
 
 ### 最佳實踐
 
@@ -248,6 +266,7 @@ struct JoinAction: ActionPayload {
 - **自動生成轉換方法**：產生 `toSnapshotValue()` 方法
 - **避免 runtime reflection**：不使用 Mirror，大幅提升效能
 - **支援巢狀結構**：自動處理巢狀的 `@SnapshotConvertible` 型別
+- **純資料**：讓型別成為 [`PlainData`](../turns/README.zh-TW.md#什麼算純資料)，並寫出與 `@PlainData` 相同的檢查，因此可以存放在 state 中；每個 stored property 都要標註型別。與 `@PlainData` 並用時不寫自己的檢查，與 `@StateNodeBuilder` 並用時只寫 conformance
 
 ### 使用場景
 
