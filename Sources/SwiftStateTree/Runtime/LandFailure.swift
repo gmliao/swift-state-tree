@@ -2,9 +2,10 @@ import Foundation
 
 /// Why a land was ended by a failure (#535).
 ///
-/// A sync conversion, a frame, event or action-response encode, a sync plan, or a handler that
-/// threw after writing synced state can't be brought back to a fully correct state, so the land
-/// ends: its sessions close with 4016 (`landFailed`), and its destroy handlers and save see
+/// A sync conversion, a frame, event or action-response encode, a sync plan, a handler that
+/// threw after writing synced state, or a transport that called back into the keeper during a
+/// turn (`keeperReentry`) can't be brought back to a fully correct state, so the land ends: its
+/// sessions close with 4016 (`landFailed`), and its destroy handlers and save see
 /// `LandDestructionCause.failed`. The keeper keeps the first failure (`LandKeeper.failure`).
 public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConvertible {
     public enum Kind: String, Sendable, Codable {

@@ -21,6 +21,9 @@ package enum TurnEffect {
 /// call, passed to the body `inout`, and flushed exactly once.
 package struct TurnOutputs {
     private var effects: [TurnEffect] = []
+    /// The task of the last submission any flush of this turn made, across every flush (one
+    /// before each call out, and the final one): what `withTurnSubmitting` returns.
+    package fileprivate(set) var lastSubmission: Task<Void, Never>?
 
     package init() {}
 
@@ -33,7 +36,9 @@ package struct TurnOutputs {
         effects.append(.submission(label: label, apply: apply))
     }
 
-    /// Stages an effect that must not run before the flush.
+    /// Stages an effect that must not run before the flush. The action must not enter the keeper
+    /// synchronously: it runs after the depth has dropped, so the guarded entries wouldn't
+    /// refuse it.
     package mutating func stage(_ action: @escaping () -> Void) {
         effects.append(.action(action))
     }
@@ -59,19 +64,17 @@ package struct KeeperTurnSide {
         self.submissions = submissions
     }
 
-    /// Applies the staged effects in staging order and empties `outputs`. Returns the task of
-    /// the last submission it made, nil if it made none.
-    @discardableResult
-    package mutating func flush(_ outputs: inout TurnOutputs) -> Task<Void, Never>? {
-        var last: Task<Void, Never>?
+    /// Applies the staged effects in staging order and empties `outputs`, keeping the task of
+    /// the last submission it made in `outputs.lastSubmission`. Not `mutating`: the keeper calls
+    /// it on a copy of the side, so no access to its stored side is held while the actions run.
+    package func flush(_ outputs: inout TurnOutputs) {
         for effect in outputs.takeAll() {
             switch effect {
             case let .submission(label, apply):
-                last = submissions.submit(label: label, apply)
+                outputs.lastSubmission = submissions.submit(label: label, apply)
             case let .action(action):
                 action()
             }
         }
-        return last
     }
 }

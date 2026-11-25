@@ -9,6 +9,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 struct TurnSkeletonState: StateNodeProtocol {
@@ -52,18 +53,28 @@ private func clearDraft() -> SyncStreamDraft {
     }))
 }
 
-/// An in-turn transport that calls back into its keeper's `submitSyncStream` from inside one
-/// of the keeper's synchronous calls: the sync phase, or the joins-awaiting-sync read. It
-/// reads its own gate right after the refused call returns.
+/// An in-turn transport that calls back into its keeper synchronously from inside one of the
+/// keeper's synchronous calls, and reads its own gate and the keeper's mailbox right after the
+/// refused call returns.
 final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sendable {
-    enum Where { case nowhere, phase, joinsAwaitingSync }
+    enum Where {
+        case nowhere
+        /// `submitSyncStream` from the sync phase.
+        case phase
+        /// `submitSyncStream` from the joins-awaiting-sync read after a committed phase.
+        case joinsAwaitingSync
+        /// `syncTurnNow` from the sync phase.
+        case phaseRequestingSyncTurn
+        /// The land starts draining in the sync phase, then `submitSyncStream`.
+        case phaseOnDrainingLand
+    }
 
     private let lock = NSLock()
     private let reenter: Where
     private weak var keeper: LandKeeper<TurnSkeletonState>?
     private var closes = 0
     private var closedAtReentry: Bool?
-    private var phases = 0
+    private var mailboxAtReentry: LandFailure?
 
     init(reenter: Where) { self.reenter = reenter }
 
@@ -71,22 +82,40 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
 
     /// Whether the gate was closed right after the refused call returned (nil: no re-entry).
     var gateClosedAtReentry: Bool? { lock.withLock { closedAtReentry } }
+    /// The keeper's mailbox right after the refused call returned.
+    var mailboxFailureAtReentry: LandFailure? { lock.withLock { mailboxAtReentry } }
     var closeCount: Int { lock.withLock { closes } }
-    var phaseCount: Int { lock.withLock { phases } }
 
     private func reenterNow() {
         guard let keeper = lock.withLock({ self.keeper }) else { return }
-        keeper.assumeIsolated { $0.submitSyncStream([outputDraft(99)]) } // lint-allow: turns-isolated: the synchronous callback the sentinel refuses
-        lock.withLock { closedAtReentry = closes > 0 }
+        let entry = reenter
+        keeper.assumeIsolated { keeper in // lint-allow: turns-isolated: the synchronous callback the sentinel refuses
+            switch entry {
+            case .phaseRequestingSyncTurn:
+                _ = keeper.syncTurnNow(via: self, reason: .syncNow)
+            case .phaseOnDrainingLand:
+                keeper.markDrainingForTesting(cause: .forceShutdown)
+                keeper.submitSyncStream([outputDraft(99)])
+            case .phase, .joinsAwaitingSync, .nowhere:
+                keeper.submitSyncStream([outputDraft(99)])
+            }
+        }
+        lock.withLock {
+            closedAtReentry = closes > 0
+            mailboxAtReentry = keeper.pendingFailureForTesting
+        }
     }
 
     nonisolated func closeOutputs(for failure: LandFailure) {
         lock.withLock { closes += 1 }
     }
 
+    /// Answers true when it re-enters, so a follow-up would be scheduled if the refused answer
+    /// were read.
     var hasJoinsAwaitingSync: Bool {
-        if reenter == .joinsAwaitingSync { reenterNow() }
-        return false
+        guard reenter == .joinsAwaitingSync else { return false }
+        reenterNow()
+        return true
     }
 
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
@@ -100,10 +129,17 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
         includeSync: Bool,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
-        lock.withLock { phases += 1 }
-        if reenter == .phase { reenterNow() }
-        // Otherwise a success, so only the re-entry can fail the turn.
-        return InTurnSyncOutput(.committed(clearDirtyFlags: false), syncStream: [outputDraft(1)])
+        switch reenter {
+        case .phase, .phaseRequestingSyncTurn, .phaseOnDrainingLand: reenterNow()
+        case .joinsAwaitingSync, .nowhere: break
+        }
+        // Otherwise a success, so only the re-entry can fail the turn. Kept events would ask
+        // for a follow-up turn if the answer were read.
+        return InTurnSyncOutput(
+            .committed(clearDirtyFlags: false),
+            syncStream: [outputDraft(1)],
+            keepsEvents: reenter == .joinsAwaitingSync
+        )
     }
     func waitForWriterDrainForInTurnSync() async {}
 }
@@ -115,20 +151,34 @@ private final class Counter: @unchecked Sendable {
     var value: Int { lock.withLock { n } }
 }
 
+private final class OrderLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var log: [String] = []
+    func add(_ s: String) { lock.withLock { log.append(s) } }
+    var entries: [String] { lock.withLock { log } }
+}
+
 private struct BodyError: Error {}
+
+private func attachedKeeper(
+    _ reenter: TurnSkeletonReenteringTransport.Where
+) async -> (LandKeeper<TurnSkeletonState>, TurnSkeletonReenteringTransport, ReevaluationSubmissionTracker) {
+    let keeper = makeKeeper(recording: true)
+    let transport = TurnSkeletonReenteringTransport(reenter: reenter)
+    transport.attach(keeper)
+    await keeper.setTransport(transport)
+    let tracker = await keeper.recorderSubmissionsForTesting
+    tracker.startTraceForTesting()
+    return (keeper, transport, tracker)
+}
 
 @Suite("The turn skeleton: outputs, the depth and the re-entry sentinel (#700 K1b-5a)", .timeLimit(.minutes(1)))
 struct KeeperTurnSkeletonTests {
     @Test("A re-entry during a requested sync-only turn ends the land in that turn", arguments: [
-        TurnSkeletonReenteringTransport.Where.phase, .joinsAwaitingSync,
+        TurnSkeletonReenteringTransport.Where.phase, .joinsAwaitingSync, .phaseRequestingSyncTurn,
     ])
     func reentryEndsTheLandInTheTurn(at reenter: TurnSkeletonReenteringTransport.Where) async throws {
-        let keeper = makeKeeper(recording: true)
-        let transport = TurnSkeletonReenteringTransport(reenter: reenter)
-        transport.attach(keeper)
-        await keeper.setTransport(transport)
-        let tracker = await keeper.recorderSubmissionsForTesting
-        tracker.startTraceForTesting()
+        let (keeper, transport, tracker) = await attachedKeeper(reenter)
 
         // An otherwise idle land: this turn is the only step it takes.
         let result = await keeper.syncTurnNow(via: transport, reason: .syncNow)
@@ -139,40 +189,61 @@ struct KeeperTurnSkeletonTests {
         }
         #expect(reported.kind == .keeperReentry)
         #expect(keeper.failure?.kind == .keeperReentry)
-        // Closed by the sentinel, inside the transport's call, before the turn went on.
+        // Closed and noted by the sentinel, inside the transport's call, before the turn went on.
         #expect(transport.gateClosedAtReentry == true)
+        #expect(transport.mailboxFailureAtReentry?.kind == .keeperReentry)
         #expect(await keeper.reentryViolationsForTesting == 1)
         #expect(await keeper.bodyDepthForTesting == 0)
-        // The refused draft was never numbered; the turn's records: the phase's own draft
-        // (recorded before the failure when the re-entry came after the phase), the terminal
-        // entry, then the turn's end.
+        // The refused call is never numbered, and the refused phase's answer is never read.
+        // Recorded: the committed phase's own draft when the re-entry came after it, the
+        // terminal entry, then the turn's end.
         let trace = tracker.traceForTesting
         switch reenter {
-        case .phase:
-            #expect(Array(trace.prefix(2)) == ["terminal", "endTurn"], "trace \(trace)")
         case .joinsAwaitingSync:
-            #expect(Array(trace.prefix(3)) == ["sync-output", "terminal", "endTurn"], "trace \(trace)")
-        case .nowhere:
-            break
+            #expect(trace == ["sync-output", "terminal", "endTurn"])
+        default:
+            #expect(trace == ["terminal", "endTurn"])
         }
-        // No follow-up turn was scheduled from the refused answer.
-        #expect(await keeper.joinSyncTurnsForTesting == 0)
+        // Nothing was asked for from the refused answers: no kept-events turn, no join sync.
+        #expect(await keeper.hasRequestedSyncWorkForTesting == false)
+        #expect(await keeper.requestedSyncTurnsForTesting[.keptEvents] == nil)
+        // The refused `syncTurnNow` changed nothing: only the outer request was counted.
+        #expect(await keeper.requestedSyncTurnsForTesting[.syncNow] == 1)
+        // The backstop had nothing left to apply.
+        #expect(await keeper.lateReentriesAppliedForTesting == 0)
+    }
+
+    @Test("A re-entry on a land that is already draining: the gate closes and nothing of the phase is recorded")
+    func reentryOnDrainingLand() async throws {
+        let (keeper, transport, tracker) = await attachedKeeper(.phaseOnDrainingLand)
+        let counterBefore = await keeper.syncStreamCounterForTesting()
+
+        let result = await keeper.syncTurnNow(via: transport, reason: .syncNow)
+
+        guard case let .landFailed(reported) = result else {
+            Issue.record("the turn returned \(result), not .landFailed")
+            return
+        }
+        #expect(reported.kind == .keeperReentry)
+        // The drain cause stays the land's; the failure isn't set over it.
+        #expect(keeper.isDraining)
+        #expect(keeper.failure == nil)
+        #expect(transport.gateClosedAtReentry == true)
+        // No draft of the refused phase was numbered or submitted.
+        #expect(await keeper.syncStreamCounterForTesting() == counterBefore)
+        #expect(!tracker.traceForTesting.contains("sync-output"))
+        #expect(await keeper.bodyDepthForTesting == 0)
     }
 
     @Test("Without a re-entry the same turn commits, and nothing is refused")
     func noReentryCommits() async throws {
-        let keeper = makeKeeper(recording: true)
-        let transport = TurnSkeletonReenteringTransport(reenter: .nowhere)
-        transport.attach(keeper)
-        await keeper.setTransport(transport)
-        let tracker = await keeper.recorderSubmissionsForTesting
-        tracker.startTraceForTesting()
+        let (keeper, transport, tracker) = await attachedKeeper(.nowhere)
 
         #expect(await keeper.syncTurnNow(via: transport, reason: .syncNow) == .committed(clearDirtyFlags: false))
         #expect(keeper.failure == nil)
         #expect(transport.closeCount == 0)
         #expect(await keeper.reentryViolationsForTesting == 0)
-        #expect(Array(tracker.traceForTesting.prefix(2)) == ["sync-output", "endTurn"])
+        #expect(tracker.traceForTesting == ["sync-output", "endTurn"])
     }
 
     @Test("The adapter's entries outside a body record, at depth zero", arguments: [false, true])
@@ -200,7 +271,7 @@ struct KeeperTurnSkeletonTests {
         await #expect(throws: BodyError.self) {
             try await keeper.runTestBodyForTesting(
                 staging: 1,
-                effect: { applied.bump() },
+                effect: { _ in applied.bump() },
                 observe: { depth in if depth == 1 { depthInside.bump() } },
                 throwing: BodyError()
             )
@@ -223,16 +294,65 @@ struct KeeperTurnSkeletonTests {
         let order = OrderLog()
         try await keeper.runTestBodyForTesting(
             staging: 3,
-            effect: { order.add("effect") },
+            effect: { index in order.add("effect-\(index)") },
             observe: { _ in order.add("body end") }
         )
-        #expect(order.entries == ["body end", "effect", "effect", "effect"])
+        #expect(order.entries == ["body end", "effect-0", "effect-1", "effect-2"])
     }
-}
 
-private final class OrderLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var log: [String] = []
-    func add(_ s: String) { lock.withLock { log.append(s) } }
-    var entries: [String] { lock.withLock { log } }
+    @Test("A call out sees every effect staged before it (Rule 2)")
+    func callOutFlushesFirst() async throws {
+        let keeper = makeKeeper(recording: false)
+        let order = OrderLog()
+        let refused = try await keeper.runTestBodyForTesting(
+            staging: 2,
+            effect: { index in order.add("effect-\(index)") },
+            callingOut: { order.add("call") },
+            observe: { _ in order.add("body end") }
+        )
+        #expect(!refused)
+        #expect(order.entries == ["effect-0", "effect-1", "call", "body end"])
+    }
+
+    @Test("The backstop applies a re-entry a body didn't apply, once, and only while the land runs")
+    func backstopAppliesLateReentry() async throws {
+        let keeper = makeKeeper(recording: false)
+        // A body that is re-entered outside `callOut`: the backstop ends the land after it.
+        try await keeper.runTestBodyForTesting(staging: 0, effect: { _ in }, observe: { _ in
+            keeper.assumeIsolated { $0.submitSyncStream([outputDraft(3)]) } // lint-allow: turns-isolated: a re-entry no call out sees, for the backstop
+        })
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect(await keeper.lateReentriesAppliedForTesting == 1)
+        #expect(await keeper.bodyDepthForTesting == 0)
+        // On a land that has failed, a second one is refused and counted, and the backstop
+        // leaves the first failure.
+        let first = keeper.failure
+        try await keeper.runTestBodyForTesting(staging: 0, effect: { _ in }, observe: { _ in
+            keeper.assumeIsolated { $0.submitSyncStream([outputDraft(4)]) } // lint-allow: turns-isolated: a re-entry no call out sees, for the backstop
+        })
+        #expect(await keeper.reentryViolationsForTesting == 2)
+        #expect(await keeper.lateReentriesAppliedForTesting == 1)
+        #expect(keeper.failure == first)
+    }
+
+    @Test("submitTurnRecord awaits its own submission, not a later one queued during its hold")
+    func turnRecordAwaitsItsOwnSubmission() async throws {
+        let keeper = makeKeeper(recording: true)
+        let hold = TestGate()
+        await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>.at(.turnRecord) { await hold.arrive() })
+        let tracker = await keeper.recorderSubmissionsForTesting
+        let blocker = TestGate()
+
+        let record = Task { await keeper.submitTurnRecordForTesting(tickId: 0) }
+        #expect(await hold.waitForArrivals(1))
+        // A later submission that can't finish until the blocker opens.
+        tracker.submit(label: "later") { await blocker.arrive() }
+        hold.open()
+        // Returns while the later submission is still blocked: awaiting the tracker's tail
+        // instead would wait for the blocker, which opens only after this returns.
+        await record.value
+        #expect(blocker.arrivalCount <= 1)
+        blocker.open()
+        await tracker.waitForAll()
+    }
 }
