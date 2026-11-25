@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import SwiftStateTurns
 
 // MARK: - Helper for Replay Mode
 
@@ -160,6 +161,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The recorded lifecycle event kind of the shutdown turn (`PendingItem.shutdown`).
     static var shutdownLifecycleKind: String { "shutdown" }
 
+    @PlainData
     public enum LifecycleKind: String, Codable, Sendable {
         case initialize
         case join
