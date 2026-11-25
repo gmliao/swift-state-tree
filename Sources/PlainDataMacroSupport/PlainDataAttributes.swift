@@ -102,12 +102,12 @@ public enum PlainDataAttributes {
         "available", "inlinable", "inline", "usableFromInline", "discardableResult", "_spi",
         "preconcurrency", "backDeployed", "_alwaysEmitIntoClient", "_disfavoredOverload", "_documentation",
         "_effects", "_transparent", "_optimize", "_semantics", "_specialize", "warn_unqualified_access",
-        "nonobjc", "objc", "MainActor", "TaskLocal",
+        "nonobjc", "objc", "MainActor", "TaskLocal", "concurrent", "Sendable",
     ]
 
     /// The project macros a nested type may carry: each writes the nested type's own members and
     /// extensions, never a peer of the outer type's.
-    private static let nestedTypeMacros = ["StateNodeBuilder", "SnapshotConvertible", "Payload", "PlainData"]
+    static let nestedTypeMacros = ["StateNodeBuilder", "SnapshotConvertible", "Payload", "PlainData"]
 
     /// Diagnoses every attribute on a member that could add declarations to the type: on a
     /// function, an initializer, a subscript, a computed or `static` property, an enum case, a
@@ -138,12 +138,12 @@ public enum PlainDataAttributes {
                     if isAllowedOnMember(attribute, isType: isType) { continue }
                     context.diagnose(Diagnostic(
                         node: attribute,
-                        message: MemberAttributeDiagnostic(name: "@" + attribute.attributeName.trimmedDescription, member: memberName(decl), noun: rule.noun)
+                        message: MemberAttributeDiagnostic(name: "@" + attribute.attributeName.trimmedDescription, member: memberName(decl), noun: rule.noun, isNestedType: isType)
                     ))
                 case .ifConfigDecl(let ifConfig):
                     context.diagnose(Diagnostic(
                         node: ifConfig,
-                        message: MemberAttributeDiagnostic(name: "an attribute inside #if", member: memberName(decl), noun: rule.noun)
+                        message: MemberAttributeDiagnostic(name: "an attribute inside #if", member: memberName(decl), noun: rule.noun, isNestedType: isType)
                     ))
                 }
             }
@@ -200,9 +200,15 @@ struct MemberAttributeDiagnostic: DiagnosticMessage {
     let name: String
     let member: String
     let noun: String
+    /// A nested type also takes the project's own macros (`nestedTypeMacros`), so its message
+    /// names them.
+    let isNestedType: Bool
 
     var message: String {
-        "\(name) on '\(member)' can't be in a \(noun): a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable"
+        let base = "\(name) on '\(member)' can't be in a \(noun): a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable"
+        guard isNestedType else { return base }
+        let macros = PlainDataAttributes.nestedTypeMacros.sorted().map { "@" + $0 }.joined(separator: ", ")
+        return base + "; a nested type also takes \(macros)"
     }
 
     var diagnosticID: MessageID { MessageID(domain: "PlainDataMacroSupport", id: "unknownMemberAttribute") }
