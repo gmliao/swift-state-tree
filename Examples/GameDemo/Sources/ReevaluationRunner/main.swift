@@ -338,7 +338,7 @@ struct ReevaluationRunnerMain {
             // comparable (exit 10, like a record this build doesn't read); one of another
             // schema is a schema mismatch (exit 13).
             switch error {
-            case .missing:
+            case .missing, .payloadsNotReplayable:
                 print("❌ Verification not possible: \(error)")
                 exit(10)
             case .mismatch:
