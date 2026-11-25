@@ -40,6 +40,9 @@ struct KeeperPlainFormsConformanceTests {
         // Commit 6: the held resolver outputs.
         requirePlain(HeldResolverOutput.self)
         requirePlain(RecordedResolverOutput.self)
+        // Commit 7: the tuples made structs.
+        requirePlain(SyncOutputIndexCursor.self)
+        requirePlain(ReplayFailureEnd.self)
         // Commit 8: the items and PendingItem.
     }
 }

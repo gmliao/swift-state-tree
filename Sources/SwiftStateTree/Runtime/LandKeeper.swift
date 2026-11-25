@@ -526,7 +526,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var inTurnSyncTurnKind: ReevaluationRecordedSyncOutput.TurnKind = .tick
     /// The last recorded output's `observedTickId` and how many outputs were recorded after it
     /// (`ReevaluationRecordedSyncOutput.index`).
-    private var syncOutputIndexCursor: (observedTickId: Int64?, count: Int) = (nil, 0)
+    private var syncOutputIndexCursor = SyncOutputIndexCursor(observedTickId: nil, count: 0)
     /// The ordinal of a tickless land's last pass, 0 before its first (#563). Replay counts the
     /// same passes; a sync output records the value it read after (`afterPass`).
     private var passOrdinal: Int64 = 0
@@ -837,7 +837,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// The fold waiting for its tick turn: the tick deadline it folded on and whether that
     /// deadline had passed. Set with `inTurnSyncDue` by a fold, taken when a tick turn starts.
-    private var pendingFold: (deadline: ContinuousClock.Instant, overdueAtFold: Bool)?
+    private var pendingFold: PendingFold?
 
     /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
     private(set) var inTurnDeferredTurns = 0
@@ -4407,7 +4407,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// (`LandFailurePosition.endsInputs`): the tick (a tick land's tick handler is skipped and
     /// its events dropped) or, tickless, the pass whose events are dropped. Replay doesn't end
     /// the land (`failLand` returns early), so it ends that work by this instead.
-    private var replayFailureEnd: (tickId: Int64, pass: Int64?)?
+    private var replayFailureEnd: ReplayFailureEnd?
 
     /// Re-evaluation: the record is 3.4 or later, so every tickless pass carries its ordinal.
     private var replayRecordsPassOrdinals = false
@@ -4463,7 +4463,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Installs `replayFailureEnd` (re-evaluation only).
     package func setReplayFailureEnd(tickId: Int64, pass: Int64?) {
-        replayFailureEnd = (tickId, pass)
+        replayFailureEnd = ReplayFailureEnd(tickId: tickId, pass: pass)
     }
 
     /// Re-evaluation only: whether a take found the sequence counter at `Int64.max` (#741). The run
@@ -5273,7 +5273,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else {
             index = 0
         }
-        syncOutputIndexCursor = (observedTickId, index + 1)
+        syncOutputIndexCursor = SyncOutputIndexCursor(observedTickId: observedTickId, count: index + 1)
         let output = make(takeSyncStreamIndex(), index)
         enqueueRecorderSubmission(ReevaluationTickRecord(
             tickId: max(observedTickId ?? lastCommittedTickId, 0),
@@ -6146,7 +6146,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     foldedSyncs += 1
                     let overdue = deadline < now
                     if overdue { overdueFoldedSyncs += 1 }
-                    pendingFold = (deadline, overdue)
+                    pendingFold = PendingFold(deadline: deadline, overdueAtFold: overdue)
                 }
                 inTurnSyncDue = true
                 return
@@ -6462,4 +6462,27 @@ extension LandKeeper.PendingItem {
         case let .landFailure(item): return item.resolvedAtTick
         }
     }
+}
+
+// MARK: - Keeper fields as plain structs (#700 K1b-1, F3)
+
+/// The last recorded sync output's `observedTickId`, and how many outputs were recorded after it.
+@PlainData
+struct SyncOutputIndexCursor: Sendable {
+    var observedTickId: Int64?
+    var count: Int
+}
+
+/// Where a replayed record's land failure ended it: its tick, and on a tickless land its pass.
+@PlainData
+struct ReplayFailureEnd: Sendable {
+    let tickId: Int64
+    let pass: Int64?
+}
+
+/// A sync folded into the next tick: the deadline it had, and whether it was already overdue.
+/// Not plain: `ContinuousClock.Instant` (F4's exception, until K2 passes the time in).
+struct PendingFold: Sendable {
+    let deadline: ContinuousClock.Instant
+    let overdueAtFold: Bool
 }
