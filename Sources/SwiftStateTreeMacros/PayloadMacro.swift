@@ -89,14 +89,9 @@ public struct PayloadMacro: MemberMacro {
                 continue
             }
             
-            // Skip computed properties
-            let hasComputedProperty = variableDecl.bindings.contains { binding in
-                return binding.accessorBlock != nil
-            }
-            
-            if hasComputedProperty {
-                continue
-            }
+            // Fields only: skip computed and `static` properties. An observed one (`willSet`/
+            // `didSet` only) has storage: it is a field, as the PlainData witness treats it (#837).
+            guard PlainDataWalk.isStoredInstance(variableDecl) else { continue }
             
             for binding in variableDecl.bindings {
                 guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self) else {
@@ -352,6 +347,12 @@ extension PayloadMacro: ExtensionMacro {
     ) throws -> [ExtensionDeclSyntax] {
         // The member role reports a declaration that isn't a struct.
         guard let structDecl = declaration.as(StructDeclSyntax.self) else { return [] }
+        // Another macro on the type could add members the witness doesn't see (#837). The
+        // extension role reports, so the member role's expansion doesn't report twice.
+        if PlainDataAttributes.checks("Payload", on: structDecl.attributes) {
+            PlainDataAttributes.diagnoseType(structDecl.attributes, rule: PlainDataAttributes.payload, in: context)
+            PlainDataAttributes.diagnoseMembers(structDecl.memberBlock.members, rule: PlainDataAttributes.payload, in: context)
+        }
         var failed = false
         for attribute in structDecl.attributes {
             guard case .attribute(let other) = attribute else { continue }
@@ -432,7 +433,7 @@ extension PayloadMacro: ExtensionMacro {
         for member in structDecl.memberBlock.members {
             guard let variable = member.decl.as(VariableDeclSyntax.self),
                   !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) else { continue }
-            for binding in variable.bindings where binding.accessorBlock == nil {
+            for binding in variable.bindings where !PlainDataWalk.isComputed(binding) {
                 guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self),
                       let type = binding.typeAnnotation?.type else { continue }
                 let references = TypeReferences(viewMode: .sourceAccurate)

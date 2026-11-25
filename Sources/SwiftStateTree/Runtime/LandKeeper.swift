@@ -416,6 +416,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var players: [PlayerID: InternalPlayerSession] = [:]
     /// Mints `InternalPlayerSession.generation`: every insert of a player entry gets a new one.
     private var entryGenerations = EpochCounter()
+
+    /// Places reserved for duplicate logins that are between their cap check and their insert
+    /// (#852): one reservation per pending attempt, not one per player. The kick of the old
+    /// session awaits and the player's entry is gone meanwhile; a reservation keeps its place, so a
+    /// newcomer can't take it. Overlapping logins of one player each hold their own, so the end of
+    /// one never frees the place another still waits for. Only `joinReportingAdmission` reserves
+    /// (the legacy `join(playerID:…)` has no kick and no cap check); teardown clears them all.
+    private var rejoinReservations: [PlayerID: Set<Epoch>] = [:]
+    private var rejoinReservationEpochs = EpochCounter()
     /// The land's services, without a `DeterministicRngService`: the land's generator is
     /// `landRandom`, and contexts get it per handler call (`withHandlerStep`).
     private let services: LandServices
@@ -1347,12 +1356,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// Ends one attempt's reservation; idempotent, and it leaves the player's other attempts' ones.
+    private func endRejoinReservation(_ reservation: Epoch, of playerID: PlayerID) {
+        guard var epochs = rejoinReservations[playerID] else { return }
+        epochs.remove(reservation)
+        rejoinReservations[playerID] = epochs.isEmpty ? nil : epochs
+    }
+
     /// Tears the land down after its initialization failed (#104): the normal drain, without the
     /// destroy handlers (`initializationFailure` is set). Started from `performInitialization`,
     /// in a Task of its own: the drain's `forceShutdown` path would otherwise wait for the
     /// initialization it is part of.
     private func tearDownAfterFailedInitialization() async {
         players.removeAll()
+        rejoinReservations.removeAll()
         dropPendingInputs(reason: "initialization failed")
         await shutdownIfIdle(cause: .initializationFailed)
     }
@@ -2129,12 +2146,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return JoinOutcome(decision: decision, admitted: false, refusedStale: true)
         }
 
+        // A destroyed land refuses a late join as shutting down (retryable elsewhere), not as full.
+        guard !isDraining else { throw JoinError.landShuttingDown }
+
         // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
         // Skip check if player is already in the room (reconnection scenario)
-        let isReconnection = players[playerID] != nil
+        // A player whose old session is being kicked has no entry for a while, but still has a reservation.
+        let isReconnection = players[playerID] != nil || !(rejoinReservations[playerID]?.isEmpty ?? true)
 
         if let maxPlayers = definition.config.maxPlayers, !isReconnection {
-            let currentPlayerCount = players.count
+            // Reserved places count too: their owners are about to come back with a new connection.
+            let reservedPlaces = rejoinReservations.reduce(0) { $0 + ($1.value.isEmpty || players[$1.key] != nil ? 0 : 1) }
+            let currentPlayerCount = players.count + reservedPlaces
             guard currentPlayerCount < maxPlayers else {
                 logger.info("Join rejected: room is full", metadata: [
                     "currentPlayers": .stringConvertible(currentPlayerCount),
@@ -2143,6 +2166,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 throw JoinError.roomIsFull
             }
         }
+
+        // Reserve the returning player's place until its entry is back or this join fails. Each
+        // attempt ends only its own reservation, at the insert and on every other exit.
+        let reservation = isReconnection ? rejoinReservationEpochs.next() : nil
+        if let reservation { rejoinReservations[playerID, default: []].insert(reservation) }
+        defer { if let reservation { endRejoinReservation(reservation, of: playerID) } }
 
         await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
@@ -2179,6 +2208,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let entryGeneration = entryGenerations.next()
         playerSession.generation = entryGeneration
         players[playerID] = playerSession
+        if let reservation { endRejoinReservation(reservation, of: playerID) }
 
         destroyTask?.cancel()
         destroyTask = nil
@@ -2991,6 +3021,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // is awaited.
         guard drainTask == nil, !isDraining, initializationFailure == nil, mode == .live else {
             players.removeAll()
+            rejoinReservations.removeAll()
             dropPendingInputs(reason: "forceShutdown")
             await shutdownIfIdle(cause: .forceShutdown)
             return
@@ -4046,7 +4077,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recorded.sequence)
             // In re-evaluation `players` holds the replay's viewers: the shutdown only ends the
             // replay (`completeShutdownTurn`).
-            if mode == .live { players.removeAll() }
+            if mode == .live { players.removeAll(); rejoinReservations.removeAll() }
 
         case let .lifecycle(lifecycleItem):
             applyLifecycleItem(lifecycleItem, executingTickId: executingTickId, into: &applied)
@@ -5892,6 +5923,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         releaseHeldInputsForDrain()
         resumeShutdownTurnWaiters()
         players.removeAll()
+        rejoinReservations.removeAll()
         // A keeper never attached reaches the adapter bound by its first sync request (#546 L2a).
         let transport = self.transport ?? boundSyncRequester
         // The output gate closes in the mark: no new state or event frame from here (§3.2 step 4).
