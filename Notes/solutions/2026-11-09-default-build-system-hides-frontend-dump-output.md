@@ -1,4 +1,5 @@
 ---
+title: "The default SwiftPM build system hides frontend dump output and moves the build directory"
 module: build
 date: 2026-11-09
 problem_type: gotcha

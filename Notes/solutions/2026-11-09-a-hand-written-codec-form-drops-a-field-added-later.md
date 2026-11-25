@@ -1,4 +1,5 @@
 ---
+title: "A hand-written codec form drops a field added later"
 module: SwiftStateTreeMessagePack
 date: 2026-11-09
 problem_type: bug_class

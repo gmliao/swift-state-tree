@@ -1,4 +1,5 @@
 ---
+title: "Compare event times on one clock"
 module: deep-research
 date: 2026-11-09
 problem_type: measurement_pitfall

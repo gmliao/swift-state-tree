@@ -1,4 +1,5 @@
 ---
+title: "`Bundle.allBundles` crashes a Linux test process (null dereference in CFBundleGetAllBundles)"
 module: tests
 date: 2026-11-19
 problem_type: gotcha

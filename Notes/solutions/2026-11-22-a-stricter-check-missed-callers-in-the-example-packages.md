@@ -1,4 +1,5 @@
 ---
+title: "A stricter check missed callers in the example packages"
 module: SwiftStateTree
 date: 2026-11-22
 problem_type: gotcha

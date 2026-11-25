@@ -1,4 +1,5 @@
 ---
+title: "A counter incremented at plan or send time overcounts when the target goes away in between"
 module: Examples/GameDemo (ServerLoadTest)
 date: 2026-11-08
 problem_type: measurement_pitfall

@@ -1,4 +1,5 @@
 ---
+title: "A hang bound can't end a wait that ignores cancellation"
 module: Tests (SwiftStateTreeTestSupport)
 date: 2026-11-21
 problem_type: testing_practice

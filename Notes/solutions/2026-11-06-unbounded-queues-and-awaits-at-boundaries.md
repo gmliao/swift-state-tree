@@ -1,4 +1,5 @@
 ---
+title: "Unbounded queues and awaits at component boundaries"
 module: SwiftStateTreeTransport, SwiftStateTreeNIO, SwiftStateTree
 date: 2026-11-06
 problem_type: bug_class

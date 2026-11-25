@@ -1,4 +1,5 @@
 ---
+title: "A check placed at one replay site misses the other"
 module: SwiftStateTree
 date: 2026-11-22
 problem_type: bug_class

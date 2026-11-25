@@ -1,4 +1,5 @@
 ---
+title: "The Windows CRT `signal()` resets to the default on delivery: re-arm in the handler"
 module: SwiftStateTree
 date: 2026-11-24
 problem_type: gotcha

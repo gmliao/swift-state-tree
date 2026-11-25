@@ -1,4 +1,5 @@
 ---
+title: "A case placed only at the root never tests the descent"
 module: SwiftStateTree
 date: 2026-11-14
 problem_type: testing_practice

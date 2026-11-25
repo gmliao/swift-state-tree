@@ -1,4 +1,5 @@
 ---
+title: "A `rejected` assertion is vacuous on a tickless frame"
 module: SwiftStateTree
 date: 2026-11-24
 problem_type: testing_practice

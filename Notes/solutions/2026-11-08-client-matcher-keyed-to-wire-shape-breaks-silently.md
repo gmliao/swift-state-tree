@@ -1,4 +1,5 @@
 ---
+title: "A client-side matcher keyed to a wire shape breaks silently when the encoding changes"
 module: Examples/GameDemo (ws-loadtest)
 date: 2026-11-08
 problem_type: measurement_pitfall

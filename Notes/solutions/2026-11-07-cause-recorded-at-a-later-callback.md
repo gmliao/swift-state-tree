@@ -1,4 +1,5 @@
 ---
+title: "A cause recorded at a later callback than the event loses to a decision in between"
 module: NIO session handler, diagnostics
 date: 2026-11-07
 problem_type: logic_error

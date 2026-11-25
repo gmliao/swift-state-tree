@@ -1,4 +1,5 @@
 ---
+title: "A test product is a `<target>-test-runner` executable under the swift-build system"
 module: Examples/GameDemo
 date: 2026-11-24
 problem_type: gotcha

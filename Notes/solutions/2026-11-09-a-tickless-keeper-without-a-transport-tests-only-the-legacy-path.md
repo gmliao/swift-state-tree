@@ -1,4 +1,5 @@
 ---
+title: "A tickless keeper built without a transport only tests the legacy path"
 module: SwiftStateTree
 date: 2026-11-09
 problem_type: testing_practice

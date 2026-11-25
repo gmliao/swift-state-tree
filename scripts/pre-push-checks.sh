@@ -4,6 +4,8 @@
 #
 # Always (cheap, as CI runs them on every push):
 #   lessons     scripts/lint-lessons.sh --self-test, then the repository (CI: build › Lint lessons)
+#   solutions-index  scripts/solutions-index.py --self-test, then --check: Notes/solutions/README.md's
+#               index is what the entries' front matter generates (CI: build › Check the solutions index)
 #   wall-clock  scripts/lint-wall-clock-tests.sh --self-test, then with the base's baseline
 #               (CI: wall-clock-tests)
 #   turns       scripts/lint-turns.sh --self-test, then the repository (CI: build › Lint turns)
@@ -78,6 +80,8 @@ run() {  # name, command...
 
 lessons() { scripts/lint-lessons.sh --self-test && scripts/lint-lessons.sh; }
 
+solutions_index() { python3 scripts/solutions-index.py --self-test && python3 scripts/solutions-index.py --check; }
+
 wall_clock() {
   local baseline rc=0
   baseline="$(mktemp)"
@@ -125,6 +129,7 @@ shell_check() {
 
 echo "pre-push-checks: base $base (merge base ${fork:0:12}), $(grep -c . <<<"$changed") changed file(s)"
 run lessons lessons
+run solutions-index solutions_index
 run wall-clock wall_clock
 run turns bash -c 'scripts/lint-turns.sh --self-test && scripts/lint-turns.sh'
 run gate-close bash -c 'scripts/gate-close-census.sh --self-test && scripts/gate-close-census.sh'

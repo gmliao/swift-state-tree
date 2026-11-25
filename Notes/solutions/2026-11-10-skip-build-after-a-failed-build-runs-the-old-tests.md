@@ -1,4 +1,5 @@
 ---
+title: "`--skip-build` after a failed build or a branch switch runs the old tests"
 module: tooling
 date: 2026-11-10
 problem_type: testing_practice
@@ -18,6 +19,7 @@ tags:
   - swiftpm
   - skip-build
   - mutants
+  - branch switch
 related:
   - "#464"
   - "#479"

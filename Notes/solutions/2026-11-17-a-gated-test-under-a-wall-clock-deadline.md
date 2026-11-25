@@ -1,4 +1,5 @@
 ---
+title: "A gated test under a wall-clock deadline fails once the suite grows"
 module: Tests
 date: 2026-11-17
 problem_type: testing_practice

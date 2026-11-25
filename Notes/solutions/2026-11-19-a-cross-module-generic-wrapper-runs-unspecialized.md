@@ -1,4 +1,5 @@
 ---
+title: "A small generic wrapper used from another module runs unspecialized unless it's `@inlinable`"
 module: SwiftStateTree, SwiftStateTreeTransport
 date: 2026-11-19
 problem_type: performance

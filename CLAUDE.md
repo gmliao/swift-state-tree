@@ -86,7 +86,7 @@ The dependency chain flows: `SwiftStateTurns` → `SwiftStateTree` → `SwiftSta
 
 **Cross-platform:** Avoid `#if os(macOS)` / `#if os(Linux)` unless unavoidable. Prefer Foundation APIs that work on both platforms.
 
-**Lessons:** Before designing a fix, search `Notes/solutions/` for the symptom or bug class. When a fix carries a reusable lesson (a cause that could recur elsewhere, a trap that took more than one attempt, a review finding that names a rule), add an entry and its index row in the same change. Format in `Notes/solutions/README.md`.
+**Lessons:** Before designing a fix, search `Notes/solutions/` for the symptom or bug class. When a fix carries a reusable lesson (a cause that could recur elsewhere, a trap that took more than one attempt, a review finding that names a rule), add an entry in the same change and run `scripts/solutions-index.py`, which writes the index from the entry's `title:`. Format in `Notes/solutions/README.md`.
 
 **EnvConfig pattern:** Use `getEnvString`/`getEnvBool`/`getEnvUInt16` helpers (in `Sources/SwiftStateTree/Support/EnvHelpers.swift`) and named constants from `*EnvKeys` enums instead of `ProcessInfo.processInfo.environment["KEY"]` directly.
 

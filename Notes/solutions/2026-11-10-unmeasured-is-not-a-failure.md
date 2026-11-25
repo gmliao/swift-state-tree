@@ -1,4 +1,5 @@
 ---
+title: "Unmeasured is not a failure"
 module: deep-research
 date: 2026-11-10
 problem_type: measurement_pitfall

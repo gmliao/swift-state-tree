@@ -1,4 +1,5 @@
 ---
+title: "A reevaluation keeper drain runs destroy handlers"
 module: SwiftStateTree
 date: 2026-11-25
 problem_type: bug_class

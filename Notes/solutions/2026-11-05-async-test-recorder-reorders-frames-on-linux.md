@@ -1,4 +1,5 @@
 ---
+title: "Test recorders that log in a `Task` per frame reorder on Linux"
 module: tests, Examples
 date: 2026-11-05
 problem_type: testing_practice

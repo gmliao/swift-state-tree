@@ -1,4 +1,5 @@
 ---
+title: "Release-only crashes: `Task.sleep(for:)` and `%s` with a Swift `String`"
 module: SwiftStateTree, Examples
 date: 2026-01-27
 problem_type: gotcha

@@ -1,4 +1,5 @@
 ---
+title: "A converter that stamps the checkout's commit misattributes every older run"
 module: deep-research (snapshot-baseline collect.py)
 date: 2026-11-08
 problem_type: measurement_pitfall

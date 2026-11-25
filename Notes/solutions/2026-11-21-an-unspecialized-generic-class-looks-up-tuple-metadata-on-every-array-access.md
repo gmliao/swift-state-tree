@@ -1,4 +1,5 @@
 ---
+title: "An unspecialized generic class looks up tuple metadata on every array access"
 module: SwiftStateTurns
 date: 2026-11-21
 problem_type: performance_collapse

@@ -1,4 +1,5 @@
 ---
+title: "`tc qdisc change ... netem` resets the options it isn't given, `limit` included"
 module: measurement setup
 date: 2026-11-07
 problem_type: gotcha
