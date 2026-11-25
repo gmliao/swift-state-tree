@@ -247,7 +247,7 @@ struct RejoinHoldsPlaceTests {
         let rejoin = Task { _ = try? await join(keeper, "p1", client: "p1-b") }
         #expect(await box.gate.waitForArrivals(1))
         let shutdown = Task { await keeper.forceShutdown() }
-        while !keeper.isDraining { await Task.yield() }
+        await keeper.waitUntilDrainStartedForTesting()
         do {
             _ = try await join(keeper, "p3", client: "p3-a")
             Issue.record("the join of a draining land was admitted")
