@@ -6,6 +6,7 @@ import Foundation
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
+import PlainDataMacroSupport
 
 /// Macro that validates and generates code for StateNode types.
 ///
@@ -34,11 +35,33 @@ public struct StateNodeBuilderMacro: MemberMacro {
         let properties = propertiesWithNodes.map { $0.0 }
         let genericParameters = Set(structDecl.genericParameterClause?.parameters.map { $0.name.text } ?? [])
 
-        // Validate all stored properties have @Sync or @Internal
+        // Validate all stored properties have @Sync or @Internal, inside `#if` blocks too
         try validateProperties(propertiesWithNodes, context: context)
+        try validateIfConfigMarkers(structDecl.memberBlock.members, context: context)
+
+        // This macro writes the type's PlainData witness; `@PlainData` beside it would write a
+        // second one.
+        if let sibling = structDecl.attributes.first(where: {
+            guard let attribute = $0.as(AttributeSyntax.self) else { return false }
+            return PlainDataWalk.lastNameComponent(of: attribute) == "PlainData"
+        }) {
+            let error = MacroError.plainDataSibling(node: Syntax(sibling))
+            error.diagnose(context: context)
+            throw error
+        }
 
         // A synced field whose type can hold a value of any type is refused (#535 D8 (b)).
-        if diagnoseRefusedFieldTypes(in: structDecl, onlySynced: true, context: context) {
+        // `Decimal` is the PlainData walk's below, for every field.
+        if diagnoseRefusedFieldTypes(in: structDecl, onlySynced: true, kinds: [.existential], context: context) {
+            throw RefusedFieldTypeError()
+        }
+
+        // `StateNodeProtocol` refines `PlainData`: one check per `@Sync` and `@Internal` field,
+        // on its wrapped value, `#if` members included (the shared walk's diagnostics name a
+        // Foundation type, a closure or a tuple at the field).
+        guard let plainDataWitness = PlainDataExtension.memberWitness(
+            of: structDecl, readThrough: plainDataReadThrough, in: context
+        ) else {
             throw RefusedFieldTypeError()
         }
 
@@ -83,6 +106,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(try generateSyncTableFieldsMethod(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters)),
             DeclSyntax(try generateSyncTablePerPlayerFieldsMethod(propertiesWithNodes: propertiesWithNodes))
         ] + containerHelperMethods + generateSyncCheckMembers(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters)
+        members.append(plainDataWitness)
 
         // Static stored properties only where the type is provably not generic (#520).
         let storesStatics = isProvablyNonGeneric(structDecl, in: context)
@@ -254,11 +278,6 @@ public struct StateNodeBuilderMacro: MemberMacro {
         attribute.arguments?.as(LabeledExprListSyntax.self)?.first(where: { $0.label == nil })
     }
 
-    /// Whether a `@Sync` attribute's policy is `.serverOnly`, read from the syntax.
-    static func isServerOnlySync(_ attribute: AttributeSyntax) -> Bool {
-        extractPolicyType(from: attribute) == .serverOnly
-    }
-
     /// Extract policy type from @Sync attribute
     private static func extractPolicyType(from attribute: AttributeSyntax) -> LocalPolicyType? {
         guard attribute.arguments?.as(LabeledExprListSyntax.self) != nil else {
@@ -286,6 +305,43 @@ public struct StateNodeBuilderMacro: MemberMacro {
         }
 
         return .unknown
+    }
+
+    /// The property wrappers whose wrapped value the PlainData witness checks. Any other wrapper
+    /// on a state field is refused by the walk.
+    static let plainDataReadThrough: Set<String> = ["Sync", "Internal"]
+
+    /// The marker check for stored properties inside `#if` blocks, which `collectStoredProperties`
+    /// doesn't read: each clause's unmarked stored property is refused as one outside `#if` is.
+    private static func validateIfConfigMarkers(
+        _ members: MemberBlockItemListSyntax,
+        context: some MacroExpansionContext
+    ) throws {
+        for member in members {
+            guard let ifConfig = member.decl.as(IfConfigDeclSyntax.self) else { continue }
+            for clause in ifConfig.clauses {
+                guard case .decls(let nested) = clause.elements else { continue }
+                for item in nested {
+                    if item.decl.is(IfConfigDeclSyntax.self) {
+                        try validateIfConfigMarkers([item], context: context)
+                        continue
+                    }
+                    guard let variable = item.decl.as(VariableDeclSyntax.self),
+                          !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }),
+                          !variable.bindings.contains(where: { $0.accessorBlock != nil })
+                    else { continue }
+                    let marked = variable.attributes.contains {
+                        guard let name = $0.as(AttributeSyntax.self)?.attributeName.as(IdentifierTypeSyntax.self)?.name.text else { return false }
+                        return name == "Sync" || name == "Internal"
+                    }
+                    if marked { continue }
+                    let name = variable.bindings.first?.pattern.trimmedDescription ?? "?"
+                    let error = MacroError.missingMarker(propertyName: name, structName: "StateNode", node: Syntax(variable))
+                    error.diagnose(context: context)
+                    throw error
+                }
+            }
+        }
     }
 
     /// Validate that all stored properties have @Sync or @Internal markers
@@ -1488,6 +1544,7 @@ private enum MacroError: Error, @unchecked Sendable {
     case missingMarker(propertyName: String, structName: String, node: Syntax)
     case missingTypeAnnotation(propertyName: String, node: Syntax)
     case missingPolicy(propertyName: String, node: Syntax)
+    case plainDataSibling(node: Syntax)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
@@ -1519,6 +1576,8 @@ private enum MacroError: Error, @unchecked Sendable {
                     message: StateNodeBuilderDiagnostic.missingPolicy(propertyName: propertyName)
                 )
             )
+        case .plainDataSibling(let node):
+            context.diagnose(Diagnostic(node: node, message: StateNodeBuilderDiagnostic.plainDataSibling))
         }
     }
 }
@@ -1532,6 +1591,12 @@ private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
     static let onlyStructsSupported: StateNodeBuilderDiagnostic = StateNodeBuilderDiagnostic(
         message: "@StateNodeBuilder can only be applied to struct declarations",
         diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "onlyStructsSupported"),
+        severity: .error
+    )
+
+    static let plainDataSibling: StateNodeBuilderDiagnostic = StateNodeBuilderDiagnostic(
+        message: "@StateNodeBuilder writes the PlainData check; remove @PlainData",
+        diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "plainDataSibling"),
         severity: .error
     )
 

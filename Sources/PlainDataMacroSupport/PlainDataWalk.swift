@@ -1,6 +1,6 @@
 // The field walk `@PlainData` uses, shared with SwiftStateTree's macros: the members of a struct
 // or enum in, the statements of its `check(_ value: inout Self)` out, or a diagnostic for what a
-// syntactic macro can't check. `@Payload` calls it, and `@StateNodeBuilder` is to.
+// syntactic macro can't check. `@Payload` and `@StateNodeBuilder` call it.
 
 @preconcurrency import SwiftDiagnostics
 import SwiftSyntax
@@ -12,9 +12,18 @@ public enum PlainDataWalk {
     /// `#if` block is checked under the same conditions: every clause is read, so a member that
     /// only one configuration compiles is still checked there, and a type that only exists in
     /// that configuration is named only under its condition.
+    ///
+    /// - Parameter readThrough: property wrappers whose wrapped value is checked, by the
+    ///   attribute's last name component (`Sync` matches `@Sync` and `@SwiftStateTree.Sync`).
+    ///   `value.name` reads the wrapped value, whose type is the annotation's; the wrapper's own
+    ///   storage is checked by `@PlainData` on the wrapper. A field with such a wrapper and no
+    ///   annotation gets no line: the wrapper's generic constraint checks the inferred type. Any
+    ///   other wrapper is refused. Empty for `@PlainData` and `@Payload`, which refuse every
+    ///   wrapper.
     public static func checkLines(
         _ members: MemberBlockItemListSyntax,
         isEnum: Bool,
+        readThrough: Set<String> = [],
         failed: inout Bool,
         _ context: some MacroExpansionContext
     ) -> String {
@@ -26,7 +35,7 @@ public enum PlainDataWalk {
                     let keyword = clause.poundKeyword.text
                     block.append(clause.condition.map { "\(keyword) \($0.trimmedDescription)" } ?? keyword)
                     if case .decls(let nested) = clause.elements {
-                        let inner = checkLines(nested, isEnum: isEnum, failed: &failed, context)
+                        let inner = checkLines(nested, isEnum: isEnum, readThrough: readThrough, failed: &failed, context)
                         if !inner.isEmpty { block.append(inner) }
                     }
                 }
@@ -61,11 +70,16 @@ public enum PlainDataWalk {
             // A computed property has no storage, whatever its attributes (`@inlinable`).
             if variable.bindings.allSatisfy(isComputed) { continue }
             // Any other attribute (a property wrapper, an attached macro) can change the storage.
-            if let wrapper = variable.attributes.first(where: { !isStorageNeutral($0) }) {
-                context.diagnose(Diagnostic(node: wrapper, message: PlainDataDiagnostic.wrapper))
+            // A wrapper in `readThrough` is read through: its wrapped value is checked.
+            if let wrapper = variable.attributes.first(where: { !isStorageNeutral($0) && !isReadThrough($0, readThrough) }) {
+                let message = readThrough.isEmpty
+                    ? PlainDataDiagnostic.wrapper
+                    : PlainDataDiagnostic.wrapperNotRead(readThrough.sorted())
+                context.diagnose(Diagnostic(node: wrapper, message: message))
                 failed = true
                 continue
             }
+            let isWrapped = variable.attributes.contains { isReadThrough($0, readThrough) }
             for binding in variable.bindings {
                 if isComputed(binding) { continue }
                 guard binding.pattern.is(IdentifierPatternSyntax.self) else {
@@ -74,6 +88,8 @@ public enum PlainDataWalk {
                     continue
                 }
                 guard let annotation = binding.typeAnnotation?.type ?? typeOfNextBinding(binding, in: variable) else {
+                    // The wrapper's generic constraint checks the inferred type at the field.
+                    if isWrapped { continue }
                     context.diagnose(Diagnostic(node: binding.pattern, message: PlainDataDiagnostic.annotation(binding.pattern.trimmedDescription)))
                     failed = true
                     continue
@@ -93,6 +109,27 @@ public enum PlainDataWalk {
     private static func isStorageNeutral(_ element: AttributeListSyntax.Element) -> Bool {
         guard case .attribute(let attribute) = element else { return false }
         return storageNeutralAttributes.contains(attribute.attributeName.trimmedDescription)
+    }
+
+    private static func isReadThrough(_ element: AttributeListSyntax.Element, _ names: Set<String>) -> Bool {
+        guard !names.isEmpty, case .attribute(let attribute) = element else { return false }
+        return names.contains(lastNameComponent(of: attribute))
+    }
+
+    /// An attribute's name without its module qualifier: `Sync` for `@Sync` and
+    /// `@SwiftStateTree.Sync`, `PlainData` for `@SwiftStateTurns.PlainData`.
+    public static func lastNameComponent(of attribute: AttributeSyntax) -> String {
+        if let member = attribute.attributeName.as(MemberTypeSyntax.self) { return member.name.text }
+        if let identifier = attribute.attributeName.as(IdentifierTypeSyntax.self) { return identifier.name.text }
+        return attribute.attributeName.trimmedDescription
+    }
+
+    /// Whether `attributes` holds an attribute named `name`, by its last name component.
+    public static func hasAttribute(named name: String, in attributes: AttributeListSyntax) -> Bool {
+        attributes.contains {
+            guard case .attribute(let attribute) = $0 else { return false }
+            return lastNameComponent(of: attribute) == name
+        }
     }
 
     private static func check(_ value: String) -> String {
@@ -304,6 +341,9 @@ public enum PlainDataDiagnostic: DiagnosticMessage {
     case pattern
     case reference
     case wrapper
+    /// A property wrapper other than the ones a macro reads through (`@StateNodeBuilder`: `Sync`,
+    /// `Internal`).
+    case wrapperNotRead([String])
     case closure
     case existential
     case tuple
@@ -330,6 +370,7 @@ public enum PlainDataDiagnostic: DiagnosticMessage {
         case .pattern: "@PlainData checks one stored property per binding; split the tuple pattern"
         case .reference: "a weak or unowned property holds a reference, which isn't plain data"
         case .wrapper: "@PlainData can't check a property wrapper's storage; store the value itself"
+        case .wrapperNotRead(let names): "the PlainData check reads only \(names.map { "@" + $0 }.joined(separator: " and ")) fields; another property wrapper's storage can't be checked"
         case .closure: "a function type isn't plain data: it can call through to anything"
         case .existential: "an opaque type isn't plain data, and neither is an existential nested in it: its value can be a class"
         case .metatype: "a metatype isn't plain data; store a name or an id that a lookup turns into the type"

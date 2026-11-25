@@ -27,12 +27,16 @@ import SwiftStateTurns
 /// An `@Sync` property whose declared type can hold a value of any type is a compile error
 /// (#535): `any P`, `Any`, `AnyObject` or a composition `P & Q` at any depth (`[String: Any]`,
 /// `(any P)?`), and `AnyHashable` and `AnyCodable` by name. Use a concrete type, or an enum with
-/// a case for each kind of value. `@Internal` properties aren't synced; the macro doesn't inspect
-/// them, and the compiler holds them to `PlainData`. Not caught here: a
-/// protocol spelled bare, a typealias that names an existential, and a type that conforms to
-/// `StateNodeProtocol` by hand; registration checks what a default instance holds, and a value
-/// it can't see ends the land at its first conversion that throws. See
-/// `docs/core/sync.md#what-registration-refuses`.
+/// a case for each kind of value.
+///
+/// The state is `PlainData` (`StateNodeProtocol` refines it): the macro writes the
+/// `_plainDataCheck` member, with one check per `@Sync` and `@Internal` field on its wrapped
+/// value, `#if` members included, so a class, a closure, `Any` or a nested type without
+/// `@PlainData` is a compile error at the field. `Sync` and `Internal` require a `PlainData`
+/// value, so a protocol spelled bare or a typealias that names an existential is refused there
+/// too, and a generic node's parameter needs `T: PlainData`. Another property wrapper on a field
+/// is refused, and so is `@PlainData` beside this macro (it writes the same member). A node
+/// that conforms by hand uses `@PlainData`. See `docs/core/sync.md#what-registration-refuses`.
 @attached(member, names: arbitrary)
 public macro StateNodeBuilder() = #externalMacro(
     module: "SwiftStateTreeMacros",
@@ -76,13 +80,13 @@ public macro StateNodeBuilder() = #externalMacro(
 ///
 /// A stored property whose declared type can hold a value of any type is a compile error
 /// (#535): `any P`, `Any`, `AnyObject` or a composition `P & Q` at any depth (`[String: Any]`,
-/// `(any P)?`), and `AnyHashable` and `AnyCodable` by name. Registration also looks into the
-/// value's storage through the declared types (`SnapshotConvertibleStoredFields`), also inside
-/// an empty collection; a property without a type annotation is checked only through a default
-/// instance's value. Not caught: a
-/// protocol spelled bare and a typealias that names an existential; such a value ends the land
-/// at its first conversion that throws. See `docs/core/sync.md#what-registration-refuses`.
-@attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, AtomicSnapshotValue, SnapshotFieldListProvider, SnapshotConvertibleStoredFields, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)), named(atomicLeafPaths), named(getFieldMetadata), named(snapshotFieldMetadata), named(_snapshotStoredFields))
+/// `(any P)?`), and `AnyHashable` and `AnyCodable` by name.
+///
+/// The type is `PlainData`: the macro also writes the conformance and the checks `@PlainData`
+/// writes (every stored property needs a type annotation), so one attribute makes a state value
+/// type. It writes neither when `@PlainData` or `@StateNodeBuilder` is beside it, since those
+/// write the witness. See `docs/core/sync.md#what-registration-refuses`.
+@attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, AtomicSnapshotValue, SnapshotFieldListProvider, SnapshotConvertibleStoredFields, PlainData, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)), named(atomicLeafPaths), named(getFieldMetadata), named(snapshotFieldMetadata), named(_snapshotStoredFields), named(_plainDataCheck))
 public macro SnapshotConvertible(atomic: Bool = false) = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "SnapshotConvertibleMacro"

@@ -136,14 +136,14 @@ public extension SyncPolicy {
 ///
 /// **Types the sync can't check are refused (#535).** Under `@StateNodeBuilder`, a field whose
 /// declared type spells `any P`, `Any`, `AnyObject` or `P & Q` at any depth, or names
-/// `AnyHashable` or `AnyCodable`, is a compile error. Registration refuses a key type that
-/// doesn't convert to a string and those open types where they appear in nested storage. A
-/// protocol spelled bare, a typealias that names an existential, a plain struct's own property
-/// typed `Any` or `any P`, and a hand-written conversion aren't seen: a value there that can't
-/// be converted ends the land at its first sync. See
-/// `docs/core/sync.md#what-registration-refuses`.
+/// `AnyHashable` or `AnyCodable`, is a compile error. The value is `PlainData`, so a
+/// protocol spelled bare, a typealias that names an existential, a class, and a nested type
+/// whose own property is `Any` don't compile either; a nested user type needs `@PlainData` (or
+/// `@SnapshotConvertible`). Registration refuses a key type that doesn't convert to a string.
+/// See `docs/core/sync.md#what-registration-refuses`.
 @propertyWrapper
-public struct Sync<Value: Sendable>: Sendable {
+@PlainData
+public struct Sync<Value: PlainData & Sendable>: Sendable {
     private var _wrappedValue: Value
     private var _isDirty: Bool = false
     
@@ -218,6 +218,7 @@ public struct Sync<Value: Sendable>: Sendable {
 /// exception: a `Data(bytesNoCopy:…)` with a custom deallocator, which the turns guide names). A reference the
 /// land needs, such as a cache or a service handle, goes in the land's services.
 @propertyWrapper
+@PlainData
 public struct Internal<Value: PlainData & Sendable>: Sendable {
     public var wrappedValue: Value
 

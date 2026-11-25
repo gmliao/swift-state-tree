@@ -83,6 +83,36 @@ public enum PlainDataExtension {
         return [ext]
     }
 
+    /// The `_plainDataCheck` witness as a member of `declaration`, for a member macro
+    /// (`@StateNodeBuilder`): the same checks and the same access as `build`'s extension, with
+    /// the wrappers in `readThrough` read through (`PlainDataWalk.checkLines`). A generic type
+    /// gets no `where` clause: a member can't carry one, so its parameters carry the constraint
+    /// themselves (the wrappers' `Value: PlainData` asks for it at the field). Nil after a
+    /// diagnostic.
+    public static func memberWitness(
+        of declaration: StructDeclSyntax,
+        readThrough: Set<String>,
+        in context: some MacroExpansionContext
+    ) -> DeclSyntax? {
+        var failed = false
+        let checks = PlainDataWalk.checkLines(
+            declaration.memberBlock.members, isEnum: false, readThrough: readThrough, failed: &failed, context)
+        if failed { return nil }
+        let access = witnessAccess(of: declaration, in: context)
+        let body = checks.isEmpty ? "" : """
+            @available(*, deprecated, message: "the PlainData checks; never called")
+            func check(_ value: inout Self) {
+            \(checks)
+            }
+            """
+        return """
+            /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+            \(raw: access)static func _plainDataCheck() {
+                \(raw: body)
+            }
+            """
+    }
+
     /// Cases that share a base name (`case item(count: Int)` and `case item(label: String)`) are
     /// refused: `if case let .item(v0) = value` is ambiguous, and a labelled pattern doesn't
     /// pick one when the arities differ.

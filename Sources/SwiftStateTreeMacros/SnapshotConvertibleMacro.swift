@@ -5,6 +5,7 @@
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
+import PlainDataMacroSupport
 
 /// Macro that automatically generates `SnapshotValueConvertible` and `SnapshotValueDecodable`
 /// protocol conformances.
@@ -131,6 +132,31 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         )
 
         var extensions: [ExtensionDeclSyntax] = [convertibleExtension, storedFieldsExtension]
+
+        // A state value type is PlainData: this macro writes the conformance and the
+        // checks, as `@Payload` does, unless `@PlainData` beside it writes them. Beside
+        // `@StateNodeBuilder`, whose member is the witness, it writes only the conformance: the
+        // compiler leaves a conformance this macro's role declares to its expansion, even one
+        // `StateNodeProtocol` implies, so an expansion without it doesn't conform. Any spelling
+        // of either name.
+        let siblingNames = declaration.attributes.compactMap {
+            $0.as(AttributeSyntax.self).map(PlainDataWalk.lastNameComponent(of:))
+        }
+        if siblingNames.contains("PlainData") {
+            // `@PlainData` writes the conformance and the checks.
+        } else if siblingNames.contains("StateNodeBuilder") {
+            if protocols.contains(where: { $0.trimmedDescription.hasSuffix("PlainData") }) {
+                extensions.append(try ExtensionDeclSyntax("extension \(type.trimmed): SwiftStateTurns.PlainData {}"))
+            }
+        } else {
+            extensions += PlainDataExtension.build(
+                of: node,
+                attachedTo: declaration,
+                providingExtensionsOf: type,
+                conformingTo: protocols.filter { $0.trimmedDescription.hasSuffix("PlainData") },
+                in: context
+            )
+        }
 
         // `@SnapshotConvertible(atomic: true)`: declare the value atomic, with its leaf paths in
         // declaration order (a nested atomic value contributes its own leaves, prefixed).
