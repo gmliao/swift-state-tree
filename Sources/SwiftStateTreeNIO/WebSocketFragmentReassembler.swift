@@ -15,8 +15,13 @@ import SwiftStateTreeTransport
 /// - Last frame: opcode .continuation with fin=true
 ///
 /// Single-frame messages (fin=true) are passed through immediately.
+///
+/// Two size limits apply to a message: a fragmented message is held to `maxFragmentSize`
+/// (1 MiB) here, and a single unfragmented frame only to the server's `maxFrameSize`
+/// (`NIOWebSocketServerConfiguration`, 16 MiB by default), which NIO's frame decoder enforces.
 enum WebSocketFragmentReassembler {
-    /// Maximum total size for a reassembled fragmented message (prevents memory exhaustion)
+    /// Maximum total size for a reassembled fragmented message (prevents memory exhaustion).
+    /// An unfragmented frame isn't held to it: the server's `maxFrameSize` bounds that one.
     static let maxFragmentSize = 1 << 20  // 1 MiB
 
     /// A fragmented message being reassembled: the bytes so far, and the type its first frame
@@ -33,9 +38,16 @@ enum WebSocketFragmentReassembler {
         case complete(Data, WebSocketFrameKind)
         /// Frame consumed, waiting for more fragments
         case incomplete
-        /// Frame ignored (e.g. continuation without preceding fragment, or protocol error)
+        /// Frame ignored: an opcode that isn't a data frame's. The session handler routes only
+        /// data frames here.
         case ignored
-        /// Fragment exceeded max size, buffer reset
+        /// A fragment sequence RFC 6455 §5.4 forbids: a continuation frame with no unfinished
+        /// message to continue, or a text or binary opener while a message is unfinished. The
+        /// connection fails with 1002. The unfinished message, if any, is dropped.
+        case badFragmentSequence
+        /// A fragmented message past `maxFragmentSize`, at its first fragment or at a later one
+        /// (the last included): the connection fails with 1009 (RFC 6455 §7.4.1). The
+        /// unfinished message is dropped.
         case exceededMaxSize
         /// A text message whose bytes aren't valid UTF-8: the connection fails with 1007
         /// (RFC 6455 §8.1). Checked once the message is complete, so a sequence split across
@@ -56,8 +68,10 @@ enum WebSocketFragmentReassembler {
     ) -> ProcessResult {
         switch frame.opcode {
         case .binary, .text:
+            // A new message can't start before the unfinished one ends (RFC 6455 §5.4).
             if fragmentBuffer != nil {
                 fragmentBuffer = nil
+                return .badFragmentSequence
             }
             let kind: WebSocketFrameKind = frame.opcode == .text ? .text : .binary
             if frame.fin {
@@ -67,8 +81,9 @@ enum WebSocketFragmentReassembler {
             }
 
         case .continuation:
+            // A continuation must continue an unfinished message (RFC 6455 §5.4).
             guard var partial = fragmentBuffer else {
-                return .ignored
+                return .badFragmentSequence
             }
             var frameData = frame.unmaskedData
             let newSize = partial.bytes.readableBytes + frameData.readableBytes

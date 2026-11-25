@@ -12,8 +12,8 @@ export const ACTION_IDS = {
   "reevaluation-monitor": ["PauseVerification","ResumeVerification","StartVerification"] as const,
   "resolver-test": ["CallService"] as const,
   "resolver-test-replay": ["CallService"] as const,
-  "visibility-test": ["ParkEntities","PlaceEntity","SetMotion","SetMotionWide"] as const,
-  "visibility-test-replay": ["ParkEntities","PlaceEntity","SetMotion","SetMotionWide"] as const,
+  "visibility-test": ["ParkEntities","PlaceEntity","SetMotion","SetMotionResolved","SetMotionWide"] as const,
+  "visibility-test-replay": ["ParkEntities","PlaceEntity","SetMotion","SetMotionResolved","SetMotionWide"] as const,
 } as const
 export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
 export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
@@ -988,6 +988,20 @@ export const SCHEMA = {
         "nodeKind": "leaf"
       }
     },
+    "SetMotionResolvedAction": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
     "SetMotionWideAction": {
       "properties": {
         "enabled": {
@@ -1911,6 +1925,9 @@ export const SCHEMA = {
         "SetMotion": {
           "$ref": "#/defs/SetMotionAction"
         },
+        "SetMotionResolved": {
+          "$ref": "#/defs/SetMotionResolvedAction"
+        },
         "SetMotionWide": {
           "$ref": "#/defs/SetMotionWideAction"
         }
@@ -1971,6 +1988,9 @@ export const SCHEMA = {
         "SetMotion": {
           "$ref": "#/defs/SetMotionAction"
         },
+        "SetMotionResolved": {
+          "$ref": "#/defs/SetMotionResolvedAction"
+        },
         "SetMotionWide": {
           "$ref": "#/defs/SetMotionWideAction"
         }
@@ -2021,7 +2041,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "1de90ab3b2f07bb3",
+  "schemaHash": "064c8a5ef1865ab0",
   "version": "0.1.0",
   "x-stateTree": {
     "atomicEncoding": "positional"

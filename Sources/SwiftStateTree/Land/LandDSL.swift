@@ -654,7 +654,8 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
 /// The handler is executed when the Land is being destroyed due to being empty.
 /// This provides a convenient way to perform cleanup actions specific to empty-room destruction.
 /// The handler is executed before `OnFinalize`, allowing you to distinguish between
-/// different destruction scenarios.
+/// different destruction scenarios. It also runs on a live forced shutdown (e.g., server
+/// restart). A reevaluation keeper skips the handler entirely (#826).
 ///
 /// - Parameters:
 ///   - duration: The duration to wait after the last player leaves before destroying.
@@ -776,6 +777,9 @@ public func OnInitialize<State: StateNodeProtocol>(
 /// This handler is executed before the Land is destroyed, while state is still mutable.
 /// It can use resolvers to save final state or perform cleanup.
 ///
+/// A re-evaluation (replay) keeper runs none of the destroy handlers: the record holds no
+/// finalize event, so replay has nothing to check them against.
+///
 /// The body can't throw (#593): the land is ending, so nothing would act on a refusal, and a
 /// body that calls throwing code handles its errors itself. A resolver that throws skips the
 /// body; the land's teardown goes on.
@@ -796,6 +800,9 @@ public func OnFinalize<State: StateNodeProtocol>(
 ///
 /// This handler is executed after OnFinalize, when state is no longer mutable.
 /// Use this for async cleanup operations (e.g., closing database connections, sending metrics).
+///
+/// A re-evaluation (replay) keeper runs none of the destroy handlers, including AfterFinalize:
+/// the record holds no finalize event, so replay has nothing to check them against.
 ///
 /// - Parameter body: The async closure to execute with state snapshot and context.
 public func AfterFinalize<State: StateNodeProtocol>(
@@ -911,7 +918,7 @@ func makeActionHandler<State: StateNodeProtocol, A: ActionPayload>(
             guard let action = anyAction as? A else {
                 throw LandError.invalidActionType
             }
-            return AnyCodable(try invoke(&state, action, ctx))
+            return try invoke(&state, action, ctx)
         },
         resolvers: resolvers
     )

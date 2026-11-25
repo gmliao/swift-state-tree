@@ -397,10 +397,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         // RSV1–3 MUST be 0 unless a negotiated extension defines them (RFC 6455 §5.2).
         if frame.rsv1 || frame.rsv2 || frame.rsv3 {
-            fragmentBuffer = nil
-            noteCloseCause(.error, code: .protocolError)
-            closeOnLoop(code: .protocolError)
-            enqueueDisconnect()
+            failConnection(code: .protocolError)
             return
         }
 
@@ -419,11 +416,18 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         default:
             // Unknown or reserved opcode: Fail the connection (RFC 6455 §5.2).
-            fragmentBuffer = nil
-            noteCloseCause(.error, code: .protocolError)
-            closeOnLoop(code: .protocolError)
-            enqueueDisconnect()
+            failConnection(code: .protocolError)
         }
+    }
+
+    /// Fails the connection for a peer's protocol error (RFC 6455 §7.1.7): drops the unfinished
+    /// message, records the cause as `.error` with `code`, sends the close frame and hands the
+    /// disconnect to the transport now, without waiting for the close frame's write.
+    private func failConnection(code: WebSocketErrorCode) {
+        fragmentBuffer = nil
+        noteCloseCause(.error, code: code)
+        closeOnLoop(code: code)
+        enqueueDisconnect()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
@@ -464,18 +468,22 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
                 ]
             )
 
+        case .badFragmentSequence:
+            // An orphan continuation or a new opener mid-message (RFC 6455 §5.4).
+            failConnection(code: .protocolError)
+
         case .exceededMaxSize:
+            // A fragmented message too big to reassemble (RFC 6455 §7.4.1). Failing here, not
+            // only dropping it, keeps its later continuations from reading as orphans (1002).
             logger.warning(
                 "Fragmented message exceeded max size (\(WebSocketFragmentReassembler.maxFragmentSize))",
                 metadata: ["sessionID": .string(sessionID.rawValue)]
             )
+            failConnection(code: .messageTooLarge)
 
         case .invalidUTF8:
             // A text message that isn't UTF-8 fails the connection (RFC 6455 §8.1).
-            fragmentBuffer = nil
-            noteCloseCause(.error, code: .dataInconsistentWithMessage)
-            closeOnLoop(code: .dataInconsistentWithMessage)
-            enqueueDisconnect()
+            failConnection(code: .dataInconsistentWithMessage)
         }
     }
 

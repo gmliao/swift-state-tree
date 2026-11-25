@@ -41,6 +41,7 @@ export type ResolverTestState = { applied: number; joins: number; lastResult: st
 export type ResumeVerificationAction = { [key: string]: any }
 export type ResumeVerificationResponse = { [key: string]: any }
 export type SetMotionAction = { enabled: boolean }
+export type SetMotionResolvedAction = { enabled: boolean }
 export type SetMotionWideAction = { enabled: boolean }
 export type ShootEvent = { [key: string]: any }
 export type StartVerificationAction = { landType: string; recordFilePath: string }

@@ -970,6 +970,20 @@
         "nodeKind" : "leaf"
       }
     },
+    "SetMotionResolvedAction" : {
+      "properties" : {
+        "enabled" : {
+          "type" : "boolean"
+        }
+      },
+      "required" : [
+        "enabled"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "SetMotionWideAction" : {
       "properties" : {
         "enabled" : {
@@ -1931,6 +1945,9 @@
         "SetMotion" : {
           "$ref" : "#\/defs\/SetMotionAction"
         },
+        "SetMotionResolved" : {
+          "$ref" : "#\/defs\/SetMotionResolvedAction"
+        },
         "SetMotionWide" : {
           "$ref" : "#\/defs\/SetMotionWideAction"
         }
@@ -1995,6 +2012,9 @@
         "SetMotion" : {
           "$ref" : "#\/defs\/SetMotionAction"
         },
+        "SetMotionResolved" : {
+          "$ref" : "#\/defs\/SetMotionResolvedAction"
+        },
         "SetMotionWide" : {
           "$ref" : "#\/defs\/SetMotionWideAction"
         }
@@ -2049,7 +2069,7 @@
       }
     }
   },
-  "schemaHash" : "1de90ab3b2f07bb3",
+  "schemaHash" : "064c8a5ef1865ab0",
   "version" : "0.1.0",
   "x-stateTree" : {
     "atomicEncoding" : "positional"
