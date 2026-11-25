@@ -4,8 +4,9 @@ import Testing
 // These types are not Equatable on purpose, so each warns at compile time; the test is about the
 // list a land logs.
 
+@PlainData
 struct FallbackListBlob: Sendable, Codable {
-    var n = 0
+    var n: Int = 0
 }
 
 /// A class in synced state, which registration refuses (#464): only its field shape is read
@@ -14,6 +15,8 @@ final class FallbackListBox: @unchecked Sendable, Codable, Equatable {
     var n = 0
     static func == (lhs: FallbackListBox, rhs: FallbackListBox) -> Bool { lhs.n == rhs.n }
 }
+extension FallbackListBox: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class the runtime walk must refuse (#464)
+
 
 @StateNodeBuilder
 struct FallbackListRow: StateNodeProtocol {

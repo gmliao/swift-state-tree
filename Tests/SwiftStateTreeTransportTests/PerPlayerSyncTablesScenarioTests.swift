@@ -17,6 +17,7 @@ import SwiftStateTreeTestSupport
 // MARK: - Lands
 
 /// A value whose conversion throws for a negative `n`.
+@PlainData
 struct PPScenarioRisky: Equatable, Sendable, SnapshotValueConvertible {
     var n: Int = 0
     func toSnapshotValue() throws -> SnapshotValue {

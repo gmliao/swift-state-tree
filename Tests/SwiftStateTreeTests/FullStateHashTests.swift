@@ -149,6 +149,7 @@ struct FullStateHashTests {
     }
 }
 
+@PlainData
 struct CollidingKey: Hashable, Sendable, CustomStringConvertible {
     let id: Int
     var description: String { "same" }
@@ -248,6 +249,7 @@ struct NodeHolder: Sendable {
     var node: FullHashMonster = FullHashMonster()
 }
 
+@PlainData
 enum NodeChoice: Sendable {
     case none
     case one(FullHashMonster)

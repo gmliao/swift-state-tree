@@ -16,6 +16,7 @@ import SwiftStateTreeTestSupport
 /// change (a dirty-tracking miss). Synced state can't hold a class (#464); this struct
 /// conforms to `SnapshotValueConvertible`, which promises value semantics, and breaks that
 /// promise on purpose.
+@PlainData
 struct VerifierBox: Codable, Sendable, Equatable, SnapshotValueConvertible {
     private let slot: Int
 

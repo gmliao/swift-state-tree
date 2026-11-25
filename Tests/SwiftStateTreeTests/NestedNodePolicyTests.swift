@@ -518,6 +518,7 @@ struct NestingRecursiveNode: StateNodeProtocol {
 }
 
 /// A plain struct (not a state node) holding a per-player node: the encoder walks it like a child.
+@PlainData
 struct NestingPlainBox: Sendable {
     var label: String = "box"
     var node: PlainPerPlayerProbeNode = PlainPerPlayerProbeNode()
@@ -537,6 +538,7 @@ struct NestingHiddenBoxRoot: StateNodeProtocol {
 }
 
 /// A plain struct of player-independent values under a broadcast field is fine.
+@PlainData
 struct NestingPlainStats: Sendable {
     var hp: Int = 1
     var node: PlainProbeNode = PlainProbeNode()
@@ -551,6 +553,7 @@ struct NestingPlainStatsRoot: StateNodeProtocol {
 
 /// A plain struct that reaches per-player nodes through containers: the encoder gets to each
 /// node through `SnapshotValue.make`'s node branch.
+@PlainData
 struct NestingNodeListBox: Sendable {
     var nodes: [PlainPerPlayerProbeNode] = []
     var byKey: [String: PlainPerPlayerProbeNode] = [:]
@@ -574,6 +577,8 @@ final class NestingCyclicObject: @unchecked Sendable {
         return object
     }
 }
+extension NestingCyclicObject: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class the runtime walk must refuse (#464)
+
 
 @StateNodeBuilder
 struct NestingCyclicRoot: StateNodeProtocol {

@@ -18,6 +18,7 @@ struct EndToEndTestState: StateNodeProtocol {
     var messageCount: Int = 0
 }
 
+@PlainData
 struct EndToEndPlayerInfo: Codable, Sendable {
     let playerID: String
     let isGuest: Bool

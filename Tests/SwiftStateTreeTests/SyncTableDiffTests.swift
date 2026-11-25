@@ -32,6 +32,7 @@ struct TableLeaf: StateNodeProtocol {
 }
 
 /// A value whose conversion throws for a negative `n`.
+@PlainData
 struct TableThrowing: Equatable, Sendable, SnapshotValueConvertible {
     var n: Int = 0
     func toSnapshotValue() throws -> SnapshotValue {
@@ -41,6 +42,7 @@ struct TableThrowing: Equatable, Sendable, SnapshotValueConvertible {
 }
 
 /// A value that isn't `Equatable` (converted by reflection).
+@PlainData
 struct TableNonEquatable: Sendable {
     var n: Int = 0
 }
@@ -77,14 +79,15 @@ struct TableRoot: StateNodeProtocol {
 }
 
 /// A key whose path components collide (`description` is constant).
+@PlainData
 struct TableCollidingKey: Hashable, Sendable, CustomStringConvertible {
     var id: Int
     var description: String { "k" }
 }
 
-/// A generic holder: `T` is unconstrained, so its field resolves to the generic value overload.
+/// A generic holder: `T` is constrained only to PlainData, so its field resolves to the generic value overload.
 @StateNodeBuilder
-struct TableGenericBox<T: Sendable>: StateNodeProtocol {
+struct TableGenericBox<T: PlainData & Sendable>: StateNodeProtocol {
     @Sync(.broadcast) var items: [String: T] = [:]
 }
 
@@ -98,6 +101,7 @@ struct TableShapes: StateNodeProtocol {
 }
 
 /// A value whose `==` ignores `b`, which its snapshot holds.
+@PlainData
 struct TableLax: Sendable, SnapshotValueConvertible, Equatable {
     var a: Int = 0
     var b: Int = 0
@@ -115,6 +119,8 @@ final class TableBox: @unchecked Sendable, SnapshotValueConvertible {
     var n: Int = 0
     func toSnapshotValue() throws -> SnapshotValue { .object(["n": .int(n)]) }
 }
+extension TableBox: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class the runtime walk must refuse (#464)
+
 
 /// A node holding a reference-typed field.
 @StateNodeBuilder
@@ -175,6 +181,7 @@ final class TableClassNode: StateNodeProtocol, @unchecked Sendable {
     static var hasPlayerDependentSyncFields: Bool { false }
     static func _syncTableFields() -> [SyncTableField<TableClassNode>]? { [] }
 }
+extension TableClassNode: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class node the runtime walk must refuse (#464)
 
 // MARK: - Harness
 
