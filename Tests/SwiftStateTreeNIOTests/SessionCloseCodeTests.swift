@@ -109,6 +109,25 @@ struct SessionCloseCodeTests {
         #expect(try closeFrameBytes(code: .normalClosure, reason: "").suffix(4) == [0x88, 0x02, 0x03, 0xE8])
     }
 
+    @Test("The application codes are distinct, none is a reserved or unassigned one, and a superseded session closes with 4017 (#861)")
+    func applicationCodeTable() {
+        let codes: [UInt16] = [
+            SessionClose.Code.sendBacklog, SessionClose.Code.slowConsumer, SessionClose.Code.unresponsive,
+            SessionClose.Code.unencodableView, SessionClose.Code.landStopped, SessionClose.Code.landFailed,
+            SessionClose.Code.superseded,
+        ]
+        #expect(Set(codes).count == codes.count, "codes: \(codes)")
+        // 4009 and 4015 are unassigned, 4013 is the TypeScript SDK's (invalidRowEntry).
+        for code in codes {
+            #expect(![4009, 4013, 4015].contains(code), "\(code) is reserved")
+        }
+        #expect(SessionClose.Code.superseded == 4017)
+        let close = SessionClose.superseded
+        #expect(close.code == 4017)
+        #expect(close.reason == "logged in elsewhere")
+        #expect(close.closeGrace == .milliseconds(500))
+    }
+
     @Test("A reason is cut to 123 UTF-8 bytes at a character boundary")
     func reasonTruncation() {
         #expect(SessionClose(code: 4010, reason: String(repeating: "a", count: 200)).reason.utf8.count == 123)
