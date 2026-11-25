@@ -1,6 +1,6 @@
 # K1b-5a: turn bodies on the model, the turn side, and the staging rule (#700)
 
-**Status:** rev 3, plan only, for Review. Rev 2.1 corrected three §3.1 rows found by the LSP check of rev 2 (listed at the end of §3.1). Rev 3 answers Review's NOT GO on rev 2.1 (3 must-fix, 6 should, 2 nits); the Swift-semantics points are settled by a probe (§2.1). This is the first half of K1b-5 (plan rev 2.1, `2026-11-25-k1b5-turn-bodies-and-segments.md`), split as that plan's §9 proposed and Main approved. K1b-5b, the segments, follows once this plan is GO, and its PR opens after this one merges.
+**Status:** rev 3, the record. Review's verdict on rev 3 was NOT GO on semantics and ordering, so K1b-5a went code-first (a draft PR of its skeleton); this plan stays as the design record. Its probe section is `## Probes`, at the end. Rev 2.1 corrected three §3.1 rows found by the LSP check of rev 2 (listed at the end of §3.1). Rev 3 answers Review's NOT GO on rev 2.1 (3 must-fix, 6 should, 2 nits); the Swift-semantics points are settled by a probe (Probes). This is the first half of K1b-5 (plan rev 2.1, `2026-11-25-k1b5-turn-bodies-and-segments.md`), split as that plan's §9 proposed and Main approved. K1b-5b, the segments, follows once this plan is GO, and its PR opens after this one merges.
 
 **Base:** #853's head 5d53571a (K1b-3, on #835's K1a). Its `LandKeeper.swift` has the same line numbers as a87e0278, which K1b-4's rev 2.1 names. K1b-5a needs K1b-4.
 
@@ -10,7 +10,7 @@
 
 **From rev 2.1 (Review's NOT GO: 3 must-fix, 6 should, 2 nits):**
 - MF1: the sentinel's failure is applied **inside the body, right after each port call returns**, before anything decides success (§3.6). `withModel`'s check stays only as a backstop.
-- MF2: `withModel` can't return a handle its flush creates. `withModelSubmitting` flushes explicitly and returns `(result, handle)` (§2, §2.1).
+- MF2: `withModel` can't return a handle its flush creates. `withModelSubmitting` flushes explicitly and returns `(result, handle)` (§2, Probes).
 - MF3: M3 runs on the settle, and M7 reads the gate inside the stub (§5).
 - S1: the bound on what `cancel()` runs synchronously (§3.5).
 - S2: the drain task's actor-isolated entry (§3.2).
@@ -85,7 +85,7 @@ private func withModel<R>(_ step: (inout KeeperModel<State>, inout KeeperTurnSid
 - **The flush consumes the outputs,** so they flush exactly once, even when a step flushed part of them already (§3.2).
 - **`TurnOutputs`** is a non-plain struct: **one ordered list of effects**, in the order the body staged them. Every count, position, index or decision those effects depend on is already in the model when they are staged (§3.2). A turn with nothing staged leaves the list unallocated.
 - **The handler step.** K1b-4's `withHandlerStep(ctx) { m, ctx in … }` becomes a `mutating` method on the model. The body calls it on `self`, so the single access to the model is the body's own.
-- **The result is fixed before the `defer`s run.** `return step(…)` evaluates the step's result first, and then the `defer`s flush. So `withModel` can't return anything its flush creates, such as a submission's `Task` (§2.1, case 1).
+- **The result is fixed before the `defer`s run.** `return step(…)` evaluates the step's result first, and then the `defer`s flush. So `withModel` can't return anything its flush creates, such as a submission's `Task` (Probes, case 1).
 
 **`withModelSubmitting`** is for the one caller that needs a handle from the flush: `submitTurnRecord`. It runs the step in an inner scope that lowers the depth, flushes explicitly, and returns `(result, handle)`. The flush returns the handle of the last submission it made. A consuming `defer` covers the throw path, so a throw still flushes once:
 
@@ -113,40 +113,6 @@ private func withModelSubmitting<R>(_ step: (inout KeeperModel<State>, inout Kee
 3. the hold `.turnRecord` is entered **even when the handle is nil** (no recorder);
 4. it awaits **that exact task**, never the tracker's tail looked up after the hold, which could be another turn's submission;
 5. then the driver resumes the consumed waiters.
-
-### 2.1 The probe
-
-A one-file probe pins these semantics with `swiftc -swift-version 6` (Apple Swift 6.4.2), with no package build: `2026-11-25-k1b5a-probe.swift`, next to this plan (Notes isn't a SwiftPM target, so the file is not compiled by `swift build`). Run it with `swiftc -swift-version 6 -parse-as-library 2026-11-25-k1b5a-probe.swift -o probe && ./probe`. Its keeper, model, side and outputs mirror §2's shapes, and the recorder Tasks append to a locked trace. 30 runs, the same trace each time:
-
-```
-== MF2 rev 2: return value vs defer
-  result fixed
-  submit draft
-  defer flushed, handle made after the result was fixed
-== MF2 rev 3: withModelSubmitting + .turnRecord
-  depth 0 before the flush
-  submit ordinary draft
-  .turnRecord hold (handle made)
-  recorded ordinary draft
-  awaited that exact task; resume consumed waiters
-== MF2 rev 3: throw path
-  submit staged before throw
-  throw path flushed
-  caught; depth 0
-== MF1 rev 2: failure applied in the defer
-  sentinel: mailbox posted, gate closed
-  submit sync-stream draft
-  submit endTurn
-  submit terminal entry keeperReentry (late)
-  returned committed
-== MF1 rev 3: failure applied after the port call
-  sentinel: mailbox posted, gate closed
-  submit terminal entry keeperReentry
-  submit endTurn
-  returned landFailed
-```
-
-The "recorded …" lines come from the recorder Tasks and interleave freely; they are left out above except where the case awaits them. The first version of the probe crashed in about half its runs. Its trace was an unlocked array appended from the recorder Tasks and from the actor, a data race in the probe itself. A lock fixed it, and the 30 runs above have no crash.
 
 ## 3. What a body reaches outside the model
 
@@ -352,8 +318,8 @@ A port call the keeper makes during a body can call back into it synchronously. 
   - `runSyncPhaseInTurn` in `runTurnOutputs` (:4951) and in the sync-only turn (:5427);
   - `runSettlePhaseInTurn` in the settle (:1868).
 
-  The check runs before `submitSyncStream`, before `applyInTurnSyncResult`, before the input turn's `endedInTurn` (:6069), and before the tickless `endTurn` comparison (:1889, :5432). If the mailbox holds a failure, the body applies it (`applyPendingTransportFailure` → `failLand`) and returns `.landFailed` (the sync-only turn and `syncTurnNow`) or `.failed` (the settle). The input turn's `endedInTurn` then reads the failure, so consumed callers get `landClosed`. The terminal entry is staged before the turn's `endTurn` (probe, §2.1, case 5).
-- **Why not later.** A check placed after the body has computed its result can't change that result (probe, §2.1, case 4). Rev 2 applied it in `withModel`'s `defer`. By then:
+  The check runs before `submitSyncStream`, before `applyInTurnSyncResult`, before the input turn's `endedInTurn` (:6069), and before the tickless `endTurn` comparison (:1889, :5432). If the mailbox holds a failure, the body applies it (`applyPendingTransportFailure` → `failLand`) and returns `.landFailed` (the sync-only turn and `syncTurnNow`) or `.failed` (the settle). The input turn's `endedInTurn` then reads the failure, so consumed callers get `landClosed`. The terminal entry is staged before the turn's `endTurn` (Probes, case 5).
+- **Why not later.** A check placed after the body has computed its result can't change that result (Probes, case 4). Rev 2 applied it in `withModel`'s `defer`. By then:
   - `runSyncOnlyTurn` had returned `.committed`, and the adapter's `debugResumeInTurn` (TA:6403–6425) goes on to the join sync;
   - the settle had returned `.settled`, and `debugSettle` (TA:6252–6288) publishes a settled snapshot of a failed land;
   - the input turn's `endedInTurn` had read `failure == nil`, so consumed callers got `.success`;
@@ -456,3 +422,39 @@ In K2-1 the step's outputs flush after the step, not before each direct call. K2
 - **`completeShutdownTurn`:** the dropped callers' resumes move after `drainFlag.set(cause:)`.
 - **Job cancellation:** the slot's resume moves after `cancel()`.
 - **Mutant 2's staged `closeOutputs`** becomes a live mutant there: K2 draft 2's reason for a direct close.
+
+## Probes
+
+A one-file probe pins these semantics with `swiftc -swift-version 6` (Apple Swift 6.4.2), with no package build: `2026-11-25-k1b5a-probe.swift`, next to this plan (Notes isn't a SwiftPM target, so the file is not compiled by `swift build`). Run it with `swiftc -swift-version 6 -parse-as-library 2026-11-25-k1b5a-probe.swift -o probe && ./probe`. Its keeper, model, side and outputs mirror §2's shapes, and the recorder Tasks append to a locked trace. 30 runs, the same trace each time:
+
+```
+== MF2 rev 2: return value vs defer
+  result fixed
+  submit draft
+  defer flushed, handle made after the result was fixed
+== MF2 rev 3: withModelSubmitting + .turnRecord
+  depth 0 before the flush
+  submit ordinary draft
+  .turnRecord hold (handle made)
+  recorded ordinary draft
+  awaited that exact task; resume consumed waiters
+== MF2 rev 3: throw path
+  submit staged before throw
+  throw path flushed
+  caught; depth 0
+== MF1 rev 2: failure applied in the defer
+  sentinel: mailbox posted, gate closed
+  submit sync-stream draft
+  submit endTurn
+  submit terminal entry keeperReentry (late)
+  returned committed
+== MF1 rev 3: failure applied after the port call
+  sentinel: mailbox posted, gate closed
+  submit terminal entry keeperReentry
+  submit endTurn
+  returned landFailed
+```
+
+The "recorded …" lines come from the recorder Tasks and interleave freely; they are left out above except where the case awaits them. The first version of the probe crashed in about half its runs. Its trace was an unlocked array appended from the recorder Tasks and from the actor, a data race in the probe itself. A lock fixed it, and the 30 runs above have no crash.
+
+**Review's finding on this probe (rev 3, MF3):** its MF1 cases don't use `withModel`'s borrows, write the mailbox through the side directly, print "gate closed" with no gate, and stage `endTurn` unconditionally; its MF2 case has one submission and doesn't suspend at the hold. So it can't show the exclusivity, the gate or the handle claims. After rev 3's NOT GO, K1b-5a went code-first: the draft PR's tests, on the real shapes, replace these cases.
