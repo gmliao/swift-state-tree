@@ -203,3 +203,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-25 | [A drop-and-reset error path makes the next legal frame a violation](2026-11-25-a-drop-and-reset-error-path-makes-the-next-legal-frame-a-violation.md) | websocket, rfc6455, fragmentation, parser-state, stricter-check, error-path, testing |
 | 2026-11-25 | [An extension macro's role owns the conformances it declares](2026-11-25-an-extension-macro-role-owns-the-conformances-it-declares.md) | swift, macros, extension-macro, conformance, plain-data |
 | 2026-11-25 | [A check keyed on an attribute's name must also check the attribute's storage](2026-11-25-a-check-keyed-on-an-attributes-name-must-also-check-its-storage.md) | macros, plain-data, property-wrapper, spelling, soundness |
+| 2026-11-25 | [A type's attribute allow list must cover its members too](2026-11-25-a-type-allow-list-must-cover-its-members.md) | macros, plain-data, allow-list, peer-macro, soundness |
+| 2026-11-25 | [Two macros that decide "stored" separately drift](2026-11-25-two-macros-that-decide-stored-separately-drift.md) | macros, payload, plain-data, property-observer |
