@@ -1,4 +1,5 @@
 ---
+title: "A test clock with a gate per instant can't drive a single sleeper"
 module: SwiftStateTurns
 date: 2026-11-22
 problem_type: testing_practice

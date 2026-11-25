@@ -1,4 +1,5 @@
 ---
+title: "A reader that stops early fails the pipeline under `pipefail`"
 module: shell scripts (deep-research run.sh, ws-loadtest scripts, Tools benchmarks)
 date: 2026-11-08
 problem_type: tooling_trap

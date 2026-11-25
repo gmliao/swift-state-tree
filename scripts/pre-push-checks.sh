@@ -4,6 +4,8 @@
 #
 # Always (cheap, as CI runs them on every push):
 #   lessons     scripts/lint-lessons.sh --self-test, then the repository (CI: build › Lint lessons)
+#   solutions-index  scripts/solutions-index.py --self-test, then --check: Notes/solutions/README.md's
+#               index is what the entries' front matter generates (CI: build › Check the solutions index)
 #   wall-clock  scripts/lint-wall-clock-tests.sh --self-test, then with the base's baseline
 #               (CI: wall-clock-tests)
 #   turns       scripts/lint-turns.sh --self-test, then the repository (CI: build › Lint turns)
@@ -48,6 +50,11 @@
 # Usage: scripts/pre-push-checks.sh [base]   (default origin/main; run `git fetch` first)
 # Tests: scripts/test-pre-push-checks.sh
 set -uo pipefail
+# git exports GIT_DIR to a hook run from a linked worktree. Drop git's repository variables, so
+# neither these commands nor a test's own `git init` or `git commit` in a temporary directory
+# reach that repository (a deep-research test once set core.bare on the clone that way).
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
 # Python's own text I/O in UTF-8 whatever the host's locale (belt and braces: the lint below keeps
 # deep-research/ and scripts/ explicit).
 export PYTHONUTF8=1
@@ -77,6 +84,8 @@ run() {  # name, command...
 }
 
 lessons() { scripts/lint-lessons.sh --self-test && scripts/lint-lessons.sh; }
+
+solutions_index() { python3 scripts/solutions-index.py --self-test && python3 scripts/solutions-index.py --check; }
 
 wall_clock() {
   local baseline rc=0
@@ -125,6 +134,7 @@ shell_check() {
 
 echo "pre-push-checks: base $base (merge base ${fork:0:12}), $(grep -c . <<<"$changed") changed file(s)"
 run lessons lessons
+run solutions-index solutions_index
 run wall-clock wall_clock
 run turns bash -c 'scripts/lint-turns.sh --self-test && scripts/lint-turns.sh'
 run gate-close bash -c 'scripts/gate-close-census.sh --self-test && scripts/gate-close-census.sh'

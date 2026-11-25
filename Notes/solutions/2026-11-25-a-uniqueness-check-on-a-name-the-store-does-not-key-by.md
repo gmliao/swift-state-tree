@@ -1,4 +1,5 @@
 ---
+title: "A uniqueness check on a name the store doesn't key by"
 module: SwiftStateTree
 date: 2026-11-25
 problem_type: bug_class

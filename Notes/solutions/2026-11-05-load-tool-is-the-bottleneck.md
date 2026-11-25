@@ -1,4 +1,5 @@
 ---
+title: "The load tool is the bottleneck"
 module: Examples/GameDemo (ws-loadtest, ServerLoadTest)
 date: 2026-11-05
 problem_type: measurement_pitfall

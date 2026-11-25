@@ -1,4 +1,5 @@
 ---
+title: "A live-only predicate widened on a shared path changes replay"
 module: SwiftStateTree (LandKeeper)
 date: 2026-11-21
 problem_type: logic_error

@@ -1,4 +1,5 @@
 ---
+title: "A branch cut from a PR head that was then squash-merged duplicates on merge, with no conflict"
 module: git
 date: 2026-11-19
 problem_type: gotcha

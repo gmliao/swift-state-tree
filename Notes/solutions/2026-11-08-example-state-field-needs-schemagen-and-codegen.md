@@ -1,4 +1,5 @@
 ---
+title: "A synced field added to an example land needs SchemaGen and codegen in the same commit"
 module: Examples
 date: 2026-11-08
 problem_type: gotcha

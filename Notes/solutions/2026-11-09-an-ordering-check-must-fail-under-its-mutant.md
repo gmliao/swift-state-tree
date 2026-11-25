@@ -1,4 +1,5 @@
 ---
+title: "An ordering check must fail under the mutant that breaks it"
 module: SwiftStateTree
 date: 2026-11-09
 problem_type: testing_practice

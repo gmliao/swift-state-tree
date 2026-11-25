@@ -1,4 +1,5 @@
 ---
+title: "`String(contentsOfFile:)` on a Linux procfs file returns only the first page"
 module: SwiftStateTree
 date: 2026-11-09
 problem_type: gotcha

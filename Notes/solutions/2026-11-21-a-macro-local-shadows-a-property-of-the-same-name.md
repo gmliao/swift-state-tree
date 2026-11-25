@@ -1,4 +1,5 @@
 ---
+title: "A generated local shadows a property of the same name"
 module: SwiftStateTreeMacros
 date: 2026-11-21
 problem_type: bug_class

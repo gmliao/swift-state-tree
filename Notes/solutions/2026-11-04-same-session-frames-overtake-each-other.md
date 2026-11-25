@@ -1,4 +1,5 @@
 ---
+title: "Frames for one session overtake each other"
 module: SwiftStateTreeTransport
 date: 2026-11-04
 problem_type: bug_class

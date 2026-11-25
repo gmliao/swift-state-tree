@@ -1,4 +1,5 @@
 ---
+title: "An extension macro's role owns the conformances it declares"
 module: SwiftStateTreeMacros
 date: 2026-11-25
 problem_type: gotcha

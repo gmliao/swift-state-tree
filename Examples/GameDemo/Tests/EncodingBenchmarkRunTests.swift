@@ -180,7 +180,100 @@ struct EncodingBenchmarkRunTests {
             gameType: gameType, format: format, roomCount: rooms, playersPerRoom: playersPerRoom,
             iterations: iterations, parallel: false, ticksPerSync: ticksPerSync)
     }
-}
+
+    // Both suites share the process-wide `InputRun` statics; nesting inside this `.serialized`
+    // suite ensures they cannot run concurrently.
+    @Suite("EncodingBenchmark: resolver-action cell")
+    struct EncodingBenchmarkResolverTests {
+    private static let rooms = 2
+    private static let playersPerRoom = 3
+    private static let iterations = 4
+    private static let actionsPerPlayer = 2
+    private static let expectedPerRoom = playersPerRoom * iterations * actionsPerPlayer
+
+    @Test("Resolver cell: submitted = applied = replied for each encoding, with requireComplete passing",
+         arguments: [EncodingFormat.messagepackPathHash, .opcodeJsonPathHash, .jsonObject])
+    func resolverCellCounters(format: EncodingFormat) async throws {
+        let result = await Self.runResolver(format: format)
+        let total = Self.rooms * Self.expectedPerRoom
+        let inputs = try #require(result.inputs)
+        let label = "\(format.rawValue): \(inputs)"
+        #expect(inputs["submitted"] as? Int == total, "\(label)")
+        #expect(inputs["applied"] as? Int == total, "\(label)")
+        #expect(inputs["replied"] as? Int == total, "\(label)")
+        #expect(inputs["accepted"] as? Int == total, "\(label)")
+        #expect(inputs["rejected"] as? Int == 0, "\(label)")
+    }
+
+    @Test("Resolver cell outbound bytes equal the plain tickless cell's outbound bytes per encoding",
+         arguments: [EncodingFormat.messagepackPathHash, .opcodeJsonPathHash])
+    func resolverCellOutboundEqualsTickless(format: EncodingFormat) async {
+        let plain = await Self.runPlain(format: format)
+        let resolver = await Self.runResolver(format: format)
+        #expect(plain.totalBytes == resolver.totalBytes,
+                "\(format.rawValue): plain \(plain.totalBytes), resolver \(resolver.totalBytes)")
+    }
+
+    @Test("Land: SetMotionResolvedAction's handler has 1 resolver; SetMotionAction's has 0")
+    func resolverCountPerActionType() {
+        let land = VisibilityTest.makeLand(VisibilityTestState.self, tickless: true)
+        let resolvedHandler = land.actionHandlers.first(where: { $0.canHandle(SetMotionResolvedAction.self) })
+        let plainHandler = land.actionHandlers.first(where: { $0.canHandle(SetMotionAction.self) })
+        #expect(resolvedHandler != nil, "SetMotionResolvedAction handler not registered")
+        #expect(resolvedHandler?.resolverCount == 1,
+                "expected 1 resolver, got \(resolvedHandler?.resolverCount ?? -1)")
+        #expect(plainHandler != nil, "SetMotionAction handler not registered")
+        #expect(plainHandler?.resolverCount == 0,
+                "expected 0 resolvers, got \(plainHandler?.resolverCount ?? -1)")
+    }
+
+    @Test("--resolver-action refusals: needs --actions-per-player, tickless only, not with --wide-response")
+    func resolverActionRefusals() {
+        var config = BenchmarkConfig()
+        config.resolverAction = true
+        #expect(InputRun.refusal(config)?.contains("--resolver-action needs --actions-per-player") == true)
+
+        config.actionsPerPlayer = 2
+        config.inputsFromWire = true
+        config.parallel = false
+        config.gameType = .visibilityTest
+        #expect(InputRun.refusal(config)?.contains("only valid with --game-type visibility-test-tickless") == true)
+
+        config.gameType = .visibilityTestTickless
+        config.wideResponse = true
+        #expect(InputRun.refusal(config)?.contains("--resolver-action and --wide-response") == true)
+
+        config.wideResponse = false
+        #expect(InputRun.refusal(config) == nil)
+    }
+
+    private static func runPlain(format: EncodingFormat) async -> BenchmarkResult {
+        InputRun.fromWire = true
+        InputRun.actionsPerPlayer = actionsPerPlayer
+        defer {
+            InputRun.fromWire = false
+            InputRun.actionsPerPlayer = 0
+        }
+        return await runMultiRoomBenchmarkTestLand(
+            gameType: .visibilityTestTickless, format: format, roomCount: rooms, playersPerRoom: playersPerRoom,
+            iterations: iterations, parallel: false, ticksPerSync: 0)
+    }
+
+    private static func runResolver(format: EncodingFormat) async -> BenchmarkResult {
+        InputRun.fromWire = true
+        InputRun.actionsPerPlayer = actionsPerPlayer
+        InputRun.resolverAction = true
+        defer {
+            InputRun.fromWire = false
+            InputRun.actionsPerPlayer = 0
+            InputRun.resolverAction = false
+        }
+        return await runMultiRoomBenchmarkTestLand(
+            gameType: .visibilityTestTickless, format: format, roomCount: rooms, playersPerRoom: playersPerRoom,
+            iterations: iterations, parallel: false, ticksPerSync: 0)
+    }
+    } // EncodingBenchmarkResolverTests
+} // EncodingBenchmarkRunTests
 
 /// Two FIFOs in a fresh temporary directory, removed on deinit.
 private final class ControlFifos {

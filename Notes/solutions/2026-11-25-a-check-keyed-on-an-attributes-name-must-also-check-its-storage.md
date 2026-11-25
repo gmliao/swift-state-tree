@@ -1,4 +1,5 @@
 ---
+title: "A check keyed on an attribute's name must also check the attribute's storage"
 module: PlainDataMacroSupport
 date: 2026-11-25
 problem_type: bug_class

@@ -55,7 +55,7 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// outputs under one name.
     package let resolverDeclarationProblems: [String]
     /// Lifecycle handlers (join, leave, tick, initialize and finalize).
-    public let lifetimeHandlers: LifetimeHandlers<State>
+    public internal(set) var lifetimeHandlers: LifetimeHandlers<State>
     /// The services type the land declares (`Land(_:using:services:)`), nil for a land without
     /// services (`Land(_:using:)`). Read by registration and the keeper from #769 R1 on.
     package let servicesType: Any.Type?
@@ -352,6 +352,9 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     public func canHandle(_ actionType: Any.Type) -> Bool {
         actionType == type
     }
+
+    /// The number of resolvers declared for this handler (0 when none).
+    public var resolverCount: Int { resolvers?.names.count ?? 0 }
     
     /// Get the action type that this handler can handle.
     ///

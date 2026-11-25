@@ -79,6 +79,16 @@ jobs:
         scripts/lint-lessons.sh --self-test
         scripts/lint-lessons.sh
 
+    # The index of Notes/solutions/README.md is generated from each entry's front matter; the
+    # self-test proves the check still finds a stale index and a malformed entry first.
+    - name: Install python3
+      run: scripts/ci-apt-install.sh python3  # the image has no python3 binary; apt retried on mirror errors (#453)
+
+    - name: Check the solutions index
+      run: |
+        python3 scripts/solutions-index.py --self-test
+        python3 scripts/solutions-index.py --check
+
     # The turn core's rules the compiler can't check (Notes/plans/2026-11-18-swift-state-turns-core.md §7).
     - name: Lint turns
       run: |
@@ -666,3 +676,49 @@ jobs:
             console.log("moveTo payload", JSON.stringify(payload));
           }).catch((error) => { console.error(error); process.exit(1); });
         '
+
+  # The full suite on macOS, next to the Linux build job's: same triggers and path filters, since it
+  # lives in this workflow. Not a required check: it is not listed in branch protection, so a red
+  # run shows on the PR without blocking the merge, and it stays red-visible (continue-on-error would
+  # report success). The nightly's call skips it (full_matrix), because that run is about the Linux
+  # variant reruns and a red macOS job would fail the nightly (#846).
+  # No runner image has Swift 6.4: 6.4.x ships with Xcode 27, and the images stop at Xcode 26.x
+  # (macos-26: 26.6). So the job installs the swift.org 6.4.3 toolchain, pinned by SHA-256 and
+  # checked against its Apple signature, and puts it first on PATH.
+  macos:
+    name: macos (6.4.3)
+    if: ${{ !inputs.full_matrix }}
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      SWIFT_PKG_URL: https://download.swift.org/swift-6.4.3-release/xcode/swift-6.4.3-RELEASE/swift-6.4.3-RELEASE-osx.pkg
+      SWIFT_PKG_SHA256: ccbfc46b166625613286abfa63b6e974b5b6a7c2205e5bc9e52d09f6e051e859
+
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Install the Swift 6.4.3 toolchain
+      run: |
+        set -euo pipefail
+        curl -fsSL --retry 3 -o "$RUNNER_TEMP/swift.pkg" "$SWIFT_PKG_URL"
+        echo "$SWIFT_PKG_SHA256  $RUNNER_TEMP/swift.pkg" | shasum -a 256 -c -
+        pkgutil --check-signature "$RUNNER_TEMP/swift.pkg"
+        sudo installer -pkg "$RUNNER_TEMP/swift.pkg" -target /
+        echo "/Library/Developer/Toolchains/swift-6.4.3-RELEASE.xctoolchain/usr/bin" >> "$GITHUB_PATH"
+
+    - name: Show toolchain
+      run: |
+        swift --version
+        xcodebuild -version
+        sw_vers
+
+    - name: Build
+      run: swift build --build-tests
+
+    - name: Tests
+      shell: bash
+      run: |
+        set -o pipefail
+        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \
+          || { echo "::error title=Tests::the tests failed"; exit 1; }
+      timeout-minutes: 60

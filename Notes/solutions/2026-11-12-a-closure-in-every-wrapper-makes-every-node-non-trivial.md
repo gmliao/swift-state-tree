@@ -1,4 +1,5 @@
 ---
+title: "A closure in every wrapper makes every node type non-trivial"
 module: SwiftStateTree
 date: 2026-11-12
 problem_type: performance_collapse

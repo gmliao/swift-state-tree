@@ -1,4 +1,5 @@
 ---
+title: "A skipped test class reads as passing"
 module: deep-research
 date: 2026-11-10
 problem_type: testing_practice

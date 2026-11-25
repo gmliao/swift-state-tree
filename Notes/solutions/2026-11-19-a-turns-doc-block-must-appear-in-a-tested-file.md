@@ -1,4 +1,5 @@
 ---
+title: "A Swift block in the Turns docs must appear in a tested file"
 module: SwiftStateTurns
 date: 2026-11-19
 problem_type: gotcha

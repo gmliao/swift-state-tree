@@ -1,4 +1,5 @@
 ---
+title: "An evicting set lets an ended attempt back in"
 module: SwiftStateTreeTransport
 date: 2026-11-07
 problem_type: bug_class

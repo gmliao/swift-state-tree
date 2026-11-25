@@ -1,4 +1,5 @@
 ---
+title: "A per-tick frame can't be closed while late entries for its tick still arrive"
 module: re-evaluation recorder, record format
 date: 2026-11-07
 problem_type: design_flaw

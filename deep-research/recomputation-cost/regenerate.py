@@ -44,6 +44,7 @@ sync-marks.json counted.
 Usage: regenerate.py [--check | --markdown | --self-test | --record-check <process dir>]
 """
 import argparse
+import base64
 import gzip
 import json
 import math
@@ -198,6 +199,8 @@ def self_test() -> None:
     for value, hex_bytes in SELF_TEST_VECTORS:
         decoded, end = unpack(bytes.fromhex(hex_bytes))
         assert end == len(hex_bytes) // 2 and decoded == value, f"unpack({hex_bytes}) = {decoded!r}"
+    # A 3.7 payload is `bin`, read back as the JSON view's base64.
+    assert unpack(bytes.fromhex("81a77061796c6f6164c403010203")) == ({"payload": "AQID"}, 14)
     log = SSTR_MAGIC + bytes([3, 0])
     for rec in [
         {"kind": "header", "format": "x", "metadata": {"rngSeed": 1}},
@@ -238,55 +241,21 @@ FRAME_SCALAR_FIELDS = ("stateHash", "sequenceBeforeInputs", "sequenceBeforeTickH
 
 
 def unpack(data: bytes, i: int = 0):
-    """One MessagePack value at `i` (the JSON subset the encoder above writes): (value, end)."""
-    b = data[i]
-    i += 1
-    if b <= 0x7F:
-        return b, i
-    if b >= 0xE0:
-        return b - 0x100, i
-    if 0xA0 <= b <= 0xBF:
-        n = b & 0x1F
-        return data[i:i + n].decode("utf-8"), i + n
-    if 0x90 <= b <= 0x9F:
-        return _unpack_array(data, i, b & 0x0F)
-    if 0x80 <= b <= 0x8F:
-        return _unpack_map(data, i, b & 0x0F)
-    if b == 0xC0:
-        return None, i
-    if b in (0xC2, 0xC3):
-        return b == 0xC3, i
-    if b == 0xCB:
-        return struct.unpack_from(">d", data, i)[0], i + 8
-    sized = {0xCC: ">B", 0xCD: ">H", 0xCE: ">I", 0xCF: ">Q", 0xD0: ">b", 0xD1: ">h", 0xD2: ">i", 0xD3: ">q"}
-    if b in sized:
-        fmt = sized[b]
-        return struct.unpack_from(fmt, data, i)[0], i + struct.calcsize(fmt)
-    lengths = {0xD9: ">B", 0xDA: ">H", 0xDB: ">I", 0xDC: ">H", 0xDD: ">I", 0xDE: ">H", 0xDF: ">I"}
-    if b in lengths:
-        fmt = lengths[b]
-        (n,) = struct.unpack_from(fmt, data, i)
-        i += struct.calcsize(fmt)
-        if b <= 0xDB:
-            return data[i:i + n].decode("utf-8"), i + n
-        return (_unpack_array if b <= 0xDD else _unpack_map)(data, i, n)
-    raise ValueError(f"unsupported MessagePack type 0x{b:02x}")
+    """One MessagePack value at `i`: (value, end). The reader is `syncmarks.unpack`, which reads
+    `bin` (0xC4-0xC6): a 3.7 record holds each input's payload as bytes. A `bin` value comes back
+    as its standard base64 text, as the runtime's JSON view of the record writes it."""
+    value, end = syncmarks.unpack(data, i)
+    return _json_view(value), end
 
 
-def _unpack_array(data: bytes, i: int, n: int):
-    items = []
-    for _ in range(n):
-        item, i = unpack(data, i)
-        items.append(item)
-    return items, i
-
-
-def _unpack_map(data: bytes, i: int, n: int):
-    entries = {}
-    for _ in range(n):
-        key, i = unpack(data, i)
-        entries[key], i = unpack(data, i)
-    return entries, i
+def _json_view(value):
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
+    if isinstance(value, list):
+        return [_json_view(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _json_view(v) for k, v in value.items()}
+    return value
 
 
 def read_record_log(data: bytes) -> dict:

@@ -1,4 +1,5 @@
 ---
+title: "An issue read from the code gets a failing test before it shapes a plan"
 module: SwiftStateTree
 date: 2026-11-25
 problem_type: testing_practice

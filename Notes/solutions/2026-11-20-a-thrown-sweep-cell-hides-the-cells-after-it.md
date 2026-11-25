@@ -1,4 +1,5 @@
 ---
+title: "A thrown sweep cell hides the cells after it"
 module: Tests/SwiftStateTreeNIOTests/Differential
 date: 2026-11-20
 problem_type: gotcha
