@@ -416,7 +416,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var players: [PlayerID: InternalPlayerSession] = [:]
     /// Mints `InternalPlayerSession.generation`: every insert of a player entry gets a new one.
     private var entryGenerations = EpochCounter()
+    /// The land's services, without a `DeterministicRngService`: the land's generator is
+    /// `landRandom`, and contexts get it per handler call (`withHandlerStep`).
     private let services: LandServices
+    /// The land's generator: keeper state, advanced by the handlers that replay repeats from the
+    /// record (#700 K1b-3, #765).
+    private var landRandom: DeterministicRng
+    /// The seed `landRandom` started from: a caller-registered `DeterministicRngService`'s seed,
+    /// else derived from the land ID. The record header holds it.
+    private let landRandomSeed: UInt64
 
     private var transport: LandKeeperTransport?
     private let logger: Logger
@@ -608,10 +616,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// `ReleasedLandTransport`, #346).
     var transportForTesting: LandKeeperTransport? { transport }
 
-    /// Get the RNG seed for recording purposes.
-    /// Returns the seed from the DeterministicRngService if it exists, nil otherwise.
+    /// Tests: the land's generator now.
+    var landRandomForTesting: DeterministicRng { landRandom }
+
+    /// The seed the land's generator started from, for the record header: a caller-registered
+    /// `DeterministicRngService`'s seed, else the one derived from the land ID. Never `nil`.
     public func getRngSeed() -> UInt64? {
-        return services.get(DeterministicRngService.self)?.seed
+        landRandomSeed
     }
 
     private var tickTask: Task<Void, Never>?
@@ -1173,14 +1184,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         self.reevaluationOutputMode = reevaluationOutputMode
         self.payloadDecoders = payloadDecoders
 
-        // Ensure DeterministicRngService is always registered for deterministic behavior
-        // If not provided, seed it from the instance ID when known, else from definition.id.
-        var resolvedServices = services
-        if resolvedServices.get(DeterministicRngService.self) == nil {
-            let seed = DeterministicSeed.fromLandID(landID ?? definition.id)
-            let rngService = DeterministicRngService(seed: seed)
-            resolvedServices.register(rngService, as: DeterministicRngService.self)
-        }
+        // The land's generator starts from a caller-registered service's seed (replay registers
+        // the recorded one), else from the instance ID when known, else from definition.id. The
+        // service itself is removed: only its seed is used, and contexts get the land's
+        // generator per handler call.
+        let rngSeed = services.get(DeterministicRngService.self)?.seed
+            ?? DeterministicSeed.fromLandID(landID ?? definition.id)
+        self.landRandomSeed = rngSeed
+        self.landRandom = DeterministicRng(seed: rngSeed)
+        var resolvedServices = services.removing(DeterministicRngService.self)
 
         self.transport = transport
         if transport != nil { hasHeldTransport = true }
@@ -1381,7 +1393,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         do {
             // `invoke` throws only from `validate`, before `apply` writes (#593).
-            try withMutableStateSync { state in
+            try withHandlerStep(ctx) { state, ctx in
                 try handler.invoke(&state, ctx)
             }
         } catch {
@@ -1542,7 +1554,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             do {
                 // `invoke` throws only from `validate`, before `apply` writes (#593).
-                try withMutableStateSync { state in
+                try withHandlerStep(ctx) { state, ctx in
                     try handler.invoke(&state, ctx)
                 }
             } catch {
@@ -2099,7 +2111,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 )
             }
 
-            // Execute handler synchronously (resolvers already executed above)
+            // Execute handler synchronously (resolvers already executed above). CanJoin isn't
+            // repeated from the record (a viewer joining a reevaluation keeper runs it live), so
+            // its draws come from a copy of the land's generator, never written back.
+            ctx.stepRandom = detachedRandom()
             decision = try canJoinHandler(state, session, ctx)
         }
 
@@ -3579,7 +3594,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) -> LandContext {
         let baseServices = servicesOverride ?? LandServices()
         let playerServices = players[playerID]?.services
+        // A `DeterministicRngService` registered in an override or in a player's services is
+        // removed too, so no context or resolver reaches an RNG instance: handlers draw from the
+        // one `withHandlerStep` binds.
         let resolvedServices = services.merging(baseServices).merging(playerServices ?? LandServices())
+            .removing(DeterministicRngService.self)
         let playerSession = players[playerID]
         // Use actual land instance ID if available, otherwise fall back to definition.id (land type)
         let landID = actualLandID ?? definition.id
@@ -3610,13 +3629,47 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
     }
 
-    /// Runs a handler on the state, in place: handlers are synchronous, so the body can't
-    /// suspend and the actor's state is mutated directly.
+    /// Where a handler call's `ctx.random` draws from.
+    enum HandlerRandom {
+        /// The land's generator: a handler that replay repeats from the record. The draws are
+        /// written back to `landRandom` when the call returns.
+        case step
+        /// A service that isn't written back: a handler that replay doesn't repeat (CanJoin,
+        /// the sync handler, the drain's handlers).
+        case detached(DeterministicRngService)
+    }
+
+    /// Runs a handler on the state, in place, with `ctx.random` bound for this call: handlers
+    /// are synchronous, so the body can't suspend and the actor's state is mutated directly.
+    ///
+    /// With `.step`, the service is built from `landRandom` and its generator is written back
+    /// in the same segment, after the body's access to `state` ends; a `defer` keeps draws made
+    /// before a throw. Calls don't nest: a second `&state` would break exclusivity.
     ///
     /// Handlers throw only from `validate`, before they write: the input handlers (#586) and
     /// OnInitialize (#593). The destroy handlers don't throw.
-    private func withMutableStateSync<R>(_ body: (inout State) throws -> R) rethrows -> R {
-        try body(&state)
+    private func withHandlerStep<R>(
+        _ ctx: LandContext,
+        random: HandlerRandom = .step,
+        _ body: (inout State, LandContext) throws -> R
+    ) rethrows -> R {
+        var bound = ctx
+        switch random {
+        case .detached(let service):
+            bound.stepRandom = service
+            return try body(&state, bound)
+        case .step:
+            let service = DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
+            defer { landRandom = service.generator }
+            bound.stepRandom = service
+            return try body(&state, bound)
+        }
+    }
+
+    /// A service for a handler that replay doesn't repeat: a copy of the land's generator,
+    /// never written back.
+    private func detachedRandom() -> DeterministicRngService {
+        DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
     }
 
     // MARK: - Tick & Lifetime
@@ -3857,7 +3910,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Execute handler and capture response
             // Throws only from the type check or `validate`, before anything is written (#586).
-            let response = try withMutableStateSync { state in
+            let response = try withHandlerStep(ctx) { state, ctx in
                 try handler.invokeTyped(&state, action: decodedAction, ctx: ctx)
             }
             return .action(response: response)
@@ -3911,7 +3964,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // descriptor has no decode is decoded by its handler, as before. A recorded payload
             // that didn't decode is dropped, as its handler dropped it (#362 counts a too-deep one).
             var ranHandler = true
-            try withMutableStateSync { state in
+            try withHandlerStep(ctx) { state, ctx in
                 switch eventItem.payload {
                 case .decoded(let decoded):
                     ranHandler = try handler.invokeDecoded(&state, event: decoded, ctx: ctx)
@@ -3960,7 +4013,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recorded.sequence)
             // Throws only from the payload's decode (a recorded one that failed when replay built
             // the item) or `validate`, before anything is written (#586).
-            try withMutableStateSync { state in
+            try withHandlerStep(ctx) { state, ctx in
                 let input: any ServerInputPayload
                 switch inputItem.decoded {
                 case .success(let value): input = value
@@ -4057,7 +4110,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // (a live run writes one whenever it records). `invoke` throws only from `validate`,
             // before `apply` writes and with nothing emitted (#593).
             do {
-                try withMutableStateSync { state in
+                try withHandlerStep(ctx) { state, ctx in
                     try handler.invoke(&state, ctx)
                 }
             } catch {
@@ -4080,7 +4133,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 tickId: executingTickId,
                 resolverOutputs: lifecycleItem.heldResolverOutputs
             )
-            withMutableStateSync { state in
+            withHandlerStep(ctx) { state, ctx in
                 handler(&state, ctx)
             }
         case .leave:
@@ -4103,7 +4156,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // The player is gone: the broadcast-only sync follows the pass, deferred until after
             // the pending items' removal.
             applied.shouldSyncBroadcastOnly = true
-            withMutableStateSync { state in
+            withHandlerStep(ctx) { state, ctx in
                 handler(&state, ctx)
             }
         }
@@ -4806,12 +4859,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         restoreSequenceWatermark(replayWatermarks?.beforeTickHandler, tickId: tickId, point: "beforeTickHandler")
         let sequenceBeforeTickHandler = outputCollector.nextSequence
 
-        // Execute handler synchronously - no copying needed
-        // withMutableStateSync directly modifies state (actor isolation maintained)
-        // A replayed shutdown frame (#382) runs no tick handler: live applied the shutdown as a
-        // turn of its own, between ticks.
-        if !shutdownTurnApplied {
-            tickHandler?(&state, ctx)
+        // The handler runs on the state in place, in one synchronous segment, with the land's
+        // generator bound (`withHandlerStep`). A replayed shutdown frame (#382) runs no tick
+        // handler: live applied the shutdown as a turn of its own, between ticks. A tickless or
+        // shutdown frame binds nothing.
+        if !shutdownTurnApplied, let tickHandler {
+            withHandlerStep(ctx) { state, ctx in
+                tickHandler(&state, ctx)
+            }
         }
 
         // Update lastCommittedTickId after tick execution completes
@@ -5019,7 +5074,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         // Sequence watermark W2 (before the tick handler).
         let sequenceBeforeTickHandler = outputCollector.nextSequence
-        handler(&state, ctx)
+        withHandlerStep(ctx) { state, ctx in
+            handler(&state, ctx)
+        }
         lastCommittedTickId = tickId
 
         var stateHash: String?
@@ -6087,13 +6144,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Execute optional read-only callback if provided
         // This callback is read-only and should NOT modify state
         if let handler = definition.lifetimeHandlers.syncHandler {
-            let ctx = makeContext(
+            var ctx = makeContext(
                 playerID: systemPlayerID,
                 clientID: systemClientID,
                 sessionID: systemSessionID,
                 servicesOverride: LandServices(),
                 tickId: lastCommittedTickId
             )
+            // The sync handler isn't repeated from the record, so it draws from a copy of the
+            // land's generator, never written back.
+            ctx.stepRandom = detachedRandom()
             // Pass state as value (read-only) to emphasize that it should not be modified
             handler(state, ctx)
         }
@@ -6234,11 +6294,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // segment. Nothing else changes the state across those awaits: intake, deliveries and
         // every lifecycle append are rejected while draining, no tick starts, and no input is
         // pending. That is why the handlers need no ticket.
+        //
+        // The drain's handlers aren't repeated from the record, so their draws come from one
+        // copy of the land's generator, never written back: OnDestroyWhenEmpty, OnFinalize and
+        // AfterFinalize continue one sequence instead of repeating each other's.
+        let drainRandom = detachedRandom()
         if let onDestroyWhenEmptyHandler = definition.lifetimeHandlers.onDestroyWhenEmpty {
             let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "onDestroyWhenEmpty",
                 resolvers: { _, _ in handlers.onDestroyWhenEmptyResolverExecutors },
+                random: drainRandom,
                 handler: onDestroyWhenEmptyHandler
             )
         }
@@ -6247,6 +6313,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await runDestroyHandler(
                 "OnFinalize",
                 resolvers: { state, ctx in handlers.onFinalizeResolvers?.build(state, ctx) ?? [] },
+                random: drainRandom,
                 handler: onFinalizeHandler
             )
         }
@@ -6254,11 +6321,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Execute AfterFinalize handler (async cleanup)
         if let afterFinalizeHandler = definition.lifetimeHandlers.afterFinalize {
             let snapshot = state
-            let ctx = makeContext(
+            var ctx = makeContext(
                 playerID: systemPlayerID,
                 clientID: systemClientID,
                 sessionID: systemSessionID
             )
+            ctx.stepRandom = drainRandom
             await afterFinalizeHandler(snapshot, ctx)
         }
 
@@ -6291,6 +6359,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runDestroyHandler(
         _ name: String,
         resolvers buildResolvers: (State, ValidateContext) -> [any AnyResolverExecutor],
+        random: DeterministicRngService,
         handler: @Sendable (inout State, LandContext) -> Void
     ) async {
         let ctx = makeContext(
@@ -6318,8 +6387,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
         // The handler can't throw (#593): the land is ending, so nothing would act on a refusal.
-        withMutableStateSync { state in
-            handler(&state, updatedCtx)
+        withHandlerStep(updatedCtx, random: .detached(random)) { state, ctx in
+            handler(&state, ctx)
         }
     }
 

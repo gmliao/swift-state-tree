@@ -157,16 +157,29 @@ public struct LandContext: Sendable {
     /// produced live, or read from a record in replay.
     private var resolverOutputs: [String: HeldResolverOutput] = [:]
     
-    /// Thread-safe deterministic random number generator.
+    /// The service for this handler invocation's draws, bound by the keeper at the call: a step
+    /// service written back to the land's generator when the step ends, or a detached copy for a
+    /// handler that replay doesn't repeat. `nil` in a context built without a keeper.
+    var stepRandom: DeterministicRngService? = nil
+
+    /// The land's deterministic random number generator.
     ///
-    /// This property provides convenient access to the deterministic RNG service.
-    /// The RNG service is automatically registered by `LandKeeper` during initialization,
-    /// ensuring deterministic behavior based on the land instance ID.
+    /// Draws continue one sequence across the land's steps, started from the land's seed, and
+    /// replay repeats them. The keeper hands each handler invocation its own service:
+    /// - In a handler that replay repeats from the record (OnInitialize, OnJoin, OnLeave, an
+    ///   action, a client event, a server input, the tick), draws move the land's generator.
+    ///   The keeper copies the generator back when the handler returns.
+    /// - In a handler that replay doesn't repeat (CanJoin, the sync handler, OnDestroyWhenEmpty,
+    ///   OnFinalize, AfterFinalize), draws come from a copy and never move the land's generator.
+    ///   Two such calls in a row can draw the same values.
     ///
-    /// **Thread Safety**: The returned RNG is thread-safe and can be used concurrently.
+    /// **Draw synchronously inside the handler.** A `random` kept past its handler draws from a
+    /// copy that no longer moves the land. A draw from a `Task` the handler starts may land
+    /// before or after the step's write-back, so replay can't repeat it. Resolvers don't get the
+    /// land's generator (#765): a resolver that needs randomness brings its own.
     ///
-    /// **Precondition**: A `DeterministicRngService` must be registered in `services`.
-    /// `LandKeeper` automatically ensures this during initialization.
+    /// A context built without a keeper (a unit test) falls back to a `DeterministicRngService`
+    /// registered in `services`.
     ///
     /// Example usage:
     /// ```swift
@@ -177,9 +190,9 @@ public struct LandContext: Sendable {
     /// }
     /// ```
     public var random: DeterministicRngService {
-        // LandKeeper ensures DeterministicRngService is always registered
+        if let stepRandom { return stepRandom }
         guard let rngService = services.get(DeterministicRngService.self) else {
-            fatalError("DeterministicRngService not found in services. This should not happen as LandKeeper automatically registers it.")
+            fatalError("LandContext.random: no generator. A keeper binds one for each handler call; a context built without a keeper needs a DeterministicRngService in services.")
         }
         return rngService
     }
