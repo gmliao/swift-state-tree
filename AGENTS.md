@@ -109,7 +109,7 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 ```
 
 ## Coding Style & Naming Conventions
-- Swift 6.4+, macOS 14+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
+- Swift 6.4+, macOS 15+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
 - **DTOs for API payloads**: Define `Codable` structs for HTTP request/response bodies instead of using `[String: Any]`. Align field names with the API contract (e.g. control-plane DTOs).
 - Indent with 4 spaces; keep line length reasonable (~120 chars).
 - Types: `UpperCamelCase`; methods/variables: `lowerCamelCase`; enums use verb-like cases for commands (`.join`, `.attack`).
