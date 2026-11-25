@@ -270,4 +270,22 @@ struct PayloadExtensionRoleTests {
         #expect(text.contains("PlainDataCheck.field(value.hp)"), "\(text)")
         #expect(!text.contains("name: \"shown\"") && !text.contains("self.shown"), "\(text)")
     }
+
+    @Test("A static property is not a payload field (#837)")
+    func staticPropertiesAreNotFields() {
+        let (text, messages) = expand("""
+            @Payload
+            struct Hit: ServerEventPayload {
+                let n: Int
+                static let limit = 3
+                static var shared: Int = 0
+                @TaskLocal static var current: Int = 0
+            }
+            """, conforming: false)
+        #expect(messages.isEmpty, "\(messages)")
+        #expect(text.contains("try writer.field(self.n)"), "\(text)")
+        for name in ["limit", "shared", "current"] {
+            #expect(!text.contains("self.\(name)") && !text.contains("value.\(name)") && !text.contains("name: \"\(name)\""), "\(name): \(text)")
+        }
+    }
 }

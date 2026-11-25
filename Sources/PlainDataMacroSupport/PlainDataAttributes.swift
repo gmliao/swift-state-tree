@@ -128,7 +128,7 @@ public enum PlainDataAttributes {
                 }
                 continue
             }
-            if let variable = decl.as(VariableDeclSyntax.self), isStoredInstance(variable) { continue }
+            if let variable = decl.as(VariableDeclSyntax.self), PlainDataWalk.isStoredInstance(variable) { continue }
             guard let attributes = decl.asProtocol(WithAttributesSyntax.self)?.attributes else { continue }
             let isType = decl.is(StructDeclSyntax.self) || decl.is(EnumDeclSyntax.self)
                 || decl.is(ClassDeclSyntax.self) || decl.is(ActorDeclSyntax.self) || decl.is(ProtocolDeclSyntax.self)
@@ -148,15 +148,6 @@ public enum PlainDataAttributes {
                 }
             }
         }
-    }
-
-    /// A non-`static` property with storage: some binding isn't computed (observers keep it
-    /// stored).
-    private static func isStoredInstance(_ variable: VariableDeclSyntax) -> Bool {
-        let isStatic = variable.modifiers.contains {
-            $0.name.tokenKind == .keyword(.static) || $0.name.tokenKind == .keyword(.class)
-        }
-        return !isStatic && !variable.bindings.allSatisfy(PlainDataWalk.isComputed)
     }
 
     private static func isAllowedOnMember(_ attribute: AttributeSyntax, isType: Bool) -> Bool {

@@ -543,4 +543,21 @@ struct StatePlainDataMacroTests {
         let (_, both) = expand("@StateNodeBuilder\n@SnapshotConvertible\nstruct Both: StateNodeProtocol {\n@Sync(.broadcast) var hp: Int = 0\ninit() {}\n@Memoized func cost() -> Int { 0 }\n}")
         #expect(both.filter { $0.contains("a macro attached to a member") } == ["@Memoized on 'cost()'" + rest], "\(both)")
     }
+
+    @Test("A static property is not a field: no marker asked, not converted, not checked (#837)")
+    func staticPropertiesAreNotFields() {
+        let statics = "static let limit = 3\nstatic var shared: Int = 0\n@TaskLocal static var current: Int = 0"
+        let shapes: [(String, String)] = [
+            ("@StateNodeBuilder", "@StateNodeBuilder\nstruct Node: StateNodeProtocol {\n@Sync(.broadcast) var hp: Int = 0\ninit() {}\n\(statics)\n}"),
+            ("@SnapshotConvertible", "@SnapshotConvertible\nstruct Value {\nvar hp: Int = 0\ninit() {}\n\(statics)\n}"),
+        ]
+        for (macro, source) in shapes {
+            let (text, messages) = expand(source)
+            #expect(messages.isEmpty, "\(macro): \(messages)")
+            for name in ["limit", "shared", "current"] {
+                #expect(!text.contains("self.\(name)") && !text.contains("value.\(name)") && !text.contains("\"\(name)\""), "\(macro) \(name): \(text)")
+            }
+            #expect(text.contains("value.hp") || text.contains("self.hp"), "\(macro): \(text)")
+        }
+    }
 }

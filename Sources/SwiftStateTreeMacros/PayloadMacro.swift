@@ -89,13 +89,9 @@ public struct PayloadMacro: MemberMacro {
                 continue
             }
             
-            // Skip computed properties. An observed one (`willSet`/`didSet` only) has storage:
-            // it is a field, as the PlainData witness already treats it (#837).
-            let hasComputedProperty = variableDecl.bindings.contains(where: PlainDataWalk.isComputed)
-            
-            if hasComputedProperty {
-                continue
-            }
+            // Fields only: skip computed and `static` properties. An observed one (`willSet`/
+            // `didSet` only) has storage: it is a field, as the PlainData witness treats it (#837).
+            guard PlainDataWalk.isStoredInstance(variableDecl) else { continue }
             
             for binding in variableDecl.bindings {
                 guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self) else {

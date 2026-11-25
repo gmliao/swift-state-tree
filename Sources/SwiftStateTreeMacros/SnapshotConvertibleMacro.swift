@@ -326,21 +326,9 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                 continue
             }
 
-            // Skip computed properties. Observers keep a property stored, and converted, as the
-            // PlainData check counts it.
-            let hasComputedProperty = variableDecl.bindings.contains(where: PlainDataWalk.isComputed)
-
-            if hasComputedProperty {
-                continue
-            }
-
-            // Skip static properties (they're not part of the instance)
-            let isStatic = variableDecl.modifiers.contains { modifier in
-                modifier.name.text == "static"
-            }
-            if isStatic {
-                continue
-            }
+            // Fields only: skip computed and `static` properties. Observers keep a property
+            // stored, and converted, as the PlainData check counts it.
+            guard PlainDataWalk.isStoredInstance(variableDecl) else { continue }
 
             // Determine if the property is mutable (var) or immutable (let)
             let isMutable = variableDecl.bindingSpecifier.text == "var"

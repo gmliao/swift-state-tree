@@ -194,14 +194,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 continue
             }
 
-            // Skip computed properties. Observers (`willSet`/`didSet`) keep a property stored, so an
-            // observed field needs a marker like any other; `validateObservedSync` refuses it on
-            // a `@Sync` field.
-            let hasComputedProperty = variableDecl.bindings.contains(where: PlainDataWalk.isComputed)
-
-            if hasComputedProperty {
-                continue
-            }
+            // Fields only: skip computed and `static` properties. Observers (`willSet`/`didSet`)
+            // keep a property stored, so an observed field needs a marker like any other;
+            // `validateObservedSync` refuses it on a `@Sync` field.
+            guard PlainDataWalk.isStoredInstance(variableDecl) else { continue }
 
             for binding in variableDecl.bindings {
                 guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self) else {
@@ -318,8 +314,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                         continue
                     }
                     guard let variable = item.decl.as(VariableDeclSyntax.self),
-                          !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }),
-                          !variable.bindings.contains(where: PlainDataWalk.isComputed)
+                          PlainDataWalk.isStoredInstance(variable)
                     else { continue }
                     // The sync tables read only top-level members, so a `@Sync` field inside `#if`
                     // would never be synced, snapshotted or hashed: refused. `@Internal` is fine.
