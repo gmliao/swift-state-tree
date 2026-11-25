@@ -578,6 +578,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// The join failed (its waiter got the reason); it never flips. The session stays
         /// excluded until its disconnect removes the record.
         var failed = false
+        /// The router attempt's mailbox, marked when the join flips (#867); nil for a join
+        /// admitted without a router attempt.
+        var attemptEnd: JoinAttemptEnd?
 
         var isReadyToFlip: Bool { consumed && transportRegistered && !failed }
         /// Ready, and asking for a sync turn of its own (`hasJoinsAwaitingSync`).
@@ -697,6 +700,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let joinDeadline: ContinuousClock.Instant?
         /// The router's join attempt, for the stale check by the resolved player (#234).
         let joinAttempt: UInt64?
+        /// The router attempt's mailbox, handed to the in-turn join for its flip (#867).
+        let attemptEnd: JoinAttemptEnd?
     }
 
     /// Admissions made by the keeper's in-turn callback (tests only).
@@ -1732,7 +1737,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?,
-        inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?, joinDeadline: ContinuousClock.Instant?)? = nil
+        inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?, joinDeadline: ContinuousClock.Instant?, attemptEnd: JoinAttemptEnd?)? = nil
     ) -> Int32 {
         applySessionPerPlayerPolicy(to: playerID, keeping: sessionID)
         _ = membershipCoordinator.registerPlayer(
@@ -1750,7 +1755,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 joinSequence: inTurn.joinSequence,
                 order: nextInTurnJoinOrder,
                 joinResponse: response,
-                consumed: inTurn.joinSequence == nil
+                consumed: inTurn.joinSequence == nil,
+                attemptEnd: inTurn.attemptEnd
             )
             startJoinWaiter(sessionID: sessionID, ticket: ticket, joinDeadline: inTurn.joinDeadline)
         }
@@ -1981,7 +1987,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             sessionID: sessionID,
             playerID: playerID,
             authInfo: expected.authInfo,
-            inTurn: expected.joinResponse.map { (joinSequence: joinSequence, joinResponse: $0, joinDeadline: expected.joinDeadline) }
+            inTurn: expected.joinResponse.map { (joinSequence: joinSequence, joinResponse: $0, joinDeadline: expected.joinDeadline, attemptEnd: expected.attemptEnd) }
         )
         inTurnAdmissionCountForTesting += 1
         return joiningSessions[sessionID]?.inTurn != nil ? .admittedCompletesInTurn : .admitted
@@ -2249,7 +2255,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Attempt to join (updates keeper.players). On the in-turn path the keeper admits the
         // session inside the join, in the segment of its state change (`admitJoiningSession`);
         // otherwise it is admitted below, right after the join returns, before any await.
-        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse, joinDeadline: joinDeadline, joinAttempt: joinAttempt)
+        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse, joinDeadline: joinDeadline, joinAttempt: joinAttempt, attemptEnd: attemptEnd)
         defer { expectedAdmissions.removeValue(forKey: sessionID) }
         let outcome: LandKeeper<State>.JoinOutcome
         do {
@@ -4239,6 +4245,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             #if DEBUG
             noteJoinCommitForTesting(flip.sessionID, flipped: true)
             #endif
+            // Before the JoinResponse is enqueued below: once the client holds it, the router
+            // must already answer a second join as joined (#867).
+            joining.inTurn?.attemptEnd?.markFlipped()
             joinWaiters[flip.sessionID]?.resolve(.success(()))
         }
         pendingEventManager.removeConsumed(
