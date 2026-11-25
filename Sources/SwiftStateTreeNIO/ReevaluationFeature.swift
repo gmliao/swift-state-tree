@@ -59,8 +59,8 @@ public struct ReevaluationFeatureConfiguration: Sendable {
 
 public extension NIOLandHost {
     /// `registerWithGenericReplay` for a live land that declares services (#769 §3.4): `services`
-    /// builds its services value per land instance. The replay land never calls `resolve`, so it
-    /// needs none.
+    /// builds its services value per live land instance. The replay and monitor lands never call
+    /// `resolve`, so they get none: `services` is never called for them.
     func registerWithGenericReplay<State: StateFromSnapshotDecodable, Services: Sendable>(
         landType: String,
         liveLand: TypedLand<State, Services>,
@@ -141,6 +141,9 @@ public extension NIOLandHost {
                     recordsDir: recordsDir
                 )
             replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
+            // The replay land resolves nothing: the live land's services factory would build
+            // production dependencies for each replay viewer.
+            replayConfig.resolverServicesFactory = nil
             // Built once, from the live definition alone, and checked before the live land
             // registers with the context its own registration uses: a refusal then publishes no
             // route (#521 PR 1b-2b). The alias drops the server inputs. Its fingerprint walk used to
@@ -320,7 +323,8 @@ extension NIOLandServerConfiguration {
     /// The configuration the reevaluation monitor land is registered with: this (the live
     /// land's) configuration, with the monitor's own path and event hashes in place of the live
     /// land's (the monitor's state and events differ, so with the live land's every patch would
-    /// be dropped as outside the schema), gated on a monitor ticket (`injectingMonitorTicket`).
+    /// be dropped as outside the schema), gated on a monitor ticket (`injectingMonitorTicket`),
+    /// without the live land's resolver services factory.
     /// The monitor land is never recorded: its tick reads the runner service, so a record of it
     /// couldn't replay, and it isn't a game to verify.
     func monitorLandConfiguration(
@@ -332,6 +336,8 @@ extension NIOLandServerConfiguration {
             monitorLandType: monitorLandType, recordsDir: recordsDir, ticketSigner: ticketSigner
         )
         updated.enableLiveStateHashRecording = false
+        // The monitor land resolves nothing: the live land's services factory isn't its own.
+        updated.resolverServicesFactory = nil
         if pathHashes != nil || eventHashes != nil || clientEventHashes != nil {
             let land = ReevaluationMonitor.makeLand()
             let schema = try SchemaExtractor.extract(from: land).lands[land.id]
