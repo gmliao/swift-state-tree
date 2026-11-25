@@ -52,16 +52,16 @@ private func logAndEmit(_ entry: String, _ state: inout RoutingPinState, _ ctx: 
 
 func makeRoutingPinLand(tick: Bool) -> LandDefinition<RoutingPinState> {
     let rules: LandRules<RoutingPinState, NoServices> = Rules {
-        OnJoin { (state: inout RoutingPinState, ctx: LandContext) in logAndEmit("join:\(ctx.playerID.rawValue)", &state, ctx) }
-        OnLeave { (state: inout RoutingPinState, ctx: LandContext) in logAndEmit("leave:\(ctx.playerID.rawValue)", &state, ctx) }
-        HandleAction(RoutingPinAction.self) { (state: inout RoutingPinState, action: RoutingPinAction, ctx: LandContext) in
+        OnJoin { state, ctx in logAndEmit("join:\(ctx.playerID.rawValue)", &state, ctx) }
+        OnLeave { state, ctx in logAndEmit("leave:\(ctx.playerID.rawValue)", &state, ctx) }
+        HandleAction(RoutingPinAction.self) { state, action, ctx in
             logAndEmit("action:\(action.tag)", &state, ctx)
             return RoutingPinAck(count: state.log.count)
         }
-        HandleEvent(RoutingPinClientEvent.self) { (state: inout RoutingPinState, event: RoutingPinClientEvent, ctx: LandContext) in
+        HandleEvent(RoutingPinClientEvent.self) { state, event, ctx in
             logAndEmit("event:\(event.tag)", &state, ctx)
         }
-        HandleServerInput(RoutingPinInput.self) { (state: inout RoutingPinState, input: RoutingPinInput, ctx: LandContext) in
+        HandleServerInput(RoutingPinInput.self) { state, input, ctx in
             logAndEmit("input:\(input.tag)", &state, ctx)
         }
     }
@@ -71,9 +71,9 @@ func makeRoutingPinLand(tick: Bool) -> LandDefinition<RoutingPinState> {
             ServerEvents { Register(RoutingPinEvent.self) }
             rules
             Lifetime {
-                OnInitialize { (state: inout RoutingPinState, ctx: LandContext) in logAndEmit("initialize", &state, ctx) }
+                OnInitialize { state, ctx in logAndEmit("initialize", &state, ctx) }
                 // Hourly and stepped by hand: no real tick runs during a test.
-                Tick(every: .seconds(3600)) { (state: inout RoutingPinState, ctx: LandContext) in
+                Tick(every: .seconds(3600)) { state, ctx in
                     state.ticks += 1
                     ctx.emitEvent(RoutingPinEvent(entry: "tick:\(state.ticks)"), to: .all)
                 }
@@ -85,7 +85,7 @@ func makeRoutingPinLand(tick: Bool) -> LandDefinition<RoutingPinState> {
         ServerEvents { Register(RoutingPinEvent.self) }
         rules
         Lifetime {
-            OnInitialize { (state: inout RoutingPinState, ctx: LandContext) in logAndEmit("initialize", &state, ctx) }
+            OnInitialize { state, ctx in logAndEmit("initialize", &state, ctx) }
         }
     }
 }

@@ -67,23 +67,23 @@ private func makeInputTurnLand() -> LandDefinition<InputTurnTestState> {
         ServerEvents { Register(InputTurnEvent.self) }
         ClientEvents { Register(InputTurnBumpEvent.self) }
         Lifetime {
-            OnInitialize { (state: inout InputTurnTestState, _: LandContext) in
+            OnInitialize { state, _ in
                 state.initialized = 1
             }
         }
         Rules {
-            OnJoin { (state: inout InputTurnTestState, _: LandContext) in
+            OnJoin { state, _ in
                 state.joined += 1
             }
-            OnLeave { (state: inout InputTurnTestState, _: LandContext) in
+            OnLeave { state, _ in
                 state.joined -= 1
             }
-            HandleAction(InputTurnAddAction.self, validate: { (_: InputTurnTestState, action: InputTurnAddAction, _: ValidateContext) in
+            HandleAction(InputTurnAddAction.self, validate: { _, action, _ in
                 // A negative amount is refused before anything is written (#586).
                 if action.amount < 0 {
                     throw InputTurnHandlerError()
                 }
-            }, apply: { (state: inout InputTurnTestState, action: InputTurnAddAction, ctx: LandContext) in
+            }, apply: { state, action, ctx in
                 state.total += action.amount
                 ctx.emitEvent(InputTurnEvent(message: "added-\(action.amount)"), to: .all)
                 if action.sync {
@@ -91,13 +91,13 @@ private func makeInputTurnLand() -> LandDefinition<InputTurnTestState> {
                 }
                 return InputTurnAddResponse(amount: action.amount)
             })
-            HandleEvent(InputTurnBumpEvent.self, validate: { (_: InputTurnTestState, event: InputTurnBumpEvent, _: ValidateContext) in
+            HandleEvent(InputTurnBumpEvent.self, validate: { _, event, _ in
                 // A negative bump is refused (its validate runs are counted).
                 if event.amount < 0 {
                     InputTurnEventRuns.shared.increment(event.amount)
                     throw InputTurnHandlerError()
                 }
-            }, apply: { (state: inout InputTurnTestState, event: InputTurnBumpEvent, _: LandContext) in
+            }, apply: { state, event, _ in
                 state.total += event.amount
             })
         }

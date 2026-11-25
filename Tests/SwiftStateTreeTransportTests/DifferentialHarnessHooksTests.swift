@@ -34,21 +34,23 @@ struct HooksPingResponse: ResponsePayload {
 struct HooksPingOutput: ResolverOutput {}
 
 /// Returns at once; with it the ping is a pending job, answered by the adapter's response task.
-struct HooksPingResolver: ContextResolver {
+@PlainData
+struct HooksPingResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = HooksPingOutput
-    static func resolve(ctx: ResolverContext) async throws -> HooksPingOutput { HooksPingOutput() }
+    func resolve(_ deps: NoServices) async throws -> HooksPingOutput { HooksPingOutput() }
 }
 
 private func makeHooksLand() -> LandDefinition<HarnessHooksState> {
     Land("harness-hooks", using: HarnessHooksState.self) {
         Rules {
-            HandleAction(HooksPingAction.self, resolvers: HooksPingResolver.self) { (_: inout HarnessHooksState, action: HooksPingAction, _: LandContext) in
+            HandleAction(HooksPingAction.self, resolvers: { _, _, _ in HooksPingResolver() }) { _, action, _, _ in
                 HooksPingResponse(tag: action.tag)
             }
-            OnJoin { (state: inout HarnessHooksState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players.append(ctx.playerID.rawValue)
             }
-            OnLeave { (state: inout HarnessHooksState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeAll { $0 == ctx.playerID.rawValue }
                 state.leaves.append(ctx.playerID.rawValue)
             }

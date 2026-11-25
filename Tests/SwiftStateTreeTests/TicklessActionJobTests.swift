@@ -72,22 +72,30 @@ enum TicklessJobGates {
     static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
-struct TicklessJobGatedResolver: ContextResolver {
+@PlainData
+struct TicklessJobGatedResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = TicklessJobResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> TicklessJobResolverOutput {
-        let key = (ctx.actionPayload as? TicklessJobGatedAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> TicklessJobResolverOutput {
+        let key = key
         await TicklessJobGates.gate(key).enterAndWait()
         return TicklessJobResolverOutput(key: key)
     }
 }
 
 /// Waits at its gate, then fails.
-struct TicklessJobFailingResolver: ContextResolver {
+@PlainData
+struct TicklessJobFailingResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = TicklessJobResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> TicklessJobResolverOutput {
-        let key = (ctx.actionPayload as? TicklessJobFailingAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> TicklessJobResolverOutput {
+        let key = key
         await TicklessJobGates.gate(key).enterAndWait()
         throw TicklessJobResolverFailure()
     }
@@ -105,22 +113,22 @@ private func makeDefinition() -> LandDefinition<TicklessJobState> {
         ClientEvents { Register(TicklessJobNote.self) }
         ServerEvents { Register(TicklessJobLogged.self) }
         Rules {
-            OnJoin { (state: inout TicklessJobState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 append("join:\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
             }
-            HandleAction(TicklessJobGatedAction.self, resolvers: TicklessJobGatedResolver.self) {
-                (state: inout TicklessJobState, action: TicklessJobGatedAction, ctx: LandContext) in
+            HandleAction(TicklessJobGatedAction.self, resolvers: { _, action, _ in TicklessJobGatedResolver(key: action.key) }) {
+                state, action, _, ctx in
                 append(action.tag, to: &state, ctx: ctx)
             }
-            HandleAction(TicklessJobFailingAction.self, resolvers: TicklessJobFailingResolver.self) {
-                (state: inout TicklessJobState, action: TicklessJobFailingAction, ctx: LandContext) in
+            HandleAction(TicklessJobFailingAction.self, resolvers: { _, action, _ in TicklessJobFailingResolver(key: action.key) }) {
+                state, action, _, ctx in
                 append("failing", to: &state, ctx: ctx)
             }
             HandleAction(TicklessJobPlainAction.self) {
-                (state: inout TicklessJobState, action: TicklessJobPlainAction, ctx: LandContext) in
+                state, action, ctx in
                 append(action.tag, to: &state, ctx: ctx)
             }
-            HandleEvent(TicklessJobNote.self) { (state: inout TicklessJobState, event: TicklessJobNote, ctx: LandContext) in
+            HandleEvent(TicklessJobNote.self) { state, event, ctx in
                 append(event.tag, to: &state, ctx: ctx)
             }
         }

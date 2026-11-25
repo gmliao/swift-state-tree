@@ -81,10 +81,10 @@ struct ExistentialGapTests {
     func gapEndsTheLand() async throws {
         let definition = Land("existential-gap-test", using: ExistentialGapState.self) {
             Rules {
-                OnJoin { (state: inout ExistentialGapState, _: LandContext) in state.round += 1 }
+                OnJoin { state, _ in state.round += 1 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (state: inout ExistentialGapState, ctx: LandContext) in
+                Tick(every: .seconds(3600)) { state, ctx in
                     if state.round > 1 { state.payload = GapObject() }
                     state.round += 1
                     ctx.requestSyncNow()
@@ -98,10 +98,10 @@ struct ExistentialGapTests {
     func plainAnyEndsTheLand() async throws {
         let definition = Land("plain-any-gap-test", using: PlainAnyGapState.self) {
             Rules {
-                OnJoin { (state: inout PlainAnyGapState, _: LandContext) in state.round += 1 }
+                OnJoin { state, _ in state.round += 1 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (state: inout PlainAnyGapState, ctx: LandContext) in
+                Tick(every: .seconds(3600)) { state, ctx in
                     if state.round > 1 { state.holder.value = GapObject() }
                     state.round += 1
                     ctx.requestSyncNow()

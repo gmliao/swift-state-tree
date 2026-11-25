@@ -10,12 +10,15 @@
 /// written (a hand-written `@LandDSL<…>`, or an alias of it). The builder is attached only to a
 /// computed `static var body`; a stored `body` (`static let body = Rules { … }`) is used as it is.
 ///
-/// `@Land` makes a land without services. A land with services is written with
-/// `Land(_:using:services:)`.
+/// Without `services:`, `@Land` makes a land without services. With it
+/// (`@Land(GameState.self, services: AppServices.self)`, #769), `definition` is
+/// `TypedLand<GameState, AppServices>`, and `body` is under `@LandDSL<GameState, AppServices>`:
+/// register it with `register(landType:land:services:…)`.
 ///
 /// - Parameters:
 ///   - state: The StateNodeProtocol type for this Land.
 ///   - id: Optional Land ID. If omitted, the struct name is converted to kebab-case.
+///   - services: The land's services type, which its resolvers depend on.
 ///
 /// Example:
 /// ```swift
@@ -39,6 +42,19 @@
 public macro Land(
     _ state: Any.Type,
     id: String? = nil
+) = #externalMacro(
+    module: "SwiftStateTreeMacros",
+    type: "LandMacro"
+)
+
+/// `@Land` for a land that declares services (#769 R1): `definition` is a `TypedLand`, and
+/// `body` is under `@LandDSL<State, Services>`.
+@attached(member, names: named(definition))
+@attached(memberAttribute)
+public macro Land(
+    _ state: Any.Type,
+    id: String? = nil,
+    services: Any.Type
 ) = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "LandMacro"

@@ -219,6 +219,10 @@ public struct NIOLandServerConfiguration: Sendable {
     /// it to the host's `shutdownTimeout`.
     package var landStopTimeout: Duration = .seconds(8)
 
+    /// The land's services value per instance, for its `Resolver` values (#769 §3.4). Set only by
+    /// the registrations that take a `TypedLand`; nil for a land registered by its definition.
+    package var resolverServicesFactory: (@Sendable (LandID, [String: String]) -> any Sendable)?
+
     public init(
         logger: Logger? = nil,
         jwtConfig: JWTConfiguration? = nil,
@@ -356,7 +360,34 @@ public actor NIOLandHost {
         self.httpRouter = NIOHTTPRouter(logger: configuration.logger)
     }
 
+    /// Registers a land that declares services (`Land(_:using:services:)`, #769 §3.4).
+    ///
+    /// `services` builds the land's services value for each land instance, from its ID and
+    /// creation metadata; the land's resolvers get it. It is the only registration that takes a
+    /// `TypedLand`, so a factory of another services type doesn't compile.
+    public func register<State: StateNodeProtocol, Services: Sendable>(
+        landType: String,
+        land: TypedLand<State, Services>,
+        services: @escaping @Sendable (LandID, [String: String]) -> Services,
+        initialState: @autoclosure @escaping @Sendable () -> State,
+        webSocketPath: String,
+        configuration: NIOLandServerConfiguration
+    ) async throws {
+        var configuration = configuration
+        configuration.resolverServicesFactory = { landID, metadata in services(landID, metadata) }
+        try await register(
+            landType: landType,
+            land: land.definition,
+            initialState: initialState(),
+            webSocketPath: webSocketPath,
+            configuration: configuration
+        )
+    }
+
     /// Registers a Land type with this host.
+    ///
+    /// A land that declares services is refused here (`LandRegistrationError.missingServices`):
+    /// register it with `register(landType:land:services:…)`.
     ///
     /// - Parameters:
     ///   - landType: Unique identifier for this land type.
@@ -873,7 +904,8 @@ extension NIOLandServerConfiguration {
         LandRegistrationContext(
             payloadsCompressed: effectiveTransportEncoding.shouldEncodePayloadAsArray,
             recordsForReplay: enableLiveStateHashRecording,
-            eventHashes: eventHashes
+            eventHashes: eventHashes,
+            servicesProvided: resolverServicesFactory != nil
         )
     }
     /// `registrationContext` with recording forced on: the context the reevaluation helpers check a

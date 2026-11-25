@@ -48,39 +48,39 @@ private func makeShutdownDefinition(tick: Bool, destroyWhenEmpty: Bool = false) 
     if tick, destroyWhenEmpty {
         return Land("shutdown-turn", using: ShutdownTurnState.self) {
             Rules {
-                OnJoin { (state: inout ShutdownTurnState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.log.append("join:\(ctx.playerID.rawValue)")
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (state: inout ShutdownTurnState, _: LandContext) in
+                Tick(every: .seconds(3600)) { state, _ in
                     state.log.append("tick")
                 }
-                DestroyWhenEmpty(after: .seconds(3600)) { (_: inout ShutdownTurnState, _: LandContext) in }
+                DestroyWhenEmpty(after: .seconds(3600)) { _, _ in }
             }
         }
     }
     if tick {
         return Land("shutdown-turn", using: ShutdownTurnState.self) {
             Rules {
-                OnJoin { (state: inout ShutdownTurnState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.log.append("join:\(ctx.playerID.rawValue)")
                 }
-                OnLeave { (state: inout ShutdownTurnState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.log.append("leave:\(ctx.playerID.rawValue)")
                 }
                 HandleAction(ShutdownAdd.self) {
-                    (state: inout ShutdownTurnState, action: ShutdownAdd, _: LandContext) in
+                    state, action, _ in
                     state.total += action.amount
                     state.log.append("add")
                     return ShutdownAck(ok: true)
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (state: inout ShutdownTurnState, _: LandContext) in
+                Tick(every: .seconds(3600)) { state, _ in
                     state.log.append("tick")
                 }
-                OnFinalize { (state: inout ShutdownTurnState, _: LandContext) in
+                OnFinalize { state, _ in
                     state.log.append("finalize")
                 }
             }
@@ -89,17 +89,17 @@ private func makeShutdownDefinition(tick: Bool, destroyWhenEmpty: Bool = false) 
     if destroyWhenEmpty {
         return Land("shutdown-turn", using: ShutdownTurnState.self) {
             Rules {
-                OnJoin { (state: inout ShutdownTurnState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.log.append("join:\(ctx.playerID.rawValue)")
                 }
-                OnLeave { (state: inout ShutdownTurnState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.log.append("leave:\(ctx.playerID.rawValue)")
                 }
             }
             Lifetime {
                 // Started by the test (`runEmptyRoomShutdownForTesting`), not by the timer.
-                DestroyWhenEmpty(after: .seconds(3600)) { (_: inout ShutdownTurnState, _: LandContext) in }
-                OnFinalize { (state: inout ShutdownTurnState, _: LandContext) in
+                DestroyWhenEmpty(after: .seconds(3600)) { _, _ in }
+                OnFinalize { state, _ in
                     state.log.append("finalize")
                 }
             }
@@ -107,21 +107,21 @@ private func makeShutdownDefinition(tick: Bool, destroyWhenEmpty: Bool = false) 
     }
     return Land("shutdown-turn", using: ShutdownTurnState.self) {
         Rules {
-            OnJoin { (state: inout ShutdownTurnState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.log.append("join:\(ctx.playerID.rawValue)")
             }
-            OnLeave { (state: inout ShutdownTurnState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.log.append("leave:\(ctx.playerID.rawValue)")
             }
             HandleAction(ShutdownAdd.self) {
-                (state: inout ShutdownTurnState, action: ShutdownAdd, _: LandContext) in
+                state, action, _ in
                 state.total += action.amount
                 state.log.append("add")
                 return ShutdownAck(ok: true)
             }
         }
         Lifetime {
-            OnFinalize { (state: inout ShutdownTurnState, _: LandContext) in
+            OnFinalize { state, _ in
                 state.log.append("finalize")
             }
         }

@@ -53,7 +53,7 @@ private actor CacheTestRecordingTransport: Transport {
 func testSnapshotForSyncDoesNotReplayUnchangedBroadcastFieldsAfterPerPlayerOnlyDirtySync() async throws {
     let definition = Land("snapshot-cache-test", using: SnapshotCacheTestState.self) {
         Rules {
-            OnJoin { (state: inout SnapshotCacheTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 // Only mutates a per-player field; the broadcast field ("tick") stays untouched.
                 state.scores[ctx.playerID] = 0
             }

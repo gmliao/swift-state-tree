@@ -34,11 +34,11 @@ struct LandRouterTests {
              if landType == "basic-test" {
                  return Land("basic-test", using: RouterTestState.self) {
                     Rules {
-                        OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                        OnJoin { state, ctx in
                             state.players[ctx.playerID] = "Joined"
                         }
 
-                        OnLeave { (state: inout RouterTestState, ctx: LandContext) in
+                        OnLeave { state, ctx in
                             state.players.removeValue(forKey: ctx.playerID)
                         }
                     }
@@ -448,7 +448,7 @@ struct LandRouterTests {
         let landFactory: @Sendable (String, LandID) -> LandDefinition<RouterTestState> = { landType, _ in
             Land("basic-test", using: RouterTestState.self) {
                 Rules {
-                    OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.players[ctx.playerID] = "Joined"
                     }
                 }
@@ -512,7 +512,7 @@ struct LandRouterTests {
         let landFactory: @Sendable (String, LandID) -> LandDefinition<RouterTestState> = { landType, _ in
             Land("basic-test", using: RouterTestState.self) {
                 Rules {
-                    OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.players[ctx.playerID] = "Joined"
                     }
                 }
@@ -574,7 +574,7 @@ struct LandRouterTests {
         let landFactory: @Sendable (String, LandID) -> LandDefinition<RouterTestState> = { landType, _ in
             Land("basic-test", using: RouterTestState.self) {
                 Rules {
-                    OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.players[ctx.playerID] = "Joined"
                     }
                 }
@@ -632,7 +632,7 @@ struct LandRouterTests {
         let landFactory: @Sendable (String, LandID) -> LandDefinition<RouterTestState> = { landType, _ in
             Land("basic-test", using: RouterTestState.self) {
                 Rules {
-                    OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.players[ctx.playerID] = "Joined"
                     }
                 }
@@ -701,7 +701,7 @@ struct LandRouterTests {
         let landFactory: @Sendable (String, LandID) -> LandDefinition<RouterTestState> = { landType, _ in
             Land("basic-test", using: RouterTestState.self) {
                 Rules {
-                    OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.players[ctx.playerID] = "Joined"
                     }
                 }
@@ -765,7 +765,7 @@ struct LandRouterTests {
         let landFactory: @Sendable (String, LandID) -> LandDefinition<RouterTestState> = { landType, _ in
             Land("basic-test", using: RouterTestState.self) {
                 Rules {
-                    OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.players[ctx.playerID] = "Joined"
                     }
                 }
@@ -846,7 +846,7 @@ struct LandRouterTests {
         let landFactory: @Sendable (String, LandID) -> LandDefinition<RouterTestState> = { landType, _ in
             Land("basic-test", using: RouterTestState.self) {
                 Rules {
-                    OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.players[ctx.playerID] = "Joined"
                     }
                 }

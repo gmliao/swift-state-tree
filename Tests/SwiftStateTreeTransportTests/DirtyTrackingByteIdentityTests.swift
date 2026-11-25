@@ -66,15 +66,15 @@ private func makeDirtyIdentityDefinition(landID: String) -> LandDefinition<Dirty
         ClientEvents { Register(DirtyIdentityStep.self) }
         ServerEvents { Register(DirtyIdentityNotice.self) }
         Rules {
-            OnJoin { (state: inout DirtyIdentityState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.inventories[ctx.playerID] = []
                 state.positions[ctx.playerID.rawValue] = 0
             }
-            OnLeave { (state: inout DirtyIdentityState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.inventories.removeValue(forKey: ctx.playerID)
                 state.positions.removeValue(forKey: ctx.playerID.rawValue)
             }
-            HandleEvent(DirtyIdentityStep.self) { (state: inout DirtyIdentityState, step: DirtyIdentityStep, ctx: LandContext) in
+            HandleEvent(DirtyIdentityStep.self) { state, step, ctx in
                 state.secret += 1
                 if step.secretOnly { return }
                 state.round += 1

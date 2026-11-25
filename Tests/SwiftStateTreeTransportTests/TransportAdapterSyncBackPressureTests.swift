@@ -45,7 +45,7 @@ private func bpLand(_ id: String) -> LandDefinition<BackPressureState> {
     Land(id, using: BackPressureState.self) {
         ServerEvents { Register(BackPressureEvent.self) }
         Rules {
-            HandleAction(BackPressureSetAction.self) { (state: inout BackPressureState, action: BackPressureSetAction, ctx: LandContext) in
+            HandleAction(BackPressureSetAction.self) { state, action, ctx in
                 state.stamp = bpMarker(action.stamp)
                 // Tickless: the action asks for a sync (runs only when the keeper has a transport).
                 ctx.requestSyncNow()

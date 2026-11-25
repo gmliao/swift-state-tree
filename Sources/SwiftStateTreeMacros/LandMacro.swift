@@ -33,14 +33,28 @@ public struct LandMacro: MemberMacro, MemberAttributeMacro {
         let inferredID = inferLandID(from: structName)
         let idExpr = args.idExpr ?? ExprSyntax(StringLiteralExprSyntax(content: inferredID))
 
-        let definitionDecl: DeclSyntax =
-            """
-            public static var definition: LandDefinition<\(args.stateType)> {
-                Land(\(idExpr), using: \(args.stateType).self) {
-                    Self.body
+        // With `services:` (#769 R1), the definition is the land typed by its services, and the
+        // body is under `LandDSL<State, Services>`.
+        let definitionDecl: DeclSyntax
+        if let services = args.servicesType {
+            definitionDecl =
+                """
+                public static var definition: TypedLand<\(args.stateType), \(services)> {
+                    Land(\(idExpr), using: \(args.stateType).self, services: \(services).self) {
+                        Self.body
+                    }
                 }
-            }
-            """
+                """
+        } else {
+            definitionDecl =
+                """
+                public static var definition: LandDefinition<\(args.stateType)> {
+                    Land(\(idExpr), using: \(args.stateType).self) {
+                        Self.body
+                    }
+                }
+                """
+        }
 
         return [definitionDecl]
     }
@@ -63,7 +77,7 @@ public struct LandMacro: MemberMacro, MemberAttributeMacro {
         else { return [] }
         // A missing state type is the member expansion's diagnostic; this one adds nothing.
         guard let args = try? LandAttributeArguments.parse(from: attribute) else { return [] }
-        return ["@LandDSL<\(args.stateType), NoServices>"]
+        return ["@LandDSL<\(args.stateType), \(args.servicesType ?? "NoServices")>"]
     }
 }
 
@@ -89,6 +103,8 @@ private func isAvailability(_ element: AttributeListSyntax.Element) -> Bool {
 private struct LandAttributeArguments {
     let stateType: TypeSyntax
     let idExpr: ExprSyntax?
+    /// `services:`, the land's services type (#769 R1); nil for a land without services.
+    let servicesType: TypeSyntax?
 
     static func parse(from attribute: AttributeSyntax) throws -> LandAttributeArguments {
         guard let arguments = attribute.arguments?.as(LabeledExprListSyntax.self) else {
@@ -99,6 +115,7 @@ private struct LandAttributeArguments {
 
         var stateType: TypeSyntax?
         var idExpr: ExprSyntax?
+        var servicesType: TypeSyntax?
 
         for (index, argument) in arguments.enumerated() {
             let label = argument.label?.text
@@ -110,6 +127,8 @@ private struct LandAttributeArguments {
             switch label {
             case "id":
                 idExpr = ExprSyntax(argument.expression)
+            case "services":
+                servicesType = try TypeSyntax.make(from: argument.expression)
             default:
                 break
             }
@@ -123,7 +142,8 @@ private struct LandAttributeArguments {
 
         return LandAttributeArguments(
             stateType: stateType,
-            idExpr: idExpr
+            idExpr: idExpr,
+            servicesType: servicesType
         )
     }
 }
@@ -163,7 +183,7 @@ private enum LandMacroDiagnostics: DiagnosticMessage {
         case .onlyStructs:
             return "@Land can only be applied to struct declarations"
         case .missingBody:
-            return "@Land struct must declare `static var body: LandRules<State, NoServices>`"
+            return "@Land struct must declare `static var body: LandRules<State, Services>` (`NoServices` without `services:`)"
         case .missingArguments:
             return "@Land requires state type"
         }

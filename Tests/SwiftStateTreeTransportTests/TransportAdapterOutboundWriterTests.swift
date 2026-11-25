@@ -44,7 +44,7 @@ private func writerLand(_ id: String) -> LandDefinition<WriterTestState> {
     Land(id, using: WriterTestState.self) {
         ServerEvents { Register(WriterEvent.self) }
         Rules {
-            HandleAction(WriterSetAction.self) { (state: inout WriterTestState, action: WriterSetAction, _: LandContext) in
+            HandleAction(WriterSetAction.self) { state, action, _ in
                 state.stamp = writerMarker(action.stamp)
                 return WriterSetResponse(ok: true)
             }

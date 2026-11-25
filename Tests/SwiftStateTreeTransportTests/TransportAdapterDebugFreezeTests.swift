@@ -64,10 +64,12 @@ actor DebugFreezeStuckGate {
     }
 }
 
-struct DebugFreezeStuckResolver: ContextResolver {
+@PlainData
+struct DebugFreezeStuckResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = DebugFreezeStuckOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> DebugFreezeStuckOutput {
+    func resolve(_ deps: NoServices) async throws -> DebugFreezeStuckOutput {
         await DebugFreezeStuckGate.shared.pass()
         return DebugFreezeStuckOutput(ok: true)
     }
@@ -83,19 +85,19 @@ struct DebugFreezeStuckOutput: ResolverOutput {
 private func makeDefinition() -> LandDefinition<DebugFreezeAdapterState> {
     Land("debug-freeze-adapter", using: DebugFreezeAdapterState.self) {
         Rules {
-            OnJoin { (state: inout DebugFreezeAdapterState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.members[ctx.playerID] = true
             }
-            OnLeave { (state: inout DebugFreezeAdapterState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.members.removeValue(forKey: ctx.playerID)
             }
-            HandleAction(DebugFreezeStuckAction.self, resolvers: DebugFreezeStuckResolver.self) {
-                (state: inout DebugFreezeAdapterState, action: DebugFreezeStuckAction, _: LandContext) in
+            HandleAction(DebugFreezeStuckAction.self, resolvers: { _, _, _ in DebugFreezeStuckResolver() }) {
+                state, action, _, _ in
                 state.headline = action.headline
                 return DebugFreezeUpdateAck(ok: true)
             }
             HandleAction(DebugFreezeUpdateAction.self) {
-                (state: inout DebugFreezeAdapterState, action: DebugFreezeUpdateAction, ctx: LandContext) in
+                state, action, ctx in
                 state.headline = action.headline
                 state.scores[ctx.playerID] = action.score
                 return DebugFreezeUpdateAck(ok: true)

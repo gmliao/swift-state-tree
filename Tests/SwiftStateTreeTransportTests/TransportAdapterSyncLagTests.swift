@@ -79,15 +79,15 @@ func syncLagTestLand() -> LandDefinition<SyncLagTestState> {
         ClientEvents { Register(SyncLagIncrementEvent.self) }
         ServerEvents { Register(Opcode107MessageEvent.self) }
         Rules {
-            HandleEvent(SyncLagIncrementEvent.self) { (state: inout SyncLagTestState, _: SyncLagIncrementEvent, _) in
+            HandleEvent(SyncLagIncrementEvent.self) { state, _, _ in
                 state.count += 1
             }
-            HandleAction(SyncLagIncrementAction.self) { (state: inout SyncLagTestState, _: SyncLagIncrementAction, _: LandContext) in
+            HandleAction(SyncLagIncrementAction.self) { state, _, _ in
                 state.count += 1
                 state.tags["k\(state.count)"] = state.count
                 return SyncLagIncrementResponse(ok: true)
             }
-            HandleAction(SyncLagSpeedAction.self) { (state: inout SyncLagTestState, action: SyncLagSpeedAction, _: LandContext) in
+            HandleAction(SyncLagSpeedAction.self) { state, action, _ in
                 state.speeds["p"] = action.nan ? .nan : nil
                 return SyncLagIncrementResponse(ok: true)
             }

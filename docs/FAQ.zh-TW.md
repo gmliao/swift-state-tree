@@ -124,18 +124,21 @@ A: 為了 determinism，handlers 以同步方式設計，**不建議在 handler 
 請改用 Resolver 在 handler 執行前載入資料，並用 `ctx.emitEvent(...)` 產生 deterministic 輸出：
 
 ```swift
-struct LoadSomethingResolver: ContextResolver {
-    @PlainData
-    struct Output: ResolverOutput { let value: Int }
-    static func resolve(ctx: ResolverContext) async throws -> Output {
-        let value = try await someAsyncOperation()
-        return Output(value: value)
+@PlainData
+struct LoadSomethingOutput: ResolverOutput { let value: Int }
+
+@PlainData
+struct LoadSomething: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+    func resolve(_ deps: NoServices) async throws -> LoadSomethingOutput {
+        let value = try await someAsyncOperation(key)
+        return LoadSomethingOutput(value: value)
     }
 }
 
 Rules {
-    HandleAction(SomeAction.self, resolvers: LoadSomethingResolver.self) { state, action, ctx in
-        let output: LoadSomethingResolver.Output? = ctx.loadSomething
+    HandleAction(SomeAction.self, resolvers: { _, action, _ in LoadSomething(key: action.key) }) { state, action, output, ctx in
         state.someField = output?.value ?? 0
 
         ctx.emitEvent(SomeEvent(result: state.someField), to: .player(ctx.playerID))
@@ -237,14 +240,12 @@ A: 主要錯誤碼包括：
 A: Resolver 錯誤會被自動包裝並回傳給 client：
 
 ```swift
-struct ProductInfoResolver: ContextResolver {
-    typealias Output = ProductInfo
-    
-    static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-        guard let productID = ctx.actionPayload.productID else {
-            throw ResolverError.missingParameter("productID")
-        }
-        
+@PlainData
+struct ProductInfo: Resolver {
+    typealias Dependencies = NoServices
+    let productID: String
+
+    func resolve(_ deps: NoServices) async throws -> ProductInfoOutput {
         // 如果找不到產品，拋出錯誤
         guard let product = await fetchProduct(productID) else {
             throw ResolverError.dataLoadFailed("Product not found")

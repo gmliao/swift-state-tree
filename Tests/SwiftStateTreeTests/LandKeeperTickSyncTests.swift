@@ -75,11 +75,11 @@ func testTickUpdatesBroadcastFields() async throws {
         
         Lifetime {
             // Use a short interval to reduce CI flakiness.
-            Tick(every: .milliseconds(10)) { (state: inout TickTestState, _) in
+            Tick(every: .milliseconds(10)) { state, _ in
                 state.ticks += 1
                 state.gameTime += 1
             }
-            StateSync(every: .milliseconds(10)) { (_: TickTestState, _: LandContext) in
+            StateSync(every: .milliseconds(10)) { _, _ in
                 // Read-only sync callback
             }
         }

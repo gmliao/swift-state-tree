@@ -53,6 +53,18 @@ struct SlowDeterministicConsistencyResolver: ContextResolver {
     }
 }
 
+/// The action's form of the same resolver (#769): a value, built with the sender's ID.
+@PlainData
+struct SlowDeterministicConsistency: Resolver {
+    typealias Dependencies = NoServices
+    let playerID: PlayerID
+
+    func resolve(_ deps: NoServices) async throws -> SlowDeterministicConsistencyOutput {
+        try await Task.sleep(for: .milliseconds(25))
+        return SlowDeterministicConsistencyOutput(stableInt: DeterministicHash.stableInt32(playerID.rawValue))
+    }
+}
+
 @PlainData
 struct SlowDeterministicConsistencyOutput: ResolverOutput {
     let stableInt: Int32
@@ -63,17 +75,18 @@ struct SlowDeterministicConsistencyOutput: ResolverOutput {
 private func createConsistencyTestLandDefinition() -> LandDefinition<AsyncResolverConsistencyTestState> {
     Land("async-resolver-consistency-test", using: AsyncResolverConsistencyTestState.self) {
         Rules {
-            OnJoin(resolvers: SlowDeterministicConsistencyResolver.self) { (state: inout AsyncResolverConsistencyTestState, ctx: LandContext) in
-                state.playersJoined[ctx.playerID.rawValue] = Int((ctx.slowDeterministicConsistency as SlowDeterministicConsistencyOutput?)?.stableInt ?? 0)
+            OnJoin(resolvers: SlowDeterministicConsistencyResolver.self) { state, slowDeterministicConsistency, ctx in
+                state.playersJoined[ctx.playerID.rawValue] = Int((slowDeterministicConsistency as SlowDeterministicConsistencyOutput?)?.stableInt ?? 0)
             }
 
-            OnLeave(resolvers: SlowDeterministicConsistencyResolver.self) { (state: inout AsyncResolverConsistencyTestState, ctx: LandContext) in
+            OnLeave(resolvers: SlowDeterministicConsistencyResolver.self) { state, _, ctx in
                 state.playersJoined.removeValue(forKey: ctx.playerID.rawValue)
             }
 
-            HandleAction(IncrementCounterConsistencyAction.self, resolvers: SlowDeterministicConsistencyResolver.self) {
-                (state: inout AsyncResolverConsistencyTestState, action: IncrementCounterConsistencyAction, ctx: LandContext) in
-                let bias = Int((ctx.slowDeterministicConsistency as SlowDeterministicConsistencyOutput?)?.stableInt ?? 0) % 7
+            HandleAction(IncrementCounterConsistencyAction.self, resolvers: { _, _, ctx in
+                SlowDeterministicConsistency(playerID: ctx.playerID)
+            }) { state, action, slowDeterministicConsistency, _ in
+                let bias = Int(slowDeterministicConsistency?.stableInt ?? 0) % 7
                 state.counter += action.amount + bias
                 return IncrementCounterConsistencyResponse(newValue: state.counter)
             }
@@ -81,7 +94,7 @@ private func createConsistencyTestLandDefinition() -> LandDefinition<AsyncResolv
 
         Lifetime {
             // Interval won't be used in this test because we run with autoStartLoops:false and manual stepping.
-            Tick(every: .seconds(3600)) { (state: inout AsyncResolverConsistencyTestState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
         }

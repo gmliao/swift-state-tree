@@ -16,10 +16,14 @@ private struct InitFailureTestError: Error {}
 /// "throw-late" throws once the group has collected `InitOkResolver`'s output (`InitOrder`),
 /// "stuck" sleeps until
 /// cancelled; any other mode returns 7.
-struct InitFailureResolver: ContextResolver {
+@PlainData
+struct InitFailureResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = DeadlineResolverOutput
-    static func resolve(ctx: ResolverContext) async throws -> DeadlineResolverOutput {
-        let parts = ctx.landID.split(separator: ":")
+    func resolve(_ deps: NoServices) async throws -> DeadlineResolverOutput {
+        let parts = landID.split(separator: ":")
         switch parts.count > 1 ? String(parts[1]) : "" {
         case "throw":
             throw InitFailureTestError()
@@ -82,9 +86,11 @@ final class InitOrder: @unchecked Sendable {
 
 /// A resolver that succeeds with 5 (`ctx.initOk`). It yields first, so without `InitOrder` the
 /// failing sibling would usually throw before it is collected.
-struct InitOkResolver: ContextResolver {
+@PlainData
+struct InitOkResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = DeadlineResolverOutput
-    static func resolve(ctx: ResolverContext) async throws -> DeadlineResolverOutput {
+    func resolve(_ deps: NoServices) async throws -> DeadlineResolverOutput {
         for _ in 0..<10 { await Task.yield() }
         return DeadlineResolverOutput(value: 5)
     }
@@ -93,24 +99,23 @@ struct InitOkResolver: ContextResolver {
 /// OnInitialize logs "init:<output>" or "init:no-output"; OnJoin "join:<p>"; OnFinalize
 /// "finalize"; OnDestroyWhenEmpty "destroyWhenEmpty".
 private func makeDefinition(_ policy: InitializeResolverFailure?) -> LandDefinition<DeadlineTestState> {
-    let body: @Sendable (inout DeadlineTestState, LandContext) -> Void = { state, ctx in
-        let output: DeadlineResolverOutput? = ctx.initFailure
+    let body: @Sendable (inout DeadlineTestState, DeadlineResolverOutput?, LandContext) -> Void = { state, output, _ in
         state.log.append(output.map { "init:\($0.value)" } ?? "init:no-output")
     }
     let onJoin = OnJoin { (state: inout DeadlineTestState, ctx: LandContext) in
         state.log.append("join:\(ctx.playerID.rawValue)")
     }
-    let onFinalize: LifetimeDirective<DeadlineTestState> = OnFinalize { (state: inout DeadlineTestState, _: LandContext) in
+    let onFinalize: LifetimeDirective<DeadlineTestState> = OnFinalize { state, _ in
         state.log.append("finalize")
     }
-    let destroyWhenEmpty: LifetimeDirective<DeadlineTestState> = DestroyWhenEmpty(after: .seconds(3600)) { (state: inout DeadlineTestState, _: LandContext) in
+    let destroyWhenEmpty: LifetimeDirective<DeadlineTestState> = DestroyWhenEmpty(after: .seconds(3600)) { state, _ in
         state.log.append("destroyWhenEmpty")
     }
     guard let policy else {
         return Land("init-failure", using: DeadlineTestState.self) {
             Rules { onJoin }
             Lifetime {
-                OnInitialize(resolvers: InitFailureResolver.self, body)
+                OnInitialize(resolvers: { _, ctx in InitFailureResolver(landID: ctx.landID) }, body)
                 onFinalize
                 destroyWhenEmpty
             }
@@ -119,7 +124,7 @@ private func makeDefinition(_ policy: InitializeResolverFailure?) -> LandDefinit
     return Land("init-failure", using: DeadlineTestState.self) {
         Rules { onJoin }
         Lifetime {
-            OnInitialize(resolvers: InitFailureResolver.self, onResolverFailure: policy, body)
+            OnInitialize(resolvers: { _, ctx in InitFailureResolver(landID: ctx.landID) }, onResolverFailure: policy, body)
             onFinalize
             destroyWhenEmpty
         }
@@ -247,9 +252,9 @@ struct InitializeResolverFailureTests {
         let metrics = ResolverDeadlineMetrics(), transport = DestroyFlag()
         let definition = Land("init-failure", using: DeadlineTestState.self) {
             Lifetime {
-                OnInitialize(resolvers: (InitOkResolver.self, InitFailureResolver.self), onResolverFailure: .continue) { (state: inout DeadlineTestState, ctx: LandContext) in
-                    let ok: DeadlineResolverOutput? = ctx.initOk
-                    let failed: DeadlineResolverOutput? = ctx.initFailure
+                OnInitialize(resolvers: { _, ctx in (InitOkResolver(), InitFailureResolver(landID: ctx.landID)) }, onResolverFailure: .continue) { state, resolved, ctx in
+                    let ok: DeadlineResolverOutput? = resolved.0
+                    let failed: DeadlineResolverOutput? = resolved.1
                     state.log.append("ok:\(ok.map { "\($0.value)" } ?? "none") failed:\(failed.map { "\($0.value)" } ?? "none")")
                 }
             }
@@ -354,18 +359,18 @@ struct InitializeResolverFailureTests {
         #expect(makeDefinition(.continue).lifetimeHandlers.onInitializeResolverFailure == .continue)
         let two = Land("init-failure-two", using: DeadlineTestState.self) {
             Lifetime {
-                OnInitialize(resolvers: (InitFailureResolver.self, InitFailureResolver.self)) { (_: inout DeadlineTestState, _: LandContext) in }
+                OnInitialize(resolvers: { _, ctx in (InitOkResolver(), InitFailureResolver(landID: ctx.landID)) }) { _, _, _ in }
             }
         }
         let three = Land("init-failure-three", using: DeadlineTestState.self) {
             Lifetime {
-                OnInitialize(resolvers: (InitFailureResolver.self, InitFailureResolver.self, InitFailureResolver.self), onResolverFailure: .continue) { (_: inout DeadlineTestState, _: LandContext) in }
+                OnInitialize(resolvers: { _, ctx in (InitOkResolver(), InitFailureResolver(landID: ctx.landID), DeadlineInitResolver(landID: ctx.landID)) }, onResolverFailure: .continue) { _, _, _ in }
             }
         }
         #expect(two.lifetimeHandlers.onInitializeResolverFailure == .failLand)
         #expect(three.lifetimeHandlers.onInitializeResolverFailure == .continue)
         let none = Land("init-failure-none", using: DeadlineTestState.self) {
-            Lifetime { OnInitialize { (_: inout DeadlineTestState, _: LandContext) in } }
+            Lifetime { OnInitialize { _, _ in } }
         }
         #expect(none.lifetimeHandlers.onInitializeResolverFailure == .failLand)
     }

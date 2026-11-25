@@ -29,13 +29,13 @@ struct QueueIncrementAction: ActionPayload {
 private func queueTestLand(tick interval: Duration) -> LandDefinition<QueueTestState> {
     Land("queue-test", using: QueueTestState.self) {
         Rules {
-            HandleAction(QueueIncrementAction.self) { (state: inout QueueTestState, action: QueueIncrementAction, ctx: LandContext) in
+            HandleAction(QueueIncrementAction.self) { state, action, ctx in
                 action.apply(to: &state, ctx: ctx)
                 return QueueIncrementResponse()
             }
         }
         Lifetime {
-            Tick(every: interval) { (_: inout QueueTestState, _: LandContext) in }
+            Tick(every: interval) { _, _ in }
         }
     }
 }
