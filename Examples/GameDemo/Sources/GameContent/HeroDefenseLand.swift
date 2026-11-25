@@ -221,7 +221,7 @@ public enum HeroDefense {
                     let playerID = ctx.playerID
 
                     // Get user level from resolver (deterministic based on PlayerID hash)
-                    let userLevel = (userLevel as UserLevel?)?.level ?? 1
+                    let level = userLevel?.level ?? 1
 
                     // Spawn player near base center
                     var player = PlayerState()
@@ -236,18 +236,18 @@ public enum HeroDefense {
                     // Set initial health and max health based on user level
                     // Higher level players start with more health
                     let baseHealth = 100
-                    let levelBonus = userLevel * 10
+                    let levelBonus = level * 10
                     player.health = baseHealth + levelBonus
                     player.maxHealth = baseHealth + levelBonus
 
                     // Set initial weapon level based on user level (deterministic from PlayerID hash)
                     // Players start with different weapon levels, but can upgrade further
-                    player.weaponLevel = userLevel - 1 // Convert 1-3 to 0-2 for weapon level
+                    player.weaponLevel = level - 1 // Convert 1-3 to 0-2 for weapon level
                     player.resources = 0
                     state.players[playerID] = player
                     ctx.logger.info("👤 Player joined", metadata: [
                         "playerID": .string(playerID.rawValue),
-                        "level": .stringConvertible(userLevel),
+                        "level": .stringConvertible(level),
                         "health": .stringConvertible(player.health),
                         "totalPlayers": .string("\(state.players.count)"),
                     ])
