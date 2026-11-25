@@ -455,6 +455,67 @@ struct WebSocketSessionHandlerProtocolTests {
         )
     }
 
+    // MARK: - Close frame validation (RFC 6455 §5.5.1, §7.4.2, §8.1), #827
+
+    /// Sends a single malformed close frame with the flush held, then checks that the disconnect
+    /// arrives (from the failure path itself, not from the channel closing) and that `closeCause`
+    /// is `.error` — not `.serverClose`, which the old `closeOnLoop + enqueueDisconnect` path set.
+    private func expectCloseValidationFailure(
+        payload: ByteBuffer,
+        code expectedCode: UInt16,
+        sessionID: String
+    ) async throws {
+        let recorder = RecordingDelegate()
+        let transport = WebSocketTransport()
+        await transport.setDelegate(recorder)
+        let channel = EmbeddedChannel()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+        let hold = FlushHold()
+        let handler = WebSocketSessionHandler(
+            sessionID: SessionID(sessionID),
+            path: "/test",
+            transport: transport,
+            eventLoop: channel.eventLoop,
+            logger: Logger(label: "test")
+        )
+        try channel.pipeline.syncOperations.addHandler(hold)
+        try channel.pipeline.syncOperations.addHandler(handler)
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: payload))
+        channel.embeddedEventLoop.run()
+        await handler.waitForInboundIdle()
+        #expect(channel.isActive, "the close write is held")
+        #expect(handler.closeCause == .error, "malformed close is a protocol error, not server close: \(String(describing: handler.closeCause))")
+        #expect(recorder.events == [.disconnect], "\(recorder.events)")
+        hold.holding = false
+        channel.flush()
+        channel.embeddedEventLoop.run()
+        let r = try outboundCloseResult(channel)
+        #expect(r.code == expectedCode)
+        #expect(!r.active)
+    }
+
+    @Test("1-byte close payload → 1002, cause .error, disconnect before frame written")
+    func oneByteClosePayloadCausesError() async throws {
+        var buf = ByteBuffer()
+        buf.writeInteger(UInt8(0))
+        try await expectCloseValidationFailure(payload: buf, code: 1002, sessionID: "proto-malclose-1b")
+    }
+
+    @Test("Invalid close code → 1002, cause .error, disconnect before frame written")
+    func invalidCloseCodeCausesError() async throws {
+        var buf = ByteBuffer()
+        buf.writeInteger(UInt16(1005))
+        try await expectCloseValidationFailure(payload: buf, code: 1002, sessionID: "proto-malclose-code")
+    }
+
+    @Test("Invalid UTF-8 close reason → 1007, cause .error, disconnect before frame written")
+    func invalidUTF8CloseReasonCausesError() async throws {
+        var buf = ByteBuffer()
+        buf.writeInteger(UInt16(1000))
+        buf.writeBytes([0xC3, 0x28])
+        try await expectCloseValidationFailure(payload: buf, code: 1007, sessionID: "proto-malclose-utf8")
+    }
+
     @Test("Bad close: trailing ping is dropped after the error close")
     func badCloseDropsTrailingPing() throws {
         let channel = try makeSession("proto-badclose-trail")

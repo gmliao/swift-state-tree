@@ -717,8 +717,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         // A 1-byte payload is malformed (RFC 6455 §5.5.1).
         guard payload.readableBytes != 1 else {
-            closeOnLoop(code: .protocolError)
-            enqueueDisconnect()
+            failConnection(code: .protocolError)
             return
         }
 
@@ -727,8 +726,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         // Invalid close code (RFC 6455 §7.4.2).
         guard isValidCloseCode(codeValue) else {
-            closeOnLoop(code: .protocolError)
-            enqueueDisconnect()
+            failConnection(code: .protocolError)
             return
         }
 
@@ -737,8 +735,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
            let reasonBytes = payload.readBytes(length: payload.readableBytes),
            String(bytes: reasonBytes, encoding: .utf8) == nil
         {
-            closeOnLoop(code: .dataInconsistentWithMessage)
-            enqueueDisconnect()
+            failConnection(code: .dataInconsistentWithMessage)
             return
         }
 
