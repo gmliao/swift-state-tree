@@ -1,4 +1,5 @@
 ---
+title: "A gate checked per send site leaks at the next site; a failure found outside a turn needs a mailbox"
 module: SwiftStateTreeTransport
 date: 2026-11-21
 problem_type: bug_class

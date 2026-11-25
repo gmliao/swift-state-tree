@@ -1,4 +1,5 @@
 ---
+title: "A drain wait returns at once before the destruction starts"
 module: SwiftStateTreeTransport
 date: 2026-11-11
 problem_type: gotcha

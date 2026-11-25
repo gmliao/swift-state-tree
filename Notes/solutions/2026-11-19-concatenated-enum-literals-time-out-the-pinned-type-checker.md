@@ -1,4 +1,5 @@
 ---
+title: "Array literals of enum cases joined with `+` time out the pinned type checker"
 module: Tests, toolchain
 date: 2026-11-19
 problem_type: build_failure

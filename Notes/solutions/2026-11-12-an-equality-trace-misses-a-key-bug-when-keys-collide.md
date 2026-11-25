@@ -1,4 +1,5 @@
 ---
+title: "An equality trace misses a key bug when keys collide"
 module: SwiftStateTreeTransport
 date: 2026-11-12
 problem_type: testing_practice

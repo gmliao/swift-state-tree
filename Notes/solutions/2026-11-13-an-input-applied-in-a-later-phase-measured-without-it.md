@@ -1,4 +1,5 @@
 ---
+title: "An input that takes effect only in a later phase, measured without that phase"
 module: Examples/GameDemo (EncodingBenchmark)
 date: 2026-11-13
 problem_type: measurement_pitfall

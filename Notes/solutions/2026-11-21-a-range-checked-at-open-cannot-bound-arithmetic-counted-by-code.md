@@ -1,4 +1,5 @@
 ---
+title: "A range checked at open can't bound later arithmetic whose count comes from code"
 module: SwiftStateTree (replay)
 date: 2026-11-21
 problem_type: bug_class

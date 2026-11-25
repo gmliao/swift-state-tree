@@ -1,4 +1,5 @@
 ---
+title: "A feature path in the driver costs machines that don't use it"
 module: SwiftStateTurns
 date: 2026-11-21
 problem_type: performance_collapse

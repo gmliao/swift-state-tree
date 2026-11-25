@@ -1,4 +1,5 @@
 ---
+title: "A soft reset to a moved main stages the reverse of every commit in between"
 module: repository workflow
 date: 2026-11-18
 problem_type: workflow_issue

@@ -1,4 +1,5 @@
 ---
+title: "A visited set keyed by a lossy name merges distinct types"
 module: SwiftStateTree
 date: 2026-11-20
 problem_type: bug_class

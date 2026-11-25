@@ -1,4 +1,5 @@
 ---
+title: "An explicit config still reads the environment through its stored defaults"
 module: SwiftStateTreeTransport
 date: 2026-11-19
 problem_type: testing_practice

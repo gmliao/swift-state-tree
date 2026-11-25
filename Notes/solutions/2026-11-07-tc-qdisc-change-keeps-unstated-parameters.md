@@ -1,4 +1,5 @@
 ---
+title: "`tc qdisc change` keeps netem parameters you don't restate"
 module: Examples/GameDemo (ws-loadtest impair.sh)
 date: 2026-11-07
 problem_type: measurement_pitfall

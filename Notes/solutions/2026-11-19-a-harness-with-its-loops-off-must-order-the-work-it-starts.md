@@ -1,4 +1,5 @@
 ---
+title: "A harness with its loops off must order the work it starts"
 module: SwiftStateTreeNIOTests
 date: 2026-11-19
 problem_type: testing_practice

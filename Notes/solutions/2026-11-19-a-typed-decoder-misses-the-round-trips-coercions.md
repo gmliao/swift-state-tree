@@ -1,4 +1,5 @@
 ---
+title: "A typed decoder that replaces a JSON round trip misses the round trip's coercions"
 module: SwiftStateTreeMessagePack
 date: 2026-11-19
 problem_type: bug_class

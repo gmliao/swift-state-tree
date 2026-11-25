@@ -1,4 +1,5 @@
 ---
+title: "An extension macro can't attach to a local type"
 module: SwiftStateTreeMacros
 date: 2026-11-24
 problem_type: gotcha

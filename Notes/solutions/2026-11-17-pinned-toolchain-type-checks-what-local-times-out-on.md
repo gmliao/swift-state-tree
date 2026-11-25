@@ -1,4 +1,5 @@
 ---
+title: "A test-argument literal the pinned toolchain type-checks and a newer one times out on"
 module: Tests, toolchain
 date: 2026-11-17
 problem_type: build_failure
