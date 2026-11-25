@@ -1,8 +1,17 @@
 # K1b-2: failure ids, the failure table and the action side tables (#700)
 
-**Status:** rev 2, plan only, for Review. Read at #835's head 6657fce4, without the LSP. K1b-2 needs K1b-1, because the job's `item` must be plain first. It re-runs this census with the LSP on its base.
+**Status:** rev 2.1, plan only. Review: GO once rev 2.1 corrects the `EpochCounter` line (2026-11-25), with only that line re-checked. Read at #835's head 6657fce4, without the LSP. K1b-2 needs K1b-1, because the job's `item` must be plain first. It re-runs this census with the LSP on its base.
 
 **Parent plan:** `Notes/plans/2026-11-22-keeper-on-turncore.md` rev 5.8: Appendix A.6 F1 with Review's S1 and S4, and A.7's K1b-2 row. This plan writes S1 and S4 against K1a's code.
+
+**Rev 2.1** answers Review's read of rev 2 (1 must-fix, 5 shoulds, 1 nit, all taken):
+- **MF1:** `EpochCounter` isn't plain. It gains `@PlainData` too, as the second public additive conformance, which Main approved. A.1 already puts `entryGenerations` (an `EpochCounter`) and `GenerationTable` (which holds one) in Model, so K1b-4 needs the mark anyway, and the failure ids reuse the same counter type (§2, §7).
+- **S1:** the alignment check returns its violations instead of asserting. Mutant 3 then fails a test, instead of trapping inside `removeActionJob`.
+- **S2:** a table miss is logged with the land ID, the lookup path and the sequence.
+- **S3:** the split's checklist.
+- **S4:** the test matrix, and a named seam for mutant 5.
+- **S5:** K2's holder between the applying step and `.recordTaken`.
+- **Nit:** the no-waiter tickless cost.
 
 **Rev 2** answers Review's NOT GO on rev 1 (2 must-fix, 6 shoulds, 3 nits, all taken). Review agreed to rev 1's three departures from S1 (§6).
 - **MF1:** `Epoch` gains `@PlainData`, a public additive conformance (Main approved, 2026-11-25). `FailureID` declares `Hashable` and `Sendable`.
@@ -49,8 +58,9 @@ Code pointers: `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, at 665
 ### `FailureID` and the failure table
 
 - **`Epoch` gains `@PlainData` (MF1).** `Epoch` (Support/SingleFlight.swift:140) is public, so this is a public additive conformance; Main approved it under the additive-API rule. Without it, neither `FailureID` nor `ActionTicket` (`Epoch?`) passes the macro's field check.
+- **`EpochCounter` gains `@PlainData` (rev 2.1, MF1).** It is public (Support/SingleFlight.swift:156) and holds one `UInt64`. Marking `Epoch` doesn't mark it. Main approved it as the second public additive conformance. A.1 already needs it: `entryGenerations` is an `EpochCounter`, and `GenerationTable` (Generations.swift:32) holds one, and both are Model rows.
 - **`FailureID`**: a package struct, `@PlainData`, `Hashable` and `Sendable` declared explicitly, holding one `Epoch`.
-  - It is minted by a keeper-local `EpochCounter`, which is never reset and never restored from a record. Replay mints its own.
+  - It is minted by a keeper-local `EpochCounter`, `failureIDs`, which is never reset and never restored from a record. Replay mints its own.
   - `EpochCounter` traps on overflow, so it can't wrap around and reuse a value. A stale id can't name a newer entry.
   - It isn't `Error`, so it can't be thrown to a caller by mistake.
 - **`InputResult`**: a package `@PlainData` enum, `case outcome(InputOutcome)` or `case failed(FailureID)`.
@@ -58,13 +68,15 @@ Code pointers: `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, at 665
   - It isn't a `Result`: a `Result`'s failure must be an `Error`, and `FailureID` deliberately isn't one.
   - `InputOutcome` is already `@PlainData` (InputOutcome.swift:11).
 - **The failure table**: `failures: [FailureID: any Error]` on the actor. It is Outside in the parent plan's split, and never enters `KeeperModel`.
-- **Three accessors.** None runs the assertion, so each can be half of a pair (S3):
+- **Three accessors.** None runs the alignment check, so each can be half of a pair (S3):
   - `recordFailure(_ error: any Error) -> FailureID` mints an id and stores the value;
   - `takeFailure(_ id: FailureID) -> any Error` removes the entry and returns the value;
   - `failure(for id: FailureID) -> any Error` returns the value and leaves the entry. Only `initializationFailure`'s reader uses it.
   - **A missing id** in `takeFailure` or `failure(for:)` is a broken invariant. It doesn't trap, in any build:
     - it returns a sentinel error, `FailureTableMiss(id:)` (package), so the caller still gets an error;
-    - it logs the miss at error level, and counts it in `failureTableMissesForTesting`.
+    - it logs the miss at error level, with the land ID, the lookup path (`slot`, `inputTurn` or `initialization`) and the sequence, and counts it in `failureTableMissesForTesting`.
+    - The log matters in production. A sentinel takes the adapter's generic error-frame path, while an event's `LandInputRejection` suppresses the error frame (TransportAdapter.swift:2674–2724). So a miss changes what the client sees while the land keeps running.
+    - A consuming read removes the dangling owner along with the entry, so the alignment check can't catch a miss after the fact. Only the log and the count show it.
   - So under a mutant a test fails on the error's identity, or on the miss count, instead of the test process trapping. Every test in §4 also checks that the count is 0. A trap would have to be set before `LandKeeper.init`'s eager task reads the entry, and no flag can be set that early.
 
 ### Each store
@@ -102,32 +114,41 @@ Code pointers: `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, at 665
   - `awaitActionResult` reads the task and the flag from `actionJobTasks`, and the slot from `actionSlots`;
   - `waitForActionJobsForTesting` captures each job's task and abandonment before its first await.
 
-### The assertion (S3)
+### The alignment check (S3; returns its violations, rev 2.1)
 
-`assertActionTablesAligned()` is debug only. It checks:
+`actionTableViolations() -> [String]` is a function, not an assertion. Each call site logs what it returns and adds the count to `alignmentViolationsForTesting`. A debug assertion inside the function a mutant changes would trap there, before the test's hook or `#expect` could observe anything, as with the table miss. The function checks:
 1. `actionJobTasks`' keys equal `actionJobs`' keys;
 2. each slot holds at most one of `result` and a waiter: `actionSlotWaiters`' keys are a subset of `actionSlots`' keys, and no key has both a `result` and a waiter;
 3. each id in the failure table has exactly one owner among `initializationFailure`, the slots' results and `inputTurnResults`, and every id those name is in the table.
 
-**Placement.** The assertion runs after each completed pair, never between its halves:
-- at the end of `startActionJob`, `completeAction`, `removeActionJob`, `cancelActionJob` and `fillActionSlot`;
-- inside `awaitActionResult`'s continuation closure, after the slot is removed or the waiter stored;
+**Placement.** The check runs after each completed pair, never between its halves:
+- at the end of `startActionJob`, `removeActionJob`, `cancelActionJob` and `fillActionSlot`;
+- at each exit of `completeAction`: the fill, the keeper-cancelled exit and the tickless exit (S3);
+- inside `awaitActionResult`'s continuation closure, after both the slot's removal and `takeFailure`, or after the waiter is stored (S3);
 - at the end of `runInputTurn`'s outcome loop and of `resumeInputTurnWaiters`;
 - in `failInitialization(with:)`.
 
-`recordFailure`, `takeFailure` and `failure(for:)` don't run it. No live path has an await between the halves of a pair (Review's reading and Codex's). During the record-submit await in `runInputDrain`, a result and its entry are both present, so an assertion in another function holds.
+`recordFailure`, `takeFailure` and `failure(for:)` don't run it.
+
+**The split's checklist (S3):**
+- `actionResultHasWaiterForTesting` reads `actionSlotWaiters`, not `ActionSlot.waiter`.
+- `fillActionSlot` removes the waiter before the slot, so the subset invariant holds at every point.
+
+No live path has an await between the halves of a pair (Review's reading and Codex's). During the record-submit await in `runInputDrain`, a result and its entry are both present, so an assertion in another function holds.
 
 ## 3. Hooks
 
-Three package hooks are new, all for tests:
+Five package hooks are new, all for tests:
 - `failureTableCountForTesting`;
 - `failureTableMissesForTesting` (§2);
-- `assertActionTablesAlignedForTesting()`, which runs the assertion on demand.
+- `alignmentViolationsForTesting`, the count the call sites add to;
+- `actionTableViolationsForTesting() -> [String]`, which runs the check on demand and returns what it found;
+- `setInputTurnResultForTesting(_:_:)`, the seam for mutant 5. It calls the private setter with a sequence and a result, so a test can write the same sequence twice, and write `nil` while a result is stored.
 
 ## 4. Tests and mutants
 
 **Tests first, green on K1b-1's base** (except those that read a new hook, which land with the change):
-- **`failedActionResultReachesItsCallerAsTheSameValue`,** with the caller waiting and not yet waiting:
+- **`failedActionResultReachesItsCallerAsTheSameValue`.** "Waiting and not yet waiting" applies only to resolver jobs: a tickless action without resolvers waits inside `submit`, so it is never read late (S4).
   - a resolver's error on both land kinds;
   - a handler's `validate` error on a tickless land;
   - on a tickless land, a resolver action whose `validate` throws. That covers `inputTurnResults`, the resume, and `fillActionSlot`.
@@ -147,25 +168,30 @@ Three package hooks are new, all for tests:
   - Its late `awaitActionResult` reads the exact rejection, and the entry is then gone.
   - A second read gets `ActionResultUnavailable`.
   - The adapter always reads (`trackActionResponse`, TransportAdapter.swift:5456–5493). A package caller that discards `.pending` can grow unread slots without bound. That is today's behavior; noted, not fixed.
-- **`actionTablesStayAlignedThroughAJobsLife`:** a job is admitted, resolved, abandoned, cancelled by a leave, and cancelled by the drain. After each, `assertActionTablesAlignedForTesting()` holds.
+- **`actionTablesStayAlignedThroughAJobsLife`:** a job is admitted, resolved, abandoned, cancelled by a leave, and cancelled by the drain. After each, `actionTableViolationsForTesting()` is empty, and `alignmentViolationsForTesting` is 0.
+- **`inputTurnResultSetterConsumesWhatItDisplaces`:** through `setInputTurnResultForTesting`, a failure replaced by another failure, and a failure replaced by `nil`, while the result is still stored. Each leaves exactly one table entry or none, and no violation.
 
 **Mutants (cloud):**
 1. `awaitActionResult` reads the value but doesn't remove the entry. Expected to fail `failureTableHoldsOnlyWhatIsUnread`.
 2. `resumeInputTurnWaiters` resumes with a generic error instead of the table's value. Expected to fail `failedInputTurnOutcomeReachesItsCaller`.
-3. `removeActionJob` removes the job but not its `actionJobTasks` entry (S4's mutant). Expected to fail the alignment test, through the assertion.
+3. `removeActionJob` removes the job but not its `actionJobTasks` entry (S4's mutant). Expected to fail the alignment test: the check returns a violation and counts it, and the test fails on that. Nothing traps.
 4. `throwIfInitializationFailed()` uses `takeFailure` instead of `failure(for:)`. The eager task takes the entry, so the first external caller gets the sentinel (`FailureTableMiss`), and the miss count is 1. Expected to fail `initializationFailureReachesEachCallerAsTheSameValue` on the value.
-5. `setInputTurnResult` stores without consuming a displaced id. Expected to fail the alignment invariant 3 under a direct double write in a unit test.
+5. `setInputTurnResult` stores without consuming a displaced id. Expected to fail `inputTurnResultSetterConsumesWhatItDisplaces` (invariant 3), through `setInputTurnResultForTesting`.
 
 ## 5. Boundaries (S6)
 
 - **K1b-3 (the RNG).** One adjacent merge area: `performInitialization` (:1486–1557). K1b-2 routes its five failure writes through `failInitialization(with:)`, and K1b-3 wraps OnInitialize's handler call in its step RNG helper. They are different lines, but the same region, and maybe both add an `import SwiftStateTurns`. The second lander merges by hand. K1b-2 doesn't touch a handler-call wrapper.
 - **K1b-4 (the model).**
-  - **Model rows:** `actionJobs` (its plain part), `actionSlots` (`result: InputResult?`), `inputTurnResults` (`InputResult`), `initializationFailure` (`FailureID?`), and the `EpochCounter` that mints failure ids, which is plain and keeper-local.
+  - **Model rows:** `actionJobs` (its plain part), `actionSlots` (`result: InputResult?`), `inputTurnResults` (`InputResult`), `initializationFailure` (`FailureID?`), and `failureIDs`, the keeper-local `EpochCounter` that mints failure ids. It is plain once `EpochCounter` is marked (MF1).
   - **Outside rows:** the failure table, `actionJobTasks` and `actionSlotWaiters`.
   - Its census test runs the alignment hook through a job's life.
 - **K2.**
-  - **Who owns the exact error.** In K2, the step that applies an input owns its error until the reply is eligible, after `.recordTaken`. The step's output carries the value to the facade, which resumes the waiter: S1's "nothing stored when a waiter exists". The table is used only when no one waits.
-  - **Who releases it on abandonment.** `handleAbandoned` for the input's key releases its table entry, if any, in the same step.
+  - **Who owns the exact error (rev 2.1, S5).** The applying step is synchronous and flushes its outputs when it ends, and `.recordTaken` is a later step. So the error needs a holder in between:
+    - it is an Outside table keyed by the record request's `RequestID` (the `.awaitRecordTaken` request, scoped to `.land`), holding the errors of the inputs that request's record covers;
+    - `flush` writes it from the applying step's output;
+    - `.recordTaken`'s completion consumes it: the facade resumes each waiter with its value, and anything with no waiter goes to the failure table under the input's slot;
+    - `handleAbandoned` for that request releases it: its waiters get `landClosed`, as they do today when the land ends;
+    - this is a K2 design note, not a K1b-2 change.
   - S1's "empty after `endAll`" test waits for K2, which owns `endAll`.
 
 ## 6. The departures from S1's text (agreed by Review on rev 1)
@@ -178,9 +204,9 @@ Three package hooks are new, all for tests:
 
 ## 7. Public API and measurement
 
-- **Public API: one addition.** `Epoch` conforms to `PlainData` (MF1; Main approved). `LandInitializationError` keeps `underlying: any Error`: the table holds the public value, and the model holds only the id. Every other new type is package.
+- **Public API: two additions.** `Epoch` and `EpochCounter` conform to `PlainData` (rev 2 MF1 and rev 2.1 MF1; Main approved both). `LandInitializationError` keeps `underlying: any Error`: the table holds the public value, and the model holds only the id. Every other new type is package.
 - **Measurement: none (Review).**
   - On the success path, `InputResult` replaces `Result` with the same payload.
   - Each resolver job also gains a side-table insert and remove in `actionJobTasks`, plus a waiter lookup in `actionSlotWaiters`.
-  - A failure costs one table insert and one remove, and failures are the refused path.
+  - A failure costs one table insert and one remove, and failures are the refused path. A tickless job with no waiter costs two pairs: the input turn's id, then a second id for the unread slot.
   - If K1b-1's small A/B runs after K1b-2 is on the branch, it adds one resolver-action cell.
