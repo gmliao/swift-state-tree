@@ -109,14 +109,16 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// Register it with `register(landType:land:services:…)`, or build its keeper with
     /// `LandKeeper(land:resolverServices:…)`. Nil when there is no such problem.
     public let missingServices: String?
-    /// The land declares a services type, and the services value a live keeper was given is of
-    /// another type (#769): "declared, given", by name. Only an erased services factory can get
-    /// here (`LandManager(resolverServicesFactory:)`); the typed entry points don't compile with a
-    /// value of the wrong type. Nil when there is no such problem.
+    /// The services value a live keeper was given isn't of the land's services type (#769):
+    /// "declared, given", by name. A land that declares no services takes `NoServices`. Only an
+    /// erased services factory can get here (`LandManager(resolverServicesFactory:)`); the typed
+    /// entry points don't compile with a value of the wrong type. Nil when there is no such
+    /// problem.
     public let wrongServices: String?
     /// Resolver declarations the land can't run (#769), one line each: resolvers that depend on
     /// services other than the land's (a node built by hand under another services type), or two
-    /// resolvers of one base type in one declaration. Empty when there are none.
+    /// resolvers of one declaration that store their outputs under one name (`Price` and
+    /// `PriceResolver` both store `price`). Empty when there are none.
     public let resolverDeclarations: [String]
 
     init(

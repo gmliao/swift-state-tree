@@ -126,6 +126,14 @@ public enum ResolverExecutionError: Error, Sendable {
     ///   - names: The resolvers still running at the deadline
     ///   - after: The deadline
     case timedOut(names: [String], after: Duration)
+
+    /// Two resolvers of one group returned an output under the same name. The group fails
+    /// rather than keep whichever finished last.
+    ///
+    /// - Parameters:
+    ///   - name: The output name
+    ///   - resolvers: The two resolvers, in the order their outputs arrived
+    case duplicateOutput(name: String, resolvers: [String])
 }
 
 extension ResolverExecutionError {
@@ -138,7 +146,7 @@ extension ResolverExecutionError {
             return isCancellation(underlying)
         case .multipleResolversFailed(let failures)?:
             return !failures.isEmpty && failures.allSatisfy { isCancellation($0.error) }
-        case .timedOut?, nil:
+        case .timedOut?, .duplicateOutput?, nil:
             return false
         }
     }
@@ -154,6 +162,8 @@ extension ResolverExecutionError: CustomStringConvertible {
             return "Multiple resolvers failed: \(failureDescriptions)"
         case .timedOut(let names, let after):
             return "Resolvers timed out after \(after): \(names.joined(separator: ", "))"
+        case .duplicateOutput(let name, let resolvers):
+            return "Resolvers \(resolvers.joined(separator: " and ")) both returned an output named '\(name)'"
         }
     }
 }

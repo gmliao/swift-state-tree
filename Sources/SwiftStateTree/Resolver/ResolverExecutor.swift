@@ -220,13 +220,14 @@ public enum ResolverExecutor {
 
         // Execute all resolvers in parallel using TaskGroup
         // We use a custom error type to capture which resolver failed
-        try await withThrowingTaskGroup(of: (String, any ResolverOutput).self) { group in
+        try await withThrowingTaskGroup(of: (resolver: String, name: String, output: any ResolverOutput).self) { group in
             for executor in executors {
                 group.addTask {
                     let resolverName = extractResolverName(from: executor)
                     defer { race?.resolverFinished(resolverName) }
                     do {
-                        return try await executor.execute(ctx: resolverContext)
+                        let (name, output) = try await executor.execute(ctx: resolverContext)
+                        return (resolverName, name, output)
                     } catch {
                         // Wrap error with resolver name for better diagnostics
                         throw ResolverExecutionError.resolverFailed(name: resolverName, underlyingError: error)
@@ -236,8 +237,16 @@ public enum ResolverExecutor {
 
             // Collect all results
             // If any resolver throws, the error will be propagated and remaining tasks cancelled
+            // Two outputs under one name fail the group: which one a handler would read would
+            // depend on completion order. Registration refuses the built-in cases early; this
+            // catches an executor it can't name (a custom `AnyResolverExecutor`).
             let outputCollected = outputCollectedForTesting
-            for try await (propertyName, output) in group {
+            var collectedFrom: [String: String] = [:]
+            for try await (resolverName, propertyName, output) in group {
+                if let first = collectedFrom[propertyName] {
+                    throw ResolverExecutionError.duplicateOutput(name: propertyName, resolvers: [first, resolverName])
+                }
+                collectedFrom[propertyName] = resolverName
                 updatedContext.setResolverOutput(output, forPropertyName: propertyName)
                 outputCollected?(propertyName)
             }

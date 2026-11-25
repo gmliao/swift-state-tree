@@ -235,14 +235,17 @@ public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
 ///     guard state.players.count < 8 else {
 ///         throw JoinError.roomIsFull
 ///     }
-///     
-///     // Use resolver output (e.g., userProfile from UserProfileResolver)
-///     if let profile = ctx.userProfile {
-///         guard profile.level >= 5 else {
-///             throw JoinError.levelTooLow(required: 5)
-///         }
-///     }
+///     return .allow(playerID: PlayerID(session.playerID))
+/// }
+/// ```
 ///
+/// With resolvers, `CanJoin(resolvers:)` gives the body their outputs as a parameter, after the
+/// session (`UserProfileResolver` is a `ContextResolver`):
+/// ```swift
+/// CanJoin(resolvers: UserProfileResolver.self) { state, session, profile, ctx in
+///     guard let profile, profile.level >= 5 else {
+///         throw JoinError.levelTooLow(required: 5)
+///     }
 ///     return .allow(playerID: PlayerID(session.playerID))
 /// }
 /// ```

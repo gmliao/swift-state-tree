@@ -110,6 +110,13 @@ private func makeDefinition(tick: Bool) -> LandDefinition<ActionJobTestState> {
                 state.total += action.amount
                 return ActionJobAck(ok: true)
             }
+            HandleAction(ActionJobMaybeAction.self, resolvers: { _, action, _ in
+                action.fetch ? ActionJobGatedResolver(amount: action.amount) : nil
+            }) { state, action, output, _ in
+                state.total += action.amount
+                state.maybeSeen = output?.value ?? -1
+                return ActionJobAck(ok: true)
+            }
         }
     }
 }
@@ -386,6 +393,25 @@ struct ActionJobTests {
         #expect(await keeper.currentState().total == 0)
     }
 
+    @Test("A caller cancelled before it submits: a cache hit is delivered, as an action without resolvers is (a miss isn't: above)")
+    func preCancelledCallerCacheHitIsDelivered() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let cached = ActionJobGates.freshKey()
+        let caller = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await keeper.handleActionEnvelope(maybe(cached, fetch: false), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        let result = try await withinDeadline("the pre-cancelled caller") { await caller.result }
+        guard case .success? = result else {
+            Issue.record("Expected the cache hit to be delivered, got \(String(describing: result))")
+            return
+        }
+        #expect(await keeper.actionJobCountsForTesting().started == 0)
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == cached)
+    }
+
     @Test("A caller cancelled after its resolvers finished, before the completion segment: not delivered")
     func callerCancelledBeforeCompletionSegment() async throws {
         let keeper = await makeKeeper()
@@ -585,6 +611,45 @@ struct ActionJobLimitTests {
         await keeper.stepTickOnce()
         state = await keeper.currentState()
         #expect(state.total == cached + held)
+        #expect(await counts(keeper) == [0, 0])
+    }
+
+    @Test("On a tickless land, a cache hit is applied and answered inline while the caps are full; a refused miss leaves no in-flight work")
+    func ticklessCacheHitPassesFullCaps() async throws {
+        let keeper = await makeKeeper(tick: false)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let metrics = ResolverDeadlineMetrics()
+        let held = ActionJobGates.freshKey(), refused = ActionJobGates.freshKey(), cached = ActionJobGates.freshKey()
+        let first: Int64 = try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
+            let first = try await submitPending(keeper, held)
+            // The job's work lasts until its response exists.
+            #expect(await keeper.debugInFlightWorkForTesting() == 1)
+            await expectLimit(.inFlightLimit(limit: 1)) {
+                try await keeper.submitAction(maybe(refused, fetch: true), playerID: p1, clientID: c1, sessionID: s1)
+            }
+            // The refused miss ran its closure and left no work behind.
+            #expect(await keeper.debugInFlightWorkForTesting() == 1)
+            guard case .completed(let response) = try await keeper.submitAction(maybe(cached, fetch: false), playerID: p1, clientID: c1, sessionID: s1) else {
+                Issue.record("Expected the cache hit to be applied inline")
+                return first
+            }
+            let handlerAck = (response.base as? ActionJobAck) ?? ((response.base as? AnyCodable)?.base as? ActionJobAck)
+            #expect(handlerAck?.ok == true, "unexpected response: \(response.base)")
+            // Its work ended when it returned; the job's is still counted.
+            #expect(await keeper.debugInFlightWorkForTesting() == 1)
+            #expect(await keeper.actionJobCountsForTesting().jobs == 1)
+            return first
+        }
+        #expect(metrics.snapshot.inFlightLimitRejections == 1)
+        var state = await keeper.currentState()
+        #expect(state.total == cached)
+        #expect(state.maybeSeen == -1)
+
+        ActionJobGates.gate(held).release()
+        _ = try await keeper.awaitActionResult(sequence: first)
+        state = await keeper.currentState()
+        #expect(state.total == cached + held)
+        #expect(await keeper.debugInFlightWorkForTesting() == 0)
         #expect(await counts(keeper) == [0, 0])
     }
 
@@ -1149,5 +1214,70 @@ struct CacheHitActionReplayTests {
         let replayedSecond = await replay.currentState()
         #expect(replayedSecond.total == liveSecond.total)
         #expect(replayedSecond.maybeSeen == liveSecond.maybeSeen)
+    }
+
+    @Test("On a tickless land, a cache hit applied before an earlier miss's job completes records and replays the same as live")
+    func ticklessCacheHitReplaysAsLive() async throws {
+        let keeper = await makeKeeper(tick: false, recording: true)
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        await keeper.awaitInitialization()
+        await recorder.setMetadata(ReevaluationRecordMetadata(
+            landID: "action-job-test:local",
+            landType: "action-job-test",
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            metadata: [:],
+            landDefinitionID: "action-job-test",
+            rngSeed: await keeper.getRngSeed()
+        ))
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let fetched = ActionJobGates.freshKey(), cached = ActionJobGates.freshKey()
+
+        // The miss first: its job waits at its gate.
+        let submission = try await keeper.submitAction(maybe(fetched, fetch: true), playerID: p1, clientID: c1, sessionID: s1)
+        guard case .pending(let sequence) = submission else {
+            Issue.record("Expected a job, got \(submission)")
+            return
+        }
+        // The later cache hit is applied first, in a pass of its own.
+        guard case .completed = try await keeper.submitAction(maybe(cached, fetch: false), playerID: p1, clientID: c1, sessionID: s1) else {
+            Issue.record("Expected the cache hit to be applied inline")
+            return
+        }
+        var state = await keeper.currentState()
+        #expect(state.total == cached)
+        #expect(state.maybeSeen == -1)
+
+        ActionJobGates.gate(fetched).release()
+        _ = try await keeper.awaitActionResult(sequence: sequence)
+        state = await keeper.currentState()
+        #expect(state.total == cached + fetched)
+        #expect(state.maybeSeen == fetched)
+
+        await keeper.waitForInFlightWorkForTesting()
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-hit-tickless-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try await recorder.save(to: path)
+
+        let result = try await ReevaluationEngine.run(
+            definition: makeDefinition(tick: false),
+            initialState: ActionJobTestState(),
+            recordFilePath: path
+        )
+        #expect(result.recordedPassMismatches.isEmpty, "\(result.recordedPassMismatches)")
+
+        // A tickless record's passes replay in tick 0, in the live order.
+        let replay = LandKeeper<ActionJobTestState>(
+            definition: makeDefinition(tick: false),
+            initialState: ActionJobTestState(),
+            mode: .reevaluation,
+            reevaluationSource: try ReevaluationRecordFile.openSource(filePath: path),
+            autoStartLoops: false
+        )
+        await replay.stepTickOnce()
+        let replayed = await replay.currentState()
+        #expect(replayed.total == state.total)
+        #expect(replayed.maybeSeen == state.maybeSeen)
     }
 }

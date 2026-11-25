@@ -51,7 +51,8 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// registration, at initialization.
     package let unrecognizedNodes: [String]
     /// Resolver declarations registration refuses (#769), one line each: resolvers that depend on
-    /// other services than the land's, or two resolvers of one base type in one declaration.
+    /// other services than the land's, or two resolvers of one declaration that store their
+    /// outputs under one name.
     package let resolverDeclarationProblems: [String]
     /// Lifecycle handlers (join, leave, tick, initialize and finalize).
     public let lifetimeHandlers: LifetimeHandlers<State>

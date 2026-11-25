@@ -6,6 +6,7 @@
 
 import Foundation
 import Testing
+import Logging
 @testable import SwiftStateTree
 
 // MARK: - State and payloads
@@ -144,6 +145,14 @@ struct LegacyShared: ContextResolver {
 
 struct LegacySharedResolver: ContextResolver {
     static func resolve(ctx: ResolverContext) async throws -> TaggedOutput { TaggedOutput(value: 2) }
+}
+
+/// A hand-written executor registration can't name: it returns its output as `legacyShared`.
+struct CustomLegacySharedExecutor: AnyResolverExecutor {
+    func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput) {
+        ("legacyShared", TaggedOutput(value: 3))
+    }
+    var resolverName: String { "CustomLegacyShared" }
 }
 
 
@@ -384,6 +393,30 @@ struct ResolverValueTests {
             landID: "resolver-price:right"
         )
         try await right.join(playerID: p1, clientID: c1, sessionID: s1)
+
+        // A land that declares no services takes `NoServices`; another value fails the same way.
+        let plainLand = Land("resolver-plain", using: ResolverValueState.self) { Rules {} }
+        let plain = LandKeeper<ResolverValueState>(
+            definition: plainLand,
+            resolverServices: PriceServices(prices: [:]),
+            initialState: ResolverValueState(),
+            autoStartLoops: false,
+            landID: "resolver-plain:wrong"
+        )
+        let plainFailure = try await #require(throws: LandInitializationError.self) {
+            try await plain.leave(playerID: p1, clientID: c1, sessionID: s1)
+        }
+        let plainRegistration = try #require(plainFailure.underlying as? LandRegistrationError)
+        #expect(plainRegistration.wrongServices
+            == "declared \(String(reflecting: NoServices.self)), given \(String(reflecting: PriceServices.self))")
+        let plainRight = LandKeeper<ResolverValueState>(
+            definition: plainLand,
+            resolverServices: NoServices(),
+            initialState: ResolverValueState(),
+            autoStartLoops: false,
+            landID: "resolver-plain:right"
+        )
+        try await plainRight.join(playerID: p1, clientID: c1, sessionID: s1)
     }
 
     @Test("Registration without services refuses a services land; the schema's and a replay's checks don't")
@@ -454,6 +487,44 @@ struct ResolverValueTests {
             #expect(error.resolverDeclarations == ["CanJoin", "OnJoin", "OnLeave"].map {
                 "\($0): resolvers LegacyShared and LegacySharedResolver both store their output as `legacyShared`; one declaration resolves each output once"
             })
+        }
+    }
+
+    @Test("A group whose custom executor returns an output name another resolver returns fails, instead of one value winning")
+    func customExecutorSharedOutputNameFailsTheGroup() async throws {
+        let landContext = LandContext(
+            landID: "resolver-custom-shared",
+            playerID: PlayerID("p1"),
+            clientID: ClientID("c1"),
+            sessionID: SessionID("s1"),
+            services: LandServices(),
+            logger: Logger(label: "test"),
+            deviceID: nil,
+            metadata: [:],
+            emitEventHandler: { _, _ in },
+            requestSyncNowHandler: { },
+            requestSyncBroadcastOnlyHandler: { }
+        )
+        let resolverContext = ResolverContext(landContext: landContext, currentState: ResolverValueState())
+        let executors: [any AnyResolverExecutor] = [
+            ResolverExecutor.createExecutor(for: LegacyShared.self),
+            CustomLegacySharedExecutor(),
+        ]
+        do {
+            _ = try await ResolverExecutor.executeResolvers(
+                executors: executors,
+                resolverContext: resolverContext,
+                landContext: landContext
+            )
+            Issue.record("Expected the group to fail")
+        } catch let error as ResolverExecutionError {
+            guard case .duplicateOutput(let name, let resolvers) = error else {
+                Issue.record("Expected duplicateOutput, got \(error)")
+                return
+            }
+            #expect(name == "legacyShared")
+            #expect(Set(resolvers) == ["LegacyShared", "CustomLegacyShared"])
+            #expect(!ResolverExecutionError.isCancellation(error))
         }
     }
 

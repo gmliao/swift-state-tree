@@ -126,14 +126,6 @@ package struct ResolverDeclaration<Input>: Sendable {
         self.build = build
     }
 
-    /// Builds the executors, or none when the declaration is absent.
-    package static func executors(
-        _ declaration: ResolverDeclaration<Input>?,
-        _ input: Input,
-        _ ctx: ValidateContext
-    ) -> [any AnyResolverExecutor] {
-        declaration?.build(input, ctx) ?? []
-    }
 }
 
 /// One resolver of a declaration: its names, computed once when the entry is declared, not for
