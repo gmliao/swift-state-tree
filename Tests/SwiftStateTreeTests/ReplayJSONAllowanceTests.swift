@@ -33,20 +33,20 @@ private struct JSONAllowanceOutput: ResolverOutput {
     let ratio: Double
 }
 
-private struct JSONAllowanceResolver: ContextResolver {
-    typealias Output = JSONAllowanceOutput
-    static func resolve(ctx: ResolverContext) async throws -> JSONAllowanceOutput {
-        return JSONAllowanceOutput(ratio: 2.0)
-    }
+/// Named so its output key is "jSONAllowance", the key the recorded frame carries.
+@PlainData
+private struct JSONAllowance: Resolver {
+    typealias Dependencies = NoServices
+    func resolve(_ deps: NoServices) async throws -> JSONAllowanceOutput { JSONAllowanceOutput(ratio: 2.0) }
 }
 
 private func makeJSONAllowanceLand() -> LandDefinition<JSONAllowanceKeeperState> {
     Land("json-allowance-keeper", using: JSONAllowanceKeeperState.self) {
         Rules {
-            HandleAction(JSONAllowanceAction.self, resolvers: JSONAllowanceResolver.self) {
-                (state: inout JSONAllowanceKeeperState, _: JSONAllowanceAction, ctx: LandContext) in
+            HandleAction(JSONAllowanceAction.self, resolvers: { _, _, _ in JSONAllowance() }) {
+                (state: inout JSONAllowanceKeeperState, _: JSONAllowanceAction, output: JSONAllowanceOutput?, _: LandContext) in
                 state.actionApplied = true
-                state.resolverRatioWasNil = (ctx.jSONAllowance as JSONAllowanceOutput?) == nil
+                state.resolverRatioWasNil = output == nil
                 return JSONAllowanceResponse()
             }
         }
