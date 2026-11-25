@@ -44,5 +44,13 @@ struct KeeperPlainFormsConformanceTests {
         requirePlain(SyncOutputIndexCursor.self)
         requirePlain(ReplayFailureEnd.self)
         // Commit 8: the items and PendingItem.
+        requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingItem.self)
+        requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingActionItem.self)
+        requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingClientEventItem.self)
+        requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingClientEventPayload.self)
+        requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingLifecycleItem.self)
+        requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingServerInputItem.self)
+        requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingShutdownItem.self)
+        requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingLandFailureItem.self)
     }
 }

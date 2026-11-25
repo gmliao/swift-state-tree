@@ -117,6 +117,7 @@ private final class ActionJobCallerCancellation: @unchecked Sendable {
 
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Unified pending item for every input kind (`package`: nothing public takes or returns it).
+    @PlainData
     package enum PendingItem: Sendable {
         case action(PendingActionItem)
         case clientEvent(PendingClientEventItem)
@@ -130,6 +131,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// A transport-reported failure (#535), queued as a turn input so it is applied in a turn.
+    @PlainData
     package struct PendingLandFailureItem: Sendable {
         package let sequence: Int64
         package let resolvedAtTick: Int64
@@ -137,6 +139,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// A server input (#387), taken at submit: the system identity applies it.
+    @PlainData
     package struct PendingServerInputItem: Sendable {
         package let sequence: Int64
         package let typeIdentifier: String
@@ -153,6 +156,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The forced shutdown's input (#382). Its turn clears the players without OnLeave, drops
     /// every input still queued and starts the drain, in one synchronous segment
     /// (`applyInputs`).
+    @PlainData
     package struct PendingShutdownItem: Sendable {
         package let sequence: Int64
         package let resolvedAtTick: Int64
@@ -168,6 +172,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case leave
     }
 
+    @PlainData
     public struct PendingLifecycleItem: Sendable {
         public let sequence: Int64
         public let kind: LifecycleKind
@@ -226,6 +231,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    @PlainData
     package struct PendingActionItem: Sendable {
         package let sequence: Int64
         /// The action as the apply step runs it (#521, #700 K1a): decoded at intake live, and
@@ -311,6 +317,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// A client event's payload as its item holds it.
+    @PlainData
     package enum PendingClientEventPayload: Sendable {
         /// Decoded at intake live, or when replay built the item (#521, #700 K1a).
         case decoded(any ClientEventPayload)
@@ -321,6 +328,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case failed(RecordedPayloadDecodeFailure)
     }
 
+    @PlainData
     package struct PendingClientEventItem: Sendable {
         package let sequence: Int64
         /// The event's wire type, its descriptor's name.
