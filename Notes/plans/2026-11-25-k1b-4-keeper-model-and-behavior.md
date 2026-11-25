@@ -1,6 +1,6 @@
 # K1b-4: `KeeperModel<State>` and `KeeperBehavior<State>`, with the census test (#700)
 
-**Status:** rev 2, plan only. Rev 2 answers Review's NOT GO on rev 1.2 (3 must-fix, 5 should, 1 nit; §11). It was read at #853's reviewed head 2afb96fc (K1b-3, on #835's K1a). The review fix round a87e0278 changes no line of `LandKeeper.swift`, so its line numbers hold there too. Rev 1.2 took Appendix A's F5–F8 (#700 plan rev 5.8) and K1b-3's fields (§10). Rev 1.1 settled D2 and took the K2 survey's shape (§9).
+**Status:** rev 2.1, plan only. Review on rev 2: 1 must-fix (a one-row correction; GO once fixed), 4 should, 1 nit; rev 2.1 takes all of them (§12). Rev 2 answered Review's NOT GO on rev 1.2 (3 must-fix, 5 should, 1 nit; §11). It was read at #853's reviewed head 2afb96fc (K1b-3, on #835's K1a). The review fix round a87e0278 changes no line of `LandKeeper.swift`, so its line numbers hold there too. Rev 1.2 took Appendix A's F5–F8 (#700 plan rev 5.8) and K1b-3's fields (§10). Rev 1.1 settled D2 and took the K2 survey's shape (§9).
 - K1b-4 needs K1b-1 (the plain forms), K1b-2 (`FailureID` and the side tables), K1b-3 (the RNG) and P4-1 (K1b-Q3). It names their results by their planned shapes. It rebases on their landed types and regenerates its references and its census then (§8).
 - The census is Appendix A of `2026-11-22-keeper-on-turncore.md` (draft 3 and A.7), with this plan's changes in §2.
 
@@ -23,10 +23,12 @@ K1b-5 (turn bodies as `mutating` methods on `KeeperModel`) builds on it.
 
 | Destination | Fields |
 |---|---|
-| `model` (59) | `state`, `players` (§3.3: without `services`), `entryGenerations`, `landRandom`, `pendingItems`, `serverInputsHeldWhileFrozen`, `pendingItemScans`, `outputCollector` (D1), `initializationFailure` (as K1b-2's failure record), `actionJobs` and `actionSlots` (their plain halves, K1b-2), `inputTurnResults`; the counters `stateHashUnavailableTotal`, `serverInputsInFlight`, `serverInputCapRejections`, `syncStreamCounter`, `passOrdinal`, `foldedSyncs`, `overdueFoldedSyncs`, `lateFoldedSyncs`, `inTurnDeferredTurns`, `recorderSubmissionCount`, `inputsSkippedAfterDestroy`, `joinSyncTicks`, `supersededSenderRejections`, `actionJobsStarted`, `nextTickId`, `lastCommittedTickId`, `ticksInFlight`, `requestedSyncWork`; the flags `destructionFinished`, `transportRecordsFolds`, `didInitialize`, `inTurnSyncDue`, `inputDrainScheduled`, `joinSyncWaitsForCommit`, `shutdownRequested`, `hasHeldTransport`, `destroyHandlersStarted`, `shutdownTurnApplied`, `passInProgress`; `inTurnSyncTurnKind`, `syncOutputIndexCursor`; the bindings `syncBinding`, `inTurnDrainRetryBinding`, `joinSyncTurnBinding`; `ticklessJobWork`, `ticklessJobTurns`; the freeze's plain part `debugFrozen`, `debugInFlightWork`, `debugNextWaiterID`, `debugActiveGeneration`, `debugReleasedGeneration`; the test counters `joinSyncRequestTurnsForTesting`, `joinSyncTurnsForTesting`, `requestedSyncTurnsForTesting`; and, DEBUG only, `filledActionSlotsForAssert`, `filledActionSlotsOrderForAssert`, `filledActionSlotsNextForAssert` |
+| `model` (59) | `state`, `players` (§3.3: without `services`), `entryGenerations`, `landRandom`, `pendingItems`, `serverInputsHeldWhileFrozen`, `pendingItemScans`, `initializationFailure` (as K1b-2's failure record), `actionJobs` and `actionSlots` (their plain halves, K1b-2), `inputTurnResults`; the counters `stateHashUnavailableTotal`, `serverInputsInFlight`, `serverInputCapRejections`, `syncStreamCounter`, `passOrdinal`, `foldedSyncs`, `overdueFoldedSyncs`, `lateFoldedSyncs`, `inTurnDeferredTurns`, `recorderSubmissionCount`, `inputsSkippedAfterDestroy`, `joinSyncTicks`, `supersededSenderRejections`, `actionJobsStarted`, `nextTickId`, `lastCommittedTickId`, `ticksInFlight`, `requestedSyncWork`; the flags `destructionFinished`, `transportRecordsFolds`, `didInitialize`, `inTurnSyncDue`, `inputDrainScheduled`, `joinSyncWaitsForCommit`, `shutdownRequested`, `hasHeldTransport`, `destroyHandlersStarted`, `shutdownTurnApplied`, `passInProgress`; `inTurnSyncTurnKind`, `syncOutputIndexCursor`; the bindings `syncBinding`, `inTurnDrainRetryBinding`, `joinSyncTurnBinding`; `ticklessJobWork`, `ticklessJobTurns`; the freeze's plain part `debugFrozen`, `debugInFlightWork`, `debugNextWaiterID`, `debugActiveGeneration`, `debugReleasedGeneration`; the test counters `joinSyncRequestTurnsForTesting`, `joinSyncTurnsForTesting`, `requestedSyncTurnsForTesting`; and, DEBUG only, `filledActionSlotsForAssert`, `filledActionSlotsOrderForAssert`, `filledActionSlotsNextForAssert` |
 | `behavior` | `definition`, `services`, `resolverServices`, `payloadDecoders`, `logger` |
 | `behavior.config` (`KeeperConfig`, internal; §3.2) | `autoStartLoops`, `enableLoopPhaseOffset`, `enableLiveStateHashRecording`, `reevaluationOutputMode`, `mode`, `actualLandID`, `landRandomSeed`, `systemPlayerID`, `systemClientID`, `systemSessionID` |
 | `replay` (`ReplayFields`, D2) | `reevaluationSource`, `reevaluationSink`, `replayHeaderPayloadEncoding`, `replayedInitializeBeforeTickZero`, `replayedInitializeRefusal`, `replayPassObserver`, `replayFailureEnd`, `replayRecordsPassOrdinals`, `replayRecordsRejected`, `replayRejected`, `recordedPassMismatches` |
+| actor, the containers themselves | `model`, `behavior`, `replay`; and `behavior.config` inside `behavior` |
+| actor, the output collector (D1; K2) | `outputCollector` |
 | actor, the player-services table (new, §3.3) | `playerServices` |
 | actor, the binding token's parts (K2) | `transport`, `releasedTransport`, `boundSyncRequesterObject`, `pendingSyncTurnAfterTurn` |
 | actor, the recorder (K2) | `reevaluationRecorder`, `recorderSubmissions` |
@@ -34,7 +36,7 @@ K1b-5 (turn bodies as `mutating` methods on `KeeperModel`) builds on it.
 | actor, resolver abandonment (K5) | `abandonmentCounter` |
 | actor, the loop driver's time (K2; F4, F8) | `nextTickDeadline`, `pendingFold` (its deadline and its overdue flag together: they are set and read as one optional, LK:852, 5124–5135, 6176–6182), `tickLoopConfiguredAt`, `tickLoopClock`, `appliedTickPhaseOffset`, `appliedSyncPhaseOffset` |
 | actor, the server-input cap (§3.2) | `serverInputMaxInFlight` |
-| actor, the side tables (K1b-2) | the job side table (`task`, `abandonment`, `callerCancelled`) and the slot waiters, keyed by sequence |
+| actor, K1b-2's tables | the failure table, `failureIDs`, `actionJobTasks`, `actionSlotWaiters` (K1b-2's names; K1b-4 takes the labels from its base). The plain halves of jobs and slots are the `model` row's `actionJobs` and `actionSlots` |
 | actor, replaced in K2 | `tickTask`, `syncTask`, `inputTurnWaiters`, `initializationWaits`, `initializationWaitWatchers`, `actionJobRemovalWaiters`, `tickIdleWaiters`, `shutdownTurnWaiters`, and the test waiters `drainStartedWaitersForTesting`, `nextDrainStartedWaiterForTesting`, `freezeWaitWatchersForTesting`, `inputDrainIdleWaitersForTesting`, `requestedSyncWorkWaitersForTesting`, `nextRequestedSyncWorkWaiterForTesting`, `failureWaitersForTesting`, `nextFailureWaiterForTesting` |
 | actor, replaced in K4 | `pendingTransportFailure` |
 | actor, replaced in K5 | `initializationTask` |
@@ -70,11 +72,11 @@ struct KeeperModel<State: StateNodeProtocol> {
 
 | Type | Where (at 2afb96fc) | Visibility | Change |
 |---|---|---|---|
-| `InternalPlayerSession` → `KeeperPlayerEntry` | `private struct`, LK:6450 | private → internal, moved to `KeeperModel.swift` | `@PlainData`, without `services` (§3.3). Its fields: `ClientID?`, `SessionID?`, `Epoch`, `String?`, `Bool`, `[String: String]` |
+| `InternalPlayerSession` → `KeeperPlayerEntry` | `private struct` at file level, LK:6450 | private → internal, moved to `KeeperModel.swift` | `@PlainData`, without `services` (§3.3). Its fields: `ClientID?`, `SessionID?`, `Epoch`, `String?`, `Bool`, `[String: String]` |
 | `Epoch` | Support/SingleFlight.swift:141 | **public** | `PlainData`, additive |
 | `EpochCounter` | Support/SingleFlight.swift:157 | **public** | `PlainData`, additive |
-| `Ticket<Key>` | Support/Generations.swift:8 | package | conditional `PlainData where Key: PlainData` |
-| `GenerationTable<Key>` | Support/Generations.swift:31 | package | conditional `PlainData where Key: PlainData` |
+| `Ticket<Key>` | Support/Generations.swift:8 | package | `@PlainData` on the definition, so the macro generates the conditional conformance (`where Key: PlainData`); explicit annotations where a stored field's type is inferred |
+| `GenerationTable<Key>` | Support/Generations.swift:31 | package | the same |
 | `SyncBindingKey` | LK:47 | package | `@PlainData` (so `SyncTurnTicket`, LK:52, is plain) |
 | `SyncBindingState` | `private struct`, nested in the actor, LK:5503 | private → internal, moved to `KeeperModel.swift` as `KeeperSyncBinding` | `@PlainData` |
 | `ActionTicket` | internal, nested in the actor, LK:2387 | moved to `KeeperModel.swift` as `KeeperActionTicket` | `@PlainData` |
@@ -82,7 +84,8 @@ struct KeeperModel<State: StateNodeProtocol> {
 | `ReevaluationRecordedSyncOutput.TurnKind` | ReevaluationSyncStream.swift:13 | **public** | `PlainData`, additive |
 | `PlayerID`, `ClientID`, `SessionID` | Sync/PlayerID.swift, Land/Types.swift | public | already `@PlainData` |
 
-- **Nested types move out.** `KeeperModel` is a separate generic type, so it can't name a type nested in `LandKeeper<State>` without the generic parameter. The three nested or private types above move to file level in `KeeperModel.swift`, with a `Keeper` prefix. Their uses in `LandKeeper.swift` are renamed in the same commit.
+- **Nested types move out.** `KeeperModel` is a separate generic type, so it can't name a type nested in `LandKeeper<State>` without the generic parameter. `SyncBindingState` and `ActionTicket` are nested; `InternalPlayerSession` is at file level but private. All three move to `KeeperModel.swift` as internal types, with a `Keeper` prefix. None depends on `State`, and none is exposed publicly. Their uses in `LandKeeper.swift` are renamed in the same commit.
+- **Internal stored fields that tests read** (`foldedSyncs`, `lateFoldedSyncs`, `requestedSyncTurnsForTesting` and the other `private(set)` counters) become computed getters over `model`, with the same name and access. K1b-4 lists them with `findReferences` from the test targets on its base.
 - **Public members that are stored today stay public,** as computed accessors over the new homes: `definition` (`public let`, now `nonisolated public var definition { behavior.definition }`) and `serverInputCapRejections` (`public private(set) var`, now a `public var` with a getter over `model`). The package ones too: `replayedInitializeRefusal` and `joinSyncRequestTurnsForTesting` (getters); `abandonmentCounter` stays a stored `nonisolated let`.
 
 ### 3.2 The behavior, and the keeper's own configuration (MF3)
@@ -92,7 +95,7 @@ struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
     let definition: LandDefinition<State>
     let config: KeeperConfig
     let services: LandServices            // outside-world services only (K1b-3 strips the RNG)
-    let resolverServices: (any Sendable)? // nil is a real case: a land without services
+    let resolverServices: (any Sendable)? // nil: the land declares services and was given none
     let payloadDecoders: RecordPayloadDecoders
     let logger: Logger
 }
@@ -126,14 +129,16 @@ private var playerServices: [PlayerID: (generation: Epoch, services: LandService
 ```
 
 - **Written in the same synchronous segment as every insert and remove of `players`,** keyed by the entry's generation, so a late writer never removes a newer entry's services:
-  - the joins' inserts: LK:1949–1960 (the public `join(playerID:…)`), LK:2157–2181 (`joinReportingAdmission`);
-  - the generation-checked rollbacks: LK:2005–2008, LK:2232–2235;
-  - the ordinary leave: LK:2855–2887;
-  - the bulk clears: LK:1354–1357, LK:2992–2995, LK:4049, LK:4146–4155, LK:5894, LK:6212–6216.
+  - two inserts: LK:1949–1960 (the public `join(playerID:…)`), LK:2157–2181 (`joinReportingAdmission`);
+  - three generation-guarded rollbacks: LK:2005–2008, LK:2232–2235, LK:6212–6216 (the resolver-error rollback);
+  - one ordinary removal: the leave, LK:2855–2887;
+  - four bulk clears: LK:1354–1357, LK:2992–2995, LK:4049 (live only: `if mode == .live`, kept), LK:5894.
 
   K1b-4 re-takes this list with `findReferences` on `players` at its base. A site that writes `players` without writing the table is a bug the census can't see, so §6's tests pin it.
-- **`makeContext` keeps its merge precedence** (LK:3595–3601): the land's services, then the override, then the player's, then the RNG strip. It reads the player's services from `playerServices[playerID]` instead of `players[playerID]?.services`.
-- **The OnLeave resolver's services:** the leave reads the outgoing entry's services from the table before it removes the entry, and hands them to the resolver context, as it does today from the entry.
+- **A lookup belongs to the current entry.** The table's entry for a player is the one whose generation equals `players[id]?.generation`; a lookup with no current entry finds nothing.
+- **`makeContext` keeps its merge precedence** (LK:3595–3601): the land's services, then the override, then the player's, then the RNG strip. It reads the player's services from the table's current entry instead of `players[playerID]?.services`.
+- **The OnLeave resolver's services:** the leave reads the outgoing entry's services from the table before it removes the entry, and hands that snapshot to the resolver context, as it does today from the entry.
+- **The queued OnLeave handler looks up at apply time,** as today: it builds a fresh context when the lifecycle item applies (LK:4146). If the entry is gone, it gets the land's services. If the player has rejoined, it gets the newer entry's services. That is today's behavior through `players[id]?.services`, and the table keeps it. §6 has a test that tells the two apart.
 - **K2** replaces this table with `LiveLandTurns`' table keyed by `(PlayerID, EntryID)` (parent §3.1). The census places it `outside(playerServices)` until then.
 
 ### 3.4 Exclusivity: one inout access of the model per step (S1)
@@ -152,13 +157,13 @@ private var playerServices: [PlayerID: (generation: Epoch, services: LandService
   - `&applied` is a local.
 
   K1b-4 repeats this audit on its base for every modify access of a model field: the handler sites, the `removeAll(where:)` and `sort` calls on model collections, and every `inout` argument. The audit goes in the PR body.
-- **The boundary that remains: user code re-entering the keeper synchronously.** A handler, or a service a handler calls, that captures its keeper and calls a keeper method through `assumeIsolated` reads `players` while `state` is borrowed. That works today, and traps once both live in `model`. The same holds for a hand-written `clearDirty()` (a public mutating requirement, called at LK:1702 and 4980) that reaches back into the keeper.
+- **The boundary that remains: user code re-entering the keeper synchronously.** A handler, or a service a handler calls, that captures its keeper and calls a keeper method through `assumeIsolated` reads `players` while `state` is borrowed. That works today, and traps once both live in `model`. The same holds for a hand-written `clearDirty()` (a public mutating requirement, StateNodeProtocol.swift:234; the keeper calls it at LK:1877 and 4980) that reaches back into the keeper.
   - A `swiftc -typecheck` probe of `model.items.removeAll { model.players.contains($0) }` on an actor compiles clean (Review), so the compiler won't catch it. It is a run-time trap only.
-  - **The contract, stated in the docs** (`docs/core/runtime.md`, both languages, and `LandContext`'s doc): a handler, and anything it calls, must not call back into its keeper synchronously. Work that needs the keeper goes through the context (emit, a sync request, a server input), which doesn't touch the model during the step.
+  - **The contract, stated in the docs** (`docs/core/runtime.md`, both languages; `LandContext`'s doc; and `clearDirty()`'s requirement doc at StateNodeProtocol.swift:234): a handler, and anything it calls, must not call back into its keeper synchronously. Work that needs the keeper goes through the context (emit, a sync request, a server input), which doesn't touch the model during the step.
 
 ### 3.5 Deviations from Appendix A (for Review)
 
-- **D1: `outputCollector` stays a class until K2.** A.1 splits its plain fields (`nextSequence`, `checksOverflow`, `sequenceExhausted`, `syncRequestsByTick`) into Model. But the handler's context closures write them during the handler, while `&model` is held, so moving them now would turn every `ctx.emit` into an exclusivity trap. K2 stages outputs in the step (parent §3.6), and that is when they can move. The census lists the class in Model as an exception that ends in K2.
+- **D1: `outputCollector` stays a class until K2.** A.1 splits its plain fields (`nextSequence`, `checksOverflow`, `sequenceExhausted`, `syncRequestsByTick`) into Model. But the handler's context closures write them during the handler, while `&model` is held, so moving them now would turn every `ctx.emit` into an exclusivity trap. K2 stages outputs in the step (parent §3.6), and that is when they can move. So the collector stays on the actor as `actor.outputCollector`, placed `replaced(by: "K2")`. `KeeperModel` is `@PlainData`, and the macro checks every stored field, so a class field in the model wouldn't compile; no census exception could change that. The context closures already capture the collector before the handler borrows `state` (LK:3606).
 - **D2: the replay group.** A.5's fields become one `struct ReplayFields` on the actor, non-optional, with today's defaults. The setters run on a keeper that already exists (`ReevaluationEngine`:351, `ReevaluationRunnerImpl`:350–358), and a live keeper reads the defaults today. `ReplayFields` stays non-plain: `replayPassObserver` is a closure set after init. Revisit at #612, which deletes `ReplayLandOwner` and with it this group (Q1 (c), maintainer, 2026-11-25).
 
 ## 4. The census test (`Tests/SwiftStateTreeTests/KeeperCensusTests.swift`)
@@ -167,13 +172,14 @@ private var playerServices: [PlayerID: (generation: Epoch, services: LandService
 
 `Mirror`'s children are lazy, and even reading a child's label loads and copies its field. So iterating `Mirror(reflecting: keeper)` from a nonisolated test races the keeper's own mutations, and the keeper starts initialization from its init (LK:1247–1257).
 
-- **The accessor:** a synchronous, actor-isolated `func censusLabelsForTesting() -> [String: [String]]` on the keeper (`package`, under `#if DEBUG` or a testing name). Inside isolation it reflects `self`, `model`, `behavior`, `behavior.config` and `replay`, materializes every label into a `[String]`, and returns only those arrays, keyed by storage path (`"actor"`, `"model"`, `"behavior"`, `"behavior.config"`, `"replay"`). It never returns a `Mirror` or its children, which would defer the reads past the isolation.
+- **The accessor:** a synchronous, actor-isolated `package func censusLabelsForTesting() -> [String: [String]]` on the keeper. It exists in release builds too (not under `#if DEBUG`), so a release run checks that the three ring fields are absent. Inside isolation it reflects `self`, `model`, `behavior`, `behavior.config` and `replay`, materializes every label into a `[String]`, and returns only those arrays, keyed by storage path (`"actor"`, `"model"`, `"behavior"`, `"behavior.config"`, `"replay"`). It never returns a `Mirror` or its children, which would defer the reads past the isolation.
 - **The label rules:**
   - `$defaultActor`, the actor's synthetic storage label, is allowed by name and nothing else synthetic is;
   - a lazy field's label is `$__lazy_storage_$_x` and a wrapped field's is `_x`; the table names them that way;
   - an unnamed label (`nil`), an unknown label, or a label that appears twice fails the test;
   - the three DEBUG-only ring fields are rows under `#if DEBUG` in the table, so a release run expects them absent.
 - **Matching by storage path.** The table's key is the path, not the bare name: `"model.players"`, `"behavior.config.mode"`, `"replay.replayPassObserver"`, `"actor.playerServices"`. So a stray field inside `ReplayFields` or `KeeperConfig` fails too.
+- **The manifest matches what the accessor reflects.** The containers have rows of their own (`actor.model`, `actor.behavior`, `actor.replay`, `behavior.config`), and so do K1b-2's tables, by the labels they have on the base.
 
 ### 4.2 What fails
 
@@ -183,9 +189,8 @@ private var playerServices: [PlayerID: (generation: Epoch, services: LandService
 
 ### 4.3 The known exceptions, each with the slice that ends it
 
-- F4's `Instant`s, Outside: `nextTickDeadline`, `pendingFold`, `tickLoopConfiguredAt`, `tickLoopClock` (K2, #759's clock).
+- F4's `Instant`s, Outside: `nextTickDeadline`, `pendingFold`, `tickLoopConfiguredAt`, `tickLoopClock` (K2, #759's clock). `runTickTurn` still reads the clock inside the turn, through `takePendingFold` (LK:5043). K2 moves that read out, with the deadline, when the loop driver passes the time in as the turn's input.
 - S3's non-turn writer: `runSync` writes `model.foldedSyncs`, `model.overdueFoldedSyncs` and `model.inTurnSyncDue` outside a turn (F8; K2's `.syncDue` step).
-- D1: `model.outputCollector` is a class (K2).
 
 The test checks that each exception's fields still exist at the paths it names, so the list can't go stale.
 
@@ -220,7 +225,8 @@ Each commit runs the touched suites. The full debug `swift test` runs before the
   - a join with player services, then an action: the handler's context sees the player's service;
   - a leave with an OnLeave resolver: the resolver sees the outgoing services;
   - a rejoin with a newer generation, then the older join's rollback: the newer entry keeps its services;
-  - a land stop: the table is empty after it, as `players` is.
+  - a land stop: the table is empty after it, as `players` is;
+  - the resolver snapshot against the queued handler's lookup: a player with services leaves through an OnLeave resolver and rejoins with other services before the queued OnLeave applies. The resolver sees the outgoing services; the queued handler sees the newer entry's.
 - **The re-entry contract:** a DEBUG-only test whose handler calls back into the keeper synchronously can't be a normal test (it traps). It is a cloud-only, single-case process, like K1b-2's trap tests. The positive side: every handler kind runs under a debug build in the existing suites, which have dynamic enforcement.
 
 **Mutants (cloud worker).** Each names the fixture it needs, so it compiles and fails at run time for the stated reason.
@@ -230,10 +236,10 @@ Each commit runs the touched suites. The full debug `swift test` runs before the
 | M-1 | a new stored field, unused, on the actor (`private var censusProbe = 0`) | none | census: unplaced label |
 | M-2 | a field renamed at every reference, its row left under the old name | `lateFoldedSyncs` → `lateFoldedSyncsRenamed`, in `LandKeeper.swift` and in `InTurnSyncFoldReportTests` (an internal field with no public accessor) | census: stale row (and the new name unplaced) |
 | M-3 | `@PlainData` removed from `KeeperModel` | none | the test target doesn't build (`_requirePlain`) |
-| M-4 | one handler site reads `model.players` inside the step's access | none | a trap: **cloud only, one test case per process** (the K1b-2 lesson: a trap kills the whole test process). The structural check is the audit in the PR body |
+| M-4 | one handler site reads `model.players` inside the step's access | an action handler in a test land, run through the `withHandlerStep` call in the action apply path; the mutant reads `model.players.count` in the body closure after `&m.state` is passed | a trap: **cloud only, one test case per process** (the K1b-2 lesson: a trap kills the whole test process). The structural check is the audit in the PR body |
 | M-5 | S4's side-table removal skipped | K1b-2's job-life run | census suite: the key sets are checked after the abandoned resolver finishes and its job is removed (at abandonment the job deliberately stays). The job pair and the slot pair are checked separately, because a slot can outlive its job |
-| M-6 | the rollback at LK:2232–2235 removes `players` but not `playerServices` | none | the rollback test (§6) |
-| M-7 | `makeContext` reads the land's services after the player's (precedence swapped) | none | the existing services precedence tests |
+| M-6 | the resolver-error rollback (LK:6212–6216) removes `players` but not `playerServices` | a join whose OnJoin resolver throws | the rollback test: right after the matching-generation removal, the table's keys and generations equal `players`' (the newer-generation test skips this removal, and the live shutdown and failure paths clear the table anyway, so neither can kill it) |
+| M-7 | `makeContext` reads the land's services after the player's (precedence swapped) | one ordinary service type registered with different values at land scope and at player scope (the RNG test strips its key, so it can't tell the orders apart) | a handler that reads the service sees the player's value |
 
 ## 7. Behavior and performance
 
@@ -287,3 +293,14 @@ Each commit runs the touched suites. The full debug `swift test` runs before the
 | S4: measure, don't claim | `rows-mp` (the production default) and the tickless action cell `wide-tickless-mp`, #517's windows and rule, sync reported apart | §7 |
 | S5: K1b-1's source break | owned by K1b-1; K1b-4 rebases and regenerates | §8 |
 | Nit: counts and #853's status | "126 at 5baa1887, 128 at #853's reviewed head" | Status, §2 |
+
+## 12. Rev 2 → rev 2.1 (Review on rev 2: 1 must-fix, 4 should, 1 nit)
+
+| Finding | Answer | Where |
+|---|---|---|
+| MF1: `outputCollector` was back in Model, which the `@PlainData` macro refuses | on the actor, `actor.outputCollector`, replaced in K2; dropped from the model row and §4.3 | §2, §3.5, §4.3 |
+| S1: the manifest matches the accessor | container rows and K1b-2's table rows; the accessor exists in release | §2, §4.1 |
+| S2: the site list and the queued OnLeave | 2 inserts, 3 rollbacks (6212–6216 moved there), 1 removal, 4 clears (4146 dropped; 4049 live only); lookups by the current generation; the queued handler's apply-time lookup kept, with a test | §3.3, §6 |
+| S3: M-6, M-7 and M-4 fixtures | M-6 on the resolver-error rollback, asserted right after the removal; M-7 with one ordinary service at two scopes; M-4's handler named | §6 |
+| S4: conformance details | `@PlainData` on `Ticket`'s and `GenerationTable`'s definitions; `InternalPlayerSession` is file-level private; tests' internal getters; `clearDirty`'s contract on its requirement, first site LK:1877; `takePendingFold`'s clock read moves in K2 | §3.1, §3.4, §4.3 |
+| Nit: `resolverServices == nil`; the parent's public-API row | nil means declared and not given (a land that declares none gets `NoServices()`, LK:1177); the parent's K1b row now points at K1b-Q5 (d) | §3.2; parent §8 |
