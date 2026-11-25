@@ -1,36 +1,25 @@
 import Foundation
 
-/// Context provided to resolvers during resolution.
+/// The context a `ContextResolver` reads (the join entries, until #769 R3). A `Resolver` value
+/// doesn't read it: its fields and its `Dependencies` are all it sees.
 ///
-/// ResolverContext provides all the information a resolver needs to load data:
-/// - The action payload to extract parameters
-/// - Current state for cache checking or conditional loading
-/// - Services for database, cache, API access
-/// - Request metadata (playerID, clientID, sessionID, etc.)
+/// It holds:
+/// - the request's identity (`landID`, `playerID`, `clientID`, `sessionID`);
+/// - the current state, read-only, for cache checks or conditional loading;
+/// - the land's services (database, cache, API access).
 ///
 /// Example:
 /// ```swift
-/// public struct ProductInfoResolver: ContextResolver {
-///     public typealias Output = ProductInfo
-///
-///     public static func resolve(
-///         ctx: ResolverContext
-///     ) async throws -> ProductInfo {
-///         // Extract productID from action payload
-///         let action = ctx.actionPayload as? UpdateCartAction
-///         guard let productID = action?.productID else {
-///             throw ResolverError.missingParameter("productID")
+/// struct UserProfileResolver: ContextResolver {
+///     static func resolve(ctx: ResolverContext) async throws -> UserProfile {
+///         // Check the cache in the current state
+///         if let cached = (ctx.currentState as? GameState)?.profiles[ctx.playerID] {
+///             return cached
 ///         }
-///
-///         // Check cache in current state
-///         let state = ctx.currentState as? GameState
-///         if let cachedProduct = state?.productCache[productID] {
-///             return cachedProduct
+///         guard let store = ctx.services.get(ProfileStore.self) else {
+///             throw ResolverError.missingParameter("ProfileStore")
 ///         }
-///
-///         // Load from external system
-///         let data = try await ctx.services.database.fetchProduct(by: productID)
-///         return ProductInfo(id: data.id, name: data.name, price: data.price, stock: data.stock)
+///         return try await store.profile(for: ctx.playerID)
 ///     }
 /// }
 /// ```
@@ -47,10 +36,10 @@ public struct ResolverContext: Sendable {
     /// Session identifier (connection level)
     public let sessionID: SessionID
 
-    /// Action payload (if this is an Action handler context)
-    ///
-    /// Resolvers can extract parameters from the action payload.
-    /// Example: `let action = ctx.actionPayload as? UpdateCartAction`
+    /// `nil` in every context the runtime builds: an action declares `Resolver` values (#769),
+    /// which take what they need from the action as fields when they are built. Only a context
+    /// built by hand with `init(landContext:actionPayload:eventPayload:currentState:)` can carry a
+    /// value.
     public let actionPayload: (any Sendable)?
 
     /// `nil` in every context the runtime builds: client events take no resolvers

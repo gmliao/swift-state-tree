@@ -1,32 +1,21 @@
 import Foundation
 
-/// Protocol for resolvers that provide context data to handlers (actions, CanJoin, OnJoin,
-/// OnLeave, OnInitialize, OnFinalize). Client event handlers take no resolvers.
+/// A resolver named by its type, for the join entries (`CanJoin`, `OnJoin`, `OnLeave`) until
+/// #769 R3, and for destroy-when-empty executors set on `LandDefinition`. Actions, `OnInitialize`
+/// and `OnFinalize` declare `Resolver` values instead.
 ///
-/// Resolvers are responsible for loading data from external sources (DB, Redis, API, etc.)
-/// and providing it to those handlers. The `resolve()` method is async to allow
-/// for I/O operations, but all resolve operations must complete before the handler
-/// executes (which is synchronous).
+/// `resolve` loads data from outside the land (a database, a cache, an API) and reads the join's
+/// context: `ctx.playerID`, `ctx.landID`, `ctx.currentState` and `ctx.services`. It is async;
+/// the handler runs, synchronously, once every resolver of its entry has finished.
 ///
 /// Example:
 /// ```swift
-/// struct ProductInfoResolver: ContextResolver {
-///     public typealias Output = ProductInfo
-///
-///     public static func resolve(
-///         ctx: ResolverContext
-///     ) async throws -> ProductInfo {
-///         let action = ctx.actionPayload as? UpdateCartAction
-///         guard let productID = action?.productID else {
-///             throw ResolverError.missingParameter("productID")
+/// struct UserProfileResolver: ContextResolver {
+///     static func resolve(ctx: ResolverContext) async throws -> UserProfile {
+///         guard let store = ctx.services.get(ProfileStore.self) else {
+///             throw ResolverError.missingParameter("ProfileStore")
 ///         }
-///         let data = try await ctx.services.database.fetchProduct(by: productID)
-///         return ProductInfo(
-///             id: data.id,
-///             name: data.name,
-///             price: data.price,
-///             stock: data.stock
-///         )
+///         return try await store.profile(for: ctx.playerID)
 ///     }
 /// }
 /// ```
@@ -38,11 +27,10 @@ public protocol ContextResolver {
 
     /// Resolve the context data asynchronously.
     ///
-    /// This method is called before the handler that declares this resolver executes.
-    /// All resolvers declared in `@Resolvers` are executed in parallel.
+    /// Runs before the handler that declares it, in parallel with the entry's other resolvers.
     ///
-    /// - Parameter ctx: The resolver context providing access to the action payload,
-    ///                  current state, services, and other request information.
+    /// - Parameter ctx: The join's context: the player, the land, the current state and the
+    ///                  services.
     /// - Returns: The resolved output data.
     /// - Throws: Errors from data loading operations.
     static func resolve(

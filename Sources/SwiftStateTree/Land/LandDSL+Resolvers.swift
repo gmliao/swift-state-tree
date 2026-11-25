@@ -68,14 +68,15 @@ public func HandleAction<State: StateNodeProtocol, Services: Sendable, A: Action
     _ body: @escaping @Sendable (inout State, A, R1.Output?, LandContext) -> A.Response
 ) -> ResolvingNode<AnyActionHandler<State>, Services> where R1.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self)
     return ResolvingNode(makeActionHandler(
         type,
         site: site,
-        resolvers: actionResolvers(A.self, names: [ResolverExecutor.baseTypeName(R1.self)], services: Services.self, site: site) { state, action, ctx in
+        resolvers: actionResolvers(A.self, names: [r1.name], services: Services.self, site: site) { state, action, ctx in
             let value = resolvers(state, action, ctx)
-            return resolverExecutor(value)
+            return r1.executors(value)
         },
-        invoke: { state, action, ctx in body(&state, action, resolverOutput(R1.self, in: ctx), ctx) }
+        invoke: { state, action, ctx in body(&state, action, r1.output(in: ctx), ctx) }
     ))
 }
 
@@ -89,15 +90,16 @@ public func HandleAction<State: StateNodeProtocol, Services: Sendable, A: Action
     apply: @escaping @Sendable (inout State, A, R1.Output?, Plan, LandContext) -> A.Response
 ) -> ResolvingNode<AnyActionHandler<State>, Services> where R1.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self)
     return ResolvingNode(makeActionHandler(
         type,
         site: site,
-        resolvers: actionResolvers(A.self, names: [ResolverExecutor.baseTypeName(R1.self)], services: Services.self, site: site) { state, action, ctx in
+        resolvers: actionResolvers(A.self, names: [r1.name], services: Services.self, site: site) { state, action, ctx in
             let value = resolvers(state, action, ctx)
-            return resolverExecutor(value)
+            return r1.executors(value)
         },
         invoke: { state, action, ctx in
-            let outputs = resolverOutput(R1.self, in: ctx)
+            let outputs = r1.output(in: ctx)
             let plan = try validate(state, action, outputs, ValidateContext(ctx))
             return apply(&state, action, outputs, plan, ctx)
         }
@@ -114,15 +116,16 @@ public func HandleAction<State: StateNodeProtocol, Services: Sendable, A: Action
     apply: @escaping @Sendable (inout State, A, R1.Output?, LandContext) -> A.Response
 ) -> ResolvingNode<AnyActionHandler<State>, Services> where R1.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self)
     return ResolvingNode(makeActionHandler(
         type,
         site: site,
-        resolvers: actionResolvers(A.self, names: [ResolverExecutor.baseTypeName(R1.self)], services: Services.self, site: site) { state, action, ctx in
+        resolvers: actionResolvers(A.self, names: [r1.name], services: Services.self, site: site) { state, action, ctx in
             let value = resolvers(state, action, ctx)
-            return resolverExecutor(value)
+            return r1.executors(value)
         },
         invoke: { state, action, ctx in
-            let outputs = resolverOutput(R1.self, in: ctx)
+            let outputs = r1.output(in: ctx)
             try validate(state, action, outputs, ValidateContext(ctx))
             return apply(&state, action, outputs, ctx)
         }
@@ -138,8 +141,10 @@ public func HandleAction<State: StateNodeProtocol, Services: Sendable, A: Action
 /// ```swift
 /// HandleAction(UpdateCart.self,
 ///              resolvers: { state, action, ctx in
-///                  state.productCache[action.productID] == nil ? ProductInfo(productID: action.productID) : nil
-///              }) { state, action, info, ctx in
+///                  (state.productCache[action.productID] == nil ? ProductInfo(productID: action.productID) : nil,
+///                   UserProfile(playerID: ctx.playerID))
+///              }) { state, action, outputs, ctx in
+///     let (info, profile) = outputs
 ///     ...
 /// }
 /// ```
@@ -151,14 +156,19 @@ public func HandleAction<State: StateNodeProtocol, Services: Sendable, A: Action
     _ body: @escaping @Sendable (inout State, A, (R1.Output?, R2.Output?), LandContext) -> A.Response
 ) -> ResolvingNode<AnyActionHandler<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self)
     return ResolvingNode(makeActionHandler(
         type,
         site: site,
-        resolvers: actionResolvers(A.self, names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self)], services: Services.self, site: site) { state, action, ctx in
+        resolvers: actionResolvers(A.self, names: [r1.name, r2.name], services: Services.self, site: site) { state, action, ctx in
             let value = resolvers(state, action, ctx)
-            return resolverExecutor(value.0) + resolverExecutor(value.1)
+            var executors: [any AnyResolverExecutor] = []
+            executors.reserveCapacity(2)
+            r1.append(value.0, to: &executors)
+            r2.append(value.1, to: &executors)
+            return executors
         },
-        invoke: { state, action, ctx in body(&state, action, (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx)), ctx) }
+        invoke: { state, action, ctx in body(&state, action, (r1.output(in: ctx), r2.output(in: ctx)), ctx) }
     ))
 }
 
@@ -172,15 +182,20 @@ public func HandleAction<State: StateNodeProtocol, Services: Sendable, A: Action
     apply: @escaping @Sendable (inout State, A, (R1.Output?, R2.Output?), Plan, LandContext) -> A.Response
 ) -> ResolvingNode<AnyActionHandler<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self)
     return ResolvingNode(makeActionHandler(
         type,
         site: site,
-        resolvers: actionResolvers(A.self, names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self)], services: Services.self, site: site) { state, action, ctx in
+        resolvers: actionResolvers(A.self, names: [r1.name, r2.name], services: Services.self, site: site) { state, action, ctx in
             let value = resolvers(state, action, ctx)
-            return resolverExecutor(value.0) + resolverExecutor(value.1)
+            var executors: [any AnyResolverExecutor] = []
+            executors.reserveCapacity(2)
+            r1.append(value.0, to: &executors)
+            r2.append(value.1, to: &executors)
+            return executors
         },
         invoke: { state, action, ctx in
-            let outputs = (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx))
+            let outputs = (r1.output(in: ctx), r2.output(in: ctx))
             let plan = try validate(state, action, outputs, ValidateContext(ctx))
             return apply(&state, action, outputs, plan, ctx)
         }
@@ -197,15 +212,20 @@ public func HandleAction<State: StateNodeProtocol, Services: Sendable, A: Action
     apply: @escaping @Sendable (inout State, A, (R1.Output?, R2.Output?), LandContext) -> A.Response
 ) -> ResolvingNode<AnyActionHandler<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self)
     return ResolvingNode(makeActionHandler(
         type,
         site: site,
-        resolvers: actionResolvers(A.self, names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self)], services: Services.self, site: site) { state, action, ctx in
+        resolvers: actionResolvers(A.self, names: [r1.name, r2.name], services: Services.self, site: site) { state, action, ctx in
             let value = resolvers(state, action, ctx)
-            return resolverExecutor(value.0) + resolverExecutor(value.1)
+            var executors: [any AnyResolverExecutor] = []
+            executors.reserveCapacity(2)
+            r1.append(value.0, to: &executors)
+            r2.append(value.1, to: &executors)
+            return executors
         },
         invoke: { state, action, ctx in
-            let outputs = (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx))
+            let outputs = (r1.output(in: ctx), r2.output(in: ctx))
             try validate(state, action, outputs, ValidateContext(ctx))
             return apply(&state, action, outputs, ctx)
         }
@@ -215,7 +235,7 @@ public func HandleAction<State: StateNodeProtocol, Services: Sendable, A: Action
 /// Registers OnInitialize with a resolver (#769).
 ///
 /// `resolvers` runs when the land initializes, with the initial State and a read-only context
-/// (the land's creation metadata is `ctx.metadata`). The body runs once it has resolved, with
+/// (`ctx.landID`; its `metadata` is empty). The body runs once it has resolved, with
 /// its output. With `onResolverFailure: .continue`, a failed group gives `nil` for every output.
 public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resolver>(
     resolvers: @escaping @Sendable (State, ValidateContext) -> R1?,
@@ -225,12 +245,13 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
     _ body: @escaping @Sendable (inout State, R1.Output?, LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self)
     return ResolvingNode(initializeDirective(
         site: site,
-        InitializeHandler(invoke: { state, ctx in body(&state, resolverOutput(R1.self, in: ctx), ctx) }),
-        resolvers: ResolverDeclaration(names: [ResolverExecutor.baseTypeName(R1.self)], servicesType: Services.self, site: site) { state, ctx in
+        InitializeHandler(invoke: { state, ctx in body(&state, r1.output(in: ctx), ctx) }),
+        resolvers: ResolverDeclaration(names: [r1.name], servicesType: Services.self, site: site) { state, ctx in
             let value = resolvers(state, ctx)
-            return resolverExecutor(value)
+            return r1.executors(value)
         },
         onResolverFailure: onResolverFailure
     ))
@@ -246,16 +267,17 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
     apply: @escaping @Sendable (inout State, R1.Output?, Plan, LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self)
     return ResolvingNode(initializeDirective(
         site: site,
         InitializeHandler(invoke: { state, ctx in
-            let outputs = resolverOutput(R1.self, in: ctx)
+            let outputs = r1.output(in: ctx)
             let plan = try validate(state, outputs, ValidateContext(ctx))
             apply(&state, outputs, plan, ctx)
         }),
-        resolvers: ResolverDeclaration(names: [ResolverExecutor.baseTypeName(R1.self)], servicesType: Services.self, site: site) { state, ctx in
+        resolvers: ResolverDeclaration(names: [r1.name], servicesType: Services.self, site: site) { state, ctx in
             let value = resolvers(state, ctx)
-            return resolverExecutor(value)
+            return r1.executors(value)
         },
         onResolverFailure: onResolverFailure
     ))
@@ -271,16 +293,17 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
     apply: @escaping @Sendable (inout State, R1.Output?, LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self)
     return ResolvingNode(initializeDirective(
         site: site,
         InitializeHandler(invoke: { state, ctx in
-            let outputs = resolverOutput(R1.self, in: ctx)
+            let outputs = r1.output(in: ctx)
             try validate(state, outputs, ValidateContext(ctx))
             apply(&state, outputs, ctx)
         }),
-        resolvers: ResolverDeclaration(names: [ResolverExecutor.baseTypeName(R1.self)], servicesType: Services.self, site: site) { state, ctx in
+        resolvers: ResolverDeclaration(names: [r1.name], servicesType: Services.self, site: site) { state, ctx in
             let value = resolvers(state, ctx)
-            return resolverExecutor(value)
+            return r1.executors(value)
         },
         onResolverFailure: onResolverFailure
     ))
@@ -289,7 +312,7 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
 /// Registers OnInitialize with 2 resolvers (#769).
 ///
 /// `resolvers` runs when the land initializes, with the initial State and a read-only context
-/// (the land's creation metadata is `ctx.metadata`). The body runs once they have resolved, with
+/// (`ctx.landID`; its `metadata` is empty). The body runs once they have resolved, with
 /// their outputs. With `onResolverFailure: .continue`, a failed group gives `nil` for every output.
 public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resolver, R2: Resolver>(
     resolvers: @escaping @Sendable (State, ValidateContext) -> (R1?, R2?),
@@ -299,12 +322,17 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
     _ body: @escaping @Sendable (inout State, (R1.Output?, R2.Output?), LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self)
     return ResolvingNode(initializeDirective(
         site: site,
-        InitializeHandler(invoke: { state, ctx in body(&state, (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx)), ctx) }),
-        resolvers: ResolverDeclaration(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self)], servicesType: Services.self, site: site) { state, ctx in
+        InitializeHandler(invoke: { state, ctx in body(&state, (r1.output(in: ctx), r2.output(in: ctx)), ctx) }),
+        resolvers: ResolverDeclaration(names: [r1.name, r2.name], servicesType: Services.self, site: site) { state, ctx in
             let value = resolvers(state, ctx)
-            return resolverExecutor(value.0) + resolverExecutor(value.1)
+            var executors: [any AnyResolverExecutor] = []
+            executors.reserveCapacity(2)
+            r1.append(value.0, to: &executors)
+            r2.append(value.1, to: &executors)
+            return executors
         },
         onResolverFailure: onResolverFailure
     ))
@@ -320,16 +348,21 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
     apply: @escaping @Sendable (inout State, (R1.Output?, R2.Output?), Plan, LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self)
     return ResolvingNode(initializeDirective(
         site: site,
         InitializeHandler(invoke: { state, ctx in
-            let outputs = (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx))
+            let outputs = (r1.output(in: ctx), r2.output(in: ctx))
             let plan = try validate(state, outputs, ValidateContext(ctx))
             apply(&state, outputs, plan, ctx)
         }),
-        resolvers: ResolverDeclaration(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self)], servicesType: Services.self, site: site) { state, ctx in
+        resolvers: ResolverDeclaration(names: [r1.name, r2.name], servicesType: Services.self, site: site) { state, ctx in
             let value = resolvers(state, ctx)
-            return resolverExecutor(value.0) + resolverExecutor(value.1)
+            var executors: [any AnyResolverExecutor] = []
+            executors.reserveCapacity(2)
+            r1.append(value.0, to: &executors)
+            r2.append(value.1, to: &executors)
+            return executors
         },
         onResolverFailure: onResolverFailure
     ))
@@ -345,16 +378,21 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
     apply: @escaping @Sendable (inout State, (R1.Output?, R2.Output?), LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self)
     return ResolvingNode(initializeDirective(
         site: site,
         InitializeHandler(invoke: { state, ctx in
-            let outputs = (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx))
+            let outputs = (r1.output(in: ctx), r2.output(in: ctx))
             try validate(state, outputs, ValidateContext(ctx))
             apply(&state, outputs, ctx)
         }),
-        resolvers: ResolverDeclaration(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self)], servicesType: Services.self, site: site) { state, ctx in
+        resolvers: ResolverDeclaration(names: [r1.name, r2.name], servicesType: Services.self, site: site) { state, ctx in
             let value = resolvers(state, ctx)
-            return resolverExecutor(value.0) + resolverExecutor(value.1)
+            var executors: [any AnyResolverExecutor] = []
+            executors.reserveCapacity(2)
+            r1.append(value.0, to: &executors)
+            r2.append(value.1, to: &executors)
+            return executors
         },
         onResolverFailure: onResolverFailure
     ))
@@ -363,7 +401,7 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
 /// Registers OnInitialize with 3 resolvers (#769).
 ///
 /// `resolvers` runs when the land initializes, with the initial State and a read-only context
-/// (the land's creation metadata is `ctx.metadata`). The body runs once they have resolved, with
+/// (`ctx.landID`; its `metadata` is empty). The body runs once they have resolved, with
 /// their outputs. With `onResolverFailure: .continue`, a failed group gives `nil` for every output.
 public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resolver, R2: Resolver, R3: Resolver>(
     resolvers: @escaping @Sendable (State, ValidateContext) -> (R1?, R2?, R3?),
@@ -373,12 +411,18 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
     _ body: @escaping @Sendable (inout State, (R1.Output?, R2.Output?, R3.Output?), LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services, R3.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self), r3 = ResolverSlot(R3.self)
     return ResolvingNode(initializeDirective(
         site: site,
-        InitializeHandler(invoke: { state, ctx in body(&state, (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx), resolverOutput(R3.self, in: ctx)), ctx) }),
-        resolvers: ResolverDeclaration(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self), ResolverExecutor.baseTypeName(R3.self)], servicesType: Services.self, site: site) { state, ctx in
+        InitializeHandler(invoke: { state, ctx in body(&state, (r1.output(in: ctx), r2.output(in: ctx), r3.output(in: ctx)), ctx) }),
+        resolvers: ResolverDeclaration(names: [r1.name, r2.name, r3.name], servicesType: Services.self, site: site) { state, ctx in
             let value = resolvers(state, ctx)
-            return resolverExecutor(value.0) + resolverExecutor(value.1) + resolverExecutor(value.2)
+            var executors: [any AnyResolverExecutor] = []
+            executors.reserveCapacity(3)
+            r1.append(value.0, to: &executors)
+            r2.append(value.1, to: &executors)
+            r3.append(value.2, to: &executors)
+            return executors
         },
         onResolverFailure: onResolverFailure
     ))
@@ -394,16 +438,22 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
     apply: @escaping @Sendable (inout State, (R1.Output?, R2.Output?, R3.Output?), Plan, LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services, R3.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self), r3 = ResolverSlot(R3.self)
     return ResolvingNode(initializeDirective(
         site: site,
         InitializeHandler(invoke: { state, ctx in
-            let outputs = (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx), resolverOutput(R3.self, in: ctx))
+            let outputs = (r1.output(in: ctx), r2.output(in: ctx), r3.output(in: ctx))
             let plan = try validate(state, outputs, ValidateContext(ctx))
             apply(&state, outputs, plan, ctx)
         }),
-        resolvers: ResolverDeclaration(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self), ResolverExecutor.baseTypeName(R3.self)], servicesType: Services.self, site: site) { state, ctx in
+        resolvers: ResolverDeclaration(names: [r1.name, r2.name, r3.name], servicesType: Services.self, site: site) { state, ctx in
             let value = resolvers(state, ctx)
-            return resolverExecutor(value.0) + resolverExecutor(value.1) + resolverExecutor(value.2)
+            var executors: [any AnyResolverExecutor] = []
+            executors.reserveCapacity(3)
+            r1.append(value.0, to: &executors)
+            r2.append(value.1, to: &executors)
+            r3.append(value.2, to: &executors)
+            return executors
         },
         onResolverFailure: onResolverFailure
     ))
@@ -419,16 +469,22 @@ public func OnInitialize<State: StateNodeProtocol, Services: Sendable, R1: Resol
     apply: @escaping @Sendable (inout State, (R1.Output?, R2.Output?, R3.Output?), LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services, R3.Dependencies == Services {
     let site = "\(fileID):\(line)"
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self), r3 = ResolverSlot(R3.self)
     return ResolvingNode(initializeDirective(
         site: site,
         InitializeHandler(invoke: { state, ctx in
-            let outputs = (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx), resolverOutput(R3.self, in: ctx))
+            let outputs = (r1.output(in: ctx), r2.output(in: ctx), r3.output(in: ctx))
             try validate(state, outputs, ValidateContext(ctx))
             apply(&state, outputs, ctx)
         }),
-        resolvers: ResolverDeclaration(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self), ResolverExecutor.baseTypeName(R3.self)], servicesType: Services.self, site: site) { state, ctx in
+        resolvers: ResolverDeclaration(names: [r1.name, r2.name, r3.name], servicesType: Services.self, site: site) { state, ctx in
             let value = resolvers(state, ctx)
-            return resolverExecutor(value.0) + resolverExecutor(value.1) + resolverExecutor(value.2)
+            var executors: [any AnyResolverExecutor] = []
+            executors.reserveCapacity(3)
+            r1.append(value.0, to: &executors)
+            r2.append(value.1, to: &executors)
+            r3.append(value.2, to: &executors)
+            return executors
         },
         onResolverFailure: onResolverFailure
     ))
@@ -446,13 +502,14 @@ public func OnFinalize<State: StateNodeProtocol, Services: Sendable, R1: Resolve
     _ body: @escaping @Sendable (inout State, R1.Output?, LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services {
     let site = "\(fileID):\(line)"
-    let declaration = ResolverDeclaration<State>(names: [ResolverExecutor.baseTypeName(R1.self)], servicesType: Services.self, site: site) { state, ctx in
+    let r1 = ResolverSlot(R1.self)
+    let declaration = ResolverDeclaration<State>(names: [r1.name], servicesType: Services.self, site: site) { state, ctx in
         let value = resolvers(state, ctx)
-        return resolverExecutor(value)
+        return r1.executors(value)
     }
     return ResolvingNode { config in
         guard config.claim(.onFinalize, at: site) else { return }
-        config.onFinalize = { state, ctx in body(&state, resolverOutput(R1.self, in: ctx), ctx) }
+        config.onFinalize = { state, ctx in body(&state, r1.output(in: ctx), ctx) }
         config.onFinalizeResolvers = declaration
     }
 }
@@ -469,13 +526,18 @@ public func OnFinalize<State: StateNodeProtocol, Services: Sendable, R1: Resolve
     _ body: @escaping @Sendable (inout State, (R1.Output?, R2.Output?), LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services {
     let site = "\(fileID):\(line)"
-    let declaration = ResolverDeclaration<State>(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self)], servicesType: Services.self, site: site) { state, ctx in
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self)
+    let declaration = ResolverDeclaration<State>(names: [r1.name, r2.name], servicesType: Services.self, site: site) { state, ctx in
         let value = resolvers(state, ctx)
-        return resolverExecutor(value.0) + resolverExecutor(value.1)
+        var executors: [any AnyResolverExecutor] = []
+        executors.reserveCapacity(2)
+        r1.append(value.0, to: &executors)
+        r2.append(value.1, to: &executors)
+        return executors
     }
     return ResolvingNode { config in
         guard config.claim(.onFinalize, at: site) else { return }
-        config.onFinalize = { state, ctx in body(&state, (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx)), ctx) }
+        config.onFinalize = { state, ctx in body(&state, (r1.output(in: ctx), r2.output(in: ctx)), ctx) }
         config.onFinalizeResolvers = declaration
     }
 }
@@ -492,13 +554,19 @@ public func OnFinalize<State: StateNodeProtocol, Services: Sendable, R1: Resolve
     _ body: @escaping @Sendable (inout State, (R1.Output?, R2.Output?, R3.Output?), LandContext) -> Void
 ) -> ResolvingNode<LifetimeDirective<State>, Services> where R1.Dependencies == Services, R2.Dependencies == Services, R3.Dependencies == Services {
     let site = "\(fileID):\(line)"
-    let declaration = ResolverDeclaration<State>(names: [ResolverExecutor.baseTypeName(R1.self), ResolverExecutor.baseTypeName(R2.self), ResolverExecutor.baseTypeName(R3.self)], servicesType: Services.self, site: site) { state, ctx in
+    let r1 = ResolverSlot(R1.self), r2 = ResolverSlot(R2.self), r3 = ResolverSlot(R3.self)
+    let declaration = ResolverDeclaration<State>(names: [r1.name, r2.name, r3.name], servicesType: Services.self, site: site) { state, ctx in
         let value = resolvers(state, ctx)
-        return resolverExecutor(value.0) + resolverExecutor(value.1) + resolverExecutor(value.2)
+        var executors: [any AnyResolverExecutor] = []
+        executors.reserveCapacity(3)
+        r1.append(value.0, to: &executors)
+        r2.append(value.1, to: &executors)
+        r3.append(value.2, to: &executors)
+        return executors
     }
     return ResolvingNode { config in
         guard config.claim(.onFinalize, at: site) else { return }
-        config.onFinalize = { state, ctx in body(&state, (resolverOutput(R1.self, in: ctx), resolverOutput(R2.self, in: ctx), resolverOutput(R3.self, in: ctx)), ctx) }
+        config.onFinalize = { state, ctx in body(&state, (r1.output(in: ctx), r2.output(in: ctx), r3.output(in: ctx)), ctx) }
         config.onFinalizeResolvers = declaration
     }
 }

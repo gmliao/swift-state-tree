@@ -2447,7 +2447,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             tickId: lastCommittedTickId
         )
         // The values are built here, in the intake segment, from the State the action is admitted
-        // against (#769 §3.2): the closure reads it and mutates nothing.
+        // against (#769 §3.2): the closure reads it and must not mutate it (a reference-backed State is not
+        // stopped from it).
         let executors = resolvers.build((state, decodedAction), ValidateContext(ctx))
         let resolverContext = makeResolverContext(ctx)
         let abandonment = resolverAbandonment(.action) { [weak self] in

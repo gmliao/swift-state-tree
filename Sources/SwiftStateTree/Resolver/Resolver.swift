@@ -77,10 +77,12 @@ package protocol ResolverOutputNaming {
 
 /// Runs one resolver value with the land's services (#769). The keeper builds it at the point
 /// that admits the input, from the entry's `resolvers:` closure.
-struct ResolverValueExecutor<R: Resolver>: AnyResolverExecutor {
+struct ResolverValueExecutor<R: Resolver>: AnyResolverExecutor, ResolverOutputNaming {
     let value: R
-
-    var resolverName: String { ResolverExecutor.baseTypeName(R.self) }
+    /// The base type name, for errors (`ResolverSlot` computes it once per declaration).
+    let resolverName: String
+    /// The name the output is stored and recorded under.
+    let outputName: String
 
     func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput) {
         guard let deps = ctx.resolverServices as? R.Dependencies else {
@@ -95,14 +97,11 @@ struct ResolverValueExecutor<R: Resolver>: AnyResolverExecutor {
     }
 }
 
-extension ResolverValueExecutor: ResolverOutputNaming {
-    package var outputName: String { ResolverExecutor.outputName(forBaseTypeName: resolverName) }
-}
 
 /// An entry's resolvers, as the node holds them until the keeper admits an input (#769 §3.2).
 ///
 /// `build` runs the entry's `resolvers:` closure. It reads the State, the input and a read-only
-/// context, mutates nothing, and returns one executor per value the closure built: a `nil`
+/// context, must not mutate anything, and returns one executor per value the closure built: a `nil`
 /// value is skipped, and the handler gets `nil` for that output.
 package struct ResolverDeclaration<Input>: Sendable {
     /// The resolvers' base type names, in declaration order. Two that store their outputs under
@@ -137,16 +136,34 @@ package struct ResolverDeclaration<Input>: Sendable {
     }
 }
 
-/// The executor for one built value, or none for `nil`.
-func resolverExecutor<R: Resolver>(_ value: R?) -> [any AnyResolverExecutor] {
-    value.map { [ResolverValueExecutor(value: $0)] } ?? []
-}
+/// One resolver of a declaration: its names, computed once when the entry is declared, not for
+/// each built value or output read.
+struct ResolverSlot<R: Resolver>: Sendable {
+    /// The base type name, without generic arguments: errors and registration use it.
+    let name: String
+    /// The name the output is stored and recorded under.
+    let outputName: String
 
-/// The output a handler receives for `R`: the one the group produced, live or recorded, or `nil`
-/// when the closure built no value (or, with `.continue`, when the group failed).
-func resolverOutput<R: Resolver>(_ type: R.Type, in ctx: LandContext) -> R.Output? {
-    ctx.resolverOutput(
-        R.Output.self,
-        named: ResolverExecutor.outputName(forBaseTypeName: ResolverExecutor.baseTypeName(R.self))
-    )
+    init(_ type: R.Type) {
+        name = ResolverExecutor.baseTypeName(R.self)
+        outputName = ResolverExecutor.outputName(forBaseTypeName: name)
+    }
+
+    /// The executor for one built value, or none for `nil`.
+    func executors(_ value: R?) -> [any AnyResolverExecutor] {
+        value.map { [ResolverValueExecutor(value: $0, resolverName: name, outputName: outputName)] } ?? []
+    }
+
+    /// Appends the executor for a built value; `nil` appends nothing.
+    func append(_ value: R?, to executors: inout [any AnyResolverExecutor]) {
+        if let value {
+            executors.append(ResolverValueExecutor(value: value, resolverName: name, outputName: outputName))
+        }
+    }
+
+    /// The output a handler receives for `R`: the one the group produced, live or recorded, or
+    /// `nil` when the closure built no value (or, with `.continue`, when the group failed).
+    func output(in ctx: LandContext) -> R.Output? {
+        ctx.resolverOutput(R.Output.self, named: outputName)
+    }
 }
