@@ -108,10 +108,10 @@ struct TableState: StateNodeProtocol {
 同一條規則也影響幾種宣告：
 - generic node 的型別參數必須是 `PlainData`：`struct Box<T: PlainData & Sendable>: StateNodeProtocol`。
 - 不用 `@StateNodeBuilder`、手寫 conformance 的 state node 要加上 `@PlainData`。這只適用於 stored property 都沒有 property wrapper 的 node，因為 `@PlainData` 拒絕所有 wrapper。有 `@Sync` 或 `@Internal` 欄位的 node 請用 `@StateNodeBuilder`。
-- state 欄位上 `@Sync` 與 `@Internal` 以外的 property wrapper 會被拒絕：檢查讀不到其他 wrapper 的儲存內容。自己定義、名為 `Sync` 或 `Internal` 的 wrapper 會被讀穿，但它的儲存內容會被檢查，所以只有它是純資料時才能編譯。
+- state 欄位上 `@Sync` 與 `@Internal` 以外的 property wrapper 會被拒絕：檢查讀不到其他 wrapper 的儲存內容。自己定義、名為 `Sync` 或 `Internal` 的 wrapper 會被讀穿，但它的儲存內容會被檢查，所以只有它是純資料時才能編譯。加上 module 名稱的寫法，只有在 module 匯出了 library 的 wrapper 時才會被讀穿，例如 `@SwiftStateTree.Sync`。
 - `#if` 裡的 `@Sync` 欄位會被拒絕：同步只讀型別最上層的欄位，所以它永遠不會被同步。請宣告在 `#if` 之外，或標記為 `@Internal`。
-- 有 observer（`willSet`、`didSet`）的 property 是 stored property。它和其他欄位一樣需要標記，標記 `@Sync` 的會被同步。
-- 成員中的 freestanding macro 展開（`#someMacro()`）會被拒絕，因為它加入的儲存內容不在檢查所讀的語法裡。
+- 有 observer（`willSet`、`didSet`）的 property 是 stored property，所以和其他欄位一樣需要標記。標記 `@Sync` 的會被拒絕：產生的 mutator 與 snapshot decode 直接寫入欄位的儲存內容，observer 只會在部分寫入時執行。標記 `@Internal` 的可以保留 observer。
+- 成員中的 freestanding macro 展開（`#someMacro()`）會被拒絕，因為它加入的儲存內容不在檢查所讀的語法裡。`#warning` 與 `#error` 是編譯器指令，可以使用。
 - state 型別與 `@SnapshotConvertible` 型別只能掛本專案的 macro（`@StateNodeBuilder`、`@SnapshotConvertible`、`@PlainData`、`@Payload`），以及不加入成員的內建 attribute（例如 `@available`）。其他 attached macro 會被拒絕，因為它可能加入檢查看不到的成員。
 - `@StateNodeBuilder` 旁邊加 `@PlainData` 會被拒絕，因為這個 macro 已經寫出檢查。旁邊加 `@SnapshotConvertible` 沒有問題。
 - `@SnapshotConvertible` 型別的每個 stored property 都要標註型別，與 `@PlainData` 相同。
@@ -130,7 +130,7 @@ DeterministicMath 的值型別（`IVec2`、`Position2` 等）都是 `PlainData`�
 
 **破壞性變更（2026-11-10）。** #464 之前，同步狀態中的 class 會依其 stored property 編碼，只有參照回自己的物件圖會被拒絕。現在狀態含有 class 的 Land 會註冊失敗。
 
-**破壞性變更（2026-11-25）。** state 型別現在是 `PlainData`。以下寫法不再能編譯：沒有 `@PlainData` 或 `@SnapshotConvertible` 的巢狀 struct 或 enum、型別參數不是 `PlainData` 的 generic node、沒有 `@PlainData` 的手寫 node、tuple 欄位、`.serverOnly` 的 `Decimal`、藏在 typealias 後面的 existential，以及沒有標註型別的 `@SnapshotConvertible` property。`ReactiveDictionary` 與 `ReactiveSet` 已移除：請在 `@Sync` 欄位中使用 `Dictionary` 或 `Set`，dirty tracking 的方式相同。
+**破壞性變更（2026-11-25）。** state 型別現在是 `PlainData`。以下寫法不再能編譯：沒有 `@PlainData` 或 `@SnapshotConvertible` 的巢狀 struct 或 enum、型別參數不是 `PlainData` 的 generic node、沒有 `@PlainData` 的手寫 node、tuple 欄位、`.serverOnly` 的 `Decimal`、藏在 typealias 後面的 existential，以及沒有標註型別的 `@SnapshotConvertible` property。`ReactiveDictionary` 與 `ReactiveSet` 已移除：請在 `@Sync` 欄位中使用 `Dictionary` 或 `Set`。整個欄位一起標記為 dirty：沒有逐 key 的 dirty tracking、沒有新增或移除元素的清單，也沒有變更 callback。
 
 ### 註冊時拒絕的型別
 

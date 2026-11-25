@@ -42,12 +42,13 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Validate all stored properties have @Sync or @Internal, inside `#if` blocks too
         try validateProperties(propertiesWithNodes, context: context)
         try validateIfConfigMarkers(structDecl.memberBlock.members, context: context)
+        try validateObservedSync(structDecl.memberBlock.members, context: context)
 
         // This macro writes the type's PlainData witness; `@PlainData` beside it would write a
         // second one.
         if let sibling = structDecl.attributes.first(where: {
             guard let attribute = $0.as(AttributeSyntax.self) else { return false }
-            return PlainDataWalk.lastNameComponent(of: attribute) == "PlainData"
+            return PlainDataWalk.isProjectAttribute(attribute, named: "PlainData")
         }) {
             let error = MacroError.plainDataSibling(node: Syntax(sibling))
             error.diagnose(context: context)
@@ -216,8 +217,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 }
 
                 // Check for @Sync or @Internal attribute
-                // Any spelling: `@Sync` and `@SwiftStateTree.Sync`. The PlainData witness checks
-                // the wrapper's storage, so a namesake wrapper doesn't pass as the library's.
+                // `@Sync` or `@SwiftStateTree.Sync`. The PlainData witness checks the wrapper's
+                // storage, so a bare namesake wrapper doesn't pass as the library's.
                 let hasSync = PlainDataWalk.hasAttribute(named: "Sync", in: variableDecl.attributes)
                 let hasInternal = PlainDataWalk.hasAttribute(named: "Internal", in: variableDecl.attributes)
 
@@ -226,7 +227,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 var policyExpression: String? = nil
                 if hasSync {
                     if let attribute = variableDecl.attributes.first(where: { attr in
-                        attr.as(AttributeSyntax.self).map { PlainDataWalk.lastNameComponent(of: $0) == "Sync" } ?? false
+                        attr.as(AttributeSyntax.self).map { PlainDataWalk.isProjectAttribute($0, named: "Sync") } ?? false
                     })?.as(AttributeSyntax.self) {
                         policyType = extractPolicyType(from: attribute)
                         policyExpression = syncPolicyArgument(of: attribute)?.expression.trimmedDescription
@@ -322,7 +323,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     // The sync tables read only top-level members, so a `@Sync` field inside `#if`
                     // would never be synced, snapshotted or hashed: refused. `@Internal` is fine.
                     if let sync = variable.attributes.first(where: {
-                        $0.as(AttributeSyntax.self).map { PlainDataWalk.lastNameComponent(of: $0) == "Sync" } ?? false
+                        $0.as(AttributeSyntax.self).map { PlainDataWalk.isProjectAttribute($0, named: "Sync") } ?? false
                     }) {
                         let name = variable.bindings.first?.pattern.trimmedDescription ?? "?"
                         let error = MacroError.syncInIfConfig(propertyName: name, node: Syntax(sync))
@@ -335,6 +336,31 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     error.diagnose(context: context)
                     throw error
                 }
+            }
+        }
+    }
+
+    /// Refuses `willSet`/`didSet` on a `@Sync` field: the generated mutators (`update<X>(_:forKey:)`
+    /// and the rest) and the snapshot decode write the wrapper's storage, so the observers
+    /// would run on some writes and not on others. `@Internal` keeps its observers, since no
+    /// generated code writes it.
+    private static func validateObservedSync(
+        _ members: MemberBlockItemListSyntax,
+        context: some MacroExpansionContext
+    ) throws {
+        for member in members {
+            guard let variable = member.decl.as(VariableDeclSyntax.self),
+                  PlainDataWalk.hasAttribute(named: "Sync", in: variable.attributes)
+            else { continue }
+            for binding in variable.bindings {
+                guard case .accessors(let list) = binding.accessorBlock?.accessors,
+                      let observer = list.first(where: {
+                          [.keyword(.willSet), .keyword(.didSet)].contains($0.accessorSpecifier.tokenKind)
+                      })
+                else { continue }
+                let error = MacroError.observedSync(propertyName: binding.pattern.trimmedDescription, node: Syntax(observer))
+                error.diagnose(context: context)
+                throw error
             }
         }
     }
@@ -1541,6 +1567,7 @@ private enum MacroError: Error, @unchecked Sendable {
     case missingPolicy(propertyName: String, node: Syntax)
     case plainDataSibling(node: Syntax)
     case syncInIfConfig(propertyName: String, node: Syntax)
+    case observedSync(propertyName: String, node: Syntax)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
@@ -1576,6 +1603,8 @@ private enum MacroError: Error, @unchecked Sendable {
             context.diagnose(Diagnostic(node: node, message: StateNodeBuilderDiagnostic.plainDataSibling))
         case .syncInIfConfig(let propertyName, let node):
             context.diagnose(Diagnostic(node: node, message: StateNodeBuilderDiagnostic.syncInIfConfig(propertyName: propertyName)))
+        case .observedSync(let propertyName, let node):
+            context.diagnose(Diagnostic(node: node, message: StateNodeBuilderDiagnostic.observedSync(propertyName: propertyName)))
         }
     }
 }
@@ -1602,6 +1631,14 @@ private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
         StateNodeBuilderDiagnostic(
             message: "@Sync property '\(propertyName)' inside #if isn't synced; declare it outside #if, or mark it @Internal",
             diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "syncInIfConfig"),
+            severity: .error
+        )
+    }
+
+    static func observedSync(propertyName: String) -> StateNodeBuilderDiagnostic {
+        StateNodeBuilderDiagnostic(
+            message: "@Sync property '\(propertyName)' can't have willSet or didSet: the generated mutators and the snapshot decode write its storage and skip them; move the work into the code that writes the field, or mark it @Internal",
+            diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "observedSync"),
             severity: .error
         )
     }

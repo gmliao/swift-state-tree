@@ -1,7 +1,8 @@
 // expect: compiles
 import SwiftStateTree
 
-// The wrappers spelled with their module: read through as @Sync and @Internal, and synced.
+// The wrappers spelled with their module (SwiftStateTree, or SwiftStateTreeNIO, which re-exports
+// it): read through as @Sync and @Internal. An observed @Internal field keeps its observer.
 @StateNodeBuilder
 struct QualifiedState: StateNodeProtocol {
     @SwiftStateTree.Sync(.broadcast)
@@ -10,7 +11,7 @@ struct QualifiedState: StateNodeProtocol {
     @SwiftStateTree.Internal
     var cache: [String: Int] = [:]
 
-    @Sync(.broadcast)
+    @Internal
     var observed: Int = 0 {
         didSet {}
     }

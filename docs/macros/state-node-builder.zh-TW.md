@@ -137,14 +137,14 @@ error: Stored property 'score' in GameState must be marked with @Sync or @Intern
 
 ### 驗證規則詳解
 
-1. **Stored properties**：必須明確標記 `@Sync` 或 `@Internal`，`#if` 裡的也一樣。有 observer（`willSet`、`didSet`）的 property 是 stored property
+1. **Stored properties**：必須明確標記 `@Sync` 或 `@Internal`，`#if` 裡的也一樣。有 observer（`willSet`、`didSet`）的 property 是 stored property，只有 `@Internal` 欄位可以有 observer：`@Sync` 欄位由產生的程式碼寫入時會略過 observer
 2. **Computed properties**：自動跳過驗證，不需要標記
 3. **未標記的 stored property**：編譯錯誤
 4. **欄位的值是 `PlainData`**：每個 `@Sync` 與 `@Internal` 欄位，包含 `.serverOnly`（[同步](../core/sync.zh-TW.md#同步狀態只能由-value-type-組成)）
 5. **欄位上不能有其他 property wrapper**：`PlainData` 檢查只讀 `@Sync` 與 `@Internal` 欄位
 6. **`@StateNodeBuilder` 旁邊不能加 `@PlainData`**：這個 macro 已經寫出 witness。旁邊加 `@SnapshotConvertible` 沒有問題
 7. **`#if` 裡不能有 `@Sync`**：同步只讀最上層的欄位，所以這種欄位永遠不會被同步。`#if` 裡的 `@Internal` 沒有問題
-8. **成員中不能有 freestanding macro 展開**：檢查看不到它加入的儲存內容
+8. **成員中不能有 freestanding macro 展開**：檢查看不到它加入的儲存內容。`#warning` 與 `#error` 是編譯器指令，沒有問題
 9. **型別上不能有其他 attached macro**：除了 `@StateNodeBuilder`，只能有 `@SnapshotConvertible` 與不加入成員的內建 attribute（例如 `@available`）。其他 macro 可能加入這個 macro 看不到的成員
 
 ## 生成的方法

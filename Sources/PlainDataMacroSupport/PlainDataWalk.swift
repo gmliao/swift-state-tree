@@ -48,6 +48,9 @@ public enum PlainDataWalk {
                 continue
             }
             if let expansion = member.decl.as(MacroExpansionDeclSyntax.self) {
+                // `#warning` and `#error` are compiler directives that parse as expansions; they
+                // add no member, and an `#error` in an inactive `#if` branch is honest code.
+                if compilerDirectives.contains(expansion.macroName.text) { continue }
                 context.diagnose(Diagnostic(node: expansion, message: PlainDataDiagnostic.macroExpansion))
                 failed = true
                 continue
@@ -101,9 +104,13 @@ public enum PlainDataWalk {
                     lines.append(check("value._\(storageName(pattern.identifier))"))
                 }
                 guard let annotation = binding.typeAnnotation?.type ?? typeOfNextBinding(binding, in: variable) else {
-                    // The storage check above covers the wrapper; the wrapper's generic
-                    // constraint checks the inferred type at the field.
-                    if isWrapped { continue }
+                    // With no annotation the walk can't choose a check by type, so it reads the
+                    // value as it is: the storage line above covers the wrapper, and this line
+                    // covers what its `wrappedValue` returns.
+                    if isWrapped, let pattern = binding.pattern.as(IdentifierPatternSyntax.self) {
+                        lines.append(check("value.\(pattern.identifier.trimmed)"))
+                        continue
+                    }
                     context.diagnose(Diagnostic(node: binding.pattern, message: PlainDataDiagnostic.annotation(binding.pattern.trimmedDescription)))
                     failed = true
                     continue
@@ -125,24 +132,42 @@ public enum PlainDataWalk {
         return storageNeutralAttributes.contains(attribute.attributeName.trimmedDescription)
     }
 
+    /// The freestanding expansions that are compiler directives, not macros that add members.
+    private static let compilerDirectives: Set<String> = ["warning", "error"]
+
     private static func isReadThrough(_ element: AttributeListSyntax.Element, _ names: Set<String>) -> Bool {
         guard !names.isEmpty, case .attribute(let attribute) = element else { return false }
-        return names.contains(lastNameComponent(of: attribute))
+        return names.contains { isProjectAttribute(attribute, named: $0) }
     }
 
-    /// An attribute's name without its module qualifier: `Sync` for `@Sync` and
-    /// `@SwiftStateTree.Sync`, `PlainData` for `@SwiftStateTurns.PlainData`.
-    public static func lastNameComponent(of attribute: AttributeSyntax) -> String {
-        if let member = attribute.attributeName.as(MemberTypeSyntax.self) { return member.name.text }
-        if let identifier = attribute.attributeName.as(IdentifierTypeSyntax.self) { return identifier.name.text }
-        return attribute.attributeName.trimmedDescription
+    /// The modules that declare or re-export SwiftStateTree's attributes.
+    private static let stateTreeModules: Set<String> = ["SwiftStateTree", "SwiftStateTreeNIO"]
+
+    /// The modules a qualified spelling of this project's attribute `name` may name: the module
+    /// that declares it and the modules that re-export it.
+    public static func modules(declaring name: String) -> Set<String> {
+        name == "PlainData" ? stateTreeModules.union(["SwiftStateTurns"]) : stateTreeModules
     }
 
-    /// Whether `attributes` holds an attribute named `name`, by its last name component.
+    /// Whether `attribute` spells this project's attribute `name`: bare, or qualified by a module
+    /// that declares or re-exports it (`@SwiftStateTree.Sync`, `@SwiftStateTurns.PlainData`).
+    /// `@Other.Sync` isn't. The syntax shows only spellings, so a bare namesake passes.
+    public static func isProjectAttribute(_ attribute: AttributeSyntax, named name: String) -> Bool {
+        if let identifier = attribute.attributeName.as(IdentifierTypeSyntax.self) {
+            return identifier.name.text == name
+        }
+        if let member = attribute.attributeName.as(MemberTypeSyntax.self),
+           let base = member.baseType.as(IdentifierTypeSyntax.self) {
+            return member.name.text == name && modules(declaring: name).contains(base.name.text)
+        }
+        return false
+    }
+
+    /// Whether `attributes` holds this project's attribute `name`, as `isProjectAttribute` spells it.
     public static func hasAttribute(named name: String, in attributes: AttributeListSyntax) -> Bool {
         attributes.contains {
             guard case .attribute(let attribute) = $0 else { return false }
-            return lastNameComponent(of: attribute) == name
+            return isProjectAttribute(attribute, named: name)
         }
     }
 

@@ -36,7 +36,7 @@ private func checkLines(_ expanded: String) -> [String] {
 
 @Suite("State is PlainData: the macros' witness")
 struct StatePlainDataMacroTests {
-    @Test("@StateNodeBuilder checks each @Sync and @Internal field's storage and wrapped value; an unannotated @Internal field gets the storage check only")
+    @Test("@StateNodeBuilder checks each @Sync and @Internal field's storage and wrapped value, annotated or not")
     func memberChecksEachField() {
         let (expanded, messages) = expand("""
             @StateNodeBuilder
@@ -58,6 +58,7 @@ struct StatePlainDataMacroTests {
             "SwiftStateTurns.PlainDataCheck.field(value._lastTick)",
             "SwiftStateTurns.PlainDataCheck.field(value.lastTick)",
             "SwiftStateTurns.PlainDataCheck.field(value._cache)",
+            "SwiftStateTurns.PlainDataCheck.field(value.cache)",
         ], "\(expanded)")
     }
 
@@ -158,6 +159,34 @@ struct StatePlainDataMacroTests {
         ], "\(expanded)")
     }
 
+    @Test("An unannotated read-through field reads its storage and its value")
+    func readThroughUnannotated() {
+        let (expanded, messages) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                @Internal var hits = 0
+            }
+            """)
+        #expect(messages.isEmpty, "\(messages)")
+        #expect(checkLines(expanded).suffix(2) == [
+            "SwiftStateTurns.PlainDataCheck.field(value._hits)",
+            "SwiftStateTurns.PlainDataCheck.field(value.hits)",
+        ], "\(expanded)")
+    }
+
+    @Test("A wrapper qualified by another module isn't read through as the library's")
+    func readThroughOtherModule() {
+        let (_, messages) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                @MyModule.Internal var hits: Int = 0
+            }
+            """)
+        #expect(!messages.isEmpty, "\(messages)")
+    }
+
     @Test("A @Sync field inside #if is refused: the sync tables read only top-level members")
     func syncInsideIfConfig() {
         let (_, messages) = expand("""
@@ -186,6 +215,44 @@ struct StatePlainDataMacroTests {
         #expect(messages.contains { $0.contains("Stored property 'secret'") && $0.contains("must be marked with @Sync or @Internal") }, "\(messages)")
     }
 
+    @Test("An observed @Sync field is refused: generated writes skip its observers; an observed @Internal is fine")
+    func observedSync() {
+        let (_, refused) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0 {
+                    didSet {}
+                }
+            }
+            """)
+        #expect(refused.first == "@Sync property 'count' can't have willSet or didSet: the generated mutators and the snapshot decode write its storage and skip them; move the work into the code that writes the field, or mark it @Internal", "\(refused)")
+        let (_, accepted) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                @Internal var hits: Int = 0 {
+                    willSet {}
+                }
+            }
+            """)
+        #expect(accepted.isEmpty, "\(accepted)")
+    }
+
+    @Test("#warning and #error among the members are compiler directives, not refused expansions")
+    func compilerDirectives() {
+        let (_, messages) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                #warning("check this")
+                #if false
+                #error("unsupported platform")
+                #endif
+            }
+            """)
+        #expect(messages.isEmpty, "\(messages)")
+    }
+
     @Test("A freestanding macro expansion among a state's members is refused: its storage can't be checked")
     func macroExpansionMember() {
         let (_, messages) = expand("""
@@ -202,7 +269,10 @@ struct StatePlainDataMacroTests {
         "@StateNodeBuilder", "@SnapshotConvertible",
     ])
     func stateTypeAttributeRefusals(site: String) {
-        let unknown = "can't be on a state type: a macro there can add members the PlainData check doesn't see; a state type takes only @StateNodeBuilder, @SnapshotConvertible, @PlainData, @Payload and attributes that add no members"
+        let takes = site == "@StateNodeBuilder"
+            ? "@PlainData, @SnapshotConvertible, @StateNodeBuilder"
+            : "@Payload, @PlainData, @SnapshotConvertible, @StateNodeBuilder"
+        let unknown = "can't be on a state type: a macro there can add members the PlainData check doesn't see; this type takes only \(takes) and attributes that add no members"
         let conformance = site == "@StateNodeBuilder" ? "StateNodeProtocol" : "Codable"
         // A macro this project doesn't list, a namesake qualified by another module, and an
         // attribute inside #if.
@@ -222,6 +292,32 @@ struct StatePlainDataMacroTests {
             "@Other.SnapshotConvertible " + unknown,
             "an attribute inside #if " + unknown,
         ], "\(messages)")
+    }
+
+    @Test("@Other.StateNodeBuilder doesn't turn @SnapshotConvertible's attribute check off")
+    func otherStateNodeBuilder() {
+        let (_, messages) = expand("""
+            @SnapshotConvertible
+            @Other.StateNodeBuilder
+            struct Value: Codable {
+                var count: Int = 0
+            }
+            """)
+        #expect(messages.contains { $0.hasPrefix("@Other.StateNodeBuilder can't be on a state type") }, "\(messages)")
+    }
+
+    @Test("A stored property inside #if is refused by @SnapshotConvertible: the conversion reads top-level members")
+    func snapshotStoredInIfConfig() {
+        let (_, messages) = expand("""
+            @SnapshotConvertible
+            struct Value: Codable {
+                var count: Int = 0
+                #if DEBUG
+                var trace: Int = 0
+                #endif
+            }
+            """)
+        #expect(messages.first == "@SnapshotConvertible: stored property 'trace' inside #if isn't converted; declare it outside #if", "\(messages)")
     }
 
     @Test("A state type's allowed attributes, qualified or not, add no diagnostic")

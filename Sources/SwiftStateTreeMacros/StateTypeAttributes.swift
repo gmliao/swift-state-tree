@@ -3,6 +3,7 @@
 // PlainData check and no field metadata. So a state type takes only this project's macros that
 // belong there and built-in attributes that add no members.
 
+import PlainDataMacroSupport
 import SwiftDiagnostics
 import SwiftSyntax
 import SwiftSyntaxMacros
@@ -17,16 +18,16 @@ enum StateTypeAttributes {
     static let besideSnapshotConvertible: Set<String> = ["SnapshotConvertible", "StateNodeBuilder", "PlainData", "Payload"]
 
     /// Built-in attributes that add no members.
-    static let builtins: Set<String> = ["available", "usableFromInline", "frozen", "propertyWrapper", "preconcurrency", "_spi", "_documentation"]
-
-    /// The modules a qualified spelling of an allowed macro may name.
-    static let modules: Set<String> = ["SwiftStateTree", "SwiftStateTurns"]
+    static let builtins: Set<String> = [
+        "available", "usableFromInline", "frozen", "propertyWrapper", "resultBuilder",
+        "dynamicMemberLookup", "dynamicCallable", "preconcurrency", "_spi", "_documentation",
+    ]
 
     /// Diagnoses every attribute on a state type that isn't in `allowed` or `builtins`.
     ///
     /// The syntax shows only spellings. A bare `@SnapshotConvertible` is taken as this
-    /// project's, so a macro of the user's own with that name passes; `@Other.SnapshotConvertible`
-    /// is refused. An attribute inside `#if` is refused, since its condition can't be read here.
+    /// project's, so a macro of the user's own with that name passes; a qualified spelling passes
+    /// only with a module that declares or re-exports the macro (`PlainDataWalk.modules`). An attribute inside `#if` is refused, since its condition can't be read here.
     static func diagnoseUnknown(
         _ attributes: AttributeListSyntax,
         allowed: Set<String>,
@@ -38,33 +39,30 @@ enum StateTypeAttributes {
                 if !isAllowed(attribute, allowed: allowed) {
                     context.diagnose(Diagnostic(
                         node: attribute,
-                        message: StateTypeAttributeDiagnostic(name: "@" + attribute.attributeName.trimmedDescription)
+                        message: StateTypeAttributeDiagnostic(name: "@" + attribute.attributeName.trimmedDescription, allowed: allowed)
                     ))
                 }
             case .ifConfigDecl(let ifConfig):
-                context.diagnose(Diagnostic(node: ifConfig, message: StateTypeAttributeDiagnostic(name: "an attribute inside #if")))
+                context.diagnose(Diagnostic(node: ifConfig, message: StateTypeAttributeDiagnostic(name: "an attribute inside #if", allowed: allowed)))
             }
         }
     }
 
     private static func isAllowed(_ attribute: AttributeSyntax, allowed: Set<String>) -> Bool {
-        if let identifier = attribute.attributeName.as(IdentifierTypeSyntax.self) {
-            let name = identifier.name.text
-            return allowed.contains(name) || builtins.contains(name)
+        if let identifier = attribute.attributeName.as(IdentifierTypeSyntax.self), builtins.contains(identifier.name.text) {
+            return true
         }
-        if let member = attribute.attributeName.as(MemberTypeSyntax.self),
-           let base = member.baseType.as(IdentifierTypeSyntax.self) {
-            return modules.contains(base.name.text) && allowed.contains(member.name.text)
-        }
-        return false
+        return allowed.contains { PlainDataWalk.isProjectAttribute(attribute, named: $0) }
     }
 }
 
 struct StateTypeAttributeDiagnostic: DiagnosticMessage {
     let name: String
+    let allowed: Set<String>
 
     var message: String {
-        "\(name) can't be on a state type: a macro there can add members the PlainData check doesn't see; a state type takes only @StateNodeBuilder, @SnapshotConvertible, @PlainData, @Payload and attributes that add no members"
+        let macros = allowed.sorted().map { "@" + $0 }.joined(separator: ", ")
+        return "\(name) can't be on a state type: a macro there can add members the PlainData check doesn't see; this type takes only \(macros) and attributes that add no members"
     }
 
     var diagnosticID: MessageID { MessageID(domain: "SwiftStateTreeMacros", id: "unknownStateTypeAttribute") }

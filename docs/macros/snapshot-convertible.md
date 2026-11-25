@@ -49,6 +49,8 @@ Beside another macro:
 - Beside `@StateNodeBuilder`, it writes only the conformance, since the node's member is the witness.
 - Any other attached macro on the type is refused, because it could add members the checks don't see. Built-in attributes that add no members, such as `@available`, are fine.
 
+A stored property inside `#if` is refused, because the conversion reads only the type's top-level members. Beside `@StateNodeBuilder`, that macro's own `#if` rules apply.
+
 ### Generated Code
 
 Macro automatically generates the following extension:

@@ -85,6 +85,15 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         if !PlainDataWalk.hasAttribute(named: "StateNodeBuilder", in: structDecl.attributes) {
             StateTypeAttributes.diagnoseUnknown(
                 structDecl.attributes, allowed: StateTypeAttributes.besideSnapshotConvertible, in: context)
+            // The conversion reads only the type's top-level members, so a stored property inside
+            // `#if` would be checked but never converted or snapshotted: refused, as
+            // `@StateNodeBuilder` refuses a `@Sync` field there. Beside `@StateNodeBuilder`, its
+            // own `#if` rules apply.
+            if let stored = firstStoredPropertyInIfConfig(structDecl.memberBlock.members) {
+                let error = SnapshotConvertibleError.storedInIfConfig(node: Syntax(stored), name: stored.bindings.first?.pattern.trimmedDescription ?? "?")
+                error.diagnose(context: context)
+                throw error
+            }
         }
 
         // Collect all stored properties
@@ -289,6 +298,25 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
     }
 
     /// Collect all stored properties from a struct declaration
+    /// The first stored instance property inside an `#if` clause, at any depth.
+    private static func firstStoredPropertyInIfConfig(_ members: MemberBlockItemListSyntax) -> VariableDeclSyntax? {
+        for member in members {
+            guard let ifConfig = member.decl.as(IfConfigDeclSyntax.self) else { continue }
+            for clause in ifConfig.clauses {
+                guard case .decls(let nested) = clause.elements else { continue }
+                for item in nested {
+                    if let variable = item.decl.as(VariableDeclSyntax.self),
+                       !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }),
+                       !variable.bindings.contains(where: PlainDataWalk.isComputed) {
+                        return variable
+                    }
+                }
+                if let deeper = firstStoredPropertyInIfConfig(nested) { return deeper }
+            }
+        }
+        return nil
+    }
+
     private static func collectStoredProperties(from structDecl: StructDeclSyntax) -> [PropertyInfo] {
         var properties: [PropertyInfo] = []
 
@@ -479,9 +507,21 @@ private struct PropertyInfo {
 private enum SnapshotConvertibleError: Error, @unchecked Sendable {
     case onlyStructsSupported(node: Syntax)
     case invalidAtomicProperty(node: Syntax, name: String, typeName: String?)
+    case storedInIfConfig(node: Syntax, name: String)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
+        case .storedInIfConfig(let node, let name):
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: SnapshotConvertibleDiagnostic(
+                        message: "@SnapshotConvertible: stored property '\(name)' inside #if isn't converted; declare it outside #if",
+                        diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "snapshotConvertibleStoredInIfConfig"),
+                        severity: .error
+                    )
+                )
+            )
         case .invalidAtomicProperty(let node, let name, let typeName):
             context.diagnose(
                 Diagnostic(

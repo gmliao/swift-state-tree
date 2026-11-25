@@ -137,14 +137,14 @@ error: Stored property 'score' in GameState must be marked with @Sync or @Intern
 
 ### Validation Rules Explained
 
-1. **Stored properties**: Must be explicitly marked with `@Sync` or `@Internal`, inside `#if` too. An observed property (`willSet`, `didSet`) is stored
+1. **Stored properties**: Must be explicitly marked with `@Sync` or `@Internal`, inside `#if` too. An observed property (`willSet`, `didSet`) is stored, and only `@Internal` may be observed: the generated writes of a `@Sync` field skip observers
 2. **Computed properties**: Automatically skip validation, no marking needed
 3. **Unmarked stored properties**: Compile error
 4. **Field values are `PlainData`**: every `@Sync` and `@Internal` field, `.serverOnly` included ([Sync](../core/sync.md#synced-state-is-made-of-value-types))
 5. **No other property wrapper on a field**: the `PlainData` check reads only `@Sync` and `@Internal` fields
 6. **No `@PlainData` beside `@StateNodeBuilder`**: the macro already writes the witness. `@SnapshotConvertible` beside it is fine
 7. **No `@Sync` inside `#if`**: the sync reads only top-level fields, so such a field would never be synced. `@Internal` inside `#if` is fine
-8. **No freestanding macro expansion among the members**: the check can't see the storage it adds
+8. **No freestanding macro expansion among the members**: the check can't see the storage it adds. `#warning` and `#error` are compiler directives and are fine
 9. **No other attached macro on the type**: besides `@StateNodeBuilder`, only `@SnapshotConvertible` and built-in attributes that add no members, such as `@available`. Another macro could add members this macro doesn't see
 
 ## Generated Methods

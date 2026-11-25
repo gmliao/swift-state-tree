@@ -18,10 +18,12 @@ private struct StatePlainDataValue: StateProtocol, Equatable {
     var n: Int = 0
 }
 
-/// An observed field is stored, so it is marked and synced like any other.
+/// An observed field is stored, so it is marked like any other. Only `@Internal` may be observed:
+/// the generated writes of a `@Sync` field skip observers.
 @StateNodeBuilder
 private struct StatePlainDataObservedNode: StateNodeProtocol {
-    @Sync(.broadcast) var count: Int = 0 {
+    @Sync(.broadcast) var count: Int = 0
+    @Internal var hits: Int = 0 {
         didSet {}
     }
 }
@@ -43,8 +45,8 @@ struct StatePlainDataTests {
         #expect(stateIsPlainData(StatePlainDataValue.self))
     }
 
-    @Test("An observed @Sync field is synced")
-    func observedFieldIsSynced() {
+    @Test("An observed @Internal field is stored and not synced")
+    func observedInternalField() {
         #expect(StatePlainDataObservedNode().getSyncFields().map(\.name) == ["count"])
     }
 }

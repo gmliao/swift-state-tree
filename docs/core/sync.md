@@ -108,10 +108,10 @@ struct TableState: StateNodeProtocol {
 The same rule shapes a few declarations:
 - A generic node's parameter needs `PlainData`: `struct Box<T: PlainData & Sendable>: StateNodeProtocol`.
 - A state node that conforms by hand, without `@StateNodeBuilder`, adds `@PlainData`. That works only for a node whose stored properties have no property wrapper, since `@PlainData` refuses every wrapper. A node with `@Sync` or `@Internal` fields uses `@StateNodeBuilder`.
-- A property wrapper other than `@Sync` and `@Internal` on a state field is refused: the check can't read another wrapper's storage. A wrapper of your own named `Sync` or `Internal` is read through, but its storage is checked, so it compiles only when it is plain data.
+- A property wrapper other than `@Sync` and `@Internal` on a state field is refused: the check can't read another wrapper's storage. A wrapper of your own named `Sync` or `Internal` is read through, but its storage is checked, so it compiles only when it is plain data. A qualified spelling is read through only with a module that exports the library's wrapper, such as `@SwiftStateTree.Sync`.
 - A `@Sync` field inside `#if` is refused: the sync reads only the type's top-level fields, so it would never be synced. Declare it outside `#if`, or mark it `@Internal`.
-- An observed property (`willSet`, `didSet`) is stored. It needs a marker like any other, and a `@Sync` one is synced.
-- A freestanding macro expansion among the members (`#someMacro()`) is refused, since the storage it adds isn't in the syntax the check reads.
+- An observed property (`willSet`, `didSet`) is stored, so it needs a marker like any other. A `@Sync` one is refused: the generated mutators and the snapshot decode write the field's storage, so its observers would run on some writes only. An `@Internal` one keeps its observers.
+- A freestanding macro expansion among the members (`#someMacro()`) is refused, since the storage it adds isn't in the syntax the check reads. `#warning` and `#error` are compiler directives and are allowed.
 - A state type, or a `@SnapshotConvertible` type, takes only this project's macros (`@StateNodeBuilder`, `@SnapshotConvertible`, `@PlainData`, `@Payload`) and built-in attributes that add no members, such as `@available`. Another attached macro is refused, because it could add members the check doesn't see.
 - `@PlainData` beside `@StateNodeBuilder` is refused, since the macro already writes the check. `@SnapshotConvertible` beside it is fine.
 - Every stored property of a `@SnapshotConvertible` type needs a type annotation, as under `@PlainData`.
@@ -130,7 +130,7 @@ The DeterministicMath value types (`IVec2`, `Position2` and the rest) are `Plain
 
 **Breaking change (2026-11-10).** Before #464 a class in synced state was encoded through its stored properties, and only an object graph that referred back to itself was refused. A land whose state holds a class now fails to register.
 
-**Breaking change (2026-11-25).** A state type is now `PlainData`. These no longer compile: a nested struct or enum without `@PlainData` or `@SnapshotConvertible`, a generic node whose parameter isn't `PlainData`, a hand-written node without `@PlainData`, a tuple field, a `.serverOnly` `Decimal`, an existential behind a typealias, and a `@SnapshotConvertible` property without a type annotation. `ReactiveDictionary` and `ReactiveSet` are removed: use a `Dictionary` or a `Set` in a `@Sync` field, which is dirty-tracked the same way.
+**Breaking change (2026-11-25).** A state type is now `PlainData`. These no longer compile: a nested struct or enum without `@PlainData` or `@SnapshotConvertible`, a generic node whose parameter isn't `PlainData`, a hand-written node without `@PlainData`, a tuple field, a `.serverOnly` `Decimal`, an existential behind a typealias, and a `@SnapshotConvertible` property without a type annotation. `ReactiveDictionary` and `ReactiveSet` are removed: use a `Dictionary` or a `Set` in a `@Sync` field. The field is marked dirty as a whole: there is no per-key dirty tracking, no list of inserted or removed elements, and no change callback.
 
 ### What Registration Refuses
 
