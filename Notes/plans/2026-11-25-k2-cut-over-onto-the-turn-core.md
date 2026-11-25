@@ -1,6 +1,6 @@
 # K2: the keeper's cut-over onto the turn core (#700)
 
-**Status:** draft 2, prep only. **Not for Review until K1b lands:** K2 starts from K1b-5's end state, and its line numbers, segment names and type names are re-taken on K2's base. Draft 2 takes Review's pre-read of draft 1 (not a verdict): K2-Q2's split, agreed with four conditions, and its §4 notes. It also takes K1b-5 rev 2's shape (each segment returns its await's request) and the `KeeperTurnSide` interface agreed with K1b-5's author for rev 2.1 (§4.5). §10 lists the changes. Draft 1 was read at main 7baba4c4, without the LSP.
+**Status:** draft 3, prep only. Draft 3 records K2-Q1, decided (a) by the maintainer (2026-11-25), with #855 as its follow-up and #854 (§5, §9). **Not for Review until K1b lands:** K2 starts from K1b-5's end state, and its line numbers, segment names and type names are re-taken on K2's base. Draft 2 takes Review's pre-read of draft 1 (not a verdict): K2-Q2's split, agreed with four conditions, and its §4 notes. It also takes K1b-5 rev 2's shape (each segment returns its await's request) and the `KeeperTurnSide` interface agreed with K1b-5's author for rev 2.1 (§4.5). §10 lists the changes. Draft 1 was read at main 7baba4c4, without the LSP.
 
 **Inputs:**
 - the parent plan `2026-11-22-keeper-on-turncore.md` rev 5.8: §3.1–§3.10, §5's K2 row, §6.2's K2 tests, §7 and §8;
@@ -129,9 +129,23 @@ K1b-5's request cases are of three kinds, and K2 maps each kind differently:
 - **The tick and sync loop Tasks** only `send(.tickDue(scheduled, loopEpoch))` and `.syncDue(…)` (parent §3.9). The `.tickDue` step rejects a stale epoch. #762 makes them core timers later.
 - **The result slot and `JobCancellation`** (parent §3.2): the slot table in the model, the token's three states, the seal in every step that fills a slot.
 
-## 5. The Behavior I/O question (for the maintainer)
+## 5. The Behavior I/O question: decided (a)
 
-**K2-Q1. May a handler reach `ctx.services` inside a step?**
+**K2-Q1. May a handler reach `ctx.services` inside a step? Decided (a)** (maintainer, 2026-11-25). K2 leaves `ctx.services` unchanged and documents the rule:
+- time comes from `ctx.tickId`;
+- randomness comes from `ctx.random`;
+- outside data comes through resolvers;
+- in a handler, only constant (config) services or write-only (sink) services, neither of which blocks.
+
+**Follow-ups:**
+- **#855** (before-release): the tightening, option (b) below. A handler's services are limited to `ReadOnlyLandService` plus a sink marker, as `validate`'s are.
+- **#854** (before-release): a determinism test helper for land authors: record, replay and compare per-tick hashes in a unit test. It lets a land author check the rule above on their own land.
+
+**K2's doc tasks** (in K2-2, which moves handlers into steps; both languages):
+- `LandContext.services`' `///` doc states the rule;
+- `docs/core/land-dsl.md` and `docs/core/land-dsl.zh-TW.md`, in the LandContext section (where `services` is listed), state the rule with the three kinds and point at resolvers for outside data.
+
+The analysis that led to the decision:
 
 The core's `Behavior` contract (Machine.swift's doc) says a step is synchronous and deterministic and touches nothing outside the model; anything that waits or does I/O goes out as an effect. After K2, handlers run inside steps, and `ctx.services` lets a handler reach any registered service. That is the one place where today's API and the core's contract disagree (survey §2).
 
@@ -150,7 +164,7 @@ A service whose answer changes between runs (a clock, a remote call) and that a 
 | (b) The kinds by type, reusing #586's marker | A handler's context fetches only services marked for steps: `ReadOnlyLandService` for constant reads (already the `validate` rule), plus a new sink marker for write-only services. Other services are reachable only from resolvers | Config services already conforming to `ReadOnlyLandService` need nothing more; a sink adopts the sink marker; a land that reads anything else in a handler moves the read to a resolver | A public break. Like `ReadOnlyLandService`, the markers state a trust contract the compiler can't check |
 | (c) No services in handlers | `ctx.services` is removed from `LandContext` in handlers. Constant config moves into the land's configuration (Behavior). Observation goes out as outputs: a handler stages a note, and `flush` delivers it to a sink registered on the keeper, after the step | Config becomes land configuration; sinks become output consumers; reads move to resolvers | A public break; the purest fit with the core (the Elm and Redux shape: no I/O in `update` or a reducer; effects outside). The flush adds a hop per note |
 
-**Recommendation:** (a) in K2, so the cut-over stays free of public changes. For the end state, (b) now looks the better candidate than (c) (Review agrees, pre-read of draft 1): it extends a marker the repository already uses for `validate`, and it keeps the config reads that hero-defense depends on. I propose a separate before-release issue to decide between (b) and (c), with the three kinds as the worked cases. Prior art beyond the repository: for (a), Erlang's `gen_server` lets `handle_call` do side effects and relies on convention; for (c), Elm's `update` returns `Cmd`, and Redux keeps side effects in middleware.
+**Recommendation (taken):** (a) in K2, so the cut-over stays free of public changes. For the end state, (b) now looks the better candidate than (c) (Review agrees, pre-read of draft 1): it extends a marker the repository already uses for `validate`, and it keeps the config reads that hero-defense depends on. The before-release issue is #855, filed for (b). Prior art beyond the repository: for (a), Erlang's `gen_server` lets `handle_call` do side effects and relies on convention; for (c), Elm's `update` returns `Cmd`, and Redux keeps side effects in middleware.
 
 ## 6. Slicing K2 into PRs (agreed by Review's pre-read, with four conditions)
 
@@ -160,7 +174,7 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 |---|---|---|---|
 | **K2-1, the types** | `KeeperInput`, `KeeperQuery`, `KeeperEffect` and the rest; `extension KeeperModel: TurnMachine`. `handle` calls the very K1b-5 bodies and segments the keeper calls, not copies, so the two can't drift (condition 1). The callback audit (§4.5, condition 3). The lint fixture for the facade. Not wired: the keeper doesn't use it yet | none | none (not wired) |
 | **K2-E, the step scope** | `StepScope` (the RNG service and the emitter scope), bound in `withHandlerStep`; the sequence counter into the model (ends K1b-4's D1). On today's keeper (condition 2) | yes, the one in K2: an emit from a context kept past its step is dropped and counted (parent §8) | small: it touches the emit path |
-| **K2-2, the cut-over** | the facade and `KeeperOwner`; every entry forwards to the core; the binding token, the services table, the package admission path, the drivers. A pure cut-over | none | full, plus §8's three cells |
+| **K2-2, the cut-over** | the facade and `KeeperOwner`; every entry forwards to the core; the binding token, the services table, the package admission path, the drivers. A pure cut-over. The K2-Q1 docs (§5) | none | full, plus §8's three cells |
 | **K2-3, the leftovers** | the code paths K2-2 made unreachable, each proven unreachable on live keepers **and in the replay owner**: until #612, replay calls the same bodies without a core (§7.2), so a path dead on live keepers can still be live in replay (condition 4). K9 still owns the deletions that need K3–K7 | none | none, unless it touches a hot path |
 
 **K2-1's tests are a unit-level differential.** Each §4.3 flow row is driven twice on the same inputs: through a test `TurnCore` running the machine, and through the keeper's direct path. The resulting model and outputs are compared.
@@ -196,7 +210,7 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 
 | # | Question | For | Blocks |
 |---|---|---|---|
-| K2-Q1 | `ctx.services` in steps (§5): (a) recommended for K2; (b), reusing `ReadOnlyLandService`, the likelier end state | the maintainer | K2-2's docs |
+| K2-Q1 | `ctx.services` in steps (§5) | **decided (a)** (maintainer, 2026-11-25); (b) is #855 | — (K2-2 carries the docs) |
 | K2-Q2 | Four PRs instead of one (§6) | Review: agreed in the pre-read, with four conditions, which §6 takes; confirmed in the review of this plan | K2-1 |
 
 ## 10. Draft 1 → draft 2
@@ -210,3 +224,9 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 | `EntryID` is the entry generation, `BindingID` the sync binding's ticket | Review's pre-read | §4.1, §4.5 |
 | The debug check's mutants: cloud, one case per process, plus a count | Review's pre-read | §4.2 |
 | Review agrees (b) beats (c) for K2-Q1's end state | Review's pre-read | §5 |
+
+## 11. Draft 2 → draft 3
+
+| Change | Where |
+|---|---|
+| K2-Q1 decided (a) by the maintainer; the rule; #855 (the tightening, (b)) and #854 (the determinism test helper) as follow-ups; the docs passage as K2-2's doc task | §5, §6, §9 |
