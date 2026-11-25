@@ -1,6 +1,6 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 5.6, plan only; every K1 question is decided: K1-Q4, K1-Q5 and K1-Q8 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). K1a is in implementation (#835); rev 5.5 writes down the decisions made during it, and rev 5.6 checks K1b's text against K1a's code, with three K1b questions open (K1b-Q1 to K1b-Q3, §9). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
+**Status:** rev 5.7, plan only; every K1 question is decided: K1-Q4, K1-Q5 and K1-Q8 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). K1a is in implementation (#835); rev 5.5 writes down the decisions made during it, and rev 5.6 checks K1b's text against K1a's code. Its three K1b questions are decided (rev 5.7): K1b-Q1 (a) (maintainer, 2026-11-25), K1b-Q2 (a) and K1b-Q3 (Main, 2026-11-25). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
 
 Code pointers are at main 8e622a20:
 - `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
@@ -12,6 +12,16 @@ Code pointers are at main 8e622a20:
 - `awaitActionResult` (LK:2611–2612);
 - `submitAction`'s `.completed` exits (LK:3071, :3217, :3222);
 - the adapter's `submitAction` and `awaitActionResult` calls (TA:5391, :5456) and `sendActionResponse` (TA:5583).
+
+**Rev 5.7** (the K1b questions decided, §9):
+- **K1b-Q1 = (a), the handler's index** (maintainer, 2026-11-25). The index is valid only within one process, and that is enforced, not only documented:
+  - the field can't be encoded, by its type: it isn't `Codable`, and is left out of any `Codable` path the model gets later;
+  - a test pins that a record holds only the type identifier string, never the index;
+  - its doc comment says "valid only in this process; never persisted, sent or compared across runs".
+
+  Replay re-resolves the index from the string with its own table, so reordering handlers between versions stays safe.
+- **K1b-Q2 = (a), a step-scoped RNG service** (Main, 2026-11-25). It has the reentrancy rule's shape, and it closes #765's class. The RNG PR gets the small A/B.
+- **K1b-Q3: yes** (Main, 2026-11-25). K1b-1 to K1b-3 start after K1a merges, and K1b-4 waits for P4-1 (#834).
 
 **Rev 5.6** (K1b's prep against K1a's code at #835's head a615ee85; read-only, no LSP, so K1b re-runs the census with the LSP on its base):
 - **Three of K1a's item shapes aren't plain, so K1b has to change them** (Appendix A.7, F9 to F11). `@PlainData` refuses each one:
@@ -838,7 +848,7 @@ For the maintainer, once rev 3 is GO.
 | Slice | Change | Kind |
 |---|---|---|
 | K1a | `ReevaluationRecordedAction.payload` and `ReevaluationRecordedClientEvent.payload` become `Data`; `ReevaluationRecordMetadata.payloadEncoding` added; `PendingActionItem.action` removed and its public init takes the typed action; `actionType` computed (§3.11) | break |
-| K1b | `PendingActionItem.actionType` is removed, or becomes an optional computed from the decoded value (K1b-Q1, F9). `LandFailure` gains `PlainData`, which is an addition. `LandContext.random` keeps its type if K1b-Q2 goes (a) | break (one property) |
+| K1b | `PendingActionItem.actionType` is removed, or becomes an optional computed from the decoded value (K1b-Q1 decided (a), F9). `LandFailure` gains `PlainData`, which is an addition. `LandContext.random` keeps its type if K1b-Q2 goes (a) | break (one property) |
 | K2 | **none public.** Rev 2's `runSyncPhaseInTurn` break is withdrawn: the port already returns its drafts and takes the recording flag (§3.7). The admission clear takes a package path, and `admitJoiningSession` keeps its signature. The scoped emitter is a runtime scope, and `LandContext` keeps its shape (§3.1). The public witness `runsSyncPhaseInTurn(of:)` still receives the `LandKeeper` facade (§3.10, MF-d); this row holds only with that | — |
 | K2 | `package`: `syncTurnNow`, `settleTurn` and `syncTurnTicket` become queries; new `LiveLandTurns`, `ReplayLandOwner`, `KeeperOwner`, `JobCancellation`; `admitJoiningSessionInStep` on `LandKeeperSettlePort` | package |
 | K6 | `CanJoin` takes `ValidateContext` and returns a plan that `OnJoin` receives (#588, agreed with the maintainer 2026-11-18). K6's PR lists every changed signature. The maintainer confirms there that no deprecation step is needed | break |
@@ -943,7 +953,7 @@ Not chosen:
 | (b) | an encode seam for the header's encoding, handed over with the header | keeps the re-encode of `decoded` |
 | (c) | refuse an item in the other encoding, or with no source, at intake | a behavior change on public paths |
 
-**K1b-Q1. What replaces the stored `actionType` metatype** (Appendix A.7, F9; rev 5.6). The answer is public, so it goes to the maintainer through Main.
+**K1b-Q1. What replaces the stored `actionType` metatype** (Appendix A.7, F9; rev 5.6). The answer is public, so it goes to the maintainer through Main. **Decided (a)** (maintainer, 2026-11-25), on one condition: the index is valid only within one process, enforced by its type (not `Codable`, and left out of any `Codable` path), by a test that a record holds only the type identifier string, and by its doc comment ("valid only in this process; never persisted, sent or compared across runs"). Replay re-resolves it from the string.
 
 | Option | What it is | Cost |
 |---|---|---|
@@ -951,14 +961,14 @@ Not chosen:
 | (b) | the wire type identifier, looked up by string at apply | live's exact metatype match becomes replay's looser one |
 | (c) | a hand-written `PlainData` wrapper around the metatype | an unchecked escape from #772's checked requirement |
 
-**K1b-Q2. How the land RNG's state moves into the model** (§3.1, L-Q2 (a); rev 5.6). `LandContext.random` returns `DeterministicRngService`. That is a public final class with a lock around a `DeterministicRng` struct, which is plain.
+**K1b-Q2. How the land RNG's state moves into the model** (§3.1, L-Q2 (a); rev 5.6). **Decided (a)** (Main, 2026-11-25). `LandContext.random` returns `DeterministicRngService`. That is a public final class with a lock around a `DeterministicRng` struct, which is plain.
 
 | Option | What it is | Cost |
 |---|---|---|
 | **(a), recommended** | the step builds a step-scoped `DeterministicRngService` from the model's `DeterministicRng`, and writes the state back when the step ends. A service kept past its step draws from a copy that no longer moves the land, so #765's divergence can't happen | one object per step that makes a context, so K1b's RNG PR gets the small A/B. No public change |
 | (b) | one long-lived service, whose state is copied into the model at each step's end | no allocation, but the service still reaches resolvers off the actor, which is #765's case |
 
-**K1b-Q3. Does all of K1b wait for P4?** (§5, K1-Q5 (a); rev 5.6). Only the model split reads P4: `KeeperModel` is `@PlainData` and holds `State`, which needs #834. The plain forms, the failure ids and the RNG don't read P4. Recommended: K1b-1 to K1b-3 (A.7) start after K1a, and K1b-4 waits for P4-1. This is Main's call.
+**K1b-Q3. Does all of K1b wait for P4?** (§5, K1-Q5 (a); rev 5.6). Only the model split reads P4: `KeeperModel` is `@PlainData` and holds `State`, which needs #834. The plain forms, the failure ids and the RNG don't read P4. Recommended: K1b-1 to K1b-3 (A.7) start after K1a, and K1b-4 waits for P4-1. This is Main's call. **Decided: yes** (Main, 2026-11-25). K1b-1 to K1b-3 start after K1a merges.
 
 **Q4. When is #698 fixed?** (A teardown can notify a transport other than the one it closed. Production attaches once, so it doesn't happen there today; `setTransport` is public.)
 
