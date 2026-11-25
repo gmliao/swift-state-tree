@@ -1,4 +1,5 @@
 ---
+title: "Moving a topic's results breaks the topics that read them"
 module: deep-research
 date: 2026-11-08
 problem_type: gotcha

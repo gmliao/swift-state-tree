@@ -1,4 +1,5 @@
 ---
+title: "A macro-only change doesn't rebuild the clients that expand it"
 module: SwiftStateTreeMacros
 date: 2026-11-20
 problem_type: gotcha

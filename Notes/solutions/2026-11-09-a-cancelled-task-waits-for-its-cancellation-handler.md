@@ -1,4 +1,5 @@
 ---
+title: "A cancelled task waits for its cancellation handler to return"
 module: SwiftStateTree
 date: 2026-11-09
 problem_type: concurrency_semantics

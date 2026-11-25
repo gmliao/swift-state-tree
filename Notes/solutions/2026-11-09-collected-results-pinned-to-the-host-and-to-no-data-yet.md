@@ -1,4 +1,5 @@
 ---
+title: "Collected results pinned to the host's checkout, and tests pinned to \"no data yet\""
 module: deep-research
 date: 2026-11-09
 problem_type: testing_practice

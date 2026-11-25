@@ -1,4 +1,5 @@
 ---
+title: "A shared send serialization point collapses under saturation"
 module: SwiftStateTreeTransport
 date: 2026-11-06
 problem_type: performance_collapse

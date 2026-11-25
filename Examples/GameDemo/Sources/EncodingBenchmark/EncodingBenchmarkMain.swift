@@ -232,7 +232,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     let wire = InputRun.actionsPerPlayer > 0
         ? WireInputs(
             roomCount: roomCount, playersPerRoom: playersPerRoom, encoding: format.messageEncoding,
-            actionsPerPlayer: InputRun.actionsPerPlayer, wideResponse: InputRun.wideResponse)
+            actionsPerPlayer: InputRun.actionsPerPlayer, wideResponse: InputRun.wideResponse,
+            resolverAction: InputRun.resolverAction)
         : nil
     var inputCounts = wire.map {
         InputCounts(rooms: roomCount, expectedPerRoom: $0.inputsPerRoomIteration * iterations, countsReplies: awaitsReplies)
@@ -316,18 +317,25 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
                     // A tickless land applies each action as it arrives, and the reply goes out
                     // through the adapter's outbound writer: wait on the transport's counter
                     // (replies plus error frames since the window began) until every action
-                    // submitted so far is answered. No timer. Each answer is queued before its
-                    // `onMessage` returned, so once the writer has handed the queue over, an
-                    // input that is still unanswered never will be: the settle marks the answers
-                    // final, the wait returns short and `requireComplete` fails the run.
+                    // submitted so far is answered. No timer. For plain actions each answer is
+                    // queued before its `onMessage` returned, so once the writer has handed the
+                    // queue over, an input that is still unanswered never will be: the settle marks
+                    // the answers final, the wait returns short and `requireComplete` fails the run.
+                    // For resolver actions the reply is queued after the async resolver completes
+                    // (after `onMessage` returns), so the drain-based settle would fire before all
+                    // replies arrive; the wait runs to its full count instead, with no settle task.
                     // The settle is joined after the span ends, so the measured window holds the
                     // actions and their replies, not the drain's poll.
                     var settle: Task<Void, Never>?
                     if awaitsReplies, let submitted = inputCounts?.submitted[roomIndex] {
-                        let ticket = await room.transport.beginAnswerWait()
-                        settle = Task { [adapter = room.adapter, transport = room.transport] in
-                            await MeasuredSync.drain([adapter])
-                            await transport.markAnswersFinal(ticket: ticket)
+                        if InputRun.resolverAction {
+                            _ = await room.transport.beginAnswerWait()
+                        } else {
+                            let ticket = await room.transport.beginAnswerWait()
+                            settle = Task { [adapter = room.adapter, transport = room.transport] in
+                                await MeasuredSync.drain([adapter])
+                                await transport.markAnswersFinal(ticket: ticket)
+                            }
                         }
                         await room.transport.waitForAnswers(atLeast: submitted)
                     }
@@ -1434,6 +1442,8 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             "monsterActiveEvery": config.monsterActiveEvery,
             // `--wide-response`: the actions sent were SetMotionWideAction.
             "wideResponse": config.wideResponse,
+            // `--resolver-action`: the actions sent were SetMotionResolvedAction.
+            "resolverAction": config.resolverAction,
             // `--join-through-router` (false without it); `--row-addressing` as given (null when
             // not given) and as resolved.
             "joinThroughRouter": config.joinThroughRouter,
@@ -1474,6 +1484,7 @@ struct EncodingBenchmark {
         InputRun.fromWire = config.inputsFromWire
         InputRun.actionsPerPlayer = config.actionsPerPlayer
         InputRun.wideResponse = config.wideResponse
+        InputRun.resolverAction = config.resolverAction
         RejoinRun.every = config.rejoinEvery
 
         // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.

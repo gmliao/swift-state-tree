@@ -1,4 +1,5 @@
 ---
+title: "A Swift Testing summary hides XCTest failures"
 module: Tests
 date: 2026-11-24
 problem_type: testing_practice

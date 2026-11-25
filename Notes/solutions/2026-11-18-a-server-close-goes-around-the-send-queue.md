@@ -1,4 +1,5 @@
 ---
+title: "A server close goes around the send queue"
 module: SwiftStateTreeTransport
 date: 2026-11-18
 problem_type: bug_class

@@ -1,4 +1,5 @@
 ---
+title: "A derived configuration inherits the original's factory"
 module: SwiftStateTreeNIO
 date: 2026-11-25
 problem_type: bug_class

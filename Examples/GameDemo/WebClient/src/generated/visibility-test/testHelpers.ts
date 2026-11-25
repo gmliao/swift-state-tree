@@ -3,7 +3,7 @@
 
 import { ref, computed } from 'vue'
 import type { VisibilityTestState } from '../defs.js'
-import type { MoveViewerEvent, ParkEntitiesAction, PlaceEntityAction, SetMotionAction, SetMotionWideAction } from '../defs.js'
+import type { MoveViewerEvent, ParkEntitiesAction, PlaceEntityAction, SetMotionAction, SetMotionResolvedAction, SetMotionWideAction } from '../defs.js'
 
 interface ConnectOptions {
   wsUrl: string
@@ -70,6 +70,11 @@ export function createMockVisibilityTest(initialState?: VisibilityTestState) {
     return {} as any
   }
 
+  const setMotionResolved = async (_payload: SetMotionResolvedAction): Promise<any> => {
+    // Mock implementation - customize as needed
+    return {} as any
+  }
+
   const setMotionWide = async (_payload: SetMotionWideAction): Promise<any> => {
     // Mock implementation - customize as needed
     return {} as any
@@ -92,6 +97,7 @@ export function createMockVisibilityTest(initialState?: VisibilityTestState) {
     parkEntities,
     placeEntity,
     setMotion,
+    setMotionResolved,
     setMotionWide,
     disconnect,
     connect,

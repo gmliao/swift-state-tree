@@ -151,6 +151,9 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     var closeGraceDeadlineForTesting: Scheduled<Void>? { closeGraceDeadline }
     /// Data frames read and discarded during a close grace (tests).
     private(set) var closeGraceDiscardedFramesForTesting = 0
+    /// Set when a NIO frame-decoder error reaches `errorCaught`: the decoder can no longer deliver
+    /// the peer's close frame, so no grace should start (or any running grace should end).
+    private var decoderFailed = false
     /// Counts pong-timeout closes when transport profiling is on.
     private let profilerCounters: TransportProfilerCounters?
     /// The lifecycle log's `sessionClosed` line (off unless `LAND_LIFECYCLE_LOG_PATH` is set).
@@ -166,6 +169,20 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             return [ECONNRESET, EPIPE, ETIMEDOUT].contains(ioError.errnoCode)
         }
         return false
+    }
+
+    /// Maps NIO's frame-decoder errors to their RFC 6455 close codes. Exhaustive so a new NIO
+    /// case breaks the build.
+    ///
+    /// - Note: Spell `NIOWebSocket.NIOWebSocketError`, not the bare name: this module declares
+    ///   its own `NIOWebSocketError`, which shadows NIO's inside `SwiftStateTreeNIO`. A bare cast
+    ///   compiles but never matches.
+    static func closeCode(for error: NIOWebSocket.NIOWebSocketError) -> WebSocketErrorCode {
+        switch error {
+        case .invalidFrameLength: return .messageTooLarge
+        case .fragmentedControlFrame: return .protocolError
+        case .multiByteControlFrameLength: return .protocolError
+        }
     }
 
     /// Records the close decided now, in the segment that decides it: the first one only.
@@ -431,6 +448,21 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        // After the frame decoder throws, ByteToMessageHandler wraps every later read in
+        // ByteToMessageDecoderError.dataReceivedInErrorState. When a close is already in flight
+        // (`isClosed`), let it finish: the write-completion or deadline (#229) closes the channel.
+        // When a close grace is active, the failed decoder can never deliver the peer's close
+        // frame, so end the grace immediately.
+        if case .dataReceivedInErrorState = error as? ByteToMessageDecoderError {
+            if isInCloseGrace {
+                closeGraceDeadline?.cancel()
+                closeGraceDeadline = nil
+                guard !channelCloseRequested else { return }
+                closeChannel(context)
+            }
+            return
+        }
+
         logger.error(
             "WebSocket error",
             metadata: [
@@ -438,6 +470,19 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
                 "error": .string(String(describing: error)),
             ]
         )
+
+        if let decoderError = error as? NIOWebSocket.NIOWebSocketError {
+            decoderFailed = true
+            if isInCloseGrace {
+                closeGraceDeadline?.cancel()
+                closeGraceDeadline = nil
+                guard !channelCloseRequested else { return }
+                closeChannel(context)
+                return
+            }
+            failConnection(code: Self.closeCode(for: decoderError))
+            return
+        }
 
         noteCloseCause(Self.isConnectionLoss(error) ? .connectionLost : .error, code: nil)
 
@@ -717,8 +762,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         // A 1-byte payload is malformed (RFC 6455 §5.5.1).
         guard payload.readableBytes != 1 else {
-            closeOnLoop(code: .protocolError)
-            enqueueDisconnect()
+            failConnection(code: .protocolError)
             return
         }
 
@@ -727,8 +771,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         // Invalid close code (RFC 6455 §7.4.2).
         guard isValidCloseCode(codeValue) else {
-            closeOnLoop(code: .protocolError)
-            enqueueDisconnect()
+            failConnection(code: .protocolError)
             return
         }
 
@@ -737,8 +780,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
            let reasonBytes = payload.readBytes(length: payload.readableBytes),
            String(bytes: reasonBytes, encoding: .utf8) == nil
         {
-            closeOnLoop(code: .dataInconsistentWithMessage)
-            enqueueDisconnect()
+            failConnection(code: .dataInconsistentWithMessage)
             return
         }
 
@@ -929,7 +971,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             self.closeFrameDeadline?.cancel()
             self.closeFrameDeadline = nil
             guard !self.channelCloseRequested else { return }
-            if case .success = result, let grace, grace > .zero, !self.peerCloseReceived, self.context != nil {
+            if case .success = result, let grace, grace > .zero, !self.peerCloseReceived, self.context != nil, !self.decoderFailed {
                 self.beginCloseGrace(grace, context: context)
             } else {
                 self.closeChannel(context)
@@ -960,12 +1002,23 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         }
     }
 
-    /// A frame read during the close grace: the client's close frame ends it, every other frame
-    /// is discarded (no message reaches the transport, no pong is written). Nothing is kept, so
-    /// memory doesn't grow; each frame is bounded by the decoder's maximum frame size, and the
-    /// total by the grace's length times the read rate. No frame cap ends the grace early: a
-    /// close at once with data still arriving is the RST this grace avoids.
+    /// A frame read during the close grace: the client's close frame ends it, and so does a frame
+    /// with RSV bits set (RFC 6455 §5.2, as on the open path); data frames are discarded (no
+    /// message reaches the transport); pings are answered with pong (RFC 6455 §5.5.2). Inbound,
+    /// nothing is kept, so memory doesn't grow; each frame is bounded by the decoder's maximum
+    /// frame size, and the total by the grace's length times the read rate. Outbound, at most
+    /// one pong is being written and one more payload waits (`answerPingInGrace`). No frame cap
+    /// ends the grace early: a close at once with data still arriving is the RST this grace avoids.
     private func handleFrameInCloseGrace(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
+        // A protocol violation ends the grace. No second close frame goes out (this side's is
+        // written), and the close's cause stays the one already recorded.
+        if frame.rsv1 || frame.rsv2 || frame.rsv3 {
+            closeGraceDeadline?.cancel()
+            closeGraceDeadline = nil
+            guard !channelCloseRequested else { return }
+            closeChannel(context)
+            return
+        }
         switch frame.opcode {
         case .connectionClose:
             closeGraceDeadline?.cancel()
@@ -974,8 +1027,37 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             closeChannel(context)
         case .binary, .text, .continuation:
             closeGraceDiscardedFramesForTesting += 1
+        case .ping:
+            // RFC 6455 §5.5.2: a pong is required unless a close was already received.
+            guard !channelCloseRequested else { break }
+            answerPingInGrace(frame.unmaskedData, context: context)
         default:
             break
+        }
+    }
+
+    /// The pong of the grace's latest ping that is waiting for the one being written.
+    private var gracePongQueued: ByteBuffer?
+    /// A grace pong was written and its write isn't complete (an unwritable channel).
+    private var gracePongInFlight = false
+
+    /// Answers a ping in the grace with a bounded outbound: one pong is written at a time, and
+    /// pings read while it is unwritten leave only the latest payload, which is sent when it
+    /// completes (RFC 6455 §5.5.3: an endpoint may answer only the most recent ping).
+    private func answerPingInGrace(_ payload: ByteBuffer, context: ChannelHandlerContext) {
+        guard !gracePongInFlight else {
+            gracePongQueued = payload
+            return
+        }
+        gracePongInFlight = true
+        let pong = WebSocketFrame(fin: true, opcode: .pong, data: payload)
+        context.writeAndFlush(wrapOutboundOut(pong)).whenComplete { [weak self] _ in
+            guard let self else { return }
+            self.gracePongInFlight = false
+            guard let next = self.gracePongQueued else { return }
+            self.gracePongQueued = nil
+            guard !self.channelCloseRequested, let context = self.context else { return }
+            self.answerPingInGrace(next, context: context)
         }
     }
 }

@@ -1,4 +1,5 @@
 ---
+title: "A parser's depth limit isn't the pipeline's: every recursive stage after it needs the bound"
 module: SwiftStateTree, SwiftStateTreeTransport
 date: 2026-11-18
 problem_type: bug_class
