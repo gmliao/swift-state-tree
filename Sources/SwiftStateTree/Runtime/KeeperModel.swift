@@ -3,6 +3,7 @@
 // The keeper's plain state (#700 K1b-4): every field a turn reads or writes, and nothing that
 // holds a reference, a closure or an existential. `@PlainData` checks that at compile time.
 
+import Logging
 import SwiftStateTurns
 
 /// The keeper's machine: the land's state and the keeper's plain bookkeeping. The keeper holds
@@ -10,6 +11,46 @@ import SwiftStateTurns
 @PlainData
 struct KeeperModel<State: StateNodeProtocol> {
     init() {}
+}
+
+/// What a keeper is fixed with at init (#700 K1b-4): its land's definition, its own
+/// configuration and the outside world's services. Read-only, so the keeper holds it as a
+/// `nonisolated let`.
+struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
+    let definition: LandDefinition<State>
+    let config: KeeperConfig
+    /// The land's services, without a `DeterministicRngService`: the land's generator is
+    /// `model.landRandom`, and contexts get it per handler call (`withHandlerStep`).
+    let services: LandServices
+    /// The land's services value, which its `Resolver` values get (#769 §3.4): the one the typed
+    /// entry point gave, `NoServices()` for a land without services, or nil for a land that
+    /// declares services and was given none (its initialization fails).
+    let resolverServices: (any Sendable)?
+    /// The decoders a replay reads recorded client payloads with (#700 K1a, K1-Q6 (i)). A live
+    /// keeper doesn't use them.
+    let payloadDecoders: RecordPayloadDecoders
+    let logger: Logger
+}
+
+/// The keeper's own configuration, fixed at init. Internal: the public `LandConfig` is the DSL's
+/// configuration of the land, and holds none of these.
+struct KeeperConfig: Sendable {
+    let autoStartLoops: Bool
+    /// Delay each loop's first iteration by `LandLoopPhase.offset` (see `loopPhaseOffset`).
+    let enableLoopPhaseOffset: Bool
+    let enableLiveStateHashRecording: Bool
+    let reevaluationOutputMode: ReevaluationOutputMode
+    let mode: LandMode
+    /// Actual land instance ID (e.g., "counter:550e8400-...")
+    /// This is different from definition.id which is just the land type (e.g., "counter")
+    let actualLandID: String?
+    /// The seed `model.landRandom` started from: a caller-registered `DeterministicRngService`'s
+    /// seed, else derived from the land ID. The record header holds it.
+    let landRandomSeed: UInt64
+    // The public system IDs from LandContext.
+    let systemPlayerID: PlayerID = LandContext.systemPlayerID
+    let systemClientID: ClientID = LandContext.systemClientID
+    let systemSessionID: SessionID = LandContext.systemSessionID
 }
 
 // MARK: - The keeper's nested types the model holds (were private to `LandKeeper.swift`)

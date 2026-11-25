@@ -399,11 +399,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// it with one `inout` access and reaches each field through that binding.
     private var model = KeeperModel<State>()
 
-    public let definition: LandDefinition<State>
-    /// The land's services value, which its `Resolver` values get (#769 §3.4): the one the typed
-    /// entry point gave, `NoServices()` for a land without services, or nil for a land that
-    /// declares services and was given none (its initialization fails).
-    private let resolverServices: (any Sendable)?
+    /// What the keeper is fixed with at init: the definition and its own configuration.
+    nonisolated let behavior: KeeperBehavior<State>
+
+    public nonisolated var definition: LandDefinition<State> { behavior.definition }
 
     private var state: State
     private var players: [PlayerID: InternalPlayerSession] = [:]
@@ -418,24 +417,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// (the legacy `join(playerID:…)` has no kick and no cap check); teardown clears them all.
     private var rejoinReservations: [PlayerID: Set<Epoch>] = [:]
     private var rejoinReservationEpochs = EpochCounter()
-    /// The land's services, without a `DeterministicRngService`: the land's generator is
-    /// `landRandom`, and contexts get it per handler call (`withHandlerStep`).
-    private let services: LandServices
     /// The land's generator: keeper state, advanced by the handlers that replay repeats from the
     /// record (#700 K1b-3, #765).
     private var landRandom: DeterministicRng
-    /// The seed `landRandom` started from: a caller-registered `DeterministicRngService`'s seed,
-    /// else derived from the land ID. The record header holds it.
-    private let landRandomSeed: UInt64
 
     private var transport: LandKeeperTransport?
-    private let logger: Logger
-    private let autoStartLoops: Bool
-    /// Delay each loop's first iteration by `LandLoopPhase.offset` (see `loopPhaseOffset`).
-    private let enableLoopPhaseOffset: Bool
-    private let enableLiveStateHashRecording: Bool
     private var stateHashUnavailableTotal = 0
-    private let reevaluationOutputMode: ReevaluationOutputMode
 
     private var pendingItems: [PendingItem] = []
     /// Server inputs submitted and not yet applied (`SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND`).
@@ -443,11 +430,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var serverInputMaxInFlight = ServerInputLimits.maxInFlightPerLand()
     /// Server inputs refused because the in-flight cap was reached.
     public private(set) var serverInputCapRejections = 0
-    private let mode: LandMode
 
     /// Whether this keeper is live. A `TransportAdapter` binds only a live keeper: a
     /// reevaluation keeper runs headless, with no adapter (#612).
-    package nonisolated var isLive: Bool { mode == .live }
+    package nonisolated var isLive: Bool { behavior.config.mode == .live }
 
     private struct EmittedEvent: Sendable {
         let sequence: Int64
@@ -513,7 +499,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Whether anything reads the applied inputs' records: a recorder, or a reevaluation run.
     /// Without either, an action or client event isn't recorded, and its payload's tree is never
     /// built from a MessagePack source (#521).
-    private var recordsInputs: Bool { reevaluationRecorder != nil || mode != .live }
+    private var recordsInputs: Bool { reevaluationRecorder != nil || behavior.config.mode != .live }
 
     /// The record's bytes for an item that holds none, which only an item queued before the land
     /// recorded can be: the value's canonical JSON, the bytes of a typed value with no source
@@ -566,18 +552,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
     private var reevaluationSource: (any ReevaluationSource)?
-    /// The decoders a replay reads recorded client payloads with (#700 K1a, K1-Q6 (i)). A live
-    /// keeper doesn't use them.
-    private let payloadDecoders: RecordPayloadDecoders
     /// The encoding of a replayed entry that names none: the record header's (#700 K1a).
     private var replayHeaderPayloadEncoding: RecordPayloadEncoding = .json
 
     /// Optional sink for emitting recorded outputs during re-evaluation.
     private var reevaluationSink: (any ReevaluationSink)?
 
-    /// Actual land instance ID (e.g., "counter:550e8400-...")
-    /// This is different from definition.id which is just the land type (e.g., "counter")
-    private let actualLandID: String?
 
     /// Set the transport interface (called after TransportAdapter is created). A keeper whose
     /// destruction has finished keeps its released placeholder instead: a transport attached
@@ -590,7 +570,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// way. `nil` and re-evaluation keepers are exempt.
     public func setTransport(_ transport: LandKeeperTransport?) {
         if !destructionFinished {
-            Self.refuseTransportWithoutInTurnPhase(transport, mode: mode, landID: actualLandID ?? definition.id, keeper: self)
+            Self.refuseTransportWithoutInTurnPhase(transport, mode: behavior.config.mode, landID: behavior.config.actualLandID ?? definition.id, keeper: self)
         }
         let attached = destructionFinished ? releasedTransport : transport
         self.transport = attached
@@ -643,7 +623,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The seed the land's generator started from, for the record header: a caller-registered
     /// `DeterministicRngService`'s seed, else the one derived from the land ID. Never `nil`.
     public func getRngSeed() -> UInt64? {
-        landRandomSeed
+        behavior.config.landRandomSeed
     }
 
     private var tickTask: Task<Void, Never>?
@@ -683,7 +663,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The first failure noted wins. A keeper in re-evaluation never gets one: replay has no
     /// transport.
     package nonisolated func notePendingFailure(_ failure: LandFailure) {
-        guard mode == .live else { return }
+        guard behavior.config.mode == .live else { return }
         pendingTransportFailure.note(failure)
     }
 
@@ -794,7 +774,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             outputCollector.emittedEvents.removeAll { $0.tickId == tickId }
         }
 
-        switch mode {
+        switch behavior.config.mode {
         case .live:
             for item in toFlush {
                 await transport?.sendEventToTransport(item.event, to: item.target)
@@ -814,7 +794,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 await recorder.recordServerEvents(tickId: tickId, events: records)
             }
         case .reevaluation:
-            if reevaluationOutputMode == .transportAndSink {
+            if behavior.config.reevaluationOutputMode == .transportAndSink {
                 for item in toFlush {
                     await transport?.sendEventToTransport(item.event, to: item.target)
                 }
@@ -856,7 +836,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Whether this keeper's inputs, ticks and initialization run as turns: every live keeper,
     /// whatever its transport (#546 L2d). Fixed at init. Re-evaluation keepers replay recorded
     /// passes instead.
-    private var routesThroughTurn: Bool { mode == .live }
+    private var routesThroughTurn: Bool { behavior.config.mode == .live }
 
     /// Whether this keeper's turns run the sync phase, through the attached transport: live, and
     /// the transport runs it for this keeper (`LandKeeperTransport.runsSyncPhaseInTurn(of:)`).
@@ -864,7 +844,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// `assumeIsolated` that would trap. False with no transport: the turns then record their
     /// outputs and deliver them nowhere.
     private var syncsInTurn: Bool {
-        mode == .live && (transport?.runsSyncPhaseInTurn(of: self) ?? false)
+        behavior.config.mode == .live && (transport?.runsSyncPhaseInTurn(of: self) ?? false)
     }
 
     /// The next tick turn includes the sync phase: set when the sync loop fires within
@@ -1080,10 +1060,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Highest generation released by `debugResume(generation:)`; such a generation cannot freeze again.
     private var debugReleasedGeneration: UInt64 = 0
 
-    // Use public system IDs from LandContext
-    private let systemPlayerID = LandContext.systemPlayerID
-    private let systemClientID = LandContext.systemClientID
-    private let systemSessionID = LandContext.systemSessionID
 
     /// Initializes a new LandKeeper with the given definition and initial state.
     ///
@@ -1208,16 +1184,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
-        self.definition = definition
-        // A land without services gets `NoServices()`: its resolvers depend on it (#769).
-        self.resolverServices = resolverServices ?? (definition.servicesType == nil ? NoServices() : nil)
-        self.actualLandID = landID
         state = initialState
-        self.mode = mode
         outputCollector.checksOverflow = mode == .reevaluation
         self.reevaluationSink = reevaluationSink
-        self.reevaluationOutputMode = reevaluationOutputMode
-        self.payloadDecoders = payloadDecoders
 
         // The land's generator starts from a caller-registered service's seed (replay registers
         // the recorded one), else from the instance ID when known, else from definition.id. The
@@ -1225,22 +1194,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // generator per handler call.
         let rngSeed = services.get(DeterministicRngService.self)?.seed
             ?? DeterministicSeed.fromLandID(landID ?? definition.id)
-        self.landRandomSeed = rngSeed
         self.landRandom = DeterministicRng(seed: rngSeed)
         var resolvedServices = services.removing(DeterministicRngService.self)
 
         self.transport = transport
         if transport != nil { hasHeldTransport = true }
         self.transportRecordsFolds = transport?.recordsInTurnSyncFolds ?? false
-        self.autoStartLoops = autoStartLoops
-        // Live lands only: re-evaluation replays recorded ticks, its timing is not live load.
-        self.enableLoopPhaseOffset = (mode == .live) ? enableLoopPhaseOffset : false
-        self.enableLiveStateHashRecording = (mode == .live) ? enableLiveStateHashRecording : false
         let resolvedLogger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandKeeper"
         )
-        self.logger = resolvedLogger
 
         // Initialize recorder if in live mode AND recording is enabled
         // This prevents unnecessary recorder creation in load tests or when recording is not needed
@@ -1269,7 +1232,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 as: ReevaluationRecorderService.self
             )
         }
-        self.services = resolvedServices
+        self.behavior = KeeperBehavior(
+            definition: definition,
+            config: KeeperConfig(
+                autoStartLoops: autoStartLoops,
+                // Live lands only: re-evaluation replays recorded ticks, its timing is not live load.
+                enableLoopPhaseOffset: (mode == .live) ? enableLoopPhaseOffset : false,
+                enableLiveStateHashRecording: (mode == .live) ? enableLiveStateHashRecording : false,
+                reevaluationOutputMode: reevaluationOutputMode,
+                mode: mode,
+                actualLandID: landID,
+                landRandomSeed: rngSeed
+            ),
+            services: resolvedServices,
+            // A land without services gets `NoServices()`: its resolvers depend on it (#769).
+            resolverServices: resolverServices ?? (definition.servicesType == nil ? NoServices() : nil),
+            payloadDecoders: payloadDecoders,
+            logger: resolvedLogger
+        )
 
         // Initialize source if in re-evaluation mode
         if mode == .reevaluation {
@@ -1417,7 +1397,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// before tick 0, as in the live run: at the recorded sequence, at tick -1 and with the
     /// recorded resolver outputs. Its events are flushed at tick -1 for the initialize check.
     private func replayInitializeBeforeTickZero() async {
-        guard mode == .reevaluation,
+        guard behavior.config.mode == .reevaluation,
               let source = reevaluationSource,
               let handler = definition.lifetimeHandlers.onInitialize,
               let record = try? await source.getInitializeRecord(),
@@ -1428,9 +1408,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         outputCollector.nextSequence = record.sequence
         _ = outputCollector.takeNextSequence()
         let ctx = makeContext(
-            playerID: systemPlayerID,
-            clientID: systemClientID,
-            sessionID: systemSessionID,
+            playerID: behavior.config.systemPlayerID,
+            clientID: behavior.config.systemClientID,
+            sessionID: behavior.config.systemSessionID,
             tickId: lastCommittedTickId,
             resolverOutputs: resolverOutputs
         )
@@ -1449,7 +1429,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// A replayed OnInitialize's `validate` threw (#593): logged, and kept for the initialize
     /// check (`replayedInitializeRefusal`). Nothing was written, and `validate` emits nothing.
     private func noteReplayedInitializeRefusal(_ error: any Error) {
-        logger.error("❌ OnInitialize's validate threw during re-evaluation: nothing is written", metadata: [
+        behavior.logger.error("❌ OnInitialize's validate threw during re-evaluation: nothing is written", metadata: [
             "error": .string(String(describing: error)),
         ])
         if replayedInitializeRefusal == nil {
@@ -1483,12 +1463,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let problems = SyncRegistration.cachedProblems(State.self)
         // #769 §3.4: a live keeper for a land that declares services needs its services value; a
         // replay never calls `resolve`.
-        let missingServices = mode == .live && resolverServices == nil
+        let missingServices = behavior.config.mode == .live && behavior.resolverServices == nil
             ? definition.servicesType.map { String(reflecting: $0) } : nil
         // A value of another type would fail every resolving input with `servicesMismatch`. A land
         // that declares no services takes `NoServices`, which an erased factory can replace too.
         var wrongServices: String?
-        if mode == .live, let value = resolverServices {
+        if behavior.config.mode == .live, let value = behavior.resolverServices {
             let declared: Any.Type = definition.servicesType ?? NoServices.self
             let accepts = definition.acceptsServices ?? { $0 is NoServices }
             if !accepts(value) {
@@ -1509,23 +1489,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 wrongServices: wrongServices,
                 resolverDeclarations: definition.resolverDeclarationProblems
             )
-            logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
+            behavior.logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
                 "error": .string(error.description),
             ])
             failInitialization(with: error)
             Task { await self.tearDownAfterFailedInitialization() }
             return
         }
-        if mode == .reevaluation {
+        if behavior.config.mode == .reevaluation {
             // A record whose payloads this replay has no decoder for is refused before anything
             // is replayed (#700 K1a): `ReevaluationRecordPayloadError.noDecoder`.
             // A source whose metadata can't be read is refused too (fails closed).
             if let source = reevaluationSource {
                 do {
                     replayHeaderPayloadEncoding = try await source.getMetadata().effectivePayloadEncoding
-                    try await payloadDecoders.check(source)
+                    try await behavior.payloadDecoders.check(source)
                 } catch {
-                    logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
+                    behavior.logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
                         "error": .string(String(describing: error)),
                     ])
                     failInitialization(with: error)
@@ -1538,13 +1518,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Execute OnInitialize immediately in live mode (preserve existing semantics).
         // Record it as a lifecycle event under tick 0 so replay can apply it deterministically
         // before the first tick handler runs.
-        if mode == .live, let handler = definition.lifetimeHandlers.onInitialize {
+        if behavior.config.mode == .live, let handler = definition.lifetimeHandlers.onInitialize {
             let sequence = outputCollector.takeNextSequence()
 
             var ctx = makeContext(
-                playerID: systemPlayerID,
-                clientID: systemClientID,
-                sessionID: systemSessionID,
+                playerID: behavior.config.systemPlayerID,
+                clientID: behavior.config.systemClientID,
+                sessionID: behavior.config.systemSessionID,
                 tickId: lastCommittedTickId
             )
 
@@ -1566,7 +1546,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         // Timed out (#104): the initialization fails. OnInitialize doesn't run,
                         // and the land is torn down; its waiters get the error from
                         // `ensureInitialized`.
-                        logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
+                        behavior.logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
                             "error": .string(String(describing: error)),
                         ])
                         failInitialization(with: error)
@@ -1580,7 +1560,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     ) {
                         // A resolver threw, with `.failLand` (#238): the same as a timeout.
                         ResolverDeadline.metrics.noteInitFailed()
-                        logger.error("❌ OnInitialize resolvers failed: the land is torn down", metadata: [
+                        behavior.logger.error("❌ OnInitialize resolvers failed: the land is torn down", metadata: [
                             "error": .string(String(describing: error)),
                         ])
                         failInitialization(with: error)
@@ -1589,7 +1569,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     }
                     // `.continue`, or cancelled by the land's shutdown: OnInitialize runs without
                     // the group's outputs.
-                    logger.error("❌ OnInitialize resolvers failed", metadata: [
+                    behavior.logger.error("❌ OnInitialize resolvers failed", metadata: [
                         "error": .string(String(describing: error)),
                     ])
                 }
@@ -1603,7 +1583,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             } catch {
                 // A refusal fails the initialization, as a resolver failure with `.failLand`
                 // does: nothing was written, `validate` emitted nothing, and nothing is recorded.
-                logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
+                behavior.logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
                     "error": .string(String(describing: error)),
                 ])
                 failInitialization(with: error)
@@ -1671,7 +1651,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // Then, start tick and sync loops if configured (only after OnInitialize completes)
-        guard autoStartLoops else { return }
+        guard behavior.config.autoStartLoops else { return }
         let tickInterval = definition.lifetimeHandlers.tickInterval
         let syncInterval = definition.lifetimeHandlers.syncInterval
 
@@ -1689,7 +1669,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else if let tick = tickInterval {
             // Auto-configure sync to match tick interval if sync is not explicitly set
             effectiveSyncInterval = tick
-            logger.warning(
+            behavior.logger.warning(
                 "⚠️ Sync interval not configured for land '\(definition.id)'. Auto-configuring sync to match tick interval (\(tick)). Consider explicitly setting StateSync(every:) in Lifetime block for better control.",
                 metadata: [
                     "landID": .string(definition.id),
@@ -1724,7 +1704,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// `syncInterval`, or the tick interval as fallback). Mirrors the loop setup in
     /// `performInitialization`. When `false`, the land syncs only when someone requests it.
     public nonisolated var hasPeriodicSync: Bool {
-        guard autoStartLoops else { return false }
+        guard behavior.config.autoStartLoops else { return false }
         let handlers = definition.lifetimeHandlers
         let tickLoop = handlers.tickInterval != nil && handlers.tickHandler != nil
         let syncLoop = handlers.syncInterval != nil || handlers.tickInterval != nil
@@ -1754,7 +1734,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Get the current LandMode (for testing/debugging).
     public func getMode() -> LandMode {
-        mode
+        behavior.config.mode
     }
 
     deinit {
@@ -1884,7 +1864,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the adapter's kept-events check own those). A plan that throws ends the land in this turn.
     package func settleTurn(via port: any LandKeeperTransport, fence: SettleFence) -> SettleTurnOutcome {
         requestedSyncTurnsForTesting[.settle, default: 0] += 1
-        guard mode == .live, failure == nil, !isDraining else { return .closed(failure) }
+        guard behavior.config.mode == .live, failure == nil, !isDraining else { return .closed(failure) }
         // A failure a transport noted outside a turn ends the land first (#704): no phase runs,
         // and a tickless land's turn still ends its record, as after a failed phase.
         let markBeforeNote = recorderSubmissionCount
@@ -1983,7 +1963,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
-            logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
+            behavior.logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
             // Kick old connection by calling leave
             // This will call OnLeave handler and clean up state
             try await leave(playerID: playerID, clientID: oldClientID, sessionID: existingSession.lastSessionID)
@@ -2007,7 +1987,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
         // so they are not added to game state (which would create an extra player in the replay).
-        guard isFirst, definition.lifetimeHandlers.onJoin != nil, mode != .reevaluation else { return }
+        guard isFirst, definition.lifetimeHandlers.onJoin != nil, behavior.config.mode != .reevaluation else { return }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
@@ -2185,7 +2165,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let reservedPlaces = rejoinReservations.reduce(0) { $0 + ($1.value.isEmpty || players[$1.key] != nil ? 0 : 1) }
             let currentPlayerCount = players.count + reservedPlaces
             guard currentPlayerCount < maxPlayers else {
-                logger.info("Join rejected: room is full", metadata: [
+                behavior.logger.info("Join rejected: room is full", metadata: [
                     "currentPlayers": .stringConvertible(currentPlayerCount),
                     "maxPlayers": .stringConvertible(maxPlayers),
                 ])
@@ -2202,7 +2182,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
-            logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
+            behavior.logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
             // Kick old connection by calling leave
             // This will call OnLeave handler and clean up state
             try await leave(playerID: playerID, clientID: oldClientID, sessionID: existingSession.lastSessionID)
@@ -2241,7 +2221,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
         // so they are not added to game state (which would create an extra player in the replay).
-        guard isFirst, definition.lifetimeHandlers.onJoin != nil, mode != .reevaluation else {
+        guard isFirst, definition.lifetimeHandlers.onJoin != nil, behavior.config.mode != .reevaluation else {
             // No OnJoin input: admitted in the same segment as the insert.
             let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: nil).isAdmitted
             return JoinOutcome(decision: decision, admitted: admitted)
@@ -2347,13 +2327,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Reports the join inputs a turn applied to an in-turn transport (`noteJoinInputsConsumed`),
     /// in the segment that applied them. Live keepers only: re-evaluation feeds recorded joins.
     private func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
-        guard !results.isEmpty, syncsInTurn, mode == .live, let transport else { return }
+        guard !results.isEmpty, syncsInTurn, behavior.config.mode == .live, let transport else { return }
         transport.noteJoinInputsConsumed(results)
     }
 
     /// Whether the transport has joins that wait for a committed sync phase, read in a turn.
     private var transportHasJoinsAwaitingSync: Bool {
-        guard syncsInTurn, mode == .live, let transport else { return false }
+        guard syncsInTurn, behavior.config.mode == .live, let transport else { return false }
         return transport.hasJoinsAwaitingSync
     }
 
@@ -2414,13 +2394,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         input: String
     ) throws {
-        guard playerID != systemPlayerID, clientID != systemClientID,
+        guard playerID != behavior.config.systemPlayerID, clientID != behavior.config.systemClientID,
               let entry = players[playerID] else { return }
         let otherClient = entry.clientID.map { $0 != clientID } ?? false
         let otherSession = entry.lastSessionID.map { $0 != sessionID } ?? false
         guard otherClient || otherSession else { return }
         supersededSenderRejections += 1
-        logger.warning("Input rejected: a newer session of the player replaced the sender's", metadata: [
+        behavior.logger.warning("Input rejected: a newer session of the player replaced the sender's", metadata: [
             "playerID": .string(playerID.rawValue),
             "clientID": .string(clientID.rawValue),
             "sessionID": .string(sessionID.rawValue),
@@ -2439,7 +2419,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private func actionTicket(for playerID: PlayerID, clientID: ClientID) -> KeeperActionTicket {
-        guard playerID != systemPlayerID, clientID != systemClientID else {
+        guard playerID != behavior.config.systemPlayerID, clientID != behavior.config.systemClientID else {
             return KeeperActionTicket(entryGeneration: nil)
         }
         return KeeperActionTicket(entryGeneration: players[playerID]?.generation)
@@ -2476,7 +2456,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try rejectIfLandClosed()
         if let generation = ticket.entryGeneration, players[item.playerID]?.generation != generation {
             supersededSenderRejections += 1
-            logger.warning("Action rejected at delivery: the sender's entry ended during its resolvers", metadata: [
+            behavior.logger.warning("Action rejected at delivery: the sender's entry ended during its resolvers", metadata: [
                 "playerID": .string(item.playerID.rawValue),
                 "clientID": .string(item.clientID.rawValue),
                 "sessionID": .string(item.sessionID.rawValue),
@@ -2552,8 +2532,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         failureTableMisses += 1
         // A miss changes what a client sees (a sentinel takes the generic error frame, where an
         // event's `LandInputRejection` sends none) while the land keeps running: log it.
-        logger.error("The keeper's failure table has no entry for a held failure", metadata: [
-            "landID": .string(actualLandID ?? "-"),
+        behavior.logger.error("The keeper's failure table has no entry for a held failure", metadata: [
+            "landID": .string(behavior.config.actualLandID ?? "-"),
             "path": .string(path.rawValue),
             "sequence": .string(sequence.map(String.init) ?? "-"),
             "failureID": .string(id.description),
@@ -2619,7 +2599,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let violations = actionTableViolations()
         guard !violations.isEmpty else { return }
         alignmentViolations += violations.count
-        logger.error("The keeper's action tables don't line up", metadata: [
+        behavior.logger.error("The keeper's action tables don't line up", metadata: [
             "site": .string("\(site)"),
             "violations": .string(violations.joined(separator: "; ")),
         ])
@@ -2641,6 +2621,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return [
             "actor": labels(self),
             "model": labels(model),
+            "behavior": labels(behavior),
+            "behavior.config": labels(behavior.config),
         ]
     }
     package func setInputTurnResultForTesting(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
@@ -2809,7 +2791,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if let limit = ActionJobLimits.inFlightPerSession,
            actionJobs.values.lazy.filter({ $0.item.sessionID == sessionID }).count >= limit {
             metrics.noteInFlightLimitRejection()
-            logger.warning("Action rejected: the session's in-flight limit is reached", metadata: [
+            behavior.logger.warning("Action rejected: the session's in-flight limit is reached", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "input": .string(input),
                 "limit": .stringConvertible(limit),
@@ -2818,7 +2800,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         if let limit = ActionJobLimits.abandonedActionsPerLand, abandonmentCounter.count(.action) >= limit {
             metrics.noteLandAbandonedLimitRejection()
-            logger.warning("Action rejected: the land's abandoned-resolver limit is reached", metadata: [
+            behavior.logger.warning("Action rejected: the land's abandoned-resolver limit is reached", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "input": .string(input),
                 "limit": .stringConvertible(limit),
@@ -2827,7 +2809,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         if let limit = ActionJobLimits.abandonedActions, metrics.snapshot.abandonedActions >= limit {
             metrics.noteAbandonedLimitRejection()
-            logger.warning("Action rejected: the process's abandoned-resolver limit is reached", metadata: [
+            behavior.logger.warning("Action rejected: the process's abandoned-resolver limit is reached", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "input": .string(input),
                 "limit": .stringConvertible(limit),
@@ -3072,28 +3054,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try await ensureInitialized()
         await holds.at(.leave)
         guard let session = players[playerID] else {
-            if logger.logLevel <= .debug {
-                logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
+            if behavior.logger.logLevel <= .debug {
+                behavior.logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
             }
             return
         }
 
         // Verify this is the correct client (should always match since we only allow one client per playerID)
         guard session.clientID == clientID else {
-            if logger.logLevel <= .debug {
-                logger.debug("Leave called for player \(playerID.rawValue) with mismatched clientID: expected=\(session.clientID?.rawValue ?? "nil"), received=\(clientID.rawValue)")
+            if behavior.logger.logLevel <= .debug {
+                behavior.logger.debug("Leave called for player \(playerID.rawValue) with mismatched clientID: expected=\(session.clientID?.rawValue ?? "nil"), received=\(clientID.rawValue)")
             }
             return
         }
         if let sessionID, let recorded = session.lastSessionID, recorded != sessionID {
-            if logger.logLevel <= .debug {
-                logger.debug("Leave called for player \(playerID.rawValue) with mismatched session: expected=\(recorded.rawValue), received=\(sessionID.rawValue)")
+            if behavior.logger.logLevel <= .debug {
+                behavior.logger.debug("Leave called for player \(playerID.rawValue) with mismatched session: expected=\(recorded.rawValue), received=\(sessionID.rawValue)")
             }
             return
         }
 
-        if logger.logLevel <= .debug {
-            logger.debug("Player \(playerID.rawValue) leave: clientID=\(clientID.rawValue)")
+        if behavior.logger.logLevel <= .debug {
+            behavior.logger.debug("Player \(playerID.rawValue) leave: clientID=\(clientID.rawValue)")
         }
 
         // Since we only allow one client per playerID, always call OnLeave handler
@@ -3105,12 +3087,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         cancelActionJobs(ofEntryGeneration: session.generation)
 
         // In reevaluation mode, replay viewers never ran OnJoin so skip OnLeave (no game state to clean).
-        guard definition.lifetimeHandlers.onLeave != nil, mode != .reevaluation else {
+        guard definition.lifetimeHandlers.onLeave != nil, behavior.config.mode != .reevaluation else {
             scheduleDestroyIfNeeded()
             return
         }
 
-        logger.info("Player \(playerID.rawValue) leaving, enqueuing OnLeave lifecycle item")
+        behavior.logger.info("Player \(playerID.rawValue) leaving, enqueuing OnLeave lifecycle item")
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
@@ -3124,7 +3106,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             var ctx = makeContext(
                 playerID: playerID,
                 clientID: clientID,
-                sessionID: session.lastSessionID ?? systemSessionID,
+                sessionID: session.lastSessionID ?? behavior.config.systemSessionID,
                 servicesOverride: session.services,
                 deviceID: deviceID,
                 isGuest: isGuest,
@@ -3147,7 +3129,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // The player is already removed: its OnLeave is dropped (its sequence is a gap
                 // replay steps over), and the player's game state stays behind.
                 ResolverDeadline.metrics.noteOnLeaveDropped()
-                logger.warning("OnLeave dropped: its resolvers failed", metadata: [
+                behavior.logger.warning("OnLeave dropped: its resolvers failed", metadata: [
                     "playerID": .string(playerID.rawValue),
                     "error": .string("\(error)"),
                 ])
@@ -3162,7 +3144,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // has taken the pending inputs and runs the destroy handlers, so this OnLeave is dropped
         // (its sequence is a gap replay steps over). The player was already removed.
         guard !isDraining else {
-            logger.warning("OnLeave dropped: the land started closing during its resolvers", metadata: [
+            behavior.logger.warning("OnLeave dropped: the land started closing during its resolvers", metadata: [
                 "playerID": .string(playerID.rawValue),
             ])
             return
@@ -3174,7 +3156,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 kind: .leave,
                 playerID: playerID,
                 clientID: clientID,
-                sessionID: session.lastSessionID ?? systemSessionID,
+                sessionID: session.lastSessionID ?? behavior.config.systemSessionID,
                 deviceID: deviceID,
                 isGuest: isGuest,
                 metadata: metadata,
@@ -3233,7 +3215,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // No turn when the drain has started (the empty-room timer), the initialization failed
         // (#104), or in re-evaluation: as before, the players are cleared and the drain runs or
         // is awaited.
-        guard drainTask == nil, !isDraining, initializationFailure == nil, mode == .live else {
+        guard drainTask == nil, !isDraining, initializationFailure == nil, behavior.config.mode == .live else {
             players.removeAll()
             rejoinReservations.removeAll()
             dropPendingInputs(reason: "forceShutdown")
@@ -3300,7 +3282,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         lastCommittedTickId = tickId
         guard reevaluationRecorder != nil else { return }
         var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: [])
-        if enableLiveStateHashRecording {
+        if behavior.config.enableLiveStateHashRecording {
             record.stateHash = liveStateHash(tickId: tickId).hash
         }
         await submitTurnRecord(record)
@@ -3371,7 +3353,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) async throws -> ActionSubmission {
         try await ensureInitialized()
         // In re-evaluation mode, actions come from ReevaluationSource, not from transport.
-        guard mode == .live else {
+        guard behavior.config.mode == .live else {
             // Return empty response in re-evaluation mode.
             return .completed(.none)
         }
@@ -3567,7 +3549,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) async throws {
         try await ensureInitialized()
         // In re-evaluation mode, events come from ReevaluationSource, not from transport.
-        guard mode == .live else {
+        guard behavior.config.mode == .live else {
             return
         }
 
@@ -3579,7 +3561,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Check if event is registered in the client event registry
         guard let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type) else {
-            logger.error(
+            behavior.logger.error(
                 "Client event type '\(event.type)' is not registered in ClientEvents { Register(...) }",
                 metadata: [
                     "eventType": .string(event.type),
@@ -3592,7 +3574,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // One handler per event type (#586).
         guard definition.eventHandlers.contains(where: { $0.canHandle(descriptor.type) }) else {
-            logger.error(
+            behavior.logger.error(
                 "No handler found for client event type '\(event.type)'",
                 metadata: [
                     "eventType": .string(event.type),
@@ -3702,7 +3684,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return .refused(.draining)
         }
         // From here to the append, one synchronous segment.
-        guard mode == .live else { return .refused(.notLive) }
+        guard behavior.config.mode == .live else { return .refused(.notLive) }
         let typeIdentifier = String(describing: type(of: input))
         // Declared by identity, not by name alone: a same-named type from another module or
         // scope isn't the declared one.
@@ -3715,8 +3697,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         do {
             bytes = try ServerInputCodec.recordedForm(of: input)
         } catch {
-            logger.error("Server input refused: its payload has no record form", metadata: [
-                "landID": .string(actualLandID ?? definition.id),
+            behavior.logger.error("Server input refused: its payload has no record form", metadata: [
+                "landID": .string(behavior.config.actualLandID ?? definition.id),
                 "inputType": .string(typeIdentifier),
                 "error": .string("\(error)"),
             ])
@@ -3724,8 +3706,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         if serverInputMaxInFlight > 0, serverInputsInFlight >= serverInputMaxInFlight {
             serverInputCapRejections += 1
-            logger.debug("Server input refused: the land's in-flight limit is reached", metadata: [
-                "landID": .string(actualLandID ?? definition.id),
+            behavior.logger.debug("Server input refused: the land's in-flight limit is reached", metadata: [
+                "landID": .string(behavior.config.actualLandID ?? definition.id),
                 "inputType": .string(typeIdentifier),
                 "limit": .stringConvertible(serverInputMaxInFlight),
             ])
@@ -3738,8 +3720,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         do {
             decoded = try handler.decode(bytes)
         } catch {
-            logger.error("Server input refused: its record form doesn't decode back to its type", metadata: [
-                "landID": .string(actualLandID ?? definition.id),
+            behavior.logger.error("Server input refused: its record form doesn't decode back to its type", metadata: [
+                "landID": .string(behavior.config.actualLandID ?? definition.id),
                 "inputType": .string(typeIdentifier),
                 "error": .string("\(error)"),
             ])
@@ -3798,7 +3780,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func dropServerInputsHeldWhileFrozen() {
         guard !serverInputsHeldWhileFrozen.isEmpty else { return }
         serverInputsInFlight -= serverInputsHeldWhileFrozen.count
-        logger.info("Server inputs dropped: the land is closing during a debug freeze", metadata: [
+        behavior.logger.info("Server inputs dropped: the land is closing during a debug freeze", metadata: [
             "dropped": .stringConvertible(serverInputsHeldWhileFrozen.count),
         ])
         serverInputsHeldWhileFrozen.removeAll()
@@ -3829,7 +3811,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// (#769), and today's fields for the `ContextResolver`s of CanJoin, OnJoin and OnLeave.
     private func makeResolverContext(_ ctx: LandContext) -> ResolverContext {
         var resolverContext = ResolverContext(landContext: ctx, currentState: state)
-        resolverContext.resolverServices = resolverServices
+        resolverContext.resolverServices = behavior.resolverServices
         return resolverContext
     }
 
@@ -3849,11 +3831,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A `DeterministicRngService` registered in an override or in a player's services is
         // removed too, so no context or resolver reaches an RNG instance: handlers draw from the
         // one `withHandlerStep` binds.
-        let resolvedServices = services.merging(baseServices).merging(playerServices ?? LandServices())
+        let resolvedServices = behavior.services.merging(baseServices).merging(playerServices ?? LandServices())
             .removing(DeterministicRngService.self)
         let playerSession = players[playerID]
         // Use actual land instance ID if available, otherwise fall back to definition.id (land type)
-        let landID = actualLandID ?? definition.id
+        let landID = behavior.config.actualLandID ?? definition.id
         let eventRecordingTickId = tickId ?? lastCommittedTickId
         let collector = outputCollector
         return LandContext(
@@ -3862,7 +3844,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             clientID: clientID,
             sessionID: sessionID,
             services: resolvedServices,
-            logger: logger,
+            logger: behavior.logger,
             deviceID: deviceID ?? playerSession?.deviceID,
             isGuest: isGuest ?? playerSession?.isGuest ?? false,
             metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
@@ -3911,7 +3893,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             bound.stepRandom = service
             return try body(&state, bound)
         case .step:
-            let service = DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
+            let service = DeterministicRngService(continuing: landRandom, seed: behavior.config.landRandomSeed)
             defer { landRandom = service.generator }
             bound.stepRandom = service
             return try body(&state, bound)
@@ -3921,7 +3903,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// A service for a handler that replay doesn't repeat: a copy of the land's generator,
     /// never written back.
     private func detachedRandom() -> DeterministicRngService {
-        DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
+        DeterministicRngService(continuing: landRandom, seed: behavior.config.landRandomSeed)
     }
 
     // MARK: - Tick & Lifetime
@@ -3948,8 +3930,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// this land's instance ID, or `.zero` when disabled. A keeper created without `landID:`
     /// uses the land type.
     func loopPhaseOffset(interval: Duration) -> Duration {
-        guard enableLoopPhaseOffset else { return .zero }
-        return LandLoopPhase.offset(landID: actualLandID ?? definition.id, interval: interval)
+        guard behavior.config.enableLoopPhaseOffset else { return .zero }
+        return LandLoopPhase.offset(landID: behavior.config.actualLandID ?? definition.id, interval: interval)
     }
 
     /// The clock the tick loop reads and sleeps on: `TickLoopClock.forNewKeepers` when this
@@ -4135,7 +4117,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let handler: AnyActionHandler<State>
             if let index = actionItem.handlerIndex {
                 guard definition.actionHandlers.indices.contains(index.position) else {
-                    logger.error("Handler index out of range", metadata: [
+                    behavior.logger.error("Handler index out of range", metadata: [
                         "sequence": .stringConvertible(actionItem.sequence),
                         "position": .stringConvertible(index.position),
                     ])
@@ -4145,7 +4127,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             } else {
                 let valueType = type(of: try actionItem.decoded.get())
                 guard let found = definition.actionHandlers.first(where: { $0.canHandle(valueType) }) else {
-                    logger.error("Handler not found for action type", metadata: [
+                    behavior.logger.error("Handler not found for action type", metadata: [
                         "actionType": .string(String(describing: valueType)),
                     ])
                     return .skipped
@@ -4198,7 +4180,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case let .clientEvent(eventItem):
             // Find handlers for this event type
             guard let descriptor = definition.clientEventRegistry.findDescriptor(for: eventItem.typeIdentifier) else {
-                logger.error("Event descriptor not found", metadata: [
+                behavior.logger.error("Event descriptor not found", metadata: [
                     "eventType": .string(eventItem.typeIdentifier),
                 ])
                 return .skipped
@@ -4206,7 +4188,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // One handler per event type (#586).
             guard let handler = definition.eventHandlers.first(where: { $0.canHandle(descriptor.type) }) else {
-                logger.error("No handler found for client event", metadata: [
+                behavior.logger.error("No handler found for client event", metadata: [
                     "eventType": .string(eventItem.typeIdentifier),
                 ])
                 return .skipped
@@ -4261,7 +4243,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if !ranHandler {
                 // A hand-built handler whose type differs from its descriptor's: skipped, as when
                 // the handler decoded it (A7's land stop comes with A8's registration refusal).
-                logger.error("Client event skipped: its handler's type differs from its descriptor's", metadata: [
+                behavior.logger.error("Client event skipped: its handler's type differs from its descriptor's", metadata: [
                     "eventType": .string(eventItem.typeIdentifier),
                     "handlerType": .string(String(describing: handler.handledType)),
                 ])
@@ -4270,7 +4252,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case let .serverInput(inputItem):
             guard let handler = definition.serverInputHandlers[inputItem.typeIdentifier] else {
                 // Only replay gets here: live refuses an undeclared type at submit.
-                logger.warning("Server input skipped: the land declares no handler for its type", metadata: [
+                behavior.logger.warning("Server input skipped: the land declares no handler for its type", metadata: [
                     "inputType": .string(inputItem.typeIdentifier),
                     "sequence": .stringConvertible(inputItem.sequence),
                 ])
@@ -4324,7 +4306,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recorded.sequence)
             // In re-evaluation `players` holds the replay's viewers: the shutdown only ends the
             // replay (`completeShutdownTurn`).
-            if mode == .live { players.removeAll(); rejoinReservations.removeAll() }
+            if behavior.config.mode == .live { players.removeAll(); rejoinReservations.removeAll() }
 
         case let .lifecycle(lifecycleItem):
             applyLifecycleItem(lifecycleItem, executingTickId: executingTickId, into: &applied)
@@ -4337,7 +4319,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func skipsAfterDestroy(_ item: PendingItem) -> Bool {
         guard destroyHandlersStarted else { return false }
         inputsSkippedAfterDestroy += 1
-        logger.error("Input skipped: the land's destroy handlers have started", metadata: [
+        behavior.logger.error("Input skipped: the land's destroy handlers have started", metadata: [
             "sequence": .stringConvertible(item.sequence),
         ])
         return true
@@ -4378,9 +4360,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // outputs flush with that frame. The live run had the tick before it: with that ID,
             // OnInitialize's events would go to a tick whose outputs are already flushed (#593).
             let ctx = makeContext(
-                playerID: systemPlayerID,
-                clientID: systemClientID,
-                sessionID: systemSessionID,
+                playerID: behavior.config.systemPlayerID,
+                clientID: behavior.config.systemClientID,
+                sessionID: behavior.config.systemSessionID,
                 tickId: executingTickId,
                 resolverOutputs: lifecycleItem.heldResolverOutputs
             )
@@ -4546,9 +4528,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // record, and the rejected list names recorded inputs only.
                 if applied.appliedOrder.last == item.sequence {
                     applied.rejected.append(item.sequence)
-                    if mode == .reevaluation { replayRejected.append(item.sequence) }
+                    if behavior.config.mode == .reevaluation { replayRejected.append(item.sequence) }
                 }
-                logger.error("Input refused: its validate threw; the inputs after it continue", metadata: [
+                behavior.logger.error("Input refused: its validate threw; the inputs after it continue", metadata: [
                     "sequence": .stringConvertible(item.sequence),
                     "error": .string(String(describing: error)),
                 ])
@@ -4696,7 +4678,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         if let mismatch {
             recordedPassMismatches[tickId] = mismatch
-            logger.error("Re-evaluation: the record's passes don't match its inputs", metadata: [
+            behavior.logger.error("Re-evaluation: the record's passes don't match its inputs", metadata: [
                 "tickId": .stringConvertible(tickId),
                 "reason": .string(mismatch),
             ])
@@ -4798,13 +4780,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The counter is never moved back. If replay has already taken more numbers than live did,
     /// the extra server event shows up in the per-tick server-event comparison instead.
     private func restoreSequenceWatermark(_ watermark: Int64?, tickId: Int64, point: String) {
-        guard mode == .reevaluation, let watermark else { return }
+        guard behavior.config.mode == .reevaluation, let watermark else { return }
         if outputCollector.nextSequence <= watermark {
             outputCollector.nextSequence = watermark
         } else {
             // Replay has taken more numbers than live did; later ticks may mismatch because of
             // this, so log where it started.
-            logger.warning("Re-evaluation sequence counter is past the recorded watermark", metadata: [
+            behavior.logger.warning("Re-evaluation sequence counter is past the recorded watermark", metadata: [
                 "tickId": .stringConvertible(tickId),
                 "point": .string(point),
                 "counter": .stringConvertible(outputCollector.nextSequence),
@@ -4829,7 +4811,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A tickless land in re-evaluation still steps through the recorded ticks: each step
         // applies that tick's recorded inputs and flushes their events under it (#268).
         let tickHandler = definition.lifetimeHandlers.tickHandler
-        if tickHandler == nil, mode == .live {
+        if tickHandler == nil, behavior.config.mode == .live {
             // Tickless: the ready inputs run as input turns (or join the drain in progress).
             if !inputDrainScheduled {
                 inputDrainScheduled = true
@@ -4846,7 +4828,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // step included), and the drain waits for one in flight before it takes the pending
         // inputs and runs the destroy handlers. Same synchronous segment as the start.
         // Re-evaluation: a replayed shutdown ended the replay; stop as past the recorded range.
-        if mode == .reevaluation, shutdownTurnApplied {
+        if behavior.config.mode == .reevaluation, shutdownTurnApplied {
             tickTask?.cancel()
             tickTask = nil
             return
@@ -4863,7 +4845,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         nextTickId += 1
 
         // In re-evaluation mode, stop when we exceed the recorded tick range (prevent simulation beyond record)
-        if mode == .reevaluation, let source = reevaluationSource {
+        if behavior.config.mode == .reevaluation, let source = reevaluationSource {
             let maxTickId = (try? await source.getMaxTickId()) ?? -1
             if tickId > maxTickId {
                 tickTask?.cancel()
@@ -4895,7 +4877,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var replayFrameRejected: [Int64] = []
 
         // In re-evaluation mode, load actions, client events, and lifecycle events from ReevaluationSource.
-        if mode == .reevaluation, let source = reevaluationSource {
+        if behavior.config.mode == .reevaluation, let source = reevaluationSource {
             do {
                 replayWatermarks = try await source.getSequenceWatermarks(for: tickId)
                 replayPasses = try await source.getPasses(for: tickId)
@@ -4909,7 +4891,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         + recordedServerInputs.map(\.sequence) + recordedLifecycleEvents.map(\.sequence))
                     if let reason = Self.malformedRejected(replayFrameRejected, inputs: inputs, scope: "tick \(tickId)") {
                         recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
-                        logger.error("Re-evaluation: the record's rejected inputs are malformed", metadata: [
+                        behavior.logger.error("Re-evaluation: the record's rejected inputs are malformed", metadata: [
                             "tickId": .stringConvertible(tickId),
                             "reason": .string(reason),
                         ])
@@ -4935,7 +4917,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
                         return false
                     }) else {
-                        logger.warning("Handler not found for recorded action type", metadata: [
+                        behavior.logger.warning("Handler not found for recorded action type", metadata: [
                             "typeIdentifier": .string(recordedAction.typeIdentifier),
                         ])
                         continue
@@ -4945,7 +4927,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // Get the action type from handler (we know it's ActionPayload.Type)
                     let actionTypeAny = handler.getActionType()
                     guard let actionType = actionTypeAny as? any ActionPayload.Type else {
-                        logger.warning("Action type is not ActionPayload", metadata: [
+                        behavior.logger.warning("Action type is not ActionPayload", metadata: [
                             "typeIdentifier": .string(recordedAction.typeIdentifier),
                         ])
                         continue
@@ -4961,7 +4943,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         encoding: recordedAction.payloadEncoding ?? replayHeaderPayloadEncoding
                     )
                     let decoded = DecodedAction(catching: {
-                        let source = try payloadDecoders.makeSource(recorded.bytes, recorded.encoding)
+                        let source = try behavior.payloadDecoders.makeSource(recorded.bytes, recorded.encoding)
                         try source.validateRecordable()
                         return try source.decodeAction(actionType)
                     })
@@ -4990,7 +4972,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     )
                     let payload: PendingClientEventPayload
                     do {
-                        let source = try payloadDecoders.makeSource(recorded.bytes, recorded.encoding)
+                        let source = try behavior.payloadDecoders.makeSource(recorded.bytes, recorded.encoding)
                         let descriptor = definition.clientEventRegistry.findDescriptor(for: recordedClientEvent.typeIdentifier)
                         if let decode = descriptor?.decodeClientEvent {
                             try source.validateRecordable()
@@ -5026,7 +5008,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     guard let handler = definition.serverInputHandlers[recorded.typeIdentifier] else {
                         let reason = "recorded server input \(recorded.sequence) has type \(recorded.typeIdentifier), which the land doesn't declare"
                         recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
-                        logger.error("Re-evaluation: a recorded server input can't be applied", metadata: [
+                        behavior.logger.error("Re-evaluation: a recorded server input can't be applied", metadata: [
                             "tickId": .stringConvertible(tickId),
                             "reason": .string(reason),
                         ])
@@ -5059,7 +5041,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     guard let kind = LifecycleKind(rawValue: recordedLifecycleEvent.kind) else {
                         let reason = "recorded lifecycle event \(recordedLifecycleEvent.sequence) has kind \(recordedLifecycleEvent.kind), which this build doesn't know"
                         recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
-                        logger.error("Re-evaluation: a recorded lifecycle event can't be applied", metadata: [
+                        behavior.logger.error("Re-evaluation: a recorded lifecycle event can't be applied", metadata: [
                             "tickId": .stringConvertible(tickId),
                             "reason": .string(reason),
                         ])
@@ -5085,7 +5067,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     pendingItems.append(pendingItem)
                 }
             } catch {
-                logger.error("Error loading actions from ReevaluationSource", metadata: [
+                behavior.logger.error("Error loading actions from ReevaluationSource", metadata: [
                     "tickId": .stringConvertible(tickId),
                     "error": .string(String(describing: error)),
                 ])
@@ -5106,11 +5088,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await processPendingActions()
             // A tick land's refused inputs are on its frame (#586); a tickless frame without
             // passes (an older record) has none to compare.
-            if mode == .reevaluation, replayRecordsRejected, !isTickless,
+            if behavior.config.mode == .reevaluation, replayRecordsRejected, !isTickless,
                let divergence = Self.rejectedDivergence(recorded: replayFrameRejected, replayed: takeReplayRejected()) {
                 let reason = "tick \(tickId): \(divergence)"
                 recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
-                logger.error("Re-evaluation: an input's validate decided differently than live", metadata: [
+                behavior.logger.error("Re-evaluation: an input's validate decided differently than live", metadata: [
                     "tickId": .stringConvertible(tickId),
                     "reason": .string(reason),
                 ])
@@ -5119,7 +5101,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await transport?.syncBroadcastOnlyFromTransport()
         }
         // Replay of a tick land whose recorded failure ended this tick's inputs ends it the same way.
-        let replayEndsHere = mode == .reevaluation && !isTickless && replayFailureEnd?.tickId == tickId
+        let replayEndsHere = behavior.config.mode == .reevaluation && !isTickless && replayFailureEnd?.tickId == tickId
         if failure != nil || replayEndsHere {
             // The land failed in this tick's inputs (#535, a legacy failure arrives here as a
             // `landFailure` item): no tick handler, no state hash, no W2 and no outputs, as the
@@ -5131,9 +5113,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         let ctx = makeContext(
-            playerID: systemPlayerID,
-            clientID: systemClientID,
-            sessionID: systemSessionID,
+            playerID: behavior.config.systemPlayerID,
+            clientID: behavior.config.systemClientID,
+            sessionID: behavior.config.systemSessionID,
             tickId: tickId
         )
 
@@ -5157,7 +5139,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         lastCommittedTickId = tickId
 
         // Optionally record live per-tick state hash as ground truth for deterministic re-evaluation.
-        if enableLiveStateHashRecording, let recorder = reevaluationRecorder {
+        if behavior.config.enableLiveStateHashRecording, let recorder = reevaluationRecorder {
             let enableStateSnapshotRecording = EnvHelpers.getEnvBool(
                 key: EnvKeys.Runtime.stateSnapshotRecording,
                 defaultValue: false
@@ -5350,9 +5332,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         let ctx = makeContext(
-            playerID: systemPlayerID,
-            clientID: systemClientID,
-            sessionID: systemSessionID,
+            playerID: behavior.config.systemPlayerID,
+            clientID: behavior.config.systemClientID,
+            sessionID: behavior.config.systemSessionID,
             tickId: tickId
         )
         // Sequence watermark W2 (before the tick handler).
@@ -5364,7 +5346,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         var stateHash: String?
         var stateSnapshot: StateSnapshot?
-        if enableLiveStateHashRecording, reevaluationRecorder != nil {
+        if behavior.config.enableLiveStateHashRecording, reevaluationRecorder != nil {
             let (hash, snapshot) = liveStateHash(tickId: tickId)
             stateHash = hash
             if EnvHelpers.getEnvBool(key: EnvKeys.Runtime.stateSnapshotRecording, defaultValue: false) {
@@ -5469,7 +5451,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     target: ReevaluationEventTargetRecord.from(item.target)
                 )
             },
-            stateHash: enableLiveStateHashRecording ? liveStateHash(tickId: tickId).hash : nil
+            stateHash: behavior.config.enableLiveStateHashRecording ? liveStateHash(tickId: tickId).hash : nil
         )
     }
 
@@ -5484,7 +5466,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
         if ReevaluationEngine.isUnavailableHash(hash) {
             stateHashUnavailableTotal += 1
-            logger.error("State hash unavailable; tick recorded without a hash", metadata: [
+            behavior.logger.error("State hash unavailable; tick recorded without a hash", metadata: [
                 "tickId": .stringConvertible(tickId),
                 "reason": .string(hash),
                 "unavailableCount": .stringConvertible(stateHashUnavailableTotal),
@@ -5506,7 +5488,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Whether this keeper records its sync stream: live, with a recorder, and in-turn sync on.
     /// The adapter asks it (through `assumeIsolated`, on the shared executor) before planning.
     package var recordsSyncStream: Bool {
-        mode == .live && reevaluationRecorder != nil && syncsInTurn
+        behavior.config.mode == .live && reevaluationRecorder != nil && syncsInTurn
     }
 
     /// Where a plan reading the state now reads it.
@@ -5537,7 +5519,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Whether passes are numbered: a tickless land that records (live, with a recorder) or
     /// replays. Without a recorder nothing reads the ordinal, so the default path doesn't count.
     private var countsPasses: Bool {
-        isTickless && (reevaluationRecorder != nil || mode == .reevaluation)
+        isTickless && (reevaluationRecorder != nil || behavior.config.mode == .reevaluation)
     }
 
     /// What the sync stream records of the current turn's sync phase, nil when it isn't
@@ -5840,7 +5822,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// so its `assumeIsolated` is valid) and this keeper's binding, under the same binding
     /// generation.
     private func acceptsSyncTurn(through port: any LandKeeperTransport, binding: SyncTurnTicket?) -> Bool {
-        guard mode == .live, failure == nil, !isDraining else { return false }
+        guard behavior.config.mode == .live, failure == nil, !isDraining else { return false }
         guard port.runsSyncPhaseInTurn(of: self), bindSyncRequester(port) else { return false }
         if let binding, !syncBinding.isCurrent(binding) { return false }
         return true
@@ -5861,7 +5843,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func syncTurnTicket(via port: any LandKeeperTransport) -> SyncTurnTicket? {
         // A failed or draining land binds no late requester (it would get `onLandDestroyed` without
         // its outputs closed); the job would reject the request anyway.
-        guard mode == .live, failure == nil, !isDraining, port.runsSyncPhaseInTurn(of: self), bindSyncRequester(port) else { return nil }
+        guard behavior.config.mode == .live, failure == nil, !isDraining, port.runsSyncPhaseInTurn(of: self), bindSyncRequester(port) else { return nil }
         return syncBinding.current
     }
 
@@ -6030,7 +6012,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// destroy runs, but runs no handlers (#826).
     private func completeShutdownTurn() {
         shutdownTurnApplied = true
-        guard mode == .live else {
+        guard behavior.config.mode == .live else {
             pendingItems.removeAll()
             return
         }
@@ -6063,9 +6045,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The plan's lifecycle ticket isn't needed: a transport serves one keeper instance, and a
     /// further failure of the same instance is a no-op (the first failure wins).
     package func submitLandFailure(_ failure: LandFailure) {
-        guard mode == .live else { return }
+        guard behavior.config.mode == .live else { return }
         guard !isDraining else {
-            logger.debug("A land failure after the land started ending; the first cause stays", metadata: [
+            behavior.logger.debug("A land failure after the land started ending; the first cause stays", metadata: [
                 "failure": .string(failure.description),
             ])
             return
@@ -6131,20 +6113,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             endsInputs: ended ? true : nil
         )
         let failure = LandFailure(kind: reported.kind, field: reported.field, detail: reported.detail, position: position)
-        guard mode == .live else {
-            logger.error("A land failure in re-evaluation; replay doesn't end the land", metadata: [
+        guard behavior.config.mode == .live else {
+            behavior.logger.error("A land failure in re-evaluation; replay doesn't end the land", metadata: [
                 "failure": .string(failure.description),
             ])
             return
         }
         guard drainFlag.setFailed(failure) else {
-            logger.debug("A further land failure after the land started ending; the first cause stays", metadata: [
+            behavior.logger.debug("A further land failure after the land started ending; the first cause stays", metadata: [
                 "failure": .string(failure.description),
             ])
             return
         }
-        logger.error("Land failed; ending it", metadata: [
-            "landID": .string(actualLandID ?? "-"),
+        behavior.logger.error("Land failed; ending it", metadata: [
+            "landID": .string(behavior.config.actualLandID ?? "-"),
             "kind": .string(failure.kind.rawValue),
             "field": .string(failure.field ?? "-"),
             "position": .string(failure.position.description),
@@ -6212,7 +6194,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 fillActionSlot(item.sequence, with: .failure(LandInputRejection.landClosed))
             }
         }
-        logger.info("Pending inputs dropped: the land is closing", metadata: [
+        behavior.logger.info("Pending inputs dropped: the land is closing", metadata: [
             "reason": .string(reason),
             "dropped": .stringConvertible(dropped.count),
             "failedWaiters": .stringConvertible(failed.count),
@@ -6421,9 +6403,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // This callback is read-only and should NOT modify state
         if let handler = definition.lifetimeHandlers.syncHandler {
             var ctx = makeContext(
-                playerID: systemPlayerID,
-                clientID: systemClientID,
-                sessionID: systemSessionID,
+                playerID: behavior.config.systemPlayerID,
+                clientID: behavior.config.systemClientID,
+                sessionID: behavior.config.systemSessionID,
                 servicesOverride: LandServices(),
                 tickId: lastCommittedTickId
             )
@@ -6459,7 +6441,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return
             }
             runSyncOnlyTurn(transport: transport)
-        } else if mode == .reevaluation {
+        } else if behavior.config.mode == .reevaluation {
             // A re-evaluation keeper may hold a transport (`ReevaluationOutputMode.transportAndSink`;
             // the attach check exempts it): its sync loop syncs through the legacy call until #612.
             await transport?.syncNowFromTransport()
@@ -6561,7 +6543,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A reevaluation keeper runs land code only for recorded inputs: the record holds no
         // destroy or finalize event, so nothing would verify these handlers against the record,
         // and their resolvers and AfterFinalize could reach outside services (#826).
-        guard mode == .live else {
+        guard behavior.config.mode == .live else {
             await notifyTransportDestroyedAndRelease()
             return
         }
@@ -6598,9 +6580,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if let afterFinalizeHandler = definition.lifetimeHandlers.afterFinalize {
             let snapshot = state
             var ctx = makeContext(
-                playerID: systemPlayerID,
-                clientID: systemClientID,
-                sessionID: systemSessionID
+                playerID: behavior.config.systemPlayerID,
+                clientID: behavior.config.systemClientID,
+                sessionID: behavior.config.systemSessionID
             )
             ctx.stepRandom = drainRandom
             await afterFinalizeHandler(snapshot, ctx)
@@ -6621,7 +6603,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await (transport ?? boundSyncRequester)?.onLandDestroyed()
         boundSyncRequesterObject = nil
         destructionFinished = true
-        releasedTransport = ReleasedLandTransport(landID: actualLandID ?? definition.id, logger: logger)
+        releasedTransport = ReleasedLandTransport(landID: behavior.config.actualLandID ?? definition.id, logger: behavior.logger)
         setTransport(nil)
     }
 
@@ -6639,9 +6621,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         handler: @Sendable (inout State, LandContext) -> Void
     ) async {
         let ctx = makeContext(
-            playerID: systemPlayerID,
-            clientID: systemClientID,
-            sessionID: systemSessionID
+            playerID: behavior.config.systemPlayerID,
+            clientID: behavior.config.systemClientID,
+            sessionID: behavior.config.systemSessionID
         )
         var updatedCtx = ctx
         // Built from the State the handler will see: nothing changes it before the handler's
@@ -6656,7 +6638,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     landContext: ctx
                 )
             } catch {
-                logger.error("❌ \(name) resolvers failed: the handler is skipped", metadata: [
+                behavior.logger.error("❌ \(name) resolvers failed: the handler is skipped", metadata: [
                     "error": .string(String(describing: error)),
                 ])
                 return
