@@ -126,8 +126,9 @@ case_ every-attempt-hangs 1 "hang hang hang hang hang" "ok ok ok ok" 4 30 'apt f
 
 # slow-forks: each of basename, ps, tr, cat and sed is shimmed to sleep 3 s before exec-ing the
 # real tool. With the old stub those forks happen before the log write; a 2 s kill (1 s bound +
-# 1 s --kill-after) ends an ok or fail stub before it can record. With the fixed stub the ok and
-# fail paths use only builtins, so the shims are never reached.
+# 1 s --kill-after) ends any stub before it can record. With the fixed stub the log write and word
+# read use only builtins, so the call is recorded before any fork; the hang path's group-recording
+# forks (ps and tr) are still reached but killed before they complete.
 shim_dir="$tmp/shims"
 mkdir -p "$shim_dir"
 for _stool in basename ps tr cat sed; do
@@ -137,6 +138,7 @@ for _stool in basename ps tr cat sed; do
 done
 stub_path_prefix="$shim_dir:"
 case_ slow-forks 0 "fail ok ok" "ok" 1 3
+case_ slow-forks-hang 0 "hang ok ok" "ok" 1 6
 stub_path_prefix=""
 
 # No package: the usage text, and no apt-get call.
