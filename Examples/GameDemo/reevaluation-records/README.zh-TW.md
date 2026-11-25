@@ -2,8 +2,8 @@
 
 # Hero Defense replay fixtures
 
-錄製格式 3.6（#521）：每份錄製都帶有該 land 的 schema fingerprint，replay 會拒絕 fingerprint 缺少或與
-目前定義不同的錄製。因此每當錄製版本改變，或 hero-defense land 的型別改動使其 fingerprint 改變
+錄製格式 3.7（#521、#700）：每份錄製都帶有該 land 的 schema fingerprint，replay 會拒絕 fingerprint 缺少或與
+目前定義不同的錄製。從 3.7 起，每個 input 的 payload 以 server 解碼的 bytes 錄製，replay 會拒絕 3.7 以前的錄製。因此每當錄製版本改變，或 hero-defense land 的型別改動使其 fingerprint 改變
 （由 `RecordSchemaFingerprintTests` 固定），都要用目前版本的 server 重新產生這些檔案。
 
 | 檔案 | 使用者 | 產生方式 |
@@ -46,8 +46,8 @@ cd Tools/CLI && npx tsx src/cli.ts script -u ws://localhost:8080/game/hero-defen
 `reevaluation-records/hero-defense-<timestamp>-<id>.sstr`。把該檔改名為 `3-hero-defense.sstr`，再以
 `swift run -c release ReevaluationRunner --input reevaluation-records/3-hero-defense.sstr --verify` 檢查。
 
-錄製的長度取決於情境各步驟落在 server 哪個 tick，所以每次重新錄製的長度都不同：目前的檔案有 390 個 tick，
-它取代的那份是 314 個。
+錄製的長度取決於情境各步驟落在 server 哪個 tick，所以每次重新錄製的長度都不同：目前的檔案有 350 個 tick，
+它取代的那份是 390 個。
 
 被取代的 JSON 錄製（格式 2.5）沒有 fingerprint，已無法 replay；canonical MessagePack 測試所編碼的那一份
 保留為 `Tests/SwiftStateTreeTests/Fixtures/hero-defense-record-2.5.json`。此目錄中其他的 `*.json` 與
