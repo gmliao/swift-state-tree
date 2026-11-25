@@ -5,16 +5,16 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 
-/// An existential behind a typealias: the macro can't see it (#535's documented gap), so the
-/// field list still names its type. A field spelled `any P` is refused at expansion.
-typealias SnapshotFieldListAnyConvertible = any SnapshotValueConvertible
+/// A type behind a typealias: the macro sees only the alias, so the field list names it. (An
+/// existential behind one doesn't compile: the macro's PlainData check refuses it.)
+typealias SnapshotFieldListAlias = [String: Int]
 
 /// One let-only struct per property type form the generated `(T).self` must parse for.
 @SnapshotConvertible
 struct SnapshotFieldListForms {
-    let existential: SnapshotFieldListAnyConvertible
+    let aliased: SnapshotFieldListAlias
     let optional: Int?
-    let optionalExistential: SnapshotFieldListAnyConvertible?
+    let optionalAliased: SnapshotFieldListAlias?
     let dictionary: [String: [Int]]
     let generic: Optional<String>
 }
@@ -48,10 +48,10 @@ struct SnapshotFieldListProviderTests {
     @Test("a let-only struct lists every property, with its type, whatever the type's form")
     func everyFormIsListed() {
         let fields = SnapshotFieldListForms.snapshotFieldMetadata
-        #expect(fields.map(\.name) == ["existential", "optional", "optionalExistential", "dictionary", "generic"])
-        #expect(ObjectIdentifier(fields[0].type) == ObjectIdentifier((any SnapshotValueConvertible).self))
+        #expect(fields.map(\.name) == ["aliased", "optional", "optionalAliased", "dictionary", "generic"])
+        #expect(ObjectIdentifier(fields[0].type) == ObjectIdentifier([String: Int].self))
         #expect(ObjectIdentifier(fields[1].type) == ObjectIdentifier(Int?.self))
-        #expect(ObjectIdentifier(fields[2].type) == ObjectIdentifier((any SnapshotValueConvertible)?.self))
+        #expect(ObjectIdentifier(fields[2].type) == ObjectIdentifier([String: Int]?.self))
         #expect(ObjectIdentifier(fields[3].type) == ObjectIdentifier([String: [Int]].self))
         #expect(ObjectIdentifier(fields[4].type) == ObjectIdentifier(String?.self))
     }

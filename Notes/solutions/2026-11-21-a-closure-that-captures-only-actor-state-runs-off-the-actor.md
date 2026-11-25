@@ -1,4 +1,5 @@
 ---
+title: "A closure that captures only actor state runs off the actor"
 module: SwiftStateTurns
 date: 2026-11-21
 problem_type: gotcha

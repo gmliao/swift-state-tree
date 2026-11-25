@@ -6,6 +6,7 @@ import Foundation
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
+import PlainDataMacroSupport
 
 /// Macro that validates and generates code for StateNode types.
 ///
@@ -29,16 +30,44 @@ public struct StateNodeBuilderMacro: MemberMacro {
             throw error
         }
 
+        // Another macro on the type could add members this macro doesn't see (#100).
+        StateTypeAttributes.diagnoseUnknown(
+            structDecl.attributes, allowed: StateTypeAttributes.besideStateNodeBuilder,
+            advertised: StateTypeAttributes.advertisedBesideStateNodeBuilder, in: context)
+
         // Collect all stored properties
         let propertiesWithNodes = collectStoredProperties(from: structDecl)
         let properties = propertiesWithNodes.map { $0.0 }
         let genericParameters = Set(structDecl.genericParameterClause?.parameters.map { $0.name.text } ?? [])
 
-        // Validate all stored properties have @Sync or @Internal
+        // Validate all stored properties have @Sync or @Internal, inside `#if` blocks too
         try validateProperties(propertiesWithNodes, context: context)
+        try validateIfConfigMarkers(structDecl.memberBlock.members, context: context)
+        try validateObservedSync(structDecl.memberBlock.members, context: context)
+
+        // This macro writes the type's PlainData witness; `@PlainData` beside it would write a
+        // second one.
+        if let sibling = structDecl.attributes.first(where: {
+            guard let attribute = $0.as(AttributeSyntax.self) else { return false }
+            return PlainDataWalk.isProjectAttribute(attribute, named: "PlainData")
+        }) {
+            let error = MacroError.plainDataSibling(node: Syntax(sibling))
+            error.diagnose(context: context)
+            throw error
+        }
 
         // A synced field whose type can hold a value of any type is refused (#535 D8 (b)).
-        if diagnoseRefusedFieldTypes(in: structDecl, onlySynced: true, context: context) {
+        // `Decimal` is the PlainData walk's below, for every field.
+        if diagnoseRefusedFieldTypes(in: structDecl, onlySynced: true, kinds: [.existential], context: context) {
+            throw RefusedFieldTypeError()
+        }
+
+        // `StateNodeProtocol` refines `PlainData`: one check per `@Sync` and `@Internal` field,
+        // on its wrapped value, `#if` members included (the shared walk's diagnostics name a
+        // Foundation type, a closure or a tuple at the field).
+        guard let plainDataWitness = PlainDataExtension.memberWitness(
+            of: structDecl, readThrough: plainDataReadThrough, in: context
+        ) else {
             throw RefusedFieldTypeError()
         }
 
@@ -83,6 +112,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(try generateSyncTableFieldsMethod(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters)),
             DeclSyntax(try generateSyncTablePerPlayerFieldsMethod(propertiesWithNodes: propertiesWithNodes))
         ] + containerHelperMethods + generateSyncCheckMembers(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters)
+        members.append(plainDataWitness)
 
         // Static stored properties only where the type is provably not generic (#520).
         let storesStatics = isProvablyNonGeneric(structDecl, in: context)
@@ -165,10 +195,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 continue
             }
 
-            // Skip computed properties (they don't have bindings with initializers or are marked with get/set)
-            let hasComputedProperty = variableDecl.bindings.contains { binding in
-                return binding.accessorBlock != nil
-            }
+            // Skip computed properties. Observers (`willSet`/`didSet`) keep a property stored, so an
+            // observed field needs a marker like any other; `validateObservedSync` refuses it on
+            // a `@Sync` field.
+            let hasComputedProperty = variableDecl.bindings.contains(where: PlainDataWalk.isComputed)
 
             if hasComputedProperty {
                 continue
@@ -189,31 +219,17 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 }
 
                 // Check for @Sync or @Internal attribute
-                let hasSync = variableDecl.attributes.contains { attr in
-                    if let attribute = attr.as(AttributeSyntax.self) {
-                        let name = attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text
-                        return name == "Sync"
-                    }
-                    return false
-                }
-
-                let hasInternal = variableDecl.attributes.contains { attr in
-                    if let attribute = attr.as(AttributeSyntax.self) {
-                        let name = attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text
-                        return name == "Internal"
-                    }
-                    return false
-                }
+                // `@Sync` or `@SwiftStateTree.Sync`. The PlainData witness checks the wrapper's
+                // storage, so a bare namesake wrapper doesn't pass as the library's.
+                let hasSync = PlainDataWalk.hasAttribute(named: "Sync", in: variableDecl.attributes)
+                let hasInternal = PlainDataWalk.hasAttribute(named: "Internal", in: variableDecl.attributes)
 
                 // Extract policy type from @Sync attribute
                 var policyType: LocalPolicyType? = nil
                 var policyExpression: String? = nil
                 if hasSync {
                     if let attribute = variableDecl.attributes.first(where: { attr in
-                        if let attr = attr.as(AttributeSyntax.self) {
-                            return attr.attributeName.as(IdentifierTypeSyntax.self)?.name.text == "Sync"
-                        }
-                        return false
+                        attr.as(AttributeSyntax.self).map { PlainDataWalk.isProjectAttribute($0, named: "Sync") } ?? false
                     })?.as(AttributeSyntax.self) {
                         policyType = extractPolicyType(from: attribute)
                         policyExpression = syncPolicyArgument(of: attribute)?.expression.trimmedDescription
@@ -254,11 +270,6 @@ public struct StateNodeBuilderMacro: MemberMacro {
         attribute.arguments?.as(LabeledExprListSyntax.self)?.first(where: { $0.label == nil })
     }
 
-    /// Whether a `@Sync` attribute's policy is `.serverOnly`, read from the syntax.
-    static func isServerOnlySync(_ attribute: AttributeSyntax) -> Bool {
-        extractPolicyType(from: attribute) == .serverOnly
-    }
-
     /// Extract policy type from @Sync attribute
     private static func extractPolicyType(from attribute: AttributeSyntax) -> LocalPolicyType? {
         guard attribute.arguments?.as(LabeledExprListSyntax.self) != nil else {
@@ -286,6 +297,74 @@ public struct StateNodeBuilderMacro: MemberMacro {
         }
 
         return .unknown
+    }
+
+    /// The property wrappers whose wrapped value the PlainData witness checks. Any other wrapper
+    /// on a state field is refused by the walk.
+    static let plainDataReadThrough: Set<String> = ["Sync", "Internal"]
+
+    /// The marker check for stored properties inside `#if` blocks, which `collectStoredProperties`
+    /// doesn't read: each clause's unmarked stored property is refused as one outside `#if` is.
+    private static func validateIfConfigMarkers(
+        _ members: MemberBlockItemListSyntax,
+        context: some MacroExpansionContext
+    ) throws {
+        for member in members {
+            guard let ifConfig = member.decl.as(IfConfigDeclSyntax.self) else { continue }
+            for clause in ifConfig.clauses {
+                guard case .decls(let nested) = clause.elements else { continue }
+                for item in nested {
+                    if item.decl.is(IfConfigDeclSyntax.self) {
+                        try validateIfConfigMarkers([item], context: context)
+                        continue
+                    }
+                    guard let variable = item.decl.as(VariableDeclSyntax.self),
+                          !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }),
+                          !variable.bindings.contains(where: PlainDataWalk.isComputed)
+                    else { continue }
+                    // The sync tables read only top-level members, so a `@Sync` field inside `#if`
+                    // would never be synced, snapshotted or hashed: refused. `@Internal` is fine.
+                    if let sync = variable.attributes.first(where: {
+                        $0.as(AttributeSyntax.self).map { PlainDataWalk.isProjectAttribute($0, named: "Sync") } ?? false
+                    }) {
+                        let name = variable.bindings.first?.pattern.trimmedDescription ?? "?"
+                        let error = MacroError.syncInIfConfig(propertyName: name, node: Syntax(sync))
+                        error.diagnose(context: context)
+                        throw error
+                    }
+                    if PlainDataWalk.hasAttribute(named: "Internal", in: variable.attributes) { continue }
+                    let name = variable.bindings.first?.pattern.trimmedDescription ?? "?"
+                    let error = MacroError.missingMarker(propertyName: name, structName: "StateNode", node: Syntax(variable))
+                    error.diagnose(context: context)
+                    throw error
+                }
+            }
+        }
+    }
+
+    /// Refuses `willSet`/`didSet` on a `@Sync` field: the generated mutators (`update<X>(_:forKey:)`
+    /// and the rest) and the snapshot decode write the wrapper's storage, so the observers
+    /// would run on some writes and not on others. `@Internal` keeps its observers, since no
+    /// generated code writes it.
+    private static func validateObservedSync(
+        _ members: MemberBlockItemListSyntax,
+        context: some MacroExpansionContext
+    ) throws {
+        for member in members {
+            guard let variable = member.decl.as(VariableDeclSyntax.self),
+                  PlainDataWalk.hasAttribute(named: "Sync", in: variable.attributes)
+            else { continue }
+            for binding in variable.bindings {
+                guard case .accessors(let list) = binding.accessorBlock?.accessors,
+                      let observer = list.first(where: {
+                          [.keyword(.willSet), .keyword(.didSet)].contains($0.accessorSpecifier.tokenKind)
+                      })
+                else { continue }
+                let error = MacroError.observedSync(propertyName: binding.pattern.trimmedDescription, node: Syntax(observer))
+                error.diagnose(context: context)
+                throw error
+            }
+        }
     }
 
     /// Validate that all stored properties have @Sync or @Internal markers
@@ -1488,6 +1567,9 @@ private enum MacroError: Error, @unchecked Sendable {
     case missingMarker(propertyName: String, structName: String, node: Syntax)
     case missingTypeAnnotation(propertyName: String, node: Syntax)
     case missingPolicy(propertyName: String, node: Syntax)
+    case plainDataSibling(node: Syntax)
+    case syncInIfConfig(propertyName: String, node: Syntax)
+    case observedSync(propertyName: String, node: Syntax)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
@@ -1519,6 +1601,12 @@ private enum MacroError: Error, @unchecked Sendable {
                     message: StateNodeBuilderDiagnostic.missingPolicy(propertyName: propertyName)
                 )
             )
+        case .plainDataSibling(let node):
+            context.diagnose(Diagnostic(node: node, message: StateNodeBuilderDiagnostic.plainDataSibling))
+        case .syncInIfConfig(let propertyName, let node):
+            context.diagnose(Diagnostic(node: node, message: StateNodeBuilderDiagnostic.syncInIfConfig(propertyName: propertyName)))
+        case .observedSync(let propertyName, let node):
+            context.diagnose(Diagnostic(node: node, message: StateNodeBuilderDiagnostic.observedSync(propertyName: propertyName)))
         }
     }
 }
@@ -1534,6 +1622,28 @@ private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
         diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "onlyStructsSupported"),
         severity: .error
     )
+
+    static let plainDataSibling: StateNodeBuilderDiagnostic = StateNodeBuilderDiagnostic(
+        message: "@StateNodeBuilder writes the PlainData check; remove @PlainData",
+        diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "plainDataSibling"),
+        severity: .error
+    )
+
+    static func syncInIfConfig(propertyName: String) -> StateNodeBuilderDiagnostic {
+        StateNodeBuilderDiagnostic(
+            message: "@Sync property '\(propertyName)' inside #if isn't synced; declare it outside #if, or mark it @Internal",
+            diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "syncInIfConfig"),
+            severity: .error
+        )
+    }
+
+    static func observedSync(propertyName: String) -> StateNodeBuilderDiagnostic {
+        StateNodeBuilderDiagnostic(
+            message: "@Sync property '\(propertyName)' can't have willSet or didSet: the generated mutators and the snapshot decode write its storage and skip them; move the work into the code that writes the field, or mark it @Internal",
+            diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "observedSync"),
+            severity: .error
+        )
+    }
 
     static func missingPolicy(propertyName: String) -> StateNodeBuilderDiagnostic {
         StateNodeBuilderDiagnostic(

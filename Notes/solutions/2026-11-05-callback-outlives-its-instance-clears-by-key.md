@@ -1,4 +1,5 @@
 ---
+title: "A callback that outlives its instance clears state by key alone"
 module: SwiftStateTreeTransport
 date: 2026-11-05
 problem_type: bug_class

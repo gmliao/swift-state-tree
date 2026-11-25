@@ -1,4 +1,5 @@
 ---
+title: "A test on a ticking land awaits a join's effect without stepping the turn that applies it"
 module: SwiftStateTree
 date: 2026-11-09
 problem_type: testing_practice

@@ -1,4 +1,5 @@
 ---
+title: "An in-process depth test sized from Linux or release overflows the Mac's debug pool"
 module: SwiftStateTree
 date: 2026-11-21
 problem_type: testing_practice

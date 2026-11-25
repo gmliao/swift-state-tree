@@ -21,6 +21,7 @@ struct PPEntity: StateNodeProtocol {
 }
 
 /// A value whose conversion throws for a negative `n`.
+@PlainData
 struct PPThrowing: Equatable, Sendable, SnapshotValueConvertible {
     var n: Int = 0
     func toSnapshotValue() throws -> SnapshotValue {
@@ -30,6 +31,7 @@ struct PPThrowing: Equatable, Sendable, SnapshotValueConvertible {
 }
 
 /// A value that isn't `Equatable` (the typed tables' snapshot fallback).
+@PlainData
 struct PPNonEquatable: Sendable {
     var n: Int = 0
 }

@@ -50,7 +50,7 @@ private func makeHandler(
 }
 
 private func frame(fin: Bool = true, _ opcode: WebSocketOpcode, _ bytes: [UInt8]) -> WebSocketFrame {
-    WebSocketFrame(fin: fin, opcode: opcode, data: ByteBuffer(bytes: bytes))
+    WebSocketFrame.client(fin: fin, opcode: opcode, data: ByteBuffer(bytes: bytes))
 }
 
 /// The close code of the first close frame written, if any.

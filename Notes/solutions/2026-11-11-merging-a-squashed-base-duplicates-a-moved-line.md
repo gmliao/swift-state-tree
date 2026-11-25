@@ -1,4 +1,5 @@
 ---
+title: "Merging a squashed base into a stacked branch duplicates a moved line"
 module: repository workflow
 date: 2026-11-11
 problem_type: workflow_issue

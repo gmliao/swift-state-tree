@@ -35,12 +35,14 @@ enum SchemaNameA {
     }
 
     /// Named as the schema's diff placeholder definition.
+    @PlainData
     struct StateDiff: Codable, Equatable, Sendable {
         var changed: Int = 0
     }
 
     /// A collection by `ArrayProtocol`, so the schema converts it inline; as an optional it is
     /// defined under its own name (`innerType`).
+    @PlainData
     struct Bag: ArrayProtocol, Codable, Equatable, Sendable {
         typealias Element = Int
         var values: [Int] = []
@@ -67,6 +69,7 @@ enum SchemaNameB {
     }
 
     /// A named object, unlike `SchemaNameA.Bag`.
+    @PlainData
     struct Bag: Codable, Equatable, Sendable {
         var label: String = ""
     }

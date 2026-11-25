@@ -1,4 +1,5 @@
 ---
+title: "CPU-bound tests starve the cooperative pool"
 module: Tests
 date: 2026-11-11
 problem_type: testing_practice

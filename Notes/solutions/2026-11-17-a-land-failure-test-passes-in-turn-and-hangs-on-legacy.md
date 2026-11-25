@@ -1,4 +1,5 @@
 ---
+title: "A land-failure test passes in-turn and hangs on the legacy path"
 module: Tests
 date: 2026-11-17
 problem_type: testing_practice

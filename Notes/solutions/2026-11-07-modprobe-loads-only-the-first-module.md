@@ -1,4 +1,5 @@
 ---
+title: "`modprobe` loads only the first module named"
 module: measurement setup
 date: 2026-11-07
 problem_type: gotcha

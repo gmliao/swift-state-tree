@@ -1,4 +1,5 @@
 ---
+title: "A concurrency diagnostic the local 6.3 accepts and the pinned 6.2.4 rejects"
 module: SwiftStateTreeTransport, toolchain
 date: 2026-11-08
 problem_type: build_failure

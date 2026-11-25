@@ -1,4 +1,5 @@
 ---
+title: "Force the interleaving with hold points, not timing"
 module: SwiftStateTree, tests
 date: 2026-11-05
 problem_type: testing_practice
@@ -24,6 +25,10 @@ tags:
   - deadline
   - hang-bound
   - code-timer
+  - timers
+  - tick
+  - parallel-hang
+  - record-save
 related:
   - "#146"
   - "#55"

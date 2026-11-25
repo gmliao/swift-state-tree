@@ -1,4 +1,5 @@
 ---
+title: "`/proc/net/sockstat` TCP `mem` is host-wide, not per namespace"
 module: measurement setup
 date: 2026-11-07
 problem_type: gotcha

@@ -33,7 +33,7 @@
 ///     }
 /// }
 /// ```
-public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
+public protocol StateNodeProtocol: PlainData, Sendable, SchemaMetadataProvider {
     /// Initialize a new instance of the StateNode.
     ///
     /// All StateNode types must provide a parameterless initializer.

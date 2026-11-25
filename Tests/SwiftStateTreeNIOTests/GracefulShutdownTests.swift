@@ -54,6 +54,15 @@ private final class Gate: @unchecked Sendable {
         }
     }
 
+    /// An arrival that doesn't wait: counts like `arrive()`, returns at once.
+    func signal() {
+        lock.lock()
+        arrivals += 1
+        let reached = takeReachedArrivalWaiters()
+        lock.unlock()
+        reached.forEach { $0.resume(returning: true) }
+    }
+
     /// Under the lock: the arrival waiters `arrivals` has reached, removed.
     private func takeReachedArrivalWaiters() -> [CheckedContinuation<Bool, Never>] {
         let ids = arrivalWaiters.filter { $0.value.count <= arrivals }.map(\.key)
@@ -318,6 +327,21 @@ private struct ProbeMiddleware: HostMiddleware {
 }
 
 private struct ProbeError: Error {}
+
+/// A middleware whose first `onStart` throws; later ones succeed.
+private final class FailFirstStartMiddleware: HostMiddleware, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var starts: Int { lock.withLock { count } }
+
+    func onStart(context: HostContext) async throws -> Task<Void, Never>? {
+        let n = lock.withLock { () -> Int in count += 1; return count }
+        if n == 1 { throw ProbeError() }
+        return nil
+    }
+
+    func onShutdown(context: HostContext) async throws {}
+}
 
 @Suite("Shutdown budget (#351, decision C2a)")
 struct ShutdownBudgetTests {
@@ -1007,6 +1031,81 @@ struct GracefulShutdownTests {
             #expect(events.count("afterFinalize") == 1, "cancel=\(cancel): \(events.all)")
             #expect(await f.host.lifecyclePhaseForTesting == .stopped)
         }
+    }
+
+    @Test("a start whose onStart throws returns the host to .idle, and a retry reaches .running (#833)")
+    func aFailedStartReturnsTheHostToIdleAndARetryRuns() async throws {
+        let failing = FailFirstStartMiddleware()
+        let f = try await Fixture.make(land: makeLand(events: Events()), middlewares: [failing], start: false)
+        await #expect(throws: ProbeError.self) { try await f.host.start() }
+        #expect(failing.starts == 1)
+        #expect(await f.host.lifecyclePhaseForTesting == .idle, "the failed start's finish wrote .idle")
+        try await f.host.start()
+        #expect(failing.starts == 2)
+        #expect(await f.host.lifecyclePhaseForTesting == .running)
+        try await f.host.shutdown()
+    }
+
+    @Test("a start returns with the phase .running, for the call that starts it and for one that joins it (#833)")
+    func startReturnsAfterTheRunningPhase() async throws {
+        let startGate = Gate()
+        let f = try await Fixture.make(
+            land: makeLand(events: Events()),
+            middlewares: [ProbeMiddleware(events: Events(), name: "m", startGate: startGate)],
+            start: false
+        )
+        let runner = Task { () -> Lifecycle.Phase in
+            try await f.host.start()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        #expect(await startGate.waitForArrivals(1), "the start is held in a middleware's onStart")
+        #expect(await f.host.lifecyclePhaseForTesting == .starting)
+        let joined = Gate()
+        await f.host.installLifecycleJoinHookForTesting { joined.signal() }
+        let joiner = Task { () -> Lifecycle.Phase in
+            try await f.host.start()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        // The joiner is about to await the start's task: it can't have found the start finished.
+        #expect(await joined.waitForArrivals(1), "the joiner joined the start in flight")
+        startGate.open()
+        // The start's task writes the phase before either call's wait ends.
+        #expect(try await runner.value == .running, "the runner returned before the phase was written")
+        #expect(try await joiner.value == .running, "the joiner returned before the phase was written")
+        try await f.host.shutdown()
+    }
+
+    @Test("a shutdown returns with the phase .stopped, for the call that runs it, for one that joins it and for run() (#833)")
+    func shutdownReturnsAfterTheStoppedPhase() async throws {
+        let shutdownGate = Gate()
+        let f = try await Fixture.make(
+            land: makeLand(events: Events()),
+            middlewares: [ProbeMiddleware(events: Events(), name: "m", shutdownGate: shutdownGate)]
+        )
+        // Installed before the stop begins: run() joins it the moment its wait is woken.
+        let joined = Gate()
+        await f.host.installLifecycleJoinHookForTesting { joined.signal() }
+        let run = Task { () -> Lifecycle.Phase in
+            try await f.host.run()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        let runner = Task { () -> Lifecycle.Phase in
+            try await f.host.shutdown()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        #expect(await shutdownGate.waitForArrivals(1), "the shutdown is held in a middleware's onShutdown")
+        #expect(await f.host.lifecyclePhaseForTesting == .stopping)
+        let joiner = Task { () -> Lifecycle.Phase in
+            try await f.host.shutdown()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        // Both the joiner and run() (woken by the stop beginning) are about to await the stop's task.
+        #expect(await joined.waitForArrivals(2), "the joiner and run() joined the stop in flight")
+        shutdownGate.open()
+        // The stop's task writes the phase before any call's wait ends, whichever call ran it.
+        #expect(try await runner.value == .stopped, "the shutdown returned before the phase was written")
+        #expect(try await joiner.value == .stopped, "the joined shutdown returned before the phase was written")
+        #expect(try await run.value == .stopped, "run() returned before the phase was written")
     }
 
     @Test("an upgrade whose auth finishes after the shutdown completes nothing on the shut-down loop")
@@ -1734,7 +1833,12 @@ struct FailedLandStopTests {
             .hook)
         let (_, connection, joined) = try await f.startJoin("p1")
         #expect(await admitted.waitForArrivals(1), "the join is held after its admission")
-        // A helper that returned once the land had the player would return here.
+        // The land has the player once the join's input drain has run, still before the router's
+        // join ends: a helper that returned at that point would return here. OnJoin runs in the
+        // drain the keeper's join scheduled before it returned (a tickless in-turn join): wait for
+        // that drain, not for the state.
+        let keeper = try await f.keeper()
+        #expect(await bounded { await keeper.waitForInputDrainIdleForTesting() } != nil, "the join's input drain ended")
         #expect(await f.players() == ["p1"], "OnJoin ran")
 
         let server = f.server
@@ -1766,6 +1870,12 @@ struct FailedLandStopTests {
         let returned = Events()
         let join = Task { try await f.join("p1"); returned.append("returned") }
         #expect(await admitted.waitForArrivals(1), "the join is held at \(point)")
+        if point == "afterAdmit" {
+            // OnJoin runs in the input drain the keeper's join scheduled; wait for it (see
+            // `joinTailUndoneByAStop`). At `.flipWaitResumed` a turn has consumed OnJoin already.
+            let keeper = try await f.keeper()
+            #expect(await bounded { await keeper.waitForInputDrainIdleForTesting() } != nil, "the join's input drain ended")
+        }
         #expect(await f.players() == ["p1"], "OnJoin ran")
         // The hold keeps the join from ending, so this can't fail on a correct
         // helper, whatever the timing. The pause only gives a helper that returns on the state
@@ -1775,6 +1885,36 @@ struct FailedLandStopTests {
         admitted.open()
         try await join.value
         #expect(returned.all == ["returned"])
+        try await f.host.shutdown()
+    }
+
+    /// The land has no tick, so the keeper's join admits the session, schedules the input drain and
+    /// returns; OnJoin runs in that drain's turn. The router's `.afterAdmit` comes after the
+    /// keeper's join returned, but the drain is its own task: it may not have run yet.
+    @Test("at .afterAdmit OnJoin may not have run yet; the join's input drain applies it (#833)")
+    func onJoinRunsInTheInputDrainAfterAfterAdmit() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        // The router auto-creates the land on a join; create it first to hold its drain.
+        let container = try await f.server.landManager.getOrCreateLand(
+            landID: f.landID, definition: makeLand(events: events), initialState: ShutdownState(), metadata: [:]
+        )
+        let keeper = container.keeper
+        let drain = Gate()
+        await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>().on(.inputDrain) { await drain.arrive() }.hook)
+        let admitted = Gate()
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.afterAdmit) { await admitted.arrive() }.hook)
+
+        let (_, _, joined) = try await f.startJoin("p1")
+        #expect(await admitted.waitForArrivals(1), "the join is held after its admission")
+        #expect(await drain.waitForArrivals(1), "the join's input drain is held at its start")
+        #expect(await f.players() == [], "the drain hasn't run, so OnJoin hasn't")
+
+        drain.open()
+        #expect(await bounded { await keeper.waitForInputDrainIdleForTesting() } != nil, "the join's input drain ended")
+        #expect(await f.players() == ["p1"], "the drain applied OnJoin")
+        admitted.open()
+        #expect(await bounded { await joined.value } != nil, "the join returned")
         try await f.host.shutdown()
     }
 

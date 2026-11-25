@@ -1,4 +1,5 @@
 ---
+title: "A concurrent delete stops a recursive removal and leaves the directory"
 module: SwiftStateTree tests
 date: 2026-11-20
 problem_type: testing_practice

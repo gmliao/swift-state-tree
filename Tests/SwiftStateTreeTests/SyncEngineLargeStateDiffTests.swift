@@ -7,6 +7,7 @@ import Testing
 // MARK: - Test Data Structures
 
 /// Test nested structure: Player state with multiple fields
+@PlainData
 struct BenchmarkPlayerState: StateProtocol {
     var name: String
     var hpCurrent: Int
@@ -14,12 +15,14 @@ struct BenchmarkPlayerState: StateProtocol {
 }
 
 /// Test nested structure: Hand state containing cards
+@PlainData
 struct BenchmarkHandState: StateProtocol {
     var ownerID: PlayerID
     var cards: [BenchmarkCard]
 }
 
 /// Test nested structure: Card with multiple properties
+@PlainData
 struct BenchmarkCard: StateProtocol {
     let id: Int
     let suit: Int

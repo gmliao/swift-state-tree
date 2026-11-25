@@ -1,4 +1,5 @@
 ---
+title: "A diff replacement must match the old diff's quirks, found by a differential test"
 module: SwiftStateTree
 date: 2026-11-10
 problem_type: testing_practice

@@ -692,6 +692,7 @@ private struct MockReplayLandServer: LandServerProtocol {
     }
 }
 
+@PlainData
 private struct DummyReplayState: StateNodeProtocol {
     init() {}
 

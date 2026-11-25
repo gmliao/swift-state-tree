@@ -3,14 +3,16 @@ import Foundation
 /// Where a `Decimal` would reach the wire, refused at registration (#597).
 ///
 /// `Decimal` has no wire form: its synced value would be its private stored fields, and a
-/// payload's MessagePack form was a lossy `Double` on one path and a string on another. The
-/// macros refuse a `Decimal` the declared syntax shows (`@Payload`, `@StateNodeBuilder`,
-/// `@SnapshotConvertible`). Registration refuses what their metadata shows past the syntax (a
-/// typealias): a synced field is a `SyncRegistrationError.Problem.decimalField`, a payload field
-/// is in `LandRegistrationError.decimalFields`. What neither sees fails at the first send: the
-/// JSON encodings and the MessagePack encoders refuse a `Decimal`. A `.serverOnly` state field and
-/// a resolver output, which never reach the wire, may hold one. An `@Internal` field can't: its
-/// value is `PlainData` (#767), and `Decimal` isn't.
+/// payload's MessagePack form was a lossy `Double` on one path and a string on another. In
+/// state, no field compiles with a `Decimal`: a state field's value is `PlainData`, and `Decimal`
+/// isn't. `@Payload` refuses a `Decimal` its declared syntax shows. Registration refuses what
+/// the metadata shows past the syntax (a typealias in a payload) and what a hand-written
+/// `PlainData` witness lets into state: a synced field is a
+/// `SyncRegistrationError.Problem.decimalField`, a payload field is in
+/// `LandRegistrationError.decimalFields`. Both walks follow only the fields that reach the wire,
+/// so a `.serverOnly` field behind such a witness isn't reported. What neither sees fails at the
+/// first send: the JSON encodings and the MessagePack encoders refuse a `Decimal`. A resolver
+/// output, which never reaches the wire, may hold one.
 enum DecimalFields {
     /// What to use instead, in every refusal.
     static let advice = "Decimal has no wire form; store an integer of the smallest unit (cents) or a String"

@@ -28,9 +28,10 @@ import SwiftStateTreeMessagePack
 
 /// A value whose snapshot conversion throws while `broken` is set (a deterministic extraction
 /// failure, not an encode failure).
+@PlainData
 struct SyncPhaseFragile: Codable, Sendable, Equatable, SnapshotValueConvertible {
-    var broken = false
-    var value = 0
+    var broken: Bool = false
+    var value: Int = 0
     func toSnapshotValue() throws -> SnapshotValue {
         if broken { throw SyncPhaseFault() }
         return .int(value)
