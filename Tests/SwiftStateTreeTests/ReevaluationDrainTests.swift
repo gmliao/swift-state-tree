@@ -23,10 +23,15 @@ struct ReevalDrainState: StateNodeProtocol {
 /// Mutable counter that tracks whether destroy-handler code ran.
 final class ReevalDrainBox: @unchecked Sendable {
     private let lock = NSLock()
+    private(set) var finalizeBuilderCount = 0
     private(set) var finalizeResolverCount = 0
-    var afterFinalizeRan = false
+    private(set) var destroyWhenEmptyExecutorCount = 0
+    private(set) var afterFinalizeRan = false
 
-    func increment() { lock.withLock { finalizeResolverCount += 1 } }
+    func incrementFinalizeBuilder() { lock.withLock { finalizeBuilderCount += 1 } }
+    func incrementFinalizeResolver() { lock.withLock { finalizeResolverCount += 1 } }
+    func incrementDestroyWhenEmptyExecutor() { lock.withLock { destroyWhenEmptyExecutorCount += 1 } }
+    func setAfterFinalizeRan() { lock.withLock { afterFinalizeRan = true } }
 }
 
 /// Integer-keyed registry so the @PlainData resolver (which must be Codable) can reach a box.
@@ -62,7 +67,7 @@ struct CountingFinalizeResolver: Resolver {
     let boxKey: Int
 
     func resolve(_ deps: NoServices) async throws -> ReevalDrainOutput {
-        lookupBox(boxKey)?.increment()
+        lookupBox(boxKey)?.incrementFinalizeResolver()
         return ReevalDrainOutput(value: 1)
     }
 }
@@ -89,11 +94,25 @@ private final class ReevalDrainTransport: LandKeeperTransport, @unchecked Sendab
     func waitForWriterDrainForInTurnSync() async {}
 }
 
+// MARK: - Counting executor for DestroyWhenEmpty resolvers
+
+private final class CountingResolverExecutor: AnyResolverExecutor, @unchecked Sendable {
+    private let box: ReevalDrainBox
+    let resolverName: String = "CountingResolverExecutor"
+
+    init(box: ReevalDrainBox) { self.box = box }
+
+    func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput) {
+        box.incrementDestroyWhenEmptyExecutor()
+        return ("countingOutput", ReevalDrainOutput(value: 0))
+    }
+}
+
 // MARK: - Helpers
 
 private func makeReevalDrainDefinition(box: ReevalDrainBox) -> LandDefinition<ReevalDrainState> {
     let key = registerBox(box)
-    return Land("reeval-drain", using: ReevalDrainState.self) {
+    var definition = Land("reeval-drain", using: ReevalDrainState.self) {
         Rules {
             OnJoin { state, ctx in
                 state.log.append("join:\(ctx.playerID.rawValue)")
@@ -103,14 +122,19 @@ private func makeReevalDrainDefinition(box: ReevalDrainBox) -> LandDefinition<Re
             DestroyWhenEmpty(after: .seconds(3600)) { state, _ in
                 state.log.append("destroyWhenEmpty")
             }
-            OnFinalize(resolvers: { _, _ in CountingFinalizeResolver(boxKey: key) }) { state, _, _ in
+            OnFinalize(resolvers: { _, _ in
+                box.incrementFinalizeBuilder()
+                return CountingFinalizeResolver(boxKey: key)
+            }) { state, _, _ in
                 state.log.append("finalize")
             }
             AfterFinalize { _, _ in
-                box.afterFinalizeRan = true
+                box.setAfterFinalizeRan()
             }
         }
     }
+    definition.lifetimeHandlers.onDestroyWhenEmptyResolverExecutors = [CountingResolverExecutor(box: box)]
+    return definition
 }
 
 private func recordedJoin(player: String, sequence: Int64, tickId: Int64) -> ReevaluationRecordedLifecycleEvent {
@@ -177,21 +201,8 @@ private func makeReevalKeeper(
 
 @Suite("Reevaluation keeper drain runs no land code (#826)", .timeLimit(.minutes(1)))
 struct ReevaluationDrainTests {
-    @Test("Reevaluation keeper: OnFinalize resolver is never called")
-    func finalizeResolverNotCalled() async throws {
-        let box = ReevalDrainBox()
-        let definition = makeReevalDrainDefinition(box: box)
-        let transport = ReevalDrainTransport()
-        let keeper = await makeReevalKeeper(definition: definition, transport: transport)
-
-        await keeper.stepTickOnce()
-        await keeper.forceShutdown()
-
-        #expect(box.finalizeResolverCount == 0, "OnFinalize resolver must not run in a reevaluation keeper")
-    }
-
-    @Test("Reevaluation keeper: OnFinalize handler, DestroyWhenEmpty, and AfterFinalize do not run")
-    func finalizeHandlersNotRun() async throws {
+    @Test("Reevaluation keeper: drain runs no land code")
+    func reevaluationDrainRunsNoLandCode() async throws {
         let box = ReevalDrainBox()
         let definition = makeReevalDrainDefinition(box: box)
         let transport = ReevalDrainTransport()
@@ -201,21 +212,12 @@ struct ReevaluationDrainTests {
         await keeper.forceShutdown()
 
         let log = await keeper.currentState().log
+        #expect(box.finalizeBuilderCount == 0, "OnFinalize resolver builder must not run in a reevaluation keeper")
+        #expect(box.finalizeResolverCount == 0, "OnFinalize resolver must not run in a reevaluation keeper")
+        #expect(box.destroyWhenEmptyExecutorCount == 0, "DestroyWhenEmpty resolver executor must not run in a reevaluation keeper")
         #expect(!log.contains("finalize"), "OnFinalize must not append 'finalize' in a reevaluation keeper")
         #expect(!log.contains("destroyWhenEmpty"), "DestroyWhenEmpty must not append in a reevaluation keeper")
         #expect(!box.afterFinalizeRan, "AfterFinalize must not run in a reevaluation keeper")
-    }
-
-    @Test("Reevaluation keeper: transport still receives onLandDestroyed after drain")
-    func transportDestroyedStillFires() async throws {
-        let box = ReevalDrainBox()
-        let definition = makeReevalDrainDefinition(box: box)
-        let transport = ReevalDrainTransport()
-        let keeper = await makeReevalKeeper(definition: definition, transport: transport)
-
-        await keeper.stepTickOnce()
-        await keeper.forceShutdown()
-
         #expect(transport.destroyedCount == 1, "onLandDestroyed must still fire once after the keeper drains")
     }
 
@@ -234,7 +236,9 @@ struct ReevaluationDrainTests {
         await keeper.runEmptyRoomShutdownForTesting()
 
         let log = await keeper.currentState().log
+        #expect(box.finalizeBuilderCount == 0, "OnFinalize resolver builder must not run via empty-room path in a reevaluation keeper")
         #expect(box.finalizeResolverCount == 0, "OnFinalize resolver must not run via empty-room path in a reevaluation keeper")
+        #expect(box.destroyWhenEmptyExecutorCount == 0, "DestroyWhenEmpty resolver executor must not run via empty-room path in a reevaluation keeper")
         #expect(!box.afterFinalizeRan, "AfterFinalize must not run via empty-room path in a reevaluation keeper")
         #expect(!log.contains("finalize"), "OnFinalize handler must not append 'finalize' via empty-room path in a reevaluation keeper")
         #expect(!log.contains("destroyWhenEmpty"), "DestroyWhenEmpty must not append via empty-room path in a reevaluation keeper")
@@ -251,7 +255,9 @@ struct ReevaluationDrainTests {
         await keeper.forceShutdown()
 
         let log = await keeper.currentState().log
+        #expect(box.finalizeBuilderCount == 1, "OnFinalize resolver builder must run on a live keeper forced shutdown")
         #expect(box.finalizeResolverCount == 1, "OnFinalize resolver must run on a live keeper forced shutdown")
+        #expect(box.destroyWhenEmptyExecutorCount == 1, "DestroyWhenEmpty resolver executor must run on a live keeper forced shutdown")
         #expect(box.afterFinalizeRan, "AfterFinalize must run on a live keeper forced shutdown")
         #expect(log.contains("finalize"), "OnFinalize handler must append 'finalize' on a live keeper forced shutdown")
         #expect(log.contains("destroyWhenEmpty"), "DestroyWhenEmpty handler also runs on a live keeper forced shutdown")

@@ -60,13 +60,13 @@ code and must fire for every keeper mode.
 
 ## Rule
 
-**Every shared path that runs land code must guard against reevaluation
-mode**, not just the paths specifically added for reevaluation. The
-pattern to look for: a function called by both the live-keeper path and
-the reevaluation-keeper path that runs handlers from `LandDefinition`
-(lifecycle, action, event). Add the guard at the first point where
-land-code execution begins, not at each call site.
+**A path shared by live and reevaluation keepers that runs land code
+with no recorded input behind it** — teardown hooks and their resolvers
+(DestroyWhenEmpty, OnFinalize, AfterFinalize) — must skip that code in
+reevaluation mode; add the guard at the first point where the unrecorded
+code begins, as the initialization-failure guard does.
 
-The existing guards in `runForceShutdown` and similar functions gate
-*which path runs* but not what `drainAfterIdleCheck` does once
-entered. Functions entered from both modes need their own guard.
+Replaying recorded actions, events and lifecycle (join/leave) inputs is
+what reevaluation is for; those paths must run. Teardown has no matching
+record entry: there is nothing to verify those handlers against, and
+their resolvers and AfterFinalize can reach outside services.

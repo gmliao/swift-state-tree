@@ -654,7 +654,8 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
 /// The handler is executed when the Land is being destroyed due to being empty.
 /// This provides a convenient way to perform cleanup actions specific to empty-room destruction.
 /// The handler is executed before `OnFinalize`, allowing you to distinguish between
-/// different destruction scenarios.
+/// different destruction scenarios. It also runs on a live forced shutdown (e.g., server
+/// restart). A reevaluation keeper skips the handler entirely (#826).
 ///
 /// - Parameters:
 ///   - duration: The duration to wait after the last player leaves before destroying.
