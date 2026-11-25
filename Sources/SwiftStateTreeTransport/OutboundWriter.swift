@@ -19,11 +19,15 @@ public struct SessionFrame: Sendable {
     /// session's current connection has a different generation, so frames meant for an ended
     /// connection never reach a later connection that reuses the `SessionID`. `nil`: not checked.
     public let connectionGeneration: UInt64?
+    /// The frame type `data` goes out in: the kind of the encoder that produced it.
+    public let kind: WebSocketFrameKind
 
-    public init(data: Data, sessionID: SessionID, connectionGeneration: UInt64?) {
+    /// `kind` defaults to `.binary`, the type every frame had before frames carried one.
+    public init(data: Data, sessionID: SessionID, connectionGeneration: UInt64?, kind: WebSocketFrameKind = .binary) {
         self.data = data
         self.sessionID = sessionID
         self.connectionGeneration = connectionGeneration
+        self.kind = kind
     }
 }
 

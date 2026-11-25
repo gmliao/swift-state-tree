@@ -18,7 +18,7 @@ fileprivate actor RecordingCloseConnection: WebSocketConnection {
     nonisolated let sent: AsyncStream<Data>
     private let continuation: AsyncStream<Data>.Continuation
     init() { (sent, continuation) = AsyncStream.makeStream(of: Data.self) }
-    func send(_ data: Data) async throws { continuation.yield(data) }
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws { continuation.yield(data) }
     func close() async throws { closes.append(nil) }
     func close(with close: SessionClose) async throws { closes.append(close) }
 }

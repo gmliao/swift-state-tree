@@ -32,7 +32,7 @@ private actor AttemptConnection: WebSocketConnection {
     private var frameWaiters: [Int: FrameWaiter] = [:]
     private var nextWaiterID = 0
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         frames.append(data)
         let sent = messages
         for (id, waiter) in frameWaiters where waiter.condition(sent) {

@@ -9,6 +9,15 @@ public enum StateUpdateEncoding: String, Sendable {
     /// Opcode array format serialized as MessagePack binary.
     /// Structure matches `opcodeJsonArray`, but uses MessagePack instead of JSON text.
     case opcodeMessagePack
+
+    /// The WebSocket frame type of the bytes this encoding writes: text for JSON, binary for
+    /// MessagePack.
+    public var frameKind: WebSocketFrameKind {
+        switch self {
+        case .jsonObject, .opcodeJsonArray, .opcodeJsonArrayLegacy: return .text
+        case .opcodeMessagePack: return .binary
+        }
+    }
 }
 
 /// Opcode for state update types.

@@ -54,7 +54,7 @@ private func writerLand(_ id: String) -> LandDefinition<WriterTestState> {
 
 private actor WriterConnection: WebSocketConnection {
     private var frames: [Data] = []
-    func send(_ data: Data) async throws { frames.append(data) }
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws { frames.append(data) }
     func close() async throws {}
     func recorded() -> [Data] { frames }
 }

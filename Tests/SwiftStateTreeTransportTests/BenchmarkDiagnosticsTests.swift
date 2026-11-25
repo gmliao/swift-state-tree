@@ -90,7 +90,7 @@ private final class HeldConnection: WebSocketConnection, @unchecked Sendable {
         return sent
     }
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         await gate.arrive()
         if failing { throw CancellationError() }
         lock.withLock { sent.append(data) }

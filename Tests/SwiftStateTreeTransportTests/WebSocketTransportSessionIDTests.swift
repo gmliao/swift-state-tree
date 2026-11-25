@@ -29,7 +29,7 @@ private actor OrderedConnection: WebSocketConnection {
     /// `gate` gets an arrival for each close.
     func setCloseSignal(_ gate: TestGate?) { closeSignal = gate }
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         if let stall { await stall.arrive() }
         entries.append(.frame(String(decoding: data, as: UTF8.self)))
         if let sendSignal { await sendSignal.arrive() }

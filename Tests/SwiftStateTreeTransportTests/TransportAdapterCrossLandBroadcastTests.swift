@@ -28,7 +28,7 @@ struct CrossLandEvent: ServerEventPayload {
 
 private actor CrossLandConnection: WebSocketConnection {
     private var frames: [Data] = []
-    func send(_ data: Data) async throws { frames.append(data) }
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws { frames.append(data) }
     func close() async throws {}
     func recorded() -> [Data] { frames }
 }

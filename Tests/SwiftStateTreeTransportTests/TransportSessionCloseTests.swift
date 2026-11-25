@@ -10,7 +10,7 @@ import Testing
 @testable import SwiftStateTreeTransport
 
 private actor SilentConnection: WebSocketConnection {
-    func send(_ data: Data) async throws {}
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {}
     func close() async throws {}  // never reports a disconnect back
 }
 

@@ -70,7 +70,7 @@ private actor LimitConnection: WebSocketConnection {
 
     func failSends() { failing = true }
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         sendAttempts += 1
         resumeWaiters()
         if failing { throw SendFailed() }

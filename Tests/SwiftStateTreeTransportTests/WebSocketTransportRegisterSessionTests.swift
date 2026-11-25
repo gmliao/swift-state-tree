@@ -7,7 +7,7 @@ import Testing
 import SwiftStateTreeTestSupport
 
 private struct RegisterTestConnection: WebSocketConnection {
-    func send(_ data: Data) async throws {}
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {}
     func close() async throws {}
 }
 

@@ -9,8 +9,8 @@
 // overrides the default, and an argument overrides both). It listens on 127.0.0.1 and runs
 // until SIGINT or SIGTERM.
 //
-// The server sends every frame as binary (`WebSocketSessionHandler.sendOnLoop`), so the suite's
-// text echo cases fail for that reason alone (#798).
+// Each message goes back in the frame type it arrived in (`FrameKindTransportDelegate`), so the
+// suite measures the server's rule: a frame's type follows the bytes it carries (#813).
 
 import Dispatch
 import Foundation
@@ -19,8 +19,8 @@ import SwiftStateTree
 import SwiftStateTreeNIO
 import SwiftStateTreeTransport
 
-/// Sends each received message back to the session it came from.
-final class EchoDelegate: TransportDelegate, Sendable {
+/// Sends each received message back to the session it came from, in the frame type it came in.
+final class EchoDelegate: FrameKindTransportDelegate, Sendable {
     private let transport: WebSocketTransport
 
     init(transport: WebSocketTransport) {
@@ -33,6 +33,12 @@ final class EchoDelegate: TransportDelegate, Sendable {
 
     func onMessage(_ message: Data, from sessionID: SessionID) async {
         await transport.send(message, to: .session(sessionID))
+    }
+
+    func onMessage(_ message: Data, kind: WebSocketFrameKind, from sessionID: SessionID) async {
+        await transport.sendSessionFrames([
+            SessionFrame(data: message, sessionID: sessionID, connectionGeneration: nil, kind: kind)
+        ])
     }
 }
 

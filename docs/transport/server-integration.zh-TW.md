@@ -49,6 +49,11 @@ public protocol TokenValidatorProtocol: Sendable {
 
 Server 必須提供 conform `WebSocketConnection` 的型別（send/receive 與 close）。Transport 只依賴此介面，不關心底層是 NIO、Vapor 或其他。
 
+每個 frame 的類型取決於它承載的位元組，所以同一條連線會同時有兩種類型：JoinResponse 一律是 JSON，混合設定則讓 JSON 訊息與 MessagePack 狀態更新走同一條連線。
+
+- **送出：** `send(_:kind:)` 對 `.text`（JSON）寫 text frame，對 `.binary`（MessagePack）寫 binary frame。Transport 從產生這些位元組的編碼器取得類型。
+- **接收：** 兩種 frame 類型都要接受，並透過 `handleIncomingMessage(sessionID:data:kind:)` 把訊息的類型一起傳入。不是合法 UTF-8 的 text 訊息依 RFC 6455 以 1007 關閉；`SwiftStateTreeNIO` 兩者都已做到。
+
 ### 4. Schema 與 admin（可選）
 
 - **Schema**：若提供 `GET /schema`，回傳 Land 定義產生的 JSON（例如透過 `SchemaGenCLI.generateSchema`）。NIO host 使用 `schemaProvider: () -> Data?` 閉包；其他框架可實作相同契約。

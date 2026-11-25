@@ -12,15 +12,17 @@ extension TransportAdapter {
     /// Enqueues `data` for `sessionID`, in issue order with every other frame of this adapter.
     ///
     /// Used by `LandRouter` for frames of a session that joined this land (the join response and
-    /// later errors), so they cannot overtake or trail this land's state frames.
-    public func enqueueOutbound(_ data: Data, to sessionID: SessionID) {
-        enqueueFrames([sessionFrame(data, to: sessionID)])
+    /// later errors), so they cannot overtake or trail this land's state frames. `kind` is the
+    /// frame type of the encoder that produced `data`; it defaults to `.binary`, the type every
+    /// frame had before frames carried one.
+    public func enqueueOutbound(_ data: Data, to sessionID: SessionID, kind: WebSocketFrameKind = .binary) {
+        enqueueFrames([sessionFrame(data, kind: kind, to: sessionID)])
     }
 
     /// Enqueues `data` once per session, in the given order.
-    func enqueueOutbound(_ data: Data, toSessions sessionIDs: [SessionID]) {
+    func enqueueOutbound(_ data: Data, kind: WebSocketFrameKind, toSessions sessionIDs: [SessionID]) {
         guard !sessionIDs.isEmpty else { return }
-        enqueueFrames(sessionIDs.map { sessionFrame(data, to: $0) })
+        enqueueFrames(sessionIDs.map { sessionFrame(data, kind: kind, to: $0) })
     }
 
     /// Enqueues pre-built frames as one writer element (a sync phase's commit enqueues all its
@@ -88,13 +90,13 @@ extension TransportAdapter {
     /// The frame and every close carry the session's connection generation, `generation` or else
     /// the one recorded for it, so none of them reaches a later connection that reuses the ID
     /// (#531). With neither, they act by ID.
-    func sendFinalFrameAndClose(_ data: Data, to sessionID: SessionID, generation: UInt64? = nil) {
+    func sendFinalFrameAndClose(_ data: Data, kind: WebSocketFrameKind, to sessionID: SessionID, generation: UInt64? = nil) {
         let generation = generation ?? connectionGenerations[sessionID]
         guard !endedSessions.contains(sessionID) else {
             closeSessionDetached(sessionID, generation: generation)
             return
         }
-        let frame = SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation)
+        let frame = SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation, kind: kind)
         let result = outboundWriter.enqueue(
             [frame], closingSessions: [ClosingSession(sessionID: sessionID, generation: generation)]
         )
@@ -105,8 +107,13 @@ extension TransportAdapter {
     }
 
     /// A frame for `sessionID`, stamped with the connection generation recorded for it.
-    func sessionFrame(_ data: Data, to sessionID: SessionID) -> SessionFrame {
-        SessionFrame(data: data, sessionID: sessionID, connectionGeneration: connectionGenerations[sessionID])
+    func sessionFrame(_ data: Data, kind: WebSocketFrameKind, to sessionID: SessionID) -> SessionFrame {
+        SessionFrame(data: data, sessionID: sessionID, connectionGeneration: connectionGenerations[sessionID], kind: kind)
+    }
+
+    /// A frame for `sessionID` from encoded bytes that carry their frame type.
+    func sessionFrame(_ frame: EncodedFrame, to sessionID: SessionID) -> SessionFrame {
+        sessionFrame(frame.data, kind: frame.kind, to: sessionID)
     }
 
     /// The sessions of this land a transport target addresses. The writer only carries single
@@ -117,7 +124,7 @@ extension TransportAdapter {
     /// nothing before its JoinResponse, a frame of its flip (#69): `frame`, the event being
     /// sent, is held for it and sent after its firstSync (`holdOrDropEvent`). Otherwise the
     /// event is counted as dropped for it.
-    func sessionIDs(for target: EventTarget, holding frame: Data? = nil) -> [SessionID] {
+    func sessionIDs(for target: EventTarget, holding frame: EncodedFrame? = nil) -> [SessionID] {
         switch target {
         case .session(let sessionID):
             guard !isJoiningInTurn(sessionID) else {

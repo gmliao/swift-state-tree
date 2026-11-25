@@ -27,7 +27,7 @@ private actor TimeoutConnection: WebSocketConnection {
 
     private(set) var closed = false
 
-    func send(_ data: Data) async throws { frames.append(data) }
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws { frames.append(data) }
     func close() async throws { closed = true }
 
     var errors: [ErrorPayload] {

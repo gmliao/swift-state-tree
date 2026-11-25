@@ -36,9 +36,18 @@ struct SyncLagPlanned: Sendable {
 }
 
 /// One frame of a sync phase, addressed to one session of this land.
+/// Encoded bytes and the WebSocket frame type they go out in: the kind of the encoder that
+/// produced them (JSON text, MessagePack binary), carried with the bytes so nothing guesses it.
+struct EncodedFrame: Sendable {
+    let data: Data
+    let kind: WebSocketFrameKind
+}
+
 struct SyncPhaseFrame: Sendable {
     let data: Data
     let sessionID: SessionID
+    /// The frame type of the encoder that produced `data`.
+    let kind: WebSocketFrameKind
     /// A state-update frame (it carries the plan's sync sequence, #332); not an event frame or a
     /// JoinResponse.
     var isStateUpdate = false
@@ -161,7 +170,7 @@ struct SyncPhasePlan {
     /// session (#69), read by a full plan to decide the held-event bound before it picks its
     /// flips; the commit appends them. `heldEventsEnd` is the targeted count they were read to;
     /// the commit reads them again if the plan consumed a different count.
-    var heldEvents: [SessionID: [Data]]?
+    var heldEvents: [SessionID: [EncodedFrame]]?
     var heldEventsEnd = 0
     /// What the plan intends to send, per scope, for the sync stream; nil unless the land records
     /// it (`TransportAdapter.digestsPlans`).
