@@ -199,4 +199,24 @@ struct RejoinHoldsPlaceTests {
         #expect(try await second.value == .admitted)
         #expect(await keeper.playerCount() == 2)
     }
+
+    @Test("a newer login that inserts and leaves while the older one is still in its kick doesn't free the older one's place")
+    func newerLoginEndsFirst() async throws {
+        let (keeper, box) = try await makeFullKeeper()
+        // Login A kicks the old session and parks in OnLeave's resolver (arrival 1).
+        let older = Task { try await join(keeper, "p1", client: "p1-b") }
+        #expect(await box.gate.waitForArrivals(1))
+        // Login B finds no entry to kick, inserts, and leaves again; its OnLeave parks too (arrival 2).
+        #expect(try await join(keeper, "p1", client: "p1-c") == .admitted)
+        let newerLeaves = Task { try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("p1-c"), sessionID: SessionID("p1-c")) }
+        #expect(await box.gate.waitForArrivals(2))
+        // A is still pending and holds p1's place: p2 plus that place fill the land.
+        let newcomer = try await join(keeper, "p3", client: "p3-a")
+        box.gate.open()
+        #expect(try await older.value == .admitted)
+        try await newerLeaves.value
+        let finalCount = await keeper.playerCount()
+        #expect(newcomer == .roomIsFull, "the older login's place was given away when the newer login ended")
+        #expect(finalCount <= 2, "the land holds more than maxPlayers: players.count == \(finalCount)")
+    }
 }
