@@ -432,7 +432,7 @@ extension PayloadMacro: ExtensionMacro {
     private static func storedProperty(naming parameter: String, in structDecl: StructDeclSyntax) -> String? {
         for member in structDecl.memberBlock.members {
             guard let variable = member.decl.as(VariableDeclSyntax.self),
-                  !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) else { continue }
+                  !PlainDataWalk.isStatic(variable) else { continue }
             for binding in variable.bindings where !PlainDataWalk.isComputed(binding) {
                 guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self),
                       let type = binding.typeAnnotation?.type else { continue }
