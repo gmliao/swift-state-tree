@@ -39,8 +39,9 @@
 # marker is accepted only under Tests/, with a reason of at least ten characters, and in a file
 # listed in ALLOW_MARKERS with no more markers than its count.
 #
-# Both lists may only shrink: a count below its listed value fails until the list is lowered in
-# the same change.
+# A list grows only in a change that adds the rule or runtime path its markers witness, with
+# each marker mapped to the code it guards; a marker goes when that code goes. A count below
+# its listed value fails until the list is lowered in the same change.
 #
 # Usage: scripts/lint-turns.sh [--self-test] [repo root]
 
