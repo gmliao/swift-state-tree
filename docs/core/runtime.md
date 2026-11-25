@@ -57,7 +57,7 @@ HandleAction(SomeAction.self) { state, action, ctx in
 }
 ```
 
-`LandKeeper` runs every handler through `withHandlerStep`, which mutates the actor's state in place and binds `ctx.random` for that call:
+`LandKeeper` runs the handlers that replay repeats (OnInitialize, OnJoin, OnLeave, actions, client events, server inputs and the tick) through `withHandlerStep`. It mutates the actor's state in place and binds `ctx.random` for that call. The other handlers get `ctx.random` without it: CanJoin and the sync handler each get their own copy of the land's generator, and the drain's three handlers (OnDestroyWhenEmpty, OnFinalize and AfterFinalize) share one copy. Those copies are never written back.
 
 ```swift
 // Internal implementation (simplified)

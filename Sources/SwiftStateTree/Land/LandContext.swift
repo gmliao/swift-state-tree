@@ -165,17 +165,19 @@ public struct LandContext: Sendable {
     /// The land's deterministic random number generator.
     ///
     /// Draws continue one sequence across the land's steps, started from the land's seed, and
-    /// replay repeats them. The keeper hands each handler invocation its own service:
-    /// - In a handler that replay repeats from the record (OnInitialize, OnJoin, OnLeave, an
-    ///   action, a client event, a server input, the tick), draws move the land's generator.
-    ///   The keeper copies the generator back when the handler returns.
-    /// - In a handler that replay doesn't repeat (CanJoin, the sync handler, OnDestroyWhenEmpty,
-    ///   OnFinalize, AfterFinalize), draws come from a copy and never move the land's generator.
-    ///   Two such calls in a row can draw the same values.
+    /// replay repeats them. The keeper binds the service at each handler call:
+    /// - A handler that replay repeats from the record (OnInitialize, OnJoin, OnLeave, an
+    ///   action, a client event, a server input, the tick) gets its own service, and its draws
+    ///   move the land's generator. The keeper copies the generator back when the handler returns.
+    /// - A handler that replay doesn't repeat draws from a copy that never moves the land's
+    ///   generator. CanJoin and the sync handler each get their own copy, so two such calls in a
+    ///   row can draw the same values. The drain's three handlers (OnDestroyWhenEmpty, OnFinalize,
+    ///   AfterFinalize) share one copy, so their draws continue one another.
     ///
-    /// **Draw synchronously inside the handler.** A `random` kept past its handler draws from a
-    /// copy that no longer moves the land. A draw from a `Task` the handler starts may land
-    /// before or after the step's write-back, so replay can't repeat it. Resolvers don't get the
+    /// **In a handler whose draws move the land's generator, draw synchronously.** A `random`
+    /// kept past its handler draws from a copy that no longer moves the land. A draw from a
+    /// `Task` the handler starts may land before or after the step's write-back, so replay can't
+    /// repeat it. Resolvers don't get the
     /// land's generator (#765): a resolver that needs randomness brings its own.
     ///
     /// A context built without a keeper (a unit test) falls back to a `DeterministicRngService`

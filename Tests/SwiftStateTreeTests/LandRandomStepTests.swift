@@ -9,11 +9,16 @@ import Logging
 import Synchronization
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 struct LandRandomState: StateNodeProtocol {
     @Sync(.broadcast)
     var draws: [Int] = []
+
+    /// The handler that made each draw, beside `draws`, where a test names them.
+    @Sync(.broadcast)
+    var drawnBy: [String] = []
 
     init() {}
 }
@@ -66,11 +71,23 @@ private final class DrawLog: Sendable {
     func names() -> [String] { entries.withLock { $0.map(\.0) } }
 }
 
-/// A `ctx.random` kept past its handler.
+/// Each `ctx.random` kept past its handler, by handler.
 private final class RetainedRandom: Sendable {
-    private let service = Mutex<DeterministicRngService?>(nil)
-    func keep(_ value: DeterministicRngService) { service.withLock { $0 = value } }
-    func take() -> DeterministicRngService? { service.withLock { $0 } }
+    private let services = Mutex<[(String, DeterministicRngService)]>([])
+    func keep(_ name: String, _ value: DeterministicRngService) { services.withLock { $0.append((name, value)) } }
+    /// The service `name`'s `index`-th call kept.
+    func take(_ name: String, _ index: Int = 0) -> DeterministicRngService? {
+        services.withLock { kept in
+            let named = kept.filter { $0.0 == name }
+            return index < named.count ? named[index].1 : nil
+        }
+    }
+}
+
+/// Draws once into the state, and names the handler that drew.
+private func draw(_ name: String, into state: inout LandRandomState, _ ctx: LandContext) {
+    state.draws.append(draw(ctx))
+    state.drawnBy.append(name)
 }
 
 /// Every handler that replay repeats from the record draws once into the state.
@@ -78,20 +95,100 @@ private func makeSequenceLand() -> LandDefinition<LandRandomState> {
     Land("land-random", using: LandRandomState.self) {
         ClientEvents { Register(LandRandomEvent.self) }
         Rules {
-            OnJoin { state, ctx in state.draws.append(draw(ctx)) }
-            OnLeave { state, ctx in state.draws.append(draw(ctx)) }
+            OnJoin { state, ctx in draw("join", into: &state, ctx) }
+            OnLeave { state, ctx in draw("leave", into: &state, ctx) }
             HandleAction(LandRandomAction.self) { state, _, ctx in
-                state.draws.append(draw(ctx))
+                draw("action", into: &state, ctx)
                 return LandRandomAck(ok: true)
             }
-            HandleEvent(LandRandomEvent.self) { state, _, ctx in state.draws.append(draw(ctx)) }
-            HandleServerInput(LandRandomInput.self) { state, _, ctx in state.draws.append(draw(ctx)) }
+            HandleEvent(LandRandomEvent.self) { state, _, ctx in draw("event", into: &state, ctx) }
+            HandleServerInput(LandRandomInput.self) { state, _, ctx in draw("input", into: &state, ctx) }
         }
         Lifetime {
-            OnInitialize { state, ctx in state.draws.append(draw(ctx)) }
-            Tick(every: .seconds(3600)) { state, ctx in state.draws.append(draw(ctx)) }
+            OnInitialize { state, ctx in draw("initialize", into: &state, ctx) }
+            Tick(every: .seconds(3600)) { state, ctx in draw("tick", into: &state, ctx) }
         }
     }
+}
+
+/// `definition` with its client events registered through the public descriptor init, which
+/// has no decode: their handlers decode them when applied (the `.undecoded` payload).
+private func withUndecodedClientEvents(_ definition: LandDefinition<LandRandomState>) -> LandDefinition<LandRandomState> {
+    let registry = EventRegistry<AnyClientEvent>(registered: definition.clientEventRegistry.registered.map {
+        AnyEventDescriptor(type: $0.type, eventName: $0.eventName, direction: $0.direction)
+    })
+    return LandDefinition(
+        id: definition.id,
+        stateType: definition.stateType,
+        clientEventRegistry: registry,
+        serverEventRegistry: definition.serverEventRegistry,
+        config: definition.config,
+        actionHandlers: definition.actionHandlers,
+        eventHandlers: definition.eventHandlers,
+        serverInputHandlers: definition.serverInputHandlers,
+        duplicateHandlers: definition.duplicateHandlers,
+        clientEventMismatches: definition.clientEventMismatches,
+        unrecognizedNodes: definition.unrecognizedNodes,
+        resolverDeclarationProblems: definition.resolverDeclarationProblems,
+        lifetimeHandlers: definition.lifetimeHandlers,
+        servicesType: definition.servicesType,
+        acceptsServices: definition.acceptsServices
+    )
+}
+
+/// A recording keeper for `definition`, initialized, with its record's metadata set.
+private func makeRecordingKeeper(
+    _ definition: LandDefinition<LandRandomState>, landID: String
+) async throws -> (keeper: LandKeeper<LandRandomState>, recorder: ReevaluationRecorder, seed: UInt64) {
+    let keeper = LandKeeper<LandRandomState>(
+        definition: definition,
+        initialState: LandRandomState(),
+        enableLiveStateHashRecording: true,
+        autoStartLoops: false,
+        landID: landID
+    )
+    let recorder = try #require(await keeper.getReevaluationRecorder())
+    await keeper.awaitInitialization()
+    let seed = try #require(await keeper.getRngSeed())
+    await recorder.setMetadata(ReevaluationRecordMetadata(
+        landID: landID, landType: definition.id, createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+        metadata: [:], landDefinitionID: definition.id, rngSeed: seed
+    ))
+    return (keeper, recorder, seed)
+}
+
+/// Saves `keeper`'s record (without its initialize record when `dropInitializeRecord`, so replay
+/// runs OnInitialize as tick 0's lifecycle item) and replays it with `definition`.
+private func replayRecord(
+    of keeper: LandKeeper<LandRandomState>,
+    _ recorder: ReevaluationRecorder,
+    definition: LandDefinition<LandRandomState>,
+    dropInitializeRecord: Bool = false
+) async throws -> ReevaluationEngine.RunResult {
+    await keeper.waitForRecorderSubmissionsForTesting()
+    let path = recordPath()
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    try await recorder.save(to: path)
+    guard dropInitializeRecord else {
+        return try await ReevaluationEngine.run(definition: definition, initialState: LandRandomState(), recordFilePath: path)
+    }
+    try ReevaluationRecordFile.convertToJSONViewForTesting(atPath: path)
+    let jsonPath = path + ".json"
+    try FileManager.default.moveItem(atPath: path, toPath: jsonPath)
+    defer { try? FileManager.default.removeItem(atPath: jsonPath) }
+    var object = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: jsonPath))) as? [String: Any])
+    var frames = try #require(object["tickFrames"] as? [[String: Any]])
+    let index = try #require(frames.firstIndex { $0["initialize"] != nil }, "the live run recorded an initialize record")
+    frames[index].removeValue(forKey: "initialize")
+    object["tickFrames"] = frames
+    try JSONSerialization.data(withJSONObject: object).write(to: URL(fileURLWithPath: jsonPath))
+    return try await ReevaluationEngine.run(definition: definition, initialState: LandRandomState(), recordFilePath: jsonPath)
+}
+
+/// The ticks whose replayed hash differs from the live one; fails when no tick was compared.
+private func divergedTicks(_ result: ReevaluationEngine.RunResult, sourceLocation: SourceLocation = #_sourceLocation) -> [Int64] {
+    #expect(!result.recordedStateHashes.isEmpty, "the live run recorded tick hashes", sourceLocation: sourceLocation)
+    return result.recordedStateHashes.filter { result.tickHashes[$0.key] != $0.value }.keys.sorted()
 }
 
 private let player = PlayerID("p1")
@@ -110,79 +207,103 @@ private func recordPath() -> String {
 struct LandRandomStepTests {
     @Test("Every handler replay repeats continues one sequence, and replay repeats it through the inline tick")
     func sequenceContinuesAndReplays() async throws {
-        let landID = "land-random:sequence"
-        let keeper = LandKeeper<LandRandomState>(
-            definition: makeSequenceLand(),
-            initialState: LandRandomState(),
-            enableLiveStateHashRecording: true,
-            autoStartLoops: false,
-            landID: landID
-        )
-        let recorder = try #require(await keeper.getReevaluationRecorder())
-        await keeper.awaitInitialization()
-        let seed = try #require(await keeper.getRngSeed())
-        await recorder.setMetadata(ReevaluationRecordMetadata(
-            landID: landID, landType: "land-random", createdAt: Date(timeIntervalSince1970: 1_800_000_000),
-            metadata: [:], landDefinitionID: "land-random", rngSeed: seed
-        ))
+        let (keeper, recorder, seed) = try await makeRecordingKeeper(makeSequenceLand(), landID: "land-random:sequence")
         try await keeper.join(playerID: player, clientID: client, sessionID: session)
         await keeper.stepTickOnce()
-        let pendingAction = Task { try await keeper.handleActionEnvelope(action(), playerID: player, clientID: client, sessionID: session) }
-        let pendingEvent = Task { try await keeper.handleClientEvent(AnyClientEvent(LandRandomEvent(n: 1)), playerID: player, clientID: client, sessionID: session) }
-        let pendingInput = Task { await keeper.submitServerInput(LandRandomInput(n: 1)) }
+        // A tick land takes each input at intake and applies them in intake order, at the next tick.
+        _ = try await keeper.handleActionEnvelope(action(), playerID: player, clientID: client, sessionID: session)
+        try await keeper.handleClientEvent(AnyClientEvent(LandRandomEvent(n: 1)), playerID: player, clientID: client, sessionID: session)
+        _ = await keeper.submitServerInput(LandRandomInput(n: 1))
         await keeper.stepTickOnce()
-        _ = try await pendingAction.value
-        try await pendingEvent.value
-        _ = await pendingInput.value
         try await keeper.leave(playerID: player, clientID: client, sessionID: session)
         await keeper.stepTickOnce()
-        await keeper.waitForRecorderSubmissionsForTesting()
 
-        let live = await keeper.currentState().draws
-        #expect(live.count == 9, "OnInitialize, OnJoin, three ticks, an action, an event, an input, OnLeave: \(live)")
-        #expect(live == expectedDraws(seed: seed, count: live.count))
+        let state = await keeper.currentState()
+        let order = ["initialize", "join", "tick", "action", "event", "input", "tick", "leave", "tick"]
+        #expect(state.drawnBy == order)
+        #expect(state.draws == expectedDraws(seed: seed, count: order.count), "each handler drew the land's next value, in this order: \(order)")
 
-        let path = recordPath()
-        defer { try? FileManager.default.removeItem(atPath: path) }
-        try await recorder.save(to: path)
-        let result = try await ReevaluationEngine.run(definition: makeSequenceLand(), initialState: LandRandomState(), recordFilePath: path)
-        #expect(!result.recordedStateHashes.isEmpty)
-        let diverged = result.recordedStateHashes.filter { result.tickHashes[$0.key] != $0.value }.keys.sorted()
+        let result = try await replayRecord(of: keeper, recorder, definition: makeSequenceLand())
+        #expect(result.initialize == .passed)
+        let diverged = divergedTicks(result)
         #expect(diverged.isEmpty, "ticks whose replayed hash differs from the live one: \(diverged)")
     }
 
-    @Test("A retained ctx.random draws from a copy: the land's sequence doesn't move")
+    @Test("A client event whose descriptor has no decode draws in turn, live and replayed")
+    func undecodedClientEventDraws() async throws {
+        let definition = withUndecodedClientEvents(makeSequenceLand())
+        #expect(definition.clientEventRegistry.registered.allSatisfy { $0.decodeClientEvent == nil })
+        let (keeper, recorder, seed) = try await makeRecordingKeeper(definition, landID: "land-random:undecoded")
+        try await keeper.join(playerID: player, clientID: client, sessionID: session)
+        await keeper.stepTickOnce()
+        try await keeper.handleClientEvent(AnyClientEvent(LandRandomEvent(n: 1)), playerID: player, clientID: client, sessionID: session)
+        await keeper.stepTickOnce()
+
+        let state = await keeper.currentState()
+        let order = ["initialize", "join", "tick", "event", "tick"]
+        #expect(state.drawnBy == order)
+        #expect(state.draws == expectedDraws(seed: seed, count: order.count))
+
+        let result = try await replayRecord(of: keeper, recorder, definition: withUndecodedClientEvents(makeSequenceLand()))
+        let diverged = divergedTicks(result)
+        #expect(diverged.isEmpty, "ticks whose replayed hash differs from the live one: \(diverged)")
+    }
+
+    @Test("A record without an initialize record replays OnInitialize as a lifecycle item, drawing in turn")
+    func initializeFallbackDrawsInTurn() async throws {
+        let (keeper, recorder, seed) = try await makeRecordingKeeper(makeSequenceLand(), landID: "land-random:init-fallback")
+        try await keeper.join(playerID: player, clientID: client, sessionID: session)
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+        let state = await keeper.currentState()
+        #expect(state.drawnBy == ["initialize", "join", "tick", "tick"])
+        #expect(state.draws == expectedDraws(seed: seed, count: 4))
+
+        let result = try await replayRecord(of: keeper, recorder, definition: makeSequenceLand(), dropInitializeRecord: true)
+        #expect(result.initialize == .notRecorded, "replay took the lifecycle fallback")
+        let diverged = divergedTicks(result)
+        #expect(diverged.isEmpty, "ticks whose replayed hash differs from the live one: \(diverged)")
+    }
+
+    @Test("Each handler call gets its own service; one kept past its call continues its own sequence")
     func retainedServiceIsIsolated() async throws {
         let retained = RetainedRandom()
         let definition = Land("land-random-retained", using: LandRandomState.self) {
             Rules {
                 HandleAction(LandRandomAction.self) { state, _, ctx in
-                    retained.keep(ctx.random)
+                    retained.keep("action", ctx.random)
                     state.draws.append(draw(ctx))
                     return LandRandomAck(ok: true)
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { state, ctx in state.draws.append(draw(ctx)) }
+                Tick(every: .seconds(3600)) { state, ctx in
+                    retained.keep("tick", ctx.random)
+                    state.draws.append(draw(ctx))
+                }
             }
         }
         let keeper = LandKeeper<LandRandomState>(definition: definition, initialState: LandRandomState(), autoStartLoops: false, landID: "land-random:retained")
         await keeper.awaitInitialization()
         let seed = try #require(await keeper.getRngSeed())
+        let all = expectedDraws(seed: seed, count: 6)
         try await keeper.join(playerID: player, clientID: client, sessionID: session)
         await keeper.stepTickOnce()
         let submission = try await keeper.submitAction(action(), playerID: player, clientID: client, sessionID: session)
+        // The action draws the land's second value, then the tick its third.
         await keeper.stepTickOnce()
-        let kept = try #require(retained.take(), "the action's handler ran (\(submission))")
+        let kept = try #require(retained.take("action"), "the action's handler ran (\(submission))")
+        let laterCall = try #require(retained.take("tick", 1), "the second tick's handler ran")
+        #expect(kept !== laterCall, "a later handler call gets a new service, not the kept one reset")
+
+        // After the later call's step: the kept service continues from its own last draw (the
+        // action's), not from where the land's generator is.
         let outside = (0..<3).map { _ in kept.nextInt(in: drawRange) }
-        await keeper.stepTickOnce()
-        _ = kept.nextInt(in: drawRange)
+        #expect(outside == Array(all[2...4]), "the kept service continues the action's sequence")
         await keeper.stepTickOnce()
 
         let live = await keeper.currentState().draws
-        #expect(live.count == 5, "four ticks and the action: \(live)")
-        #expect(live == expectedDraws(seed: seed, count: live.count), "the retained service's draws didn't move the land")
-        #expect(outside.count == 3)
+        #expect(live == Array(all[0...3]), "three ticks and the action; the kept service's draws didn't move the land")
     }
 
     @Test("Resolvers don't reach an RNG, whichever registration it came from (#765)")
@@ -240,6 +361,48 @@ struct LandRandomStepTests {
         #expect(log.values("sync") == next + next, "each sync handler call draws from a fresh copy")
         let live = await keeper.currentState().draws
         #expect(live == expectedDraws(seed: seed, count: 2), "the ticks continue the land's sequence unmoved")
+    }
+
+    @Test("CanJoin with a resolver takes its copy after the resolver; the recorded run replays")
+    func canJoinWithResolverIsDetachedAndReplays() async throws {
+        let log = DrawLog()
+        let gate = TestGate()
+        LandRandomGatedResolver.gate.withLock { $0 = gate }
+        defer { LandRandomGatedResolver.gate.withLock { $0 = nil } }
+        let makeLand = {
+            Land("land-random-canjoin-resolver", using: LandRandomState.self) {
+                Rules {
+                    CanJoin(resolvers: LandRandomGatedResolver.self) { _, session, output, ctx in
+                        log.add("resolver", output?.value ?? -1)
+                        log.add("canJoin", draw(ctx))
+                        return .allow(playerID: PlayerID(session.playerID))
+                    }
+                }
+                Lifetime {
+                    Tick(every: .seconds(3600)) { state, ctx in state.draws.append(draw(ctx)) }
+                }
+            }
+        }
+        let (keeper, recorder, seed) = try await makeRecordingKeeper(makeLand(), landID: "land-random:canjoin-resolver")
+        let all = expectedDraws(seed: seed, count: 3)
+        await keeper.stepTickOnce()
+        let joining = Task {
+            try await keeper.join(session: PlayerSession(playerID: "p1", deviceID: "dev", metadata: [:]), clientID: client, sessionID: session, services: LandServices())
+        }
+        #expect(await gate.waitForArrivals(1), "CanJoin's resolver started")
+        // A tick while the resolver is held moves the land's generator.
+        await keeper.stepTickOnce()
+        gate.open()
+        _ = try await joining.value
+        await keeper.stepTickOnce()
+
+        #expect(log.values("resolver") == expectedResolverDraw(), "the resolver drew from its own generator")
+        #expect(log.values("canJoin") == [all[2]], "CanJoin's copy was taken after the resolver, from the land's generator as the held tick left it")
+        #expect(await keeper.currentState().draws == all, "three ticks; CanJoin didn't move the land")
+
+        let result = try await replayRecord(of: keeper, recorder, definition: makeLand())
+        let diverged = divergedTicks(result)
+        #expect(diverged.isEmpty, "ticks whose replayed hash differs from the live one: \(diverged)")
     }
 
     @Test("A viewer joining a reevaluation keeper runs CanJoin on a copy: the replayed draws still match")
@@ -342,9 +505,7 @@ struct LandRandomStepTests {
                 Tick(every: .seconds(3600)) { state, ctx in state.draws.append(draw(ctx)) }
             }
         }
-        let keeper = LandKeeper<LandRandomState>(definition: definition, initialState: LandRandomState(), autoStartLoops: false, landID: "land-random:throw")
-        await keeper.awaitInitialization()
-        let seed = try #require(await keeper.getRngSeed())
+        let (keeper, recorder, seed) = try await makeRecordingKeeper(definition, landID: "land-random:throw")
         try await keeper.join(playerID: player, clientID: client, sessionID: session)
         await keeper.stepTickOnce()
         let submission = try await keeper.submitAction(action(), playerID: player, clientID: client, sessionID: session)
@@ -354,6 +515,12 @@ struct LandRandomStepTests {
         let live = await keeper.currentState().draws
         let all5 = expectedDraws(seed: seed, count: 5)
         #expect(live == [all5[0], all5[3], all5[4]], "a tick; the refused action's two draws, then the tick in its turn; a tick: \(live) vs \(all5) (\(submission))")
+
+        // The refused action is recorded before its handler runs, so replay runs it again and
+        // must make the same two draws before the throw.
+        let result = try await replayRecord(of: keeper, recorder, definition: definition)
+        let diverged = divergedTicks(result)
+        #expect(diverged.isEmpty, "ticks whose replayed hash differs from the live one: \(diverged)")
     }
 
     @Test("The seed: a caller-registered service's, else the land ID's, else the definition ID's")
@@ -393,6 +560,26 @@ private extension DeterministicRng {
 @PlainData
 struct LandRandomResolverOutput: ResolverOutput, Equatable {
     let sawRandom: Bool
+}
+
+@PlainData
+struct LandRandomResolverDraw: ResolverOutput, Equatable {
+    let value: Int
+}
+
+/// The first value `LandRandomGatedResolver`'s own generator draws.
+private func expectedResolverDraw() -> [Int] { expectedDraws(seed: 5, count: 1) }
+
+/// A resolver that waits at `gate` (when one is set), then draws from its own generator, not
+/// the land's.
+struct LandRandomGatedResolver: ContextResolver {
+    typealias Output = LandRandomResolverDraw
+    static let gate = Mutex<TestGate?>(nil)
+    static func resolve(ctx: ResolverContext) async throws -> LandRandomResolverDraw {
+        if let gate = gate.withLock({ $0 }) { await gate.arrive() }
+        var own = DeterministicRng(seed: 5)
+        return LandRandomResolverDraw(value: own.nextInt(in: drawRange))
+    }
 }
 
 /// Reports whether a resolver's services hold a `DeterministicRngService`.
