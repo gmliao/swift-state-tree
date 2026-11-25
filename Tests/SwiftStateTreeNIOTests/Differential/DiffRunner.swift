@@ -675,7 +675,36 @@ final class DiffRun: @unchecked Sendable {
             metadata: contents.metadata, frames: contents.frames,
             completeness: completeness, holdsNonNFCText: contents.holdsNonNFCText
         ))
-        return try DiffValue.fromJSON(data)
+        return try payloadsAsTrees(DiffValue.fromJSON(data))
+    }
+
+    /// Rule `recordPayloadAsTree` (#700 K1a, plan §3.11): each action's and client event's 3.7
+    /// payload in the view is its tree (the bytes decoded with their encoding), in the form a 3.6
+    /// record's tree has, and the entry's `payloadEncoding` is left out. Canonical JSON bytes are
+    /// the same within one toolchain only, so off the pinned image the view must not hold a
+    /// payload's spelling; the byte comparison on the pinned image still sees the bytes.
+    static func payloadsAsTrees(_ view: DiffValue) throws -> DiffValue {
+        guard case .object(var root) = view, case .array(let frames)? = root["frames"] else { return view }
+        root["frames"] = .array(try frames.map { frame in
+            guard case .object(var fields) = frame else { return frame }
+            for key in ["actions", "clientEvents"] {
+                guard case .array(let entries)? = fields[key] else { continue }
+                fields[key] = .array(try entries.map(payloadAsTree))
+            }
+            return .object(fields)
+        })
+        return .object(root)
+    }
+
+    private static func payloadAsTree(_ entry: DiffValue) throws -> DiffValue {
+        guard case .object(var fields) = entry, case .string(let base64)? = fields["payload"],
+              let bytes = Data(base64Encoded: base64) else { return entry }
+        var encoding: RecordPayloadEncoding?
+        if case .string(let name)? = fields["payloadEncoding"] { encoding = RecordPayloadEncoding(rawValue: name) }
+        let tree = try RecordedPayloadTree.tree(bytes, encoding: encoding)
+        fields["payload"] = try DiffValue.fromJSON(JSONEncoder().encode(tree))
+        fields["payloadEncoding"] = nil
+        return .object(fields)
     }
 
     /// Opens every gate, stops the land if it still runs, closes the connections and awaits

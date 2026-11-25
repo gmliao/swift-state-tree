@@ -110,6 +110,39 @@ extension DifferentialHarness {
             #expect(DiffCompare.differences(base, changed, checkBytes: false).isEmpty)
         }
 
+        @Test("A JSON payload's spelling differs only in the bytes; a changed payload value is reported at its path in both modes")
+        func jsonRecordPayloadComparesAsTreeOffThePinnedToolchain() async throws {
+            /// A saved record of one action whose payload is `payloadJSON`'s bytes.
+            func capture(_ payloadJSON: String) async throws -> DiffRecordCapture {
+                let recorder = ReevaluationRecorder()
+                await recorder.setMetadata(ReevaluationRecordMetadata(
+                    landID: "self-check:1", landType: "self-check", createdAt: Date(timeIntervalSince1970: 0), metadata: [:]
+                ))
+                await recorder.record(tickId: 0, actions: [ReevaluationRecordedAction(
+                    kind: "action", sequence: 0, typeIdentifier: "SelfCheckAction",
+                    payload: Data(payloadJSON.utf8), payloadEncoding: .json,
+                    playerID: "p", clientID: "c", sessionID: "s", resolverOutputs: [:], resolvedAtTick: 0
+                )], clientEvents: [], lifecycleEvents: [])
+                let path = FileManager.default.temporaryDirectory.appendingPathComponent("self-check-\(UUID().uuidString).sstr").path
+                defer { try? FileManager.default.removeItem(atPath: path) }
+                try await recorder.save(to: path)
+                let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+                let contents = try ReevaluationRecordLog.decodeForTesting(Array(bytes))
+                #expect(contents.frames.count == 1)
+                return DiffRecordCapture(bytes: bytes, decoded: try DiffRun.decodedView(contents), complete: true)
+            }
+            let escaped = try await capture(#"{"k":"a\/b"}"#)
+            let plain = try await capture(#"{"k":"a/b"}"#)
+            #expect(escaped.decoded == plain.decoded, "the view holds the tree, not the spelling")
+            #expect(DiffCompare.compareRecord(escaped, plain, checkBytes: true).map(\.place) == [DiffCompare.recordBytesPlace])
+            #expect(DiffCompare.compareRecord(escaped, plain, checkBytes: false).isEmpty)
+
+            let changed = try await capture(#"{"k":"c"}"#)
+            let path = "frames[0].actions[0].payload.k"
+            #expect(DiffCompare.compareRecord(plain, changed, checkBytes: true).map(\.place) == [DiffCompare.recordBytesPlace, path])
+            #expect(DiffCompare.compareRecord(plain, changed, checkBytes: false).map(\.place) == [path])
+        }
+
         @Test("A golden whose decoded view isn't its bytes is corrupt")
         func corruptGolden() async throws {
             let base = try await baseRun()
