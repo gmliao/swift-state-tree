@@ -23,7 +23,7 @@ private func makeCompileTestBaseLand() -> LandDefinition<CompileTestState> {
             MaxPlayers(4)
         }
         Lifetime {
-            Tick(every: .milliseconds(50)) { (_: inout CompileTestState, _: LandContext) in }
+            Tick(every: .milliseconds(50)) { _, _ in }
         }
     }
 }

@@ -25,7 +25,7 @@ func testConnectedToJoinedTransition() async throws {
         using: StateTransitionTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout StateTransitionTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -90,11 +90,11 @@ func testJoinedToDisconnectedTransition() async throws {
         using: StateTransitionTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout StateTransitionTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
 
-            OnLeave { (state: inout StateTransitionTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }
@@ -159,7 +159,7 @@ func testConnectedToDisconnectedWithoutJoin() async throws {
         using: StateTransitionTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout StateTransitionTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -213,11 +213,11 @@ func testMultipleStateTransitions() async throws {
         using: StateTransitionTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout StateTransitionTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
 
-            OnLeave { (state: inout StateTransitionTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }

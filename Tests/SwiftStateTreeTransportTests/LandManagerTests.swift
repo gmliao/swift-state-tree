@@ -250,7 +250,7 @@ func testLandManagerAutoRemovesDestroyedLand() async throws {
     let landFactory: @Sendable (LandID) -> LandDefinition<CounterTestState> = { landID in
         Land(landID.stringValue, using: CounterTestState.self) {
             Lifetime {
-                DestroyWhenEmpty(after: .milliseconds(50)) { (_: inout CounterTestState, _: LandContext) in
+                DestroyWhenEmpty(after: .milliseconds(50)) { _, _ in
                     // Empty handler
                 }
             }
@@ -308,12 +308,12 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
     let landFactory: @Sendable (LandID) -> LandDefinition<CounterTestState> = { landID in
         Land(landID.stringValue, using: CounterTestState.self) {
             Lifetime {
-                DestroyWhenEmpty(after: .milliseconds(50)) { (_: inout CounterTestState, _: LandContext) in
+                DestroyWhenEmpty(after: .milliseconds(50)) { _, _ in
                     // Empty handler
                 }
             }
             Rules {
-                HandleAction(IncrementTestAction.self) { (state: inout CounterTestState, action: IncrementTestAction, _: LandContext) in
+                HandleAction(IncrementTestAction.self) { state, action, _ in
                     state.count += action.amount
                     return IncrementTestResponse(newCount: state.count)
                 }
@@ -392,11 +392,11 @@ func testLandManagerLoopPhaseOffsetUsesInstanceID() async throws {
         Land("phase-type", using: ManagerTestState.self) {
             Rules {}
             Lifetime {
-                Tick(every: interval) { (state: inout ManagerTestState, _: LandContext) in
+                Tick(every: interval) { state, _ in
                     state.ticks += 1
                     ticks.append("tick:\(landID.stringValue)")
                 }
-                StateSync(every: interval) { (_: ManagerTestState, _: LandContext) in }
+                StateSync(every: interval) { _, _ in }
             }
         }
     }

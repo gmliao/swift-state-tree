@@ -556,19 +556,25 @@ let resourceGameLand = Land("resource-game", using: ResourceGameState.self) {
 這個範例展示如何在 Action handler 中使用 Resolver：
 
 ```swift
-// Resolver
-struct ProductInfoResolver: ContextResolver {
-    typealias Output = ProductInfo
-    
-    static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-        let action = ctx.actionPayload as? PurchaseAction
-        guard let productID = action?.productID else {
-            throw ResolverError.missingParameter("productID")
-        }
-        
+// The capability the resolver needs, and the land's services that provide it
+protocol HasProductDatabase: Sendable {
+    var database: ProductDatabase { get }
+}
+
+struct ShopServices: HasProductDatabase {
+    let database: ProductDatabase
+}
+
+// Resolver: a value whose fields are its parameters
+@PlainData
+struct ProductInfo<D: HasProductDatabase>: Resolver {
+    typealias Dependencies = D
+    let productID: String
+
+    func resolve(_ deps: D) async throws -> ProductInfoOutput {
         // Load from database (simulated)
-        let data = try await ctx.services.database.fetchProduct(by: productID)
-        return ProductInfo(
+        let data = try await deps.database.fetchProduct(by: productID)
+        return ProductInfoOutput(
             id: data.id,
             name: data.name,
             price: data.price,
@@ -578,7 +584,7 @@ struct ProductInfoResolver: ContextResolver {
 }
 
 @PlainData
-struct ProductInfo: Codable, Sendable, ResolverOutput {
+struct ProductInfoOutput: Codable, Sendable, ResolverOutput {
     let id: String
     let name: String
     let price: Double
@@ -595,14 +601,14 @@ struct PurchaseAction: ActionPayload {
 }
 
 // Land with Resolver
-let shopLand = Land("shop", using: ShopState.self) {
+let shopLand = Land("shop", using: ShopState.self, services: ShopServices.self) {
     Rules {
         HandleAction(
             PurchaseAction.self,
-            resolvers: ProductInfoResolver.self
-        ) { state, action, ctx in
-            // Resolver has already executed, productInfo is available
-            guard let product: ProductInfo = ctx.productInfo else {
+            resolvers: { _, action, _ in ProductInfo(productID: action.productID) }
+        ) { state, action, product, ctx in
+            // The resolver has already run; product is its output
+            guard let product else {
                 return PurchaseResponse(success: false, message: "Product not found")
             }
             

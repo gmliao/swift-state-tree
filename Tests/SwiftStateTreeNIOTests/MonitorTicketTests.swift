@@ -490,6 +490,76 @@ struct MonitorTicketTests {
         try await join("/game/\(replayType)", replayType, signer.issue(replayLandType: replayType, pathToken: replayToken), "r-ok")
         #expect(await lands(replayType) == 1)
     }
+
+    @Test("registerWithGenericReplay with services: the factory builds services for live lands only, never for the replay or monitor land")
+    func servicesFactoryLiveOnly() async throws {
+        let log = RunLog()
+        let built = ServicesFactorySpy()
+        let liveType = "services-live"
+        let replayType = "\(liveType)-replay"
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, adminAPIKey: "k"))
+        try await host.registerWithGenericReplay(
+            landType: liveType,
+            liveLand: Land(liveType, using: MonitorTestLiveState.self, services: SpyServices.self) { Rules {} },
+            services: { landID, _ in
+                built.add(landID.landType)
+                return SpyServices()
+            },
+            liveInitialState: MonitorTestLiveState(),
+            liveWebSocketPath: "/game/\(liveType)",
+            configuration: NIOLandServerConfiguration(allowAutoCreateOnJoin: true),
+            reevaluation: ReevaluationFeatureConfiguration(
+                enabled: true,
+                runnerServiceFactory: {
+                    let service = ReevaluationRunnerService(factory: LoggingFactory(log: log, gate: nil, fail: false))
+                    log.add(service)
+                    return service
+                }
+            )
+        )
+        let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+        let recordPath = URL(fileURLWithPath: recordsDir, isDirectory: true).standardizedFileURL.path + "/services.json"
+        let token = base64URL(recordPath)
+        let signer = ReplayTicketSigner.process
+
+        func join(_ path: String, _ landType: String, _ instanceId: String?, _ session: String) async throws {
+            let transport = try #require(await host.transportForTesting(webSocketPath: path))
+            let router = try #require(await transport.delegate)
+            let sessionID = SessionID(session)
+            await router.onConnect(sessionID: sessionID, clientID: ClientID("c-\(session)"), authInfo: nil)
+            let message = TransportMessage.join(
+                requestID: "j-\(session)", landType: landType, landInstanceId: instanceId,
+                playerID: "p-\(session)", deviceID: nil, metadata: StateUpdateFeature.joinMetadata
+            )
+            await router.onMessage(try JSONEncoder().encode(message), from: sessionID)
+        }
+        func lands(_ landType: String) async -> Int {
+            await host.realm.listAllLands().filter { $0.landType == landType }.count
+        }
+
+        try await join("/game/\(liveType)", liveType, "match-1", "live")
+        try await join("/reevaluation-monitor", monitorType,
+                       signer.issueMonitor(monitorLandType: monitorType, liveLandType: liveType, pathToken: token), "monitor")
+        try await join("/game/\(replayType)", replayType, signer.issue(replayLandType: replayType, pathToken: token), "replay")
+        // All three lands exist, so each creation reached its services.
+        #expect(await lands(liveType) == 1)
+        #expect(await lands(monitorType) == 1)
+        #expect(await lands(replayType) == 1)
+        #expect(built.landTypes == [liveType])
+        for runner in log.runners {
+            await runner.verificationTaskForTesting()?.value
+        }
+    }
+}
+
+private struct SpyServices: Sendable {}
+
+/// The land types the live land's services factory was called for.
+private final class ServicesFactorySpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [String] = []
+    func add(_ landType: String) { lock.withLock { calls.append(landType) } }
+    var landTypes: [String] { lock.withLock { calls } }
 }
 
 private final class TestClock: @unchecked Sendable {

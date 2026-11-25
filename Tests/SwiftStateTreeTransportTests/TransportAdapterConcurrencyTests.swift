@@ -56,7 +56,7 @@ func testMultipleSessionsJoinInRapidSuccession() async throws {
         using: ConcurrencyTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ConcurrencyTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
                 state.joinCount += 1
             }
@@ -132,12 +132,12 @@ func testDuplicatePlayerIDKicksOldSession() async throws {
         using: ConcurrencyTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ConcurrencyTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
                 state.joinCount += 1
             }
 
-            OnLeave { (state: inout ConcurrencyTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
                 Task {
                     await onLeaveTracker.record(playerID: ctx.playerID)
@@ -242,12 +242,12 @@ func testRapidConnectDisconnect() async throws {
         using: ConcurrencyTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ConcurrencyTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
                 state.joinCount += 1
             }
 
-            OnLeave { (state: inout ConcurrencyTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }
@@ -319,7 +319,7 @@ func testJoinDuringLeave() async throws {
         using: ConcurrencyTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ConcurrencyTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
                 state.joinCount += 1
                 Task {
@@ -327,7 +327,7 @@ func testJoinDuringLeave() async throws {
                 }
             }
 
-            OnLeave { (state: inout ConcurrencyTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
                 Task {
                     await onLeaveCallCount.increment()
@@ -425,12 +425,12 @@ func testRapidLeaveAndJoin() async throws {
         using: ConcurrencyTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ConcurrencyTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
                 state.joinCount += 1
             }
 
-            OnLeave { (state: inout ConcurrencyTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }

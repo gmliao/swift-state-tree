@@ -39,8 +39,9 @@ struct TickProbeTests {
     @Test("The land notes its ticks and its applied actions' tick advance through its probe; without a probe the state is the same")
     func land() async throws {
         func run(_ recorder: TickProbeRecorder?) async throws -> ResolverTestState {
-            let keeper = LandKeeper<ResolverTestState>(
-                definition: ResolverTest.makeLand(),
+            let keeper = LandKeeper(
+                land: ResolverTest.makeLand(),
+                resolverServices: ResolverTestServices(settings: SimulatedServiceSettings(delayMs: 0)),
                 initialState: ResolverTestState(),
                 services: ResolverTest.makeServices(settings: SimulatedServiceSettings(delayMs: 0), tickRecorder: recorder),
                 autoStartLoops: false

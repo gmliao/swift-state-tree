@@ -125,7 +125,7 @@ struct GameServer {
         }
         let visibilityLand = VisibilityTest.makeLand()
         let resolverLand = ResolverTest.makeLand()
-        let testLands = [AnyLandDefinition(visibilityLand), AnyLandDefinition(resolverLand)]
+        let testLands = [AnyLandDefinition(visibilityLand), AnyLandDefinition(resolverLand.definition)]
         let schemaLands: [AnyLandDefinition] = enableReevaluation
             ? [AnyLandDefinition(liveLand), AnyLandDefinition(ReevaluationMonitor.makeLand())] + testLands
             : [AnyLandDefinition(liveLand)] + testLands
@@ -225,6 +225,7 @@ struct GameServer {
         try await nioHost.registerWithGenericReplay(
             landType: ResolverTestConfig.landType,
             liveLand: resolverLand,
+            services: { _, _ in ResolverTestServices(settings: resolverServiceSettings) },
             liveInitialState: ResolverTestState(),
             liveWebSocketPath: "/game/\(ResolverTestConfig.landType)",
             configuration: resolverConfig,
@@ -344,7 +345,7 @@ private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
         case ResolverTestConfig.landType:
             // Replay applies the recorded resolver outputs and never calls the service.
             return try await ConcreteReevaluationRunner(
-                definition: ResolverTest.makeLand(),
+                definition: ResolverTest.makeLand().definition,
                 initialState: ResolverTestState(),
                 recordFilePath: recordFilePath,
                 requiredRecordVersion: requiredRecordVersion,

@@ -40,16 +40,16 @@ private func makeRangeTestLand(quiet: Bool = false) -> LandDefinition<RangeTestS
             Register(RangeTestEvent.self)
         }
         Rules {
-            HandleAction(RangeTestAction.self) { (_: inout RangeTestState, _: RangeTestAction, ctx: LandContext) in
+            HandleAction(RangeTestAction.self) { _, _, ctx in
                 if !quiet { ctx.emitEvent(RangeTestEvent(value: -1), to: .all) }
                 return RangeTestAck(ok: true)
             }
         }
         Lifetime {
-            OnInitialize { (_: inout RangeTestState, ctx: LandContext) in
+            OnInitialize { _, ctx in
                 ctx.emitEvent(RangeTestEvent(value: 0), to: .all)
             }
-            Tick(every: .seconds(3600)) { (state: inout RangeTestState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 if !quiet {
                     ctx.emitEvent(RangeTestEvent(value: state.ticks), to: .all)

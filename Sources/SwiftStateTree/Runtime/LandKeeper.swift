@@ -73,6 +73,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case turnRecord
     /// The start of an action job's completion (`completeAction`), before its segment.
     case actionComplete
+    /// The start of an action job's task, before its resolvers run. The values were built in
+    /// the intake segment (#769 §3.2); a test changes the State here and checks they don't see it.
+    case actionJobStart
     /// The end of `submitAction`, before it returns or throws to its caller: its intake (and
     /// a job's registration) is done.
     case actionSubmitted
@@ -405,6 +408,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     public let definition: LandDefinition<State>
+    /// The land's services value, which its `Resolver` values get (#769 §3.4): the one the typed
+    /// entry point gave, `NoServices()` for a land without services, or nil for a land that
+    /// declares services and was given none (its initialization fails).
+    private let resolverServices: (any Sendable)?
 
     private var state: State
     private var players: [PlayerID: InternalPlayerSession] = [:]
@@ -1048,7 +1055,83 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
+        self.init(
+            definition: definition,
+            resolverServices: nil,
+            initialState: initialState,
+            mode: mode,
+            reevaluationSource: reevaluationSource,
+            reevaluationSink: reevaluationSink,
+            reevaluationOutputMode: reevaluationOutputMode,
+            services: services,
+            enableLiveStateHashRecording: enableLiveStateHashRecording,
+            autoStartLoops: autoStartLoops,
+            enableLoopPhaseOffset: enableLoopPhaseOffset,
+            landID: landID,
+            transport: transport,
+            logger: logger
+        )
+    }
+
+    /// A live keeper for a land that declares services (`Land(_:using:services:)`, #769 §3.4):
+    /// its resolvers get `resolverServices`. A keeper built from such a land's `.definition` with
+    /// `init(definition:…)` has no services value, and fails its initialization with the
+    /// registration error.
+    public init<Services: Sendable>(
+        land: TypedLand<State, Services>,
+        resolverServices: Services,
+        initialState: State,
+        mode: LandMode = .live,
+        reevaluationSource: (any ReevaluationSource)? = nil,
+        reevaluationSink: (any ReevaluationSink)? = nil,
+        reevaluationOutputMode: ReevaluationOutputMode = .sinkOnly,
+        services: LandServices = LandServices(),
+        enableLiveStateHashRecording: Bool = false,
+        autoStartLoops: Bool = true,
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
+        landID: String? = nil,
+        transport: LandKeeperTransport? = nil,
+        logger: Logger? = nil
+    ) {
+        self.init(
+            definition: land.definition,
+            resolverServices: resolverServices,
+            initialState: initialState,
+            mode: mode,
+            reevaluationSource: reevaluationSource,
+            reevaluationSink: reevaluationSink,
+            reevaluationOutputMode: reevaluationOutputMode,
+            services: services,
+            enableLiveStateHashRecording: enableLiveStateHashRecording,
+            autoStartLoops: autoStartLoops,
+            enableLoopPhaseOffset: enableLoopPhaseOffset,
+            landID: landID,
+            transport: transport,
+            logger: logger
+        )
+    }
+
+    /// The designated init: `resolverServices` is the land's services value, or nil when the
+    /// entry point brought none.
+    package init(
+        definition: LandDefinition<State>,
+        resolverServices: (any Sendable)?,
+        initialState: State,
+        mode: LandMode = .live,
+        reevaluationSource: (any ReevaluationSource)? = nil,
+        reevaluationSink: (any ReevaluationSink)? = nil,
+        reevaluationOutputMode: ReevaluationOutputMode = .sinkOnly,
+        services: LandServices = LandServices(),
+        enableLiveStateHashRecording: Bool = false,
+        autoStartLoops: Bool = true,
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
+        landID: String? = nil,
+        transport: LandKeeperTransport? = nil,
+        logger: Logger? = nil
+    ) {
         self.definition = definition
+        // A land without services gets `NoServices()`: its resolvers depend on it (#769).
+        self.resolverServices = resolverServices ?? (definition.servicesType == nil ? NoServices() : nil)
         self.actualLandID = landID
         state = initialState
         self.mode = mode
@@ -1309,15 +1392,33 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // (#771), or one holding a node its builder doesn't recognize (#794), fails initialization, as an OnInitialize resolver timeout does, before
         // any handler runs. One cached lookup per state type.
         let problems = SyncRegistration.cachedProblems(State.self)
+        // #769 §3.4: a live keeper for a land that declares services needs its services value; a
+        // replay never calls `resolve`.
+        let missingServices = mode == .live && resolverServices == nil
+            ? definition.servicesType.map { String(reflecting: $0) } : nil
+        // A value of another type would fail every resolving input with `servicesMismatch`. A land
+        // that declares no services takes `NoServices`, which an erased factory can replace too.
+        var wrongServices: String?
+        if mode == .live, let value = resolverServices {
+            let declared: Any.Type = definition.servicesType ?? NoServices.self
+            let accepts = definition.acceptsServices ?? { $0 is NoServices }
+            if !accepts(value) {
+                wrongServices = "declared \(String(reflecting: declared)), given \(String(reflecting: type(of: value)))"
+            }
+        }
         if !problems.isEmpty || !definition.duplicateHandlers.isEmpty || !definition.clientEventMismatches.isEmpty
-            || !definition.unrecognizedNodes.isEmpty {
+            || !definition.unrecognizedNodes.isEmpty || !definition.resolverDeclarationProblems.isEmpty
+            || missingServices != nil || wrongServices != nil {
             let error = LandRegistrationError(
                 landType: definition.id,
                 payload: nil,
                 sync: problems.isEmpty ? nil : SyncRegistrationError(problems: problems),
                 duplicateHandlers: definition.duplicateHandlers,
                 clientEventMismatches: definition.clientEventMismatches,
-                unrecognizedNodes: definition.unrecognizedNodes
+                unrecognizedNodes: definition.unrecognizedNodes,
+                missingServices: missingServices,
+                wrongServices: wrongServices,
+                resolverDeclarations: definition.resolverDeclarationProblems
             )
             logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
                 "error": .string(error.description),
@@ -1342,17 +1443,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 tickId: lastCommittedTickId
             )
 
-            // Execute resolvers in parallel if any are declared
-            if !definition.lifetimeHandlers.onInitializeResolverExecutors.isEmpty {
-                let resolverContext = ResolverContext(
-                    landContext: ctx,
-                    actionPayload: nil,
-                    eventPayload: nil,
-                    currentState: state
-                )
+            // Execute resolvers in parallel if any are declared: the values are built from the
+            // initial State, here, before the group runs (#769). A closure that built none has
+            // no group to run.
+            if let declaration = definition.lifetimeHandlers.onInitializeResolvers,
+               case let executors = declaration.build(state, ValidateContext(ctx)), !executors.isEmpty {
+                let resolverContext = makeResolverContext(ctx)
                 do {
                     ctx = try await ResolverExecutor.executeInitializeResolvers(
-                        executors: definition.lifetimeHandlers.onInitializeResolverExecutors,
+                        executors: executors,
                         resolverContext: resolverContext,
                         landContext: ctx,
                         abandonment: resolverAbandonment(.onInitialize)
@@ -2340,31 +2439,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Registers the job and its slot, and starts its resolvers. Called in the intake segment.
     private func startActionJob(
         _ item: PendingActionItem,
-        decodedAction: any ActionPayload,
         executors: [any AnyResolverExecutor],
+        ctx: LandContext,
         ticket: ActionTicket,
         input: String
     ) {
         let sequence = item.sequence
-        let ctx = makeContext(
-            playerID: item.playerID,
-            clientID: item.clientID,
-            sessionID: item.sessionID,
-            tickId: lastCommittedTickId
-        )
-        let resolverContext = ResolverContext(
-            landContext: ctx,
-            actionPayload: decodedAction as (any Sendable),
-            eventPayload: nil,
-            currentState: state
-        )
+        let resolverContext = makeResolverContext(ctx)
         let abandonment = resolverAbandonment(.action) { [weak self] in
             Task { await self?.releaseCompletedActionJob(sequence) }
         }
         actionSlots[sequence] = ActionSlot()
         actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input, abandonment: abandonment)
         actionJobsStarted += 1
+        // A copy, so the task doesn't hop to the keeper for it: with no hook it returns at once.
+        let holds = self.holds
         let task = Task { [weak self] in
+            await holds.at(.actionJobStart)
             let resolved: Result<[String: HeldResolverOutput], any Error>
             do {
                 let outputs = try await ResolverExecutor.executeResolvers(
@@ -2931,16 +3022,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Takes an action in: decodes it, runs the intake checks, takes its sequence and ticket.
     ///
-    /// On a tick land, an action with resolvers becomes a job: its resolvers run in their own
-    /// task, and the call returns `.pending` without waiting for them. The job's completion is a
-    /// keeper turn (`completeAction`) that delivers the result like any input, and its outcome
-    /// is kept in a slot created here, until `awaitActionResult` reads it.
+    /// An action whose `resolvers:` closure builds at least one value becomes a job, on tick
+    /// and tickless lands: its resolvers run in their own task, and the call returns `.pending`
+    /// without waiting for them. The job's completion is a keeper turn (`completeAction`) that
+    /// delivers the result like any input, and its outcome is kept in a slot created here,
+    /// until `awaitActionResult` reads it.
     ///
-    /// Every other action (no resolvers, or a tickless land) is handled through as before and
-    /// returns `.completed` with its response.
+    /// Every other action (no resolvers, or a closure that built no value) is delivered here
+    /// and returns `.completed`: on a tickless land with the handler's response, after the
+    /// input turn that applies it; on a tick land with an empty acknowledgement.
     ///
     /// A job is subject to the caps (`ActionJobLimits`): over one, the action is rejected at
-    /// intake with `ActionLimitRejection`.
+    /// intake with `ActionLimitRejection`. A caller cancelled before it submits starts no job;
+    /// an action delivered here is delivered whatever the caller's cancellation, as before.
     package func submitAction(
         _ envelope: ActionEnvelope,
         playerID: PlayerID,
@@ -3036,7 +3130,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // validates the ticket against the current state and appends the input.
         try rejectIfLandClosed()
         try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
-        let becomesJob = !handler.resolverExecutors.isEmpty
+        // The resolver values are built first, here in the intake segment, from the State the
+        // action is admitted against (#769 §3.2). The closure reads the State and must not mutate
+        // it (a reference-backed State is not stopped from it). It runs for every admitted action
+        // with resolvers, so also for one the job caps then refuse. An action whose closure built
+        // no value (a cache hit) has nothing to wait for: it is delivered here, as an action
+        // without resolvers, outside the job lane and its caps (#825).
+        var job: (executors: [any AnyResolverExecutor], ctx: LandContext)?
+        if let resolvers = handler.resolvers {
+            let ctx = makeContext(
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                tickId: lastCommittedTickId
+            )
+            let executors = resolvers.build((state, decodedAction), ValidateContext(ctx))
+            if !executors.isEmpty { job = (executors, ctx) }
+        }
+        let becomesJob = job != nil
         if becomesJob, enforcingLimits {
             try rejectIfOverActionJobLimits(sessionID: sessionID, input: typeIdentifier)
         }
@@ -3045,11 +3156,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let sequence = outputCollector.takeNextSequence()
         let ticket = actionTicket(for: playerID, clientID: clientID)
 
-        // An action with resolvers runs them in a job (`startActionJob`), off the caller's wait;
-        // one without is delivered here.
-        if becomesJob {
-            // A cancelled caller's action is never delivered, as when its resolvers ran in the
-            // caller's task: the job's task wouldn't inherit the cancellation.
+        // An action with built resolver values runs them in a job (`startActionJob`), off the
+        // caller's wait; one without is delivered here.
+        if let job {
+            // A cancelled caller's job is never started or delivered, as when its resolvers ran
+            // in the caller's task: the job's task wouldn't inherit the cancellation. An action
+            // delivered below isn't checked: one whose closure built nothing is handled like an
+            // action without resolvers, which a cancelled caller's submit still delivers.
             try Task.checkCancellation()
             if isTickless {
                 endsWorkOnReturn = false
@@ -3067,8 +3180,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     heldResolverOutputs: [:],
                     resolvedAtTick: lastCommittedTickId
                 ),
-                decodedAction: decodedAction,
-                executors: handler.resolverExecutors,
+                executors: job.executors,
+                ctx: job.ctx,
                 ticket: ticket,
                 input: typeIdentifier
             )
@@ -3382,6 +3495,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     // MARK: - Helpers
+
+    /// The context a resolver group runs with: the land's services value for `Resolver` values
+    /// (#769), and today's fields for the `ContextResolver`s of CanJoin, OnJoin and OnLeave.
+    private func makeResolverContext(_ ctx: LandContext) -> ResolverContext {
+        var resolverContext = ResolverContext(landContext: ctx, currentState: state)
+        resolverContext.resolverServices = resolverServices
+        return resolverContext
+    }
 
     private func makeContext(
         playerID: PlayerID,
@@ -5998,7 +6119,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "onDestroyWhenEmpty",
-                resolvers: handlers.onDestroyWhenEmptyResolverExecutors,
+                resolvers: { _, _ in handlers.onDestroyWhenEmptyResolverExecutors },
                 handler: onDestroyWhenEmptyHandler
             )
         }
@@ -6006,7 +6127,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "OnFinalize",
-                resolvers: handlers.onFinalizeResolverExecutors,
+                resolvers: { state, ctx in handlers.onFinalizeResolvers?.build(state, ctx) ?? [] },
                 handler: onFinalizeHandler
             )
         }
@@ -6050,7 +6171,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// else can change the state before the handler's segment.
     private func runDestroyHandler(
         _ name: String,
-        resolvers: [any AnyResolverExecutor],
+        resolvers buildResolvers: (State, ValidateContext) -> [any AnyResolverExecutor],
         handler: @Sendable (inout State, LandContext) -> Void
     ) async {
         let ctx = makeContext(
@@ -6059,13 +6180,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             sessionID: systemSessionID
         )
         var updatedCtx = ctx
+        // Built from the State the handler will see: nothing changes it before the handler's
+        // segment (see the caller).
+        let resolvers = buildResolvers(state, ValidateContext(ctx))
         if !resolvers.isEmpty {
-            let resolverContext = ResolverContext(
-                landContext: ctx,
-                actionPayload: nil,
-                eventPayload: nil,
-                currentState: state
-            )
+            let resolverContext = makeResolverContext(ctx)
             do {
                 updatedCtx = try await ResolverExecutor.executeResolversWithoutDeadline(
                     executors: resolvers,

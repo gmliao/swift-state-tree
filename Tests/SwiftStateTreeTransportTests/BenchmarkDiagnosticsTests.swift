@@ -12,10 +12,10 @@ private func steppedLand(_ landID: LandID) -> LandDefinition<ManagerTestState> {
     Land("stepped", using: ManagerTestState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .milliseconds(50)) { (state: inout ManagerTestState, _: LandContext) in
+            Tick(every: .milliseconds(50)) { state, _ in
                 state.ticks += 1
             }
-            StateSync(every: .milliseconds(50)) { (_: ManagerTestState, _: LandContext) in }
+            StateSync(every: .milliseconds(50)) { _, _ in }
         }
     }
 }

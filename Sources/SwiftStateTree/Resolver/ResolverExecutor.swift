@@ -5,14 +5,35 @@ import Foundation
 /// This allows storing resolver execution closures in a type-safe way.
 public protocol AnyResolverExecutor: Sendable {
     func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput)
+    /// The name errors use: the resolver's base type name, without generic arguments.
+    var resolverName: String { get }
+}
+
+extension AnyResolverExecutor {
+    public var resolverName: String {
+        // ResolverExecutorWrapper<SomeResolver> -> SomeResolver
+        let typeName = String(describing: type(of: self))
+        if let genericStart = typeName.range(of: "<"),
+           let genericEnd = typeName.range(of: ">", options: .backwards, range: genericStart.upperBound..<typeName.endIndex) {
+            return ResolverExecutor.baseTypeName(String(typeName[genericStart.upperBound..<genericEnd.lowerBound]))
+        }
+        return typeName
+    }
 }
 
 /// Type-erased wrapper for a specific resolver type
 public struct ResolverExecutorWrapper<R: ContextResolver>: AnyResolverExecutor {
     public func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput) {
         let output = try await R.resolve(ctx: ctx)
-        let propertyName = ResolverExecutor.convertResolverTypeToPropertyName(String(describing: R.self))
-        return (propertyName, output)
+        return (outputName, output)
+    }
+}
+
+extension ResolverExecutorWrapper: ResolverOutputNaming {
+    /// The full type name converted, generic arguments included, as the output has always been
+    /// stored under.
+    package var outputName: String {
+        ResolverExecutor.convertResolverTypeToPropertyName(String(describing: R.self))
     }
 }
 
@@ -199,13 +220,14 @@ public enum ResolverExecutor {
 
         // Execute all resolvers in parallel using TaskGroup
         // We use a custom error type to capture which resolver failed
-        try await withThrowingTaskGroup(of: (String, any ResolverOutput).self) { group in
+        try await withThrowingTaskGroup(of: (resolver: String, name: String, output: any ResolverOutput).self) { group in
             for executor in executors {
                 group.addTask {
                     let resolverName = extractResolverName(from: executor)
                     defer { race?.resolverFinished(resolverName) }
                     do {
-                        return try await executor.execute(ctx: resolverContext)
+                        let (name, output) = try await executor.execute(ctx: resolverContext)
+                        return (resolverName, name, output)
                     } catch {
                         // Wrap error with resolver name for better diagnostics
                         throw ResolverExecutionError.resolverFailed(name: resolverName, underlyingError: error)
@@ -215,8 +237,16 @@ public enum ResolverExecutor {
 
             // Collect all results
             // If any resolver throws, the error will be propagated and remaining tasks cancelled
+            // Two outputs under one name fail the group: which one a handler would read would
+            // depend on completion order. Registration refuses the built-in cases early; this
+            // catches an executor it can't name (a custom `AnyResolverExecutor`).
             let outputCollected = outputCollectedForTesting
-            for try await (propertyName, output) in group {
+            var collectedFrom: [String: String] = [:]
+            for try await (resolverName, propertyName, output) in group {
+                if let first = collectedFrom[propertyName] {
+                    throw ResolverExecutionError.duplicateOutput(name: propertyName, resolvers: [first, resolverName])
+                }
+                collectedFrom[propertyName] = resolverName
                 updatedContext.setResolverOutput(output, forPropertyName: propertyName)
                 outputCollected?(propertyName)
             }
@@ -233,7 +263,7 @@ public enum ResolverExecutor {
         return ResolverExecutorWrapper<R>()
     }
 
-    /// Convert resolver type name to property name for dynamic member lookup
+    /// Convert a resolver type name to the name its output is recorded under
     ///
     /// Examples:
     /// - "ProductInfoResolver" -> "productInfo"
@@ -258,17 +288,6 @@ public enum ResolverExecutor {
     
     /// Extract resolver name from executor for error reporting
     private static func extractResolverName(from executor: any AnyResolverExecutor) -> String {
-        // Try to extract from type name
-        let typeName = String(describing: type(of: executor))
-        
-        // ResolverExecutorWrapper<SomeResolver> -> SomeResolver
-        if let genericStart = typeName.range(of: "<"),
-           let genericEnd = typeName.range(of: ">", range: genericStart.upperBound..<typeName.endIndex) {
-            let resolverTypeName = String(typeName[genericStart.upperBound..<genericEnd.lowerBound])
-            return resolverTypeName
-        }
-        
-        // Fallback to full type name
-        return typeName
+        executor.resolverName
     }
 }

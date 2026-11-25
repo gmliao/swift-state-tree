@@ -24,11 +24,13 @@ struct FailedInitOutput: ResolverOutput {
 }
 
 /// Never returns, and ignores cancellation, until the test's gate is released.
-struct FailedInitStuckResolver: ContextResolver {
+@PlainData
+struct FailedInitStuckResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = FailedInitOutput
     static let gate = TestGate()
-    static func resolve(ctx: ResolverContext) async throws -> FailedInitOutput {
-        await gate.arrive()
+    func resolve(_ deps: NoServices) async throws -> FailedInitOutput {
+        await Self.gate.arrive()
         return FailedInitOutput(value: 0)
     }
 }
@@ -37,7 +39,7 @@ private func stuckInitLand(_ landID: LandID) -> LandDefinition<FailedInitTestSta
     Land(landID.landType, using: FailedInitTestState.self) {
         Rules {}
         Lifetime {
-            OnInitialize(resolvers: FailedInitStuckResolver.self) { (_: inout FailedInitTestState, _: LandContext) in }
+            OnInitialize(resolvers: { _, _ in FailedInitStuckResolver() }) { _, _, _ in }
         }
     }
 }

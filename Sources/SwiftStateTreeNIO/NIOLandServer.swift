@@ -76,6 +76,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             landFactory: landFactory,
             initialStateFactory: initialStateFactory,
             servicesFactory: configuration.servicesFactory,
+            resolverServicesFactory: configuration.resolverServicesFactory,
             transport: transport,
             createGuestSession: configuration.createGuestSession,
             authenticatesPlayers: configuration.authenticatesPlayers,

@@ -521,7 +521,7 @@ struct InboundBacklogPendingJoinTests {
     func pendingJoinOverflowsFirst() async throws {
         let definition = Land("inbound-backlog", using: InboundBacklogLandState.self) {
             Rules {
-                OnJoin { (state: inout InboundBacklogLandState, _: LandContext) in state.joined += 1 }
+                OnJoin { state, _ in state.joined += 1 }
             }
         }
         let transport = WebSocketTransport()

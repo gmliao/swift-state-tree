@@ -336,56 +336,82 @@ public struct LeaveCheckResolver: ContextResolver {
     }
 }
 
+/// What the resolver-test land's resolvers depend on (#769): its simulated service. The join and
+/// leave checks still find theirs in `LandServices` until they become values too; the two
+/// instances keep separate counters, as one instance's join, leave and call counters are.
+public protocol HasSimulatedService: Sendable {
+    var simulatedService: SimulatedExternalService { get }
+}
+
+public struct ResolverTestServices: HasSimulatedService {
+    public let simulatedService: SimulatedExternalService
+
+    public init(settings: SimulatedServiceSettings = .fromEnvironment()) {
+        simulatedService = SimulatedExternalService(settings: settings)
+    }
+}
+
 /// Calls `SimulatedExternalService` for a `CallServiceAction`. Its output is recorded, so replay
 /// does not call the service; a failed or timed-out call throws, and the action is never applied.
-public struct ServiceCallResolver: ContextResolver {
-    public typealias Output = ServiceCall
+/// Built from the action and the tick it was admitted at.
+@PlainData
+public struct ServiceCallResolver<D: HasSimulatedService>: Resolver {
+    public typealias Dependencies = D
+    public let tag: String
+    public let delayMs: Int
+    public let deadlineMs: Int
+    public let outcome: String
+    public let startTick: Int64
 
-    public static func resolve(ctx: ResolverContext) async throws -> ServiceCall {
-        guard let action = ctx.actionPayload as? CallServiceAction else {
-            throw ResolverError.missingParameter("CallServiceAction")
-        }
-        guard let service = ctx.services.get(SimulatedExternalService.self) else {
-            throw ResolverError.custom("SimulatedExternalService is not registered")
-        }
-        let startTick = (ctx.currentState as? ResolverTestState)?.tickCount ?? 0
+    public init(action: CallServiceAction, startTick: Int64) {
+        tag = action.tag
+        delayMs = action.delayMs
+        deadlineMs = action.deadlineMs
+        outcome = action.outcome
+        self.startTick = startTick
+    }
+
+    public func resolve(_ deps: D) async throws -> ServiceCall {
+        let action = CallServiceAction(tag: tag, delayMs: delayMs, deadlineMs: deadlineMs, outcome: outcome)
         let overrides = action.overrides
-        guard CallServiceOutcome.all.contains(action.outcome) else {
-            throw ResolverError.custom("unknown outcome \(action.outcome)")
+        guard CallServiceOutcome.all.contains(outcome) else {
+            throw ResolverError.custom("unknown outcome \(outcome)")
         }
+        let service = deps.simulatedService
         let plan = await service.plan(delayMs: overrides.delayMs, fail: overrides.fail, deadlineMs: overrides.deadlineMs)
         let result = try await service.call(plan)
-        return ServiceCall(tag: action.tag, callIndex: plan.callIndex, result: result, startTick: startTick)
+        return ServiceCall(tag: tag, callIndex: plan.callIndex, result: result, startTick: startTick)
     }
 }
 
 // MARK: - Land
 
 public enum ResolverTest {
-    public static func makeLand() -> LandDefinition<ResolverTestState> {
-        Land(ResolverTestConfig.landType, using: ResolverTestState.self) {
+    public static func makeLand() -> TypedLand<ResolverTestState, ResolverTestServices> {
+        Land(ResolverTestConfig.landType, using: ResolverTestState.self, services: ResolverTestServices.self) {
             AccessControl {
                 AllowPublic(true)
                 MaxPlayers(ResolverTestConfig.maxPlayers)
             }
 
             Rules {
-                OnJoin(resolvers: JoinCheckResolver.self) { (state: inout ResolverTestState, _: LandContext) in
+                OnJoin(resolvers: JoinCheckResolver.self) { state, _, _ in
                     state.joins += 1
                 }
 
-                OnLeave(resolvers: LeaveCheckResolver.self) { (state: inout ResolverTestState, _: LandContext) in
+                OnLeave(resolvers: LeaveCheckResolver.self) { state, _, _ in
                     state.leaves += 1
                 }
 
                 // validate checks the resolver output and hands it to apply as the plan (#586).
-                HandleAction(CallServiceAction.self, resolvers: ServiceCallResolver.self, validate: {
-                    (_: ResolverTestState, _: CallServiceAction, ctx: ValidateContext) -> ServiceCall in
-                    guard let call = ctx.serviceCall as ServiceCall? else {
+                HandleAction(CallServiceAction.self, resolvers: { state, action, _ in
+                    ServiceCallResolver(action: action, startTick: state.tickCount)
+                }, validate: { _, _, serviceCall, _ in
+                    guard let call = serviceCall else {
                         throw ResolverError.custom("ServiceCallResolver output missing")
                     }
                     return call
-                }, apply: { (state: inout ResolverTestState, _: CallServiceAction, call: ServiceCall, ctx: LandContext) in
+                }, apply: { state, _, _, call, ctx in
                     state.applied += 1
                     state.lastTag = call.tag
                     state.lastResult = call.result
@@ -397,7 +423,7 @@ public enum ResolverTest {
             }
 
             Lifetime {
-                Tick(every: .milliseconds(ResolverTestConfig.tickIntervalMs)) { (state: inout ResolverTestState, ctx: LandContext) in
+                Tick(every: .milliseconds(ResolverTestConfig.tickIntervalMs)) { state, ctx in
                     // Server-side tick timing (`TickProbe`); no probe in re-evaluation.
                     ctx.services.get(TickProbe.self)?.noteTickStart()
                     state.tickCount = ctx.tickId ?? state.tickCount + 1

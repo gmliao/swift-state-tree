@@ -43,13 +43,13 @@ private struct Harness {
         let definition = Land(landID, using: EquivState.self) {
             ClientEvents { Register(EquivStepEvent.self) }
             Rules {
-                OnJoin { (state: inout EquivState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.inventories[ctx.playerID] = []
                 }
-                OnLeave { (state: inout EquivState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.inventories.removeValue(forKey: ctx.playerID)
                 }
-                HandleEvent(EquivStepEvent.self) { (state: inout EquivState, ev: EquivStepEvent, ctx: LandContext) in
+                HandleEvent(EquivStepEvent.self) { state, ev, ctx in
                     state.tick += 1
                     state.secret += 7
                     if ev.addMonster != 0 { state.monsters[ev.addMonster] = 100 - ev.addMonster }

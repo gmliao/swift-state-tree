@@ -94,7 +94,7 @@ private func renamedLand() -> LandDefinition<EventNameState> {
         Rules {
             // Registered for the schema only; a registered client event needs a handler (#771).
             HandleEvent(ENKnockEvent.self) { _, _, _ in }
-            HandleAction(ENDoorAction.self) { (_: inout EventNameState, _: ENDoorAction, _: LandContext) in ENAck(ok: true) }
+            HandleAction(ENDoorAction.self) { _, _, _ in ENAck(ok: true) }
         }
     }
 }
@@ -112,8 +112,8 @@ private func passingLand() -> LandDefinition<EventNameState> {
         Rules {
             // Registered for the schema only; a registered client event needs a handler (#771).
             HandleEvent(ENTap.self) { _, _, _ in }
-            HandleAction(ENOpenAction.self) { (_: inout EventNameState, _: ENOpenAction, _: LandContext) in ENAck(ok: true) }
-            HandleAction(ENGenericAction<Int>.self) { (_: inout EventNameState, _: ENGenericAction<Int>, _: LandContext) in ENAck(ok: true) }
+            HandleAction(ENOpenAction.self) { _, _, _ in ENAck(ok: true) }
+            HandleAction(ENGenericAction<Int>.self) { _, _, _ in ENAck(ok: true) }
         }
     }
 }
@@ -205,7 +205,7 @@ struct EventNameRegistrationTests {
             Rules {
                 // Registered for the schema only; a registered client event needs a handler (#771).
                 HandleEvent(ENTap.self) { _, _, _ in }
-                HandleAction(ENOpenAction.self) { (_: inout EventNameState, _: ENOpenAction, _: LandContext) in ENAck(ok: true) }
+                HandleAction(ENOpenAction.self) { _, _, _ in ENAck(ok: true) }
             }
         }
         try land.validateForRegistration(context: LandRegistrationContext(eventHashes: ["ENNotice": 1, "ENPlain": 2]))

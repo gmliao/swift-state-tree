@@ -33,7 +33,7 @@ public enum HeroDefense {
             }
 
             Lifetime {
-                Tick(every: .milliseconds(Int64(GameConfig.TICK_INTERVAL_MS))) { (state: inout HeroDefenseState, ctx: LandContext) in
+                Tick(every: .milliseconds(Int64(GameConfig.TICK_INTERVAL_MS))) { state, ctx in
                     guard let tickId = ctx.tickId,
                           let configService = ctx.services.get(GameConfigProviderService.self)
                     else {
@@ -181,22 +181,22 @@ public enum HeroDefense {
                     )
                 }
 
-                StateSync(every: .milliseconds(100)) { (_: HeroDefenseState, _: LandContext) in
+                StateSync(every: .milliseconds(100)) { _, _ in
                     // Read-only callback - will be called during sync
                     // Do NOT modify state here - use Tick for state mutations
                     // Use for logging, metrics, or other read-only operations
                     // StateSync callback - read-only operations only
                 }
 
-                DestroyWhenEmpty(after: .seconds(5)) { (_: inout HeroDefenseState, ctx: LandContext) in
+                DestroyWhenEmpty(after: .seconds(5)) { _, ctx in
                     ctx.logger.info("Hero Defense room is empty, destroying...")
                 }
 
-                OnFinalize { (_: inout HeroDefenseState, ctx: LandContext) in
+                OnFinalize { _, ctx in
                     ctx.logger.info("Hero Defense room is finalizing...")
                 }
 
-                AfterFinalize { (state: HeroDefenseState, ctx: LandContext) async in
+                AfterFinalize { state, ctx async in
                     ctx.logger.info("Hero Defense room is finalized with final score: \(state.score)")
 
                     do {
@@ -212,7 +212,7 @@ public enum HeroDefense {
             }
 
             Rules {
-                OnJoin(resolvers: UserLevelResolver.self) { (state: inout HeroDefenseState, ctx: LandContext) in
+                OnJoin(resolvers: UserLevelResolver.self) { state, userLevel, ctx in
                     guard let configService = ctx.services.get(GameConfigProviderService.self) else {
                         return
                     }
@@ -221,7 +221,7 @@ public enum HeroDefense {
                     let playerID = ctx.playerID
 
                     // Get user level from resolver (deterministic based on PlayerID hash)
-                    let userLevel = (ctx.userLevel as UserLevel?)?.level ?? 1
+                    let level = userLevel?.level ?? 1
 
                     // Spawn player near base center
                     var player = PlayerState()
@@ -236,24 +236,24 @@ public enum HeroDefense {
                     // Set initial health and max health based on user level
                     // Higher level players start with more health
                     let baseHealth = 100
-                    let levelBonus = userLevel * 10
+                    let levelBonus = level * 10
                     player.health = baseHealth + levelBonus
                     player.maxHealth = baseHealth + levelBonus
 
                     // Set initial weapon level based on user level (deterministic from PlayerID hash)
                     // Players start with different weapon levels, but can upgrade further
-                    player.weaponLevel = userLevel - 1 // Convert 1-3 to 0-2 for weapon level
+                    player.weaponLevel = level - 1 // Convert 1-3 to 0-2 for weapon level
                     player.resources = 0
                     state.players[playerID] = player
                     ctx.logger.info("👤 Player joined", metadata: [
                         "playerID": .string(playerID.rawValue),
-                        "level": .stringConvertible(userLevel),
+                        "level": .stringConvertible(level),
                         "health": .stringConvertible(player.health),
                         "totalPlayers": .string("\(state.players.count)"),
                     ])
                 }
 
-                OnLeave { (state: inout HeroDefenseState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     let playerID = ctx.playerID
                     state.players.removeValue(forKey: playerID)
                     ctx.logger.info("Player left", metadata: [
@@ -261,12 +261,12 @@ public enum HeroDefense {
                     ])
                 }
 
-                HandleAction(PlayAction.self) { (state: inout HeroDefenseState, _: PlayAction, _: LandContext) in
+                HandleAction(PlayAction.self) { state, _, _ in
                     state.score += 1
                     return PlayResponse(newScore: state.score)
                 }
 
-                HandleEvent(MoveToEvent.self) { (state: inout HeroDefenseState, event: MoveToEvent, ctx: LandContext) in
+                HandleEvent(MoveToEvent.self) { state, event, ctx in
                     let playerID = ctx.playerID
 
                     // Update player's target position (clamp to world bounds)
@@ -284,7 +284,7 @@ public enum HeroDefense {
                     }
                 }
 
-                HandleEvent(ShootEvent.self) { (state: inout HeroDefenseState, _: ShootEvent, ctx: LandContext) in
+                HandleEvent(ShootEvent.self) { state, _, ctx in
                     // Manual shoot event (optional - auto-shoot is handled in Tick)
                     // This can be used for manual shooting if needed in the future
                     let playerID = ctx.playerID
@@ -351,7 +351,7 @@ public enum HeroDefense {
                     state.players[playerID] = player
                 }
 
-                HandleEvent(UpdateRotationEvent.self) { (state: inout HeroDefenseState, event: UpdateRotationEvent, ctx: LandContext) in
+                HandleEvent(UpdateRotationEvent.self) { state, event, ctx in
                     let playerID = ctx.playerID
 
                     guard var player = state.players[playerID] else {
@@ -366,7 +366,7 @@ public enum HeroDefense {
                     state.players[playerID] = player
                 }
 
-                HandleEvent(PlaceTurretEvent.self) { (state: inout HeroDefenseState, event: PlaceTurretEvent, ctx: LandContext) in
+                HandleEvent(PlaceTurretEvent.self) { state, event, ctx in
                     let playerID = ctx.playerID
 
                     guard var player = state.players[playerID] else {
@@ -424,7 +424,7 @@ public enum HeroDefense {
                     ])
                 }
 
-                HandleEvent(UpgradeWeaponEvent.self) { (state: inout HeroDefenseState, _: UpgradeWeaponEvent, ctx: LandContext) in
+                HandleEvent(UpgradeWeaponEvent.self) { state, _, ctx in
                     let playerID = ctx.playerID
 
                     guard var player = state.players[playerID] else {
@@ -452,7 +452,7 @@ public enum HeroDefense {
                     }
                 }
 
-                HandleEvent(UpgradeTurretEvent.self) { (state: inout HeroDefenseState, event: UpgradeTurretEvent, ctx: LandContext) in
+                HandleEvent(UpgradeTurretEvent.self) { state, event, ctx in
                     let playerID = ctx.playerID
 
                     guard var player = state.players[playerID],

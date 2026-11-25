@@ -141,7 +141,7 @@ struct UntypedPayloadLand {
 func makeUntypedEmitLand(_ id: String, untyped: Bool, target: SwiftStateTree.EventTarget = .all) -> LandDefinition<UntypedPayloadState> {
     Land(id, using: UntypedPayloadState.self) {
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout UntypedPayloadState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.round += 1
                 if untyped {
                     ctx.emitAnyServerEventForTesting(AnyServerEvent(type: "Untyped", payload: UntypedPayloadKind.dictionary.payload), to: target)
@@ -179,7 +179,7 @@ func makeUntypedResponseLand() -> LandDefinition<UntypedPayloadState> {
             state.round += 1
             return AnyCodable(["hp": 3] as [String: Int])
         },
-        resolverExecutors: []
+        resolvers: nil
     )
     return Land("untyped-response", using: UntypedPayloadState.self) {
         ServerEvents { Register(UntypedPayloadTypedEvent.self) }

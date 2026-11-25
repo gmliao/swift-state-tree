@@ -218,7 +218,7 @@ func liveUnavailableStateHash() async throws {
     let definition = Land("unhashable-tick", using: UnhashableTickState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout UnhashableTickState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
         }
@@ -307,7 +307,7 @@ struct FullStateHashReviewTests {
         let definition = Land("big-unsigned", using: WrapperHashState.self) {
             Rules {}
             Lifetime {
-                Tick(every: .seconds(3600)) { (state: inout WrapperHashState, _: LandContext) in
+                Tick(every: .seconds(3600)) { state, _ in
                     state.ratio += 1
                 }
             }

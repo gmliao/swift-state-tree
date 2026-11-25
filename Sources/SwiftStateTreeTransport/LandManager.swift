@@ -189,6 +189,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let landFactory: (LandID) -> LandDefinition<State>
     private let initialStateFactory: (LandID) -> State
     private let servicesFactory: (LandID, [String: String]) -> LandServices
+    /// The land's services value per instance, for its `Resolver` values (#769 §3.4); nil when
+    /// the land was registered by its definition alone.
+    private let resolverServicesFactory: (@Sendable (LandID, [String: String]) -> any Sendable)?
     private let sharedTransport: WebSocketTransport?
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
     private let authenticatesPlayers: Bool
@@ -317,6 +320,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         servicesFactory: @escaping @Sendable (LandID, [String: String]) -> LandServices = { _, _ in
             LandServices()
         },
+        resolverServicesFactory: (@Sendable (LandID, [String: String]) -> any Sendable)? = nil,
         transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         authenticatesPlayers: Bool = false,
@@ -334,6 +338,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.landFactory = landFactory
         self.initialStateFactory = initialStateFactory
         self.servicesFactory = servicesFactory
+        self.resolverServicesFactory = resolverServicesFactory
         self.sharedTransport = transport
         self.createGuestSession = createGuestSession
         self.authenticatesPlayers = authenticatesPlayers
@@ -433,7 +438,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                     context: LandRegistrationContext(
                         payloadsCompressed: transportEncoding.shouldEncodePayloadAsArray,
                         recordsForReplay: enableLiveStateHashRecording,
-                        eventHashes: eventHashes
+                        eventHashes: eventHashes,
+                        servicesProvided: resolverServicesFactory != nil
                     )
                 )
                 verdict = nil
@@ -608,6 +614,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
         let keeper = LandKeeper<State>(
             definition: landDefinition,
+            resolverServices: resolverServicesFactory?(landID, metadata),
             initialState: initial,
             services: metadataServices,
             enableLiveStateHashRecording: enableLiveStateHashRecording,

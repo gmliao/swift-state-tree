@@ -21,10 +21,10 @@ struct FoldReportState: StateNodeProtocol {
 private func foldReportLand() -> LandDefinition<FoldReportState> {
     Land("fold-report-test", using: FoldReportState.self) {
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout FoldReportState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
-            StateSync(every: .seconds(3600)) { (_: FoldReportState, _: LandContext) in }
+            StateSync(every: .seconds(3600)) { _, _ in }
         }
     }
 }

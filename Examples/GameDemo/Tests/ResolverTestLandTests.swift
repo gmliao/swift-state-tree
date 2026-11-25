@@ -47,8 +47,9 @@ struct ResolverTestLandTests {
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("ws-loadtest/tests/fixtures/resolver-failure-messages.json")
         let fixture = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixtureURL))
-        let keeper = LandKeeper<ResolverTestState>(
-            definition: ResolverTest.makeLand(),
+        let keeper = LandKeeper(
+            land: ResolverTest.makeLand(),
+            resolverServices: ResolverTestServices(settings: SimulatedServiceSettings(delayMs: 0, deadlineMs: 1000)),
             initialState: ResolverTestState(),
             services: ResolverTest.makeServices(settings: SimulatedServiceSettings(delayMs: 0, deadlineMs: 1000)),
             autoStartLoops: false
@@ -67,7 +68,8 @@ struct ResolverTestLandTests {
         }
         #expect(await message(CallServiceAction(tag: "f", outcome: CallServiceOutcome.fail)) == fixture["failed"])
         #expect(await message(CallServiceAction(tag: "d", delayMs: 5, deadlineMs: 0, outcome: CallServiceOutcome.succeed)) == fixture["serviceDeadline"])
-        let timedOut = ResolverExecutionError.timedOut(names: [String(describing: ServiceCallResolver.self)], after: .milliseconds(1000))
+        // A generic resolver is named by its base type (#769).
+        let timedOut = ResolverExecutionError.timedOut(names: ["ServiceCallResolver"], after: .milliseconds(1000))
         #expect("\(timedOut)" == fixture["timedOut"])
     }
 
@@ -125,8 +127,9 @@ struct ResolverTestLandTests {
 
     @Test("A failed or timed-out action leaves the state unchanged; a successful one is applied")
     func actionOutcomes() async throws {
-        let keeper = LandKeeper<ResolverTestState>(
-            definition: ResolverTest.makeLand(),
+        let keeper = LandKeeper(
+            land: ResolverTest.makeLand(),
+            resolverServices: ResolverTestServices(settings: SimulatedServiceSettings(delayMs: 0, deadlineMs: 1000)),
             initialState: ResolverTestState(),
             services: ResolverTest.makeServices(settings: SimulatedServiceSettings(delayMs: 0, deadlineMs: 1000)),
             autoStartLoops: false
@@ -165,8 +168,9 @@ struct ResolverTestLandTests {
     @Test("Join and leave checks fail at their rates; a failed join never joins, a failed leave skips its handler")
     func membershipFailures() async throws {
         func keeper(join: Double, leave: Double) -> LandKeeper<ResolverTestState> {
-            LandKeeper<ResolverTestState>(
-                definition: ResolverTest.makeLand(),
+            LandKeeper(
+                land: ResolverTest.makeLand(),
+                resolverServices: ResolverTestServices(settings: SimulatedServiceSettings(delayMs: 0, joinFailureRate: join, leaveFailureRate: leave)),
                 initialState: ResolverTestState(),
                 services: ResolverTest.makeServices(settings: SimulatedServiceSettings(delayMs: 0, joinFailureRate: join, leaveFailureRate: leave)),
                 autoStartLoops: false

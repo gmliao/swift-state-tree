@@ -65,7 +65,7 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
             }
 
             Lifetime {
-                Tick(every: tickInterval) { (state: inout State, ctx: LandContext) in
+                Tick(every: tickInterval) { state, ctx in
                     guard let runnerService = ctx.services.get(ReevaluationRunnerService.self) else {
                         return
                     }

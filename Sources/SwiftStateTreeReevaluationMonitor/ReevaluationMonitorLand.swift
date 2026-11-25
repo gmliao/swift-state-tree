@@ -25,7 +25,7 @@ public enum ReevaluationMonitor {
             }
 
             Lifetime {
-                Tick(every: .milliseconds(100)) { (state: inout ReevaluationMonitorState, ctx: LandContext) in
+                Tick(every: .milliseconds(100)) { state, ctx in
                     guard let service = ctx.services.get(ReevaluationRunnerService.self) else { return }
 
                     // Sync status to state
@@ -89,7 +89,7 @@ public enum ReevaluationMonitor {
                 // way (or finished) and see its totals in the state. The turn only requests the
                 // run (synchronously, taking its ticket); the service's driver, started outside
                 // any turn, does the work, and the tick reads the current run's results back.
-                OnJoin { (state: inout ReevaluationMonitorState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     guard let service = ctx.services.get(ReevaluationRunnerService.self),
                           let run = ctx.services.get(ReevaluationMonitorRun.self),
                           service.getStatus().phase == .idle
@@ -99,7 +99,7 @@ public enum ReevaluationMonitor {
                 }
                 // The first join's turn requests the run (above). This only restarts a finished
                 // run, with the ticket's record; the action's fields are ignored.
-                HandleAction(StartVerificationAction.self) { (state: inout ReevaluationMonitorState, _: StartVerificationAction, ctx: LandContext) in
+                HandleAction(StartVerificationAction.self) { state, _, ctx in
                     guard let service = ctx.services.get(ReevaluationRunnerService.self),
                           let run = ctx.services.get(ReevaluationMonitorRun.self) else {
                         state.errorMessage = "Service not available"
@@ -117,14 +117,14 @@ public enum ReevaluationMonitor {
                     return StartVerificationResponse()
                 }
 
-                HandleAction(PauseVerificationAction.self) { (state: inout ReevaluationMonitorState, _: PauseVerificationAction, ctx: LandContext) in
+                HandleAction(PauseVerificationAction.self) { state, _, ctx in
                     ctx.services.get(ReevaluationRunnerService.self)?.pause()
                     state.isPaused = true
                     state.status = "paused"
                     return PauseVerificationResponse()
                 }
 
-                HandleAction(ResumeVerificationAction.self) { (state: inout ReevaluationMonitorState, _: ResumeVerificationAction, ctx: LandContext) in
+                HandleAction(ResumeVerificationAction.self) { state, _, ctx in
                     ctx.services.get(ReevaluationRunnerService.self)?.resume()
                     state.isPaused = false
                     state.status = "verifying"

@@ -75,13 +75,13 @@ private func makePinFixture() async -> PinFixture {
     let definition = Land("event-frame-pin", using: EventFramePinState.self) {
         ServerEvents { Register(EventFramePinEvent.self) }
         Rules {
-            OnJoin { (state: inout EventFramePinState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.joins += 1
                 ctx.emitEvent(EventFramePinEvent(note: "held", count: 7), to: .session(ctx.sessionID))
             }
         }
         Lifetime {
-            Tick(every: .seconds(3600)) { (_: inout EventFramePinState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
     let sent = PinFrames()

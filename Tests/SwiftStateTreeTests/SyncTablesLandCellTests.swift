@@ -202,7 +202,7 @@ private func makeShapeMatrixCellLand() -> LandDefinition<ShapeMatrixState> {
     Land("shape-matrix-cell", using: ShapeMatrixState.self) {
         ClientEvents { Register(LandCellStep.self) }
         Rules {
-            HandleEvent(LandCellStep.self) { (state: inout ShapeMatrixState, step: LandCellStep, _: LandContext) in
+            HandleEvent(LandCellStep.self) { state, step, _ in
                 let n = step.n
                 let at = Position2(x: Float(n), y: Float(-n))
                 let key = shapeKeys[abs(n) % shapeKeys.count]
@@ -242,7 +242,7 @@ private func makeNestedPolicyCellLand() -> LandDefinition<PlainProbeRoot> {
     Land("nested-policy-cell", using: PlainProbeRoot.self) {
         ClientEvents { Register(LandCellStep.self) }
         Rules {
-            HandleEvent(LandCellStep.self) { (state: inout PlainProbeRoot, step: LandCellStep, _: LandContext) in
+            HandleEvent(LandCellStep.self) { state, step, _ in
                 let n = step.n
                 let key = probeKeys[abs(n) % probeKeys.count]
                 var node = PlainProbeNode()

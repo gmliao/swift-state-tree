@@ -45,7 +45,7 @@ private func makeMergedBroadcastDefinition() -> LandDefinition<MergedBroadcastTe
         }
         Rules {
             HandleAction(MergedBroadcastSetHeadlineAction.self) {
-                (state: inout MergedBroadcastTestState, action: MergedBroadcastSetHeadlineAction, ctx: LandContext) in
+                state, action, ctx in
                 state.headline = action.headline
                 ctx.emitEvent(MergedBroadcastAnnouncementEvent(text: action.announcement), to: .all)
                 return MergedBroadcastAck(ok: true)

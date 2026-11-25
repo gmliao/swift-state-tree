@@ -66,7 +66,7 @@ func testTransportAdapterOnlyMergesBroadcastEventsIntoOpcode107() async throws {
             Register(Opcode107MessageEvent.self)
         }
         Rules {
-            HandleEvent(Opcode107IncrementEvent.self) { (state: inout Opcode107TestState, _: Opcode107IncrementEvent, _) in
+            HandleEvent(Opcode107IncrementEvent.self) { state, _, _ in
                 state.count += 1
             }
         }
@@ -164,7 +164,7 @@ func testSendEventFallbackWhenBodyEncodingFails() async throws {
             Register(Opcode107MessageEvent.self)
         }
         Rules {
-            HandleEvent(Opcode107IncrementEvent.self) { (state: inout Opcode107TestState, _: Opcode107IncrementEvent, _) in
+            HandleEvent(Opcode107IncrementEvent.self) { state, _, _ in
                 state.count += 1
             }
         }
