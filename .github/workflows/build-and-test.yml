@@ -81,6 +81,9 @@ jobs:
 
     # The index of Notes/solutions/README.md is generated from each entry's front matter; the
     # self-test proves the check still finds a stale index and a malformed entry first.
+    - name: Install python3
+      run: scripts/ci-apt-install.sh python3  # the image has no python3 binary; apt retried on mirror errors (#453)
+
     - name: Check the solutions index
       run: |
         python3 scripts/solutions-index.py --self-test
