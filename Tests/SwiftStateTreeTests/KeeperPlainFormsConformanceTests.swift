@@ -52,5 +52,11 @@ struct KeeperPlainFormsConformanceTests {
         requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingServerInputItem.self)
         requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingShutdownItem.self)
         requirePlain(LandKeeper<KeeperPlainFormsPinState>.PendingLandFailureItem.self)
+        // K1b-2: the failure IDs and what holds them.
+        requirePlain(Epoch.self)
+        requirePlain(EpochCounter.self)
+        requirePlain(FailureID.self)
+        requirePlain(InputResult.self)
+        requirePlain(LandKeeper<KeeperPlainFormsPinState>.ActionTicket.self)
     }
 }

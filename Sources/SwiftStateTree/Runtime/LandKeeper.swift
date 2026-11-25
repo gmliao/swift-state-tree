@@ -744,7 +744,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var initializationTask: Task<Void, Never>?
     /// Set when OnInitialize's resolvers timed out (#104): the land never initialized, every
     /// call that awaits the initialization throws it, and the drain skips the destroy handlers.
-    private var initializationFailure: LandInitializationError?
+    private var initializationFailure: FailureID?
+
+    /// Holds `error` as the initialization's failure, wrapped as every caller gets it (#700 K1b-2).
+    private func failInitialization(with error: any Error) {
+        initializationFailure = recordFailure(LandInitializationError(underlying: error))
+        checkActionTables(#function)
+    }
+
+    /// Throws the initialization's failure, if it failed. Every caller gets the same value: the
+    /// entry is read, never taken.
+    private func throwIfInitializationFailed() throws {
+        if let id = initializationFailure {
+            throw failure(for: id, path: .initialization, sequence: nil)
+        }
+    }
     private var didInitialize = false
     /// Re-evaluation: OnInitialize was replayed before tick 0 from the record's initialize
     /// record, so tick 0 skips its `initialize` lifecycle event.
@@ -1283,12 +1297,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Runs the initialization once; every caller waits for it. Throws `LandInitializationError`
     /// if it failed (#104), to this caller and every later one.
     private func ensureInitialized() async throws {
-        if let initializationFailure { throw initializationFailure }
+        try throwIfInitializationFailed()
         if didInitialize { return }
         if let task = initializationTask {
             noteInitializationWait()
             await task.value
-            if let initializationFailure { throw initializationFailure }
+            try throwIfInitializationFailed()
             return
         }
 
@@ -1301,7 +1315,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         initializationTask = nil
         didInitialize = true
         resumeInitializationWaitWatchers { _ in true }
-        if let initializationFailure { throw initializationFailure }
+        try throwIfInitializationFailed()
     }
 
     /// Tests: how many calls have waited on a running initialization, and the tests waiting for
@@ -1493,7 +1507,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
                 "error": .string(error.description),
             ])
-            initializationFailure = LandInitializationError(underlying: error)
+            failInitialization(with: error)
             Task { await self.tearDownAfterFailedInitialization() }
             return
         }
@@ -1509,7 +1523,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
                         "error": .string(String(describing: error)),
                     ])
-                    initializationFailure = LandInitializationError(underlying: error)
+                    failInitialization(with: error)
                     Task { await self.tearDownAfterFailedInitialization() }
                     return
                 }
@@ -1550,7 +1564,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
                             "error": .string(String(describing: error)),
                         ])
-                        initializationFailure = LandInitializationError(underlying: error)
+                        failInitialization(with: error)
                         Task { await self.tearDownAfterFailedInitialization() }
                         return
                     }
@@ -1564,7 +1578,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         logger.error("❌ OnInitialize resolvers failed: the land is torn down", metadata: [
                             "error": .string(String(describing: error)),
                         ])
-                        initializationFailure = LandInitializationError(underlying: error)
+                        failInitialization(with: error)
                         Task { await self.tearDownAfterFailedInitialization() }
                         return
                     }
@@ -1587,7 +1601,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
                     "error": .string(String(describing: error)),
                 ])
-                initializationFailure = LandInitializationError(underlying: error)
+                failInitialization(with: error)
                 Task { await self.tearDownAfterFailedInitialization() }
                 return
             }
@@ -2421,6 +2435,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// What an action captured at intake about its sender, checked when its resolvers' result
     /// is delivered (`deliverResolvedAction`).
+    @PlainData
     struct ActionTicket: Sendable {
         /// The sender's entry generation at intake; `nil` when the player had no entry (direct
         /// callers that send before or without a join) or the sender is exempt (the system
@@ -2479,35 +2494,173 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - Action jobs
 
-    /// An action whose resolvers run in their own task. Keyed by its sequence.
+    /// An action whose resolvers run in their own task, keyed by its sequence: the part the
+    /// model keeps (#700 K1b-2). The task, the abandonment and the caller's cancellation flag are
+    /// in `actionJobTasks`.
     private struct ActionJob {
         /// The action as taken in; its resolver outputs are filled in at delivery.
         let item: PendingActionItem
         let ticket: ActionTicket
         let input: String
-        var task: Task<Void, Never>?
-        /// Its resolvers' abandonment (the caller stopped waiting while they still run). The job
-        /// keeps its place in the caps until they end.
-        let abandonment: ResolverAbandonment
         /// The completion ran; the job stays registered only while its abandoned resolvers run.
         var completed = false
-        /// The caller was cancelled while waiting: the completion fails with `CancellationError`
-        /// instead of delivering, unless it ran first.
-        let callerCancelled = ActionJobCallerCancellation()
         /// Cancelled by the keeper (the sender's entry ended, or the land is draining): its slot
         /// already holds the delivery checks' rejection, and its completion only removes it.
         var cancelledByKeeper = false
     }
 
+    /// A job's references, beside the model until K5 (the task, the abandonment) and K2's
+    /// `JobCancellation` (the caller's flag). Keyed as `actionJobs`; the two are inserted and
+    /// removed together.
+    private struct ActionJobTask {
+        var task: Task<Void, Never>?
+        /// Its resolvers' abandonment (the caller stopped waiting while they still run). The job
+        /// keeps its place in the caps until they end.
+        let abandonment: ResolverAbandonment
+        /// The caller was cancelled while waiting: the completion fails with `CancellationError`
+        /// instead of delivering, unless it ran first.
+        let callerCancelled = ActionJobCallerCancellation()
+    }
+
     /// The outcome of a job, kept from `submitAction` until `awaitActionResult` reads it. It's
-    /// created in the intake's segment, so a reader that arrives after the completion still finds it.
+    /// created in the intake's segment, so a reader that arrives after the completion still finds
+    /// it. A failure is held by its ID in the failure table.
     private struct ActionSlot {
-        var result: Result<InputOutcome, any Error>?
-        var waiter: CheckedContinuation<InputOutcome, any Error>?
+        var result: InputResult?
     }
 
     private var actionJobs: [Int64: ActionJob] = [:]
+    private var actionJobTasks: [Int64: ActionJobTask] = [:]
     private var actionSlots: [Int64: ActionSlot] = [:]
+    /// The caller waiting on a slot, until K2's `InputID`. A slot holds at most one of a result
+    /// and a waiter.
+    private var actionSlotWaiters: [Int64: CheckedContinuation<InputOutcome, any Error>] = [:]
+
+    // MARK: - The failure table (#700 K1b-2). Outside the model: `any Error` isn't plain.
+
+    /// Errors held for callers that haven't read them, by the ID the model holds.
+    private var failures: [FailureID: any Error] = [:]
+    /// Mints failure IDs. Keeper-local: never reset, never restored from a record.
+    private var failureIDs = EpochCounter()
+    /// Tests: lookups that found no entry (`FailureTableMiss`).
+    private var failureTableMisses = 0
+    /// Tests: alignment violations the call sites logged.
+    private var alignmentViolations = 0
+    /// Tests: whether the call sites run the alignment check (`setActionTableAuditForTesting`).
+    /// Off in production: the check walks every slot, input-turn result and failure, so running
+    /// it at each completed pair would cost O(tables) per job event and per tickless input turn
+    /// (#870 review). Tests that pin the tables' alignment turn it on.
+    private var actionTableAuditForTesting = false
+
+    /// Where a failure is read from, for the miss's log.
+    private enum FailurePath: String {
+        case slot, inputTurn, initialization
+    }
+
+    private func recordFailure(_ error: any Error) -> FailureID {
+        let id = FailureID(failureIDs.next())
+        failures[id] = error
+        return id
+    }
+
+    /// Removes the entry and returns its error; a miss returns `FailureTableMiss`, logged and counted.
+    private func takeFailure(_ id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
+        if let error = failures.removeValue(forKey: id) { return error }
+        return noteFailureMiss(id, path: path, sequence: sequence)
+    }
+
+    /// Returns the entry's error and leaves it; a miss as `takeFailure`.
+    private func failure(for id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
+        if let error = failures[id] { return error }
+        return noteFailureMiss(id, path: path, sequence: sequence)
+    }
+
+    private func noteFailureMiss(_ id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
+        failureTableMisses += 1
+        // A miss changes what a client sees (a sentinel takes the generic error frame, where an
+        // event's `LandInputRejection` sends none) while the land keeps running: log it.
+        logger.error("The keeper's failure table has no entry for a held failure", metadata: [
+            "landID": .string(actualLandID ?? "-"),
+            "path": .string(path.rawValue),
+            "sequence": .string(sequence.map(String.init) ?? "-"),
+            "failureID": .string(id.description),
+        ])
+        return FailureTableMiss(id: id, path: path.rawValue, sequence: sequence)
+    }
+
+    /// The result to hold: a success as is, a failure recorded in the table.
+    private func held(_ result: Result<InputOutcome, any Error>) -> InputResult {
+        switch result {
+        case .success(let outcome): return .outcome(outcome)
+        case .failure(let error): return .failed(recordFailure(error))
+        }
+    }
+
+    /// The held result as its caller gets it, taking the failure out of the table.
+    private func taken(_ held: InputResult, path: FailurePath, sequence: Int64) -> Result<InputOutcome, any Error> {
+        switch held {
+        case .outcome(let outcome): return .success(outcome)
+        case .failed(let id): return .failure(takeFailure(id, path: path, sequence: sequence))
+        }
+    }
+
+    /// Sets `inputTurnResults[sequence]`, taking out of the table any failure the write displaces.
+    /// Live sequencing never displaces one; a manual replay step (`stepTickOnce` has no
+    /// single-flight) could, so the setter is safe anyway.
+    private func setInputTurnResult(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
+        if case .failed(let displaced)? = inputTurnResults[sequence] {
+            failures.removeValue(forKey: displaced)
+        }
+        inputTurnResults[sequence] = result.map(held)
+    }
+
+    // MARK: - The alignment check (returns its violations; never asserts)
+
+    /// What doesn't line up between the job table and its side table, the slots and their
+    /// waiters, and the failure table and the IDs the model holds. Each call site logs and counts
+    /// what this returns: an assertion inside a function a mutant changes would trap before a test
+    /// could observe it.
+    private func actionTableViolations() -> [String] {
+        var violations: [String] = []
+        if Set(actionJobTasks.keys) != Set(actionJobs.keys) {
+            violations.append("job tasks \(actionJobTasks.keys.sorted()) != jobs \(actionJobs.keys.sorted())")
+        }
+        for sequence in actionSlotWaiters.keys {
+            if actionSlots[sequence] == nil { violations.append("waiter \(sequence) without a slot") }
+            if actionSlots[sequence]?.result != nil { violations.append("slot \(sequence) holds a result and a waiter") }
+        }
+        var owners: [FailureID: Int] = [:]
+        if let id = initializationFailure { owners[id, default: 0] += 1 }
+        for slot in actionSlots.values { if case .failed(let id)? = slot.result { owners[id, default: 0] += 1 } }
+        for result in inputTurnResults.values { if case .failed(let id) = result { owners[id, default: 0] += 1 } }
+        for (id, count) in owners where count > 1 { violations.append("\(id) has \(count) owners") }
+        for id in owners.keys where failures[id] == nil { violations.append("\(id) has no table entry") }
+        for id in failures.keys where owners[id] == nil { violations.append("\(id) has no owner") }
+        return violations
+    }
+
+    /// Runs the check after a completed pair, logging and counting what it found, when a test
+    /// turned it on. In production it reads one flag and returns.
+    private func checkActionTables(_ site: StaticString) {
+        guard actionTableAuditForTesting else { return }
+        let violations = actionTableViolations()
+        guard !violations.isEmpty else { return }
+        alignmentViolations += violations.count
+        logger.error("The keeper's action tables don't line up", metadata: [
+            "site": .string("\(site)"),
+            "violations": .string(violations.joined(separator: "; ")),
+        ])
+    }
+
+    package func failureTableCountForTesting() -> Int { failures.count }
+    package func failureTableMissesForTesting() -> Int { failureTableMisses }
+    package func alignmentViolationsForTesting() -> Int { alignmentViolations }
+    /// Turns the alignment check at the call sites on or off (off by default).
+    package func setActionTableAuditForTesting(_ enabled: Bool) { actionTableAuditForTesting = enabled }
+    package func actionTableViolationsForTesting() -> [String] { actionTableViolations() }
+    package func setInputTurnResultForTesting(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
+        setInputTurnResult(sequence, result)
+    }
     /// This land's abandoned resolver groups still running, per kind (#364). Shared by its
     /// groups' abandonments, which update it inside their transitions; read at intake.
     package nonisolated let abandonmentCounter = LandAbandonmentCounter()
@@ -2552,7 +2705,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             Task { await self?.releaseCompletedActionJob(sequence) }
         }
         actionSlots[sequence] = ActionSlot()
-        actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input, abandonment: abandonment)
+        actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input)
+        actionJobTasks[sequence] = ActionJobTask(task: nil, abandonment: abandonment)
         actionJobsStarted += 1
         // A copy, so the task doesn't hop to the keeper for it: with no hook it returns at once.
         let holds = self.holds
@@ -2572,7 +2726,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             await self?.completeAction(sequence: sequence, resolved: resolved)
         }
-        actionJobs[sequence]?.task = task
+        actionJobTasks[sequence]?.task = task
+        checkActionTables(#function)
     }
 
     /// A job's resolvers finished (or failed, or were cancelled): one synchronous segment after
@@ -2584,19 +2739,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) async {
         await holds.at(.actionComplete)
         guard var job = actionJobs[sequence], !job.completed else { return }
+        // Read before `removeActionJob` removes it. The two tables are written together, so it
+        // is there; an optional read keeps the guard above the only early return.
+        let side = actionJobTasks[sequence]
         // The job's place in the caps lasts until its resolvers' task ends.
-        if job.abandonment.isRunning {
+        if side?.abandonment.isRunning == true {
             job.completed = true
             actionJobs[sequence] = job
         } else {
             removeActionJob(sequence)
         }
-        guard !job.cancelledByKeeper else { return }
+        guard !job.cancelledByKeeper else {
+            checkActionTables(#function)
+            return
+        }
         let outcome: Result<InputOutcome, any Error>
         switch resolved {
         case .failure(let error):
             outcome = .failure(error)
-        case .success where job.callerCancelled.isSet:
+        case .success where side?.callerCancelled.isSet == true:
             outcome = .failure(CancellationError())
         case .success(let outputs):
             let item = job.item
@@ -2611,6 +2772,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // Delivered, it is out of the job table's cancellations (`completed`).
                     ticklessJobTurns.insert(sequence)
                     scheduleInputDrain()
+                    checkActionTables(#function)
                     return
                 }
                 // Tick land: acknowledged now; the handler runs in a tick.
@@ -2625,7 +2787,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The job leaves the job table (and the caps); test waiters on it resume.
     private func removeActionJob(_ sequence: Int64) {
         actionJobs.removeValue(forKey: sequence)
+        actionJobTasks.removeValue(forKey: sequence)
         actionJobRemovalWaiters.removeValue(forKey: sequence)?.forEach { $0.resume() }
+        checkActionTables(#function)
     }
 
     /// Debug only: remembers a filled slot in the ring, forgetting the oldest once it's full.
@@ -2694,14 +2858,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             debugEndWork()
         }
         rememberFilledSlotForAssert(sequence)
-        guard var slot = actionSlots[sequence] else { return }
-        if let waiter = slot.waiter {
+        guard actionSlots[sequence] != nil else { return }
+        // The waiter leaves before the slot does: a slot holds at most one of a result and a
+        // waiter. A waiting caller gets the value itself; only an unread result is held.
+        if let waiter = actionSlotWaiters.removeValue(forKey: sequence) {
             actionSlots.removeValue(forKey: sequence)
             waiter.resume(with: outcome)
         } else {
-            slot.result = outcome
-            actionSlots[sequence] = slot
+            actionSlots[sequence]?.result = held(outcome)
         }
+        checkActionTables(#function)
+        resumeSlotWatchers(SlotWatchKey(waiter: false, sequence: sequence))
     }
 
     /// The outcome of the job `submitAction` returned `.pending(sequence)` for: the ACK, or the
@@ -2711,11 +2878,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Cancelling the caller cancels the job's task directly (no actor hop) and marks the job,
     /// so a completion that hasn't run yet fails with `CancellationError` instead of delivering.
     package func awaitActionResult(sequence: Int64) async throws -> InputOutcome {
-        let task = actionJobs[sequence]?.task
-        let callerCancelled = actionJobs[sequence]?.callerCancelled
+        let side = actionJobTasks[sequence]
+        let task = side?.task
+        let callerCancelled = side?.callerCancelled
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<InputOutcome, any Error>) in
-                guard var slot = actionSlots[sequence], slot.waiter == nil else {
+                guard let slot = actionSlots[sequence], actionSlotWaiters[sequence] == nil else {
                     continuation.resume(throwing: ActionResultUnavailable(sequence: sequence))
                     return
                 }
@@ -2727,11 +2895,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
                 if let result = slot.result {
                     actionSlots.removeValue(forKey: sequence)
-                    continuation.resume(with: result)
+                    let taken = taken(result, path: .slot, sequence: sequence)
+                    // After both the removal and the take.
+                    checkActionTables(#function)
+                    continuation.resume(with: taken)
                     return
                 }
-                slot.waiter = continuation
-                actionSlots[sequence] = slot
+                actionSlotWaiters[sequence] = continuation
+                checkActionTables(#function)
+                resumeSlotWatchers(SlotWatchKey(waiter: true, sequence: sequence))
             }
         } onCancel: {
             // Synchronous: once `cancel()` returns, a completion that hasn't run yet won't deliver.
@@ -2769,8 +2941,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } catch {
             outcome = .failure(error)
         }
+        let task = actionJobTasks[sequence]?.task
         fillActionSlot(sequence, with: outcome)
-        job.task?.cancel()
+        task?.cancel()
+        checkActionTables(#function)
     }
 
     /// Test hook: the jobs still running and the slots not yet read.
@@ -2822,7 +2996,53 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Test hook: whether a caller waits on the slot of `sequence`.
     package func actionResultHasWaiterForTesting(_ sequence: Int64) -> Bool {
-        actionSlots[sequence]?.waiter != nil
+        actionSlotWaiters[sequence] != nil
+    }
+
+    /// Tests: what a slot watcher waits for, a fill or a waiter, and on which slot.
+    private struct SlotWatchKey: Hashable {
+        let waiter: Bool
+        let sequence: Int64
+    }
+
+    /// Tests: the watchers `watchActionSlotForTesting` registered, each the continuation of the
+    /// stream it returned.
+    private var slotWatchersForTesting: [SlotWatchKey: [(id: UUID, continuation: AsyncStream<Void>.Continuation)]] = [:]
+
+    /// Test hook, observation only: registers a watcher on the slot of `sequence` in this call,
+    /// and returns its stream. The stream yields once and finishes when the slot is filled
+    /// (`waiter: false`) or a caller waits on it (`waiter: true`), or at once if that is already
+    /// so. A test registers before it releases what fills the slot, so the event can't come
+    /// first. A consumer that is cancelled ends its iteration, and the watcher is removed
+    /// (`onTermination`), so a bound that cancels the consumer can't leave it behind.
+    package func watchActionSlotForTesting(_ sequence: Int64, waiter: Bool) -> AsyncStream<Void> {
+        let key = SlotWatchKey(waiter: waiter, sequence: sequence)
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        let already = waiter ? actionSlotWaiters[sequence] != nil : actionSlots[sequence]?.result != nil
+        if already {
+            continuation.yield()
+            continuation.finish()
+            return stream
+        }
+        let id = UUID()
+        slotWatchersForTesting[key, default: []].append((id: id, continuation: continuation))
+        continuation.onTermination = { _ in Task { await self.removeSlotWatcherForTesting(key, id: id) } }
+        return stream
+    }
+
+    private func removeSlotWatcherForTesting(_ key: SlotWatchKey, id: UUID) {
+        guard var watchers = slotWatchersForTesting[key],
+              let index = watchers.firstIndex(where: { $0.id == id }) else { return }
+        watchers.remove(at: index)
+        slotWatchersForTesting[key] = watchers.isEmpty ? nil : watchers
+    }
+
+    private func resumeSlotWatchers(_ key: SlotWatchKey) {
+        guard !slotWatchersForTesting.isEmpty else { return }
+        slotWatchersForTesting.removeValue(forKey: key)?.forEach {
+            $0.continuation.yield()
+            $0.continuation.finish()
+        }
     }
 
     /// Test hook, observation only: waits until every job registered so far has left the job
@@ -2830,9 +3050,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// resolvers ended). It never releases a job itself; a job that is never released keeps it
     /// waiting, so callers bound it.
     package func waitForActionJobsForTesting() async {
-        for (sequence, job) in actionJobs {
-            await job.task?.value
-            await job.abandonment.waitUntilEnded()
+        // Captured before the first await: the tables change while this waits.
+        for (sequence, side) in actionJobTasks {
+            let task = side.task, abandonment = side.abandonment
+            await task?.value
+            await abandonment.waitUntilEnded()
             // The release is its own turn (`onEnded` hops to the keeper); wait for it without
             // spinning.
             guard actionJobs[sequence] != nil else { continue }
@@ -6083,7 +6305,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The input-turn outcome of each waiting caller, kept until the turn's record is submitted.
-    private var inputTurnResults: [Int64: Result<InputOutcome, any Error>] = [:]
+    private var inputTurnResults: [Int64: InputResult] = [:]
 
     /// What an input turn did: its record and the inputs it applied (a failed one included).
     private struct InputTurnOutcome {
@@ -6145,10 +6367,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // promise effects the land never sends (#704, #716). The failure item has no caller.
         let endedInTurn = !failedBefore && failure != nil
         for item in consumedItems {
-            inputTurnResults[item.sequence] = endedInTurn
+            setInputTurnResult(item.sequence, endedInTurn
                 ? .failure(LandInputRejection.landClosed)
-                : application.outcomes[item.sequence]
+                : application.outcomes[item.sequence])
         }
+        checkActionTables(#function)
         var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: emitted)
         // A tickless land's turn is one pass (#325, #321).
         if !applied.appliedOrder.isEmpty {
@@ -6161,13 +6384,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// response never leaves before its input is recorded.
     private func resumeInputTurnWaiters(for batch: [PendingItem]) {
         for item in batch {
-            let result = inputTurnResults.removeValue(forKey: item.sequence) ?? .success(.none)
+            // The result, and its error, are taken before the branch.
+            let result: Result<InputOutcome, any Error> = inputTurnResults.removeValue(forKey: item.sequence)
+                .map { taken($0, path: .inputTurn, sequence: item.sequence) } ?? .success(.none)
             if ticklessJobTurns.remove(item.sequence) != nil {
+                // No waiter on the slot yet: held under a fresh ID.
                 fillActionSlot(item.sequence, with: result)
             } else {
                 inputTurnWaiters.removeValue(forKey: item.sequence)?.resume(with: result)
             }
         }
+        checkActionTables(#function)
     }
 
     private func configureSyncLoop(interval: Duration) async {
