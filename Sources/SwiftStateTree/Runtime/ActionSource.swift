@@ -71,6 +71,7 @@ public protocol ReevaluationSource: Sendable {
     /// float/integer distinction, so a runner reading such a source decodes with the integral-float
     /// allowance. Sources that hold canonical frames built in memory (`init(metadata:frames:)`) or
     /// that read a 3.x binary record never set this, and their runners decode strictly.
+    /// A source that wraps another source and forwards its reads must also forward this property.
     nonisolated var readsJSONRecord: Bool { get }
 }
 
@@ -122,7 +123,6 @@ extension ReevaluationSource {
 
     /// Default for conformers that hold canonical frames built in memory: no JSON was parsed.
     public nonisolated var readsJSONRecord: Bool { false }
-
 
     /// Whether the record carries a sync stream (see `ReevaluationSyncStreamPresence`).
     public func getSyncStreamPresence() async throws -> ReevaluationSyncStreamPresence {
