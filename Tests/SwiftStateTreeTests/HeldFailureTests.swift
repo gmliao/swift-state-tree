@@ -199,7 +199,7 @@ struct HeldFailureTests {
         let waitingKey = HeldFailureGates.freshKey()
         let waitingSequence = try await submitPending(keeper, HeldFailureResolverAction(key: waitingKey))
         let waiting = Task { await thrown { _ = try await keeper.awaitActionResult(sequence: waitingSequence) } }
-        _ = try await withinDeadline("the caller waits") { await keeper.actionResultHasWaiterForTesting(waitingSequence) }
+        _ = try await withinDeadline("the caller waits") { await keeper.waitUntilActionResultHasWaiterForTesting(waitingSequence) }
         HeldFailureGates.gate(waitingKey).release()
         #expect(resolverError(await waiting.value) == HeldFailureError(token: waitingKey))
 
@@ -207,7 +207,7 @@ struct HeldFailureTests {
         let lateKey = HeldFailureGates.freshKey()
         let lateSequence = try await submitPending(keeper, HeldFailureResolverAction(key: lateKey))
         HeldFailureGates.gate(lateKey).release()
-        _ = try await withinDeadline("the slot is filled") { await keeper.actionSlotIsFilledForTesting(lateSequence) }
+        _ = try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(lateSequence) }
         let late = await thrown { _ = try await keeper.awaitActionResult(sequence: lateSequence) }
         #expect(resolverError(late) == HeldFailureError(token: lateKey))
     }
@@ -231,7 +231,7 @@ struct HeldFailureTests {
         let key = HeldFailureGates.freshKey()
         let sequence = try await submitPending(keeper, HeldFailureResolvedValidateAction(key: key))
         HeldFailureGates.gate(key).release()
-        _ = try await withinDeadline("the slot is filled") { await keeper.actionSlotIsFilledForTesting(sequence) }
+        _ = try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(sequence) }
         let error = await thrown { _ = try await keeper.awaitActionResult(sequence: sequence) }
         #expect(error as? HeldFailureError == HeldFailureError(token: key))
     }
