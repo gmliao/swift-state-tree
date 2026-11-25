@@ -97,7 +97,7 @@ struct WebSocketSessionHandlerProtocolTests {
     func rsv1Rejected() throws {
         let channel = try makeSession()
         try channel.writeInbound(
-            WebSocketFrame(fin: true, rsv1: true, opcode: .binary, data: ByteBuffer(string: "x")))
+            WebSocketFrame.client(fin: true, rsv1: true, opcode: .binary, data: ByteBuffer(string: "x")))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1002)
@@ -108,7 +108,7 @@ struct WebSocketSessionHandlerProtocolTests {
     func rsv2Rejected() throws {
         let channel = try makeSession()
         try channel.writeInbound(
-            WebSocketFrame(fin: true, rsv2: true, opcode: .binary, data: ByteBuffer(string: "x")))
+            WebSocketFrame.client(fin: true, rsv2: true, opcode: .binary, data: ByteBuffer(string: "x")))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1002)
@@ -119,7 +119,7 @@ struct WebSocketSessionHandlerProtocolTests {
     func rsv3Rejected() throws {
         let channel = try makeSession()
         try channel.writeInbound(
-            WebSocketFrame(fin: true, rsv3: true, opcode: .binary, data: ByteBuffer(string: "x")))
+            WebSocketFrame.client(fin: true, rsv3: true, opcode: .binary, data: ByteBuffer(string: "x")))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1002)
@@ -133,7 +133,7 @@ struct WebSocketSessionHandlerProtocolTests {
         let channel = try makeSession()
         let opcode = try #require(WebSocketOpcode(encodedWebSocketOpcode: rawValue))
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: opcode, data: ByteBuffer()))
+            WebSocketFrame.client(fin: true, opcode: opcode, data: ByteBuffer()))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1002, "opcode \(rawValue)")
@@ -145,7 +145,7 @@ struct WebSocketSessionHandlerProtocolTests {
         let channel = try makeSession()
         let opcode = try #require(WebSocketOpcode(encodedWebSocketOpcode: rawValue))
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: opcode, data: ByteBuffer()))
+            WebSocketFrame.client(fin: true, opcode: opcode, data: ByteBuffer()))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1002, "opcode \(rawValue)")
@@ -160,7 +160,7 @@ struct WebSocketSessionHandlerProtocolTests {
         var buf = ByteBuffer()
         buf.writeInteger(UInt8(0))  // only 1 byte, not a valid 2-byte code
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .connectionClose, data: buf))
+            WebSocketFrame.client(fin: true, opcode: .connectionClose, data: buf))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1002)
@@ -176,7 +176,7 @@ struct WebSocketSessionHandlerProtocolTests {
         var buf = ByteBuffer()
         buf.writeInteger(code)
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .connectionClose, data: buf))
+            WebSocketFrame.client(fin: true, opcode: .connectionClose, data: buf))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1002, "close code \(code) should be rejected with 1002")
@@ -192,7 +192,7 @@ struct WebSocketSessionHandlerProtocolTests {
         var buf = ByteBuffer()
         buf.writeInteger(code)
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .connectionClose, data: buf))
+            WebSocketFrame.client(fin: true, opcode: .connectionClose, data: buf))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1000, "valid code \(code) should be replied with 1000, not echoed")
@@ -206,7 +206,7 @@ struct WebSocketSessionHandlerProtocolTests {
         buf.writeInteger(UInt16(1000))       // valid code
         buf.writeBytes([0xFF, 0xFE, 0x80])  // invalid UTF-8
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .connectionClose, data: buf))
+            WebSocketFrame.client(fin: true, opcode: .connectionClose, data: buf))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1007)
@@ -220,7 +220,7 @@ struct WebSocketSessionHandlerProtocolTests {
         buf.writeInteger(UInt16(1001))  // valid code: going away
         buf.writeString("going away")   // valid UTF-8 reason
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .connectionClose, data: buf))
+            WebSocketFrame.client(fin: true, opcode: .connectionClose, data: buf))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.code == 1000, "valid close should be replied with 1000, not echoed")
@@ -231,7 +231,7 @@ struct WebSocketSessionHandlerProtocolTests {
     func emptyClosePayload() throws {
         let channel = try makeSession()
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
+            WebSocketFrame.client(fin: true, opcode: .connectionClose, data: ByteBuffer()))
         channel.embeddedEventLoop.run()
         let r = try outboundCloseResult(channel)
         #expect(r.hadClose, "should reply with a close frame")
@@ -250,18 +250,18 @@ struct WebSocketSessionHandlerProtocolTests {
 
         // Buffer a fragment so we can verify it is cleared.
         try channel.writeInbound(
-            WebSocketFrame(fin: false, opcode: .binary, data: ByteBuffer(string: "fragment")))
+            WebSocketFrame.client(fin: false, opcode: .binary, data: ByteBuffer(string: "fragment")))
 
         // RSV failure.
         try channel.writeInbound(
-            WebSocketFrame(fin: true, rsv1: true, opcode: .binary, data: ByteBuffer(string: "bad")))
+            WebSocketFrame.client(fin: true, rsv1: true, opcode: .binary, data: ByteBuffer(string: "bad")))
 
         // Trailing frames that must be dropped: a ping (control) and a continuation of the
         // buffered fragment (data reassembler path).
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
+            WebSocketFrame.client(fin: true, opcode: .ping, data: ByteBuffer()))
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
+            WebSocketFrame.client(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
 
         channel.embeddedEventLoop.run()
 
@@ -286,18 +286,18 @@ struct WebSocketSessionHandlerProtocolTests {
 
         // Buffer a fragment.
         try channel.writeInbound(
-            WebSocketFrame(fin: false, opcode: .binary, data: ByteBuffer(string: "fragment")))
+            WebSocketFrame.client(fin: false, opcode: .binary, data: ByteBuffer(string: "fragment")))
 
         // Reserved opcode failure.
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: reserved, data: ByteBuffer()))
+            WebSocketFrame.client(fin: true, opcode: reserved, data: ByteBuffer()))
 
         // Trailing frames that must be dropped: a ping (control) and a continuation of the
         // buffered fragment (data reassembler path).
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
+            WebSocketFrame.client(fin: true, opcode: .ping, data: ByteBuffer()))
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
+            WebSocketFrame.client(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
 
         channel.embeddedEventLoop.run()
 
@@ -338,7 +338,7 @@ struct WebSocketSessionHandlerProtocolTests {
         try channel.pipeline.syncOperations.addHandler(handler)
 
         let before = Data("before".utf8)
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(bytes: before)))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .binary, data: ByteBuffer(bytes: before)))
         for frame in frames {
             try channel.writeInbound(frame)
         }
@@ -350,9 +350,9 @@ struct WebSocketSessionHandlerProtocolTests {
         #expect(channel.isActive, "the close write is held")
         #expect(recorder.events == [.message(before), .disconnect], "\(recorder.events)")
 
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(string: "after")))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .ping, data: ByteBuffer()))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .binary, data: ByteBuffer(string: "after")))
         channel.embeddedEventLoop.run()
 
         hold.holding = false
@@ -380,7 +380,7 @@ struct WebSocketSessionHandlerProtocolTests {
     @Test("Continuation with nothing to continue → 1002, trailing frames dropped", arguments: [true, false])
     func orphanContinuationFails(fin: Bool) async throws {
         try await expectFailure(
-            [WebSocketFrame(fin: fin, opcode: .continuation, data: ByteBuffer(string: "orphan"))],
+            [WebSocketFrame.client(fin: fin, opcode: .continuation, data: ByteBuffer(string: "orphan"))],
             code: 1002,
             sessionID: "proto-orphan-\(fin)"
         )
@@ -396,8 +396,8 @@ struct WebSocketSessionHandlerProtocolTests {
         // Autobahn 5.18 is text, text, fin=true: two fragments that both carry the text opcode.
         try await expectFailure(
             [
-                WebSocketFrame(fin: false, opcode: first, data: ByteBuffer(string: "first")),
-                WebSocketFrame(fin: fin, opcode: opener, data: ByteBuffer(string: "second")),
+                WebSocketFrame.client(fin: false, opcode: first, data: ByteBuffer(string: "first")),
+                WebSocketFrame.client(fin: fin, opcode: opener, data: ByteBuffer(string: "second")),
             ],
             code: 1002,
             sessionID: "proto-opener-\(first)-\(opener)-\(fin)"
@@ -406,7 +406,7 @@ struct WebSocketSessionHandlerProtocolTests {
 
     /// `count` bytes of a fragment.
     private func fragment(_ opcode: WebSocketOpcode, fin: Bool, count: Int) -> WebSocketFrame {
-        WebSocketFrame(fin: fin, opcode: opcode, data: ByteBuffer(bytes: [UInt8](repeating: 0x61, count: count)))
+        WebSocketFrame.client(fin: fin, opcode: opcode, data: ByteBuffer(bytes: [UInt8](repeating: 0x61, count: count)))
     }
 
     @Test("A fragmented message past the reassembly limit → 1009, never 1002: an oversized first fragment, its continuation follows")
@@ -447,8 +447,8 @@ struct WebSocketSessionHandlerProtocolTests {
     func invalidUTF8Fails() async throws {
         try await expectFailure(
             [
-                WebSocketFrame(fin: false, opcode: .text, data: ByteBuffer(bytes: [0x61, 0xC3])),
-                WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(bytes: [0x28])),
+                WebSocketFrame.client(fin: false, opcode: .text, data: ByteBuffer(bytes: [0x61, 0xC3])),
+                WebSocketFrame.client(fin: true, opcode: .continuation, data: ByteBuffer(bytes: [0x28])),
             ],
             code: 1007,
             sessionID: "proto-utf8"
@@ -480,7 +480,7 @@ struct WebSocketSessionHandlerProtocolTests {
         )
         try channel.pipeline.syncOperations.addHandler(hold)
         try channel.pipeline.syncOperations.addHandler(handler)
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: payload))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .connectionClose, data: payload))
         channel.embeddedEventLoop.run()
         await handler.waitForInboundIdle()
         #expect(channel.isActive, "the close write is held")
@@ -524,11 +524,11 @@ struct WebSocketSessionHandlerProtocolTests {
         var buf = ByteBuffer()
         buf.writeInteger(UInt8(0))
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .connectionClose, data: buf))
+            WebSocketFrame.client(fin: true, opcode: .connectionClose, data: buf))
 
         // Trailing ping after the connection is failed.
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
+            WebSocketFrame.client(fin: true, opcode: .ping, data: ByteBuffer()))
 
         channel.embeddedEventLoop.run()
 

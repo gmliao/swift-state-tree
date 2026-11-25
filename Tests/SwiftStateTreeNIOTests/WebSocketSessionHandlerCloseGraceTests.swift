@@ -141,17 +141,17 @@ private struct GraceFixture {
     }
 
     func clientSends(_ text: String) throws {
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: text)))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .text, data: ByteBuffer(string: text)))
     }
 
     func clientPings(_ payload: [UInt8]) throws {
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer(bytes: payload)))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .ping, data: ByteBuffer(bytes: payload)))
     }
 
     func clientCloses() throws {
         var buffer = channel.allocator.buffer(capacity: 2)
         buffer.write(webSocketErrorCode: .normalClosure)
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: buffer))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .connectionClose, data: buffer))
     }
 
     /// The frames written so far, in order.
@@ -187,7 +187,7 @@ struct WebSocketSessionHandlerCloseGraceTests {
 
         try f.clientSends("late ack 1")
         try f.clientSends("late ack 2")
-        try f.channel.writeInbound(WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
+        try f.channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .ping, data: ByteBuffer()))
         #expect(f.handler.closeGraceDiscardedFramesForTesting == 2, "text/binary/continuation frames are discarded")
         let pong = try f.writtenFrames()
         #expect(pong.map(\.opcode) == [.pong], "ping in grace → pong")
@@ -385,7 +385,7 @@ struct WebSocketSessionHandlerCloseGraceTests {
         _ = try f.writtenFrames()
         let deadline = try #require(f.handler.closeGraceDeadlineForTesting)
 
-        try f.channel.writeInbound(WebSocketFrame(
+        try f.channel.writeInbound(WebSocketFrame.client(
             fin: true, rsv1: rsv == 1, rsv2: rsv == 2, rsv3: rsv == 3, opcode: opcode, data: ByteBuffer(bytes: [0x01])
         ))
         #expect(!f.channel.isActive, "the grace ended with the channel's close")
@@ -393,6 +393,45 @@ struct WebSocketSessionHandlerCloseGraceTests {
         #expect(try cancelled(deadline))
         #expect(try f.writtenFrames().isEmpty, "no pong and no second close frame")
         #expect(f.handler.closeCause == .serverClose, "the original cause stays")
+        _ = try? f.channel.finish()
+    }
+
+    @Test("An unmasked frame in the grace ends it (RFC 6455 §5.1): no second close frame, the cause stays",
+          arguments: [WebSocketOpcode.text, .ping])
+    func unmaskedFrameEndsGrace(opcode: WebSocketOpcode) async throws {
+        let f = try await GraceFixture()
+        f.handler.close(code: Self.unresponsive, grace: .seconds(2))
+        _ = try f.writtenFrames()
+        let deadline = try #require(f.handler.closeGraceDeadlineForTesting)
+
+        // Not `.client`: this frame has no mask key, as an unmasked client would send it.
+        try f.channel.writeInbound(WebSocketFrame(fin: true, opcode: opcode, data: ByteBuffer(bytes: [0x01])))
+        #expect(!f.channel.isActive, "the grace ended with the channel's close")
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        #expect(f.handler.closeGraceDeadlineForTesting == nil)
+        #expect(try cancelled(deadline))
+        #expect(try f.writtenFrames().isEmpty, "no pong and no second close frame")
+        #expect(f.handler.closeCause == .serverClose, "the original cause stays")
+        #expect(f.handler.closeGraceDiscardedFramesForTesting == 0, "the refused frame is not a discarded one")
+        _ = try? f.channel.finish()
+    }
+
+    @Test("After the connection is failed, an unmasked close frame is still the peer's close: no grace follows")
+    func unmaskedCloseAfterFailureIsStillThePeersClose() async throws {
+        let f = try await GraceFixture()
+        f.hold.holding = true
+        f.handler.close(code: Self.unresponsive, grace: .seconds(2))
+        #expect(f.handler.closeGraceDeadlineForTesting == nil, "the close frame is not written yet")
+
+        // Not `.client`: no mask key. The connection is already failed (`isClosed`), so the frame
+        // is not refused again; a close frame completes the handshake.
+        try f.channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
+        f.hold.holding = false
+        f.channel.flush()
+        #expect(f.handler.closeGraceDeadlineForTesting == nil, "the peer's close was taken: no grace begins")
+        #expect(!f.channel.isActive)
+        #expect(f.handler.closeCause == .serverClose)
+        #expect(try f.writtenFrames().map(\.opcode) == [.connectionClose], "only this side's close frame")
         _ = try? f.channel.finish()
     }
 

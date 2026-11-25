@@ -412,6 +412,13 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         // Any frame from the peer shows it is alive: it answers an outstanding ping (#108).
         notePeerAlive()
 
+        // A client MUST mask every frame (RFC 6455 §5.1); the server fails the connection with 1002.
+        // A key of all zeros is still a key: the check is for its absence.
+        if frame.maskKey == nil {
+            failConnection(code: .protocolError)
+            return
+        }
+
         // RSV1–3 MUST be 0 unless a negotiated extension defines them (RFC 6455 §5.2).
         if frame.rsv1 || frame.rsv2 || frame.rsv3 {
             failConnection(code: .protocolError)
@@ -1003,7 +1010,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     }
 
     /// A frame read during the close grace: the client's close frame ends it, and so does a frame
-    /// with RSV bits set (RFC 6455 §5.2, as on the open path); data frames are discarded (no
+    /// that is not masked (RFC 6455 §5.1) or has RSV bits set (§5.2), as on the open path; data frames are discarded (no
     /// message reaches the transport); pings are answered with pong (RFC 6455 §5.5.2). Inbound,
     /// nothing is kept, so memory doesn't grow; each frame is bounded by the decoder's maximum
     /// frame size, and the total by the grace's length times the read rate. Outbound, at most
@@ -1012,7 +1019,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     private func handleFrameInCloseGrace(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
         // A protocol violation ends the grace. No second close frame goes out (this side's is
         // written), and the close's cause stays the one already recorded.
-        if frame.rsv1 || frame.rsv2 || frame.rsv3 {
+        if frame.maskKey == nil || frame.rsv1 || frame.rsv2 || frame.rsv3 {
             closeGraceDeadline?.cancel()
             closeGraceDeadline = nil
             guard !channelCloseRequested else { return }

@@ -1,6 +1,6 @@
 # K2: the keeper's cut-over onto the turn core (#700)
 
-**Status:** draft 3, prep only. Draft 3 records K2-Q1, decided (a) by the maintainer (2026-11-25), with #855 as its follow-up and #854 (§5, §9). **Not for Review until K1b lands:** K2 starts from K1b-5's end state, and its line numbers, segment names and type names are re-taken on K2's base. Draft 2 takes Review's pre-read of draft 1 (not a verdict): K2-Q2's split, agreed with four conditions, and its §4 notes. It also takes K1b-5 rev 2's shape (each segment returns its await's request) and the `KeeperTurnSide` interface agreed with K1b-5's author for rev 2.1 (§4.5). §10 lists the changes. Draft 1 was read at main 7baba4c4, without the LSP.
+**Status:** draft 4, prep only. Draft 4 adds the probes (§12) for the points that rest on Swift semantics: the machine's conformance, the shared executor, the facade's weak reference and the exclusivity trap. Draft 3 records K2-Q1, decided (a) by the maintainer (2026-11-25), with #855 as its follow-up and #854 (§5, §9). **Not for Review until K1b lands:** K2 starts from K1b-5's end state, and its line numbers, segment names and type names are re-taken on K2's base. Draft 2 takes Review's pre-read of draft 1 (not a verdict): K2-Q2's split, agreed with four conditions, and its §4 notes. It also takes K1b-5 rev 2's shape (each segment returns its await's request) and the `KeeperTurnSide` interface agreed with K1b-5's author for rev 2.1 (§4.5). §10 lists the changes. Draft 1 was read at main 7baba4c4, without the LSP.
 
 **Inputs:**
 - the parent plan `2026-11-22-keeper-on-turncore.md` rev 5.8: §3.1–§3.10, §5's K2 row, §6.2's K2 tests, §7 and §8;
@@ -230,3 +230,24 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 | Change | Where |
 |---|---|
 | K2-Q1 decided (a) by the maintainer; the rule; #855 (the tightening, (b)) and #854 (the determinism test helper) as follow-ups; the docs passage as K2-2's doc task | §5, §6, §9 |
+
+## 12. Probes
+
+Each point below rests on Swift semantics, so it is checked by a probe, not argued. The files are kept with the plan's working notes; the code is quoted where it decides the point.
+
+| # | Point (section) | Probe | Result |
+|---|---|---|---|
+| P1 | `extension KeeperModel: TurnMachine` satisfies `TurnActor`'s `M: TurnMachine & PlainData` inside the generic keeper, with `Behavior = KeeperBehavior<State>` (§3) | a generic `ProbeModel<State: StateNodeProtocol>` whose `PlainData` conformance is conditional on `State: PlainData` (the shape `@PlainData` generates for a generic struct), a generic behavior, `actor ProbeLive<State>: TurnActor`, built through `TurnCore(machine:behavior:queueLimit:maxReleasesPerBatch:clock:)`. `swiftc -typecheck -swift-version 6` against the built `SwiftStateTurns` and `SwiftStateTree` modules (Apple Swift 6.4.2; `SwiftStateTurns` identical to main's) | positive: exit 0. Negative (the condition changed to `State: Hashable`): exit 1, `error: type 'ProbeLive<State>' does not conform to protocol 'TurnActor'`. So the condition `StateNodeProtocol` already implies (P4-1) is what makes it hold |
+| P2 | the facade adopts `LiveLandTurns`' executor and forwards with `live.assumeIsolated { … }` (§3) | compile: the same file as P1 (`nonisolated var unownedExecutor: UnownedSerialExecutor { live.unownedExecutor }`, `func forward() -> Int { live.assumeIsolated { $0.liveOnly() } }`). Run: a self-contained file, on Linux | compile: exit 0. Run: PENDING (cloud) |
+| P3 | `LiveLandTurns` holds the facade `nonisolated(unsafe) weak` (§3) | `nonisolated(unsafe) weak var facade: AnyObject?` on the actor, in P1's file | exit 0 |
+| P4 | a handler (or a service it calls) that reaches the facade or `core.read` from inside a step traps, in debug and release (§7.2) | a self-contained file: a step holds `&model` for its whole body (`withHandlerStep`'s shape); the handler reads `model` through the facade and `assumeIsolated`. Built `-Onone` and `-O`, run in a control mode (no re-entry) and a trap mode, on Linux (a trap on the Mac opens a crash dialog) | PENDING (cloud) |
+
+What the probes don't cover:
+- the per-step scoped emitter (§4.4): a lock and a flag, ordinary code that K2-E's own tests pin;
+- G3's specialization (§7): a measurement, not a probe.
+
+## 13. Draft 3 → draft 4
+
+| Change | Where |
+|---|---|
+| The probes for the Swift-semantics points (the maintainer's rule of 2026-11-25: every plan revision has a probe section) | §12 |
