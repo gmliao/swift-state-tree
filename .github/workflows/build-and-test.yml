@@ -683,8 +683,11 @@ jobs:
   # report success). The nightly's call skips it (full_matrix), because that run is about the Linux
   # variant reruns and a red macOS job would fail the nightly (#846).
   # No runner image has Swift 6.4: 6.4.x ships with Xcode 27, and the images stop at Xcode 26.x
-  # (macos-26: 26.6). So the job installs the swift.org 6.4.3 toolchain, pinned by SHA-256 and
-  # checked against its Apple signature, and puts it first on PATH.
+  # (macos-26: 26.6). So the job installs the swift.org 6.4.3 toolchain, pinned by SHA-256, and puts
+  # it first on PATH. The SHA-256 is the guarantee: the download is the one file whose hash is
+  # pinned here. There is no signature check on top, because `pkgutil --check-signature` passes any
+  # valid Developer ID signature, so it would not say whose package this is. A failed run keeps
+  # its test log as an artifact (3 days), since nobody can rerun a red macOS job locally.
   macos:
     name: macos (6.4.3)
     if: ${{ !inputs.full_matrix }}
@@ -702,7 +705,6 @@ jobs:
         set -euo pipefail
         curl -fsSL --retry 3 -o "$RUNNER_TEMP/swift.pkg" "$SWIFT_PKG_URL"
         echo "$SWIFT_PKG_SHA256  $RUNNER_TEMP/swift.pkg" | shasum -a 256 -c -
-        pkgutil --check-signature "$RUNNER_TEMP/swift.pkg"
         sudo installer -pkg "$RUNNER_TEMP/swift.pkg" -target /
         echo "/Library/Developer/Toolchains/swift-6.4.3-RELEASE.xctoolchain/usr/bin" >> "$GITHUB_PATH"
 
@@ -722,3 +724,12 @@ jobs:
         swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \
           || { echo "::error title=Tests::the tests failed"; exit 1; }
       timeout-minutes: 60
+
+    - name: Keep the test log
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: macos-tests-log
+        path: ${{ runner.temp }}/tests.log
+        retention-days: 3
+        if-no-files-found: ignore
