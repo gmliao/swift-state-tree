@@ -776,6 +776,9 @@ public func OnInitialize<State: StateNodeProtocol>(
 /// This handler is executed before the Land is destroyed, while state is still mutable.
 /// It can use resolvers to save final state or perform cleanup.
 ///
+/// A re-evaluation (replay) keeper runs none of the destroy handlers: the record holds no
+/// finalize event, so replay has nothing to check them against.
+///
 /// The body can't throw (#593): the land is ending, so nothing would act on a refusal, and a
 /// body that calls throwing code handles its errors itself. A resolver that throws skips the
 /// body; the land's teardown goes on.
@@ -796,6 +799,9 @@ public func OnFinalize<State: StateNodeProtocol>(
 ///
 /// This handler is executed after OnFinalize, when state is no longer mutable.
 /// Use this for async cleanup operations (e.g., closing database connections, sending metrics).
+///
+/// A re-evaluation (replay) keeper runs none of the destroy handlers, including AfterFinalize:
+/// the record holds no finalize event, so replay has nothing to check them against.
 ///
 /// - Parameter body: The async closure to execute with state snapshot and context.
 public func AfterFinalize<State: StateNodeProtocol>(
