@@ -1,6 +1,6 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 5.7, plan only; every K1 question is decided: K1-Q4, K1-Q5 and K1-Q8 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). K1a is in implementation (#835); rev 5.5 writes down the decisions made during it, and rev 5.6 checks K1b's text against K1a's code. Its three K1b questions are decided (rev 5.7): K1b-Q1 (a) (maintainer, 2026-11-25), K1b-Q2 (a) and K1b-Q3 (Main, 2026-11-25). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
+**Status:** rev 5.8, plan only; every K1 question is decided: K1-Q4, K1-Q5 and K1-Q8 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). K1a is in implementation (#835); rev 5.5 writes down the decisions made during it, and rev 5.6 checks K1b's text against K1a's code. Its three K1b questions are decided (rev 5.7): K1b-Q1 (a) (maintainer, 2026-11-25), K1b-Q2 (a) and K1b-Q3 (Main, 2026-11-25). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
 
 Code pointers are at main 8e622a20:
 - `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
@@ -12,6 +12,11 @@ Code pointers are at main 8e622a20:
 - `awaitActionResult` (LK:2611–2612);
 - `submitAction`'s `.completed` exits (LK:3071, :3217, :3222);
 - the adapter's `submitAction` and `awaitActionResult` calls (TA:5391, :5456) and `sendActionResponse` (TA:5583).
+
+**Rev 5.8** (census draft 3 folded in, Appendix A):
+- **F5 to F8 are in A.6, and the boundary list is A.8.** Draft 3 was read at main 32a220e9 (with #825 and #819), before K1a. A.7's K1b-5 row pointed to it, and so did the K2 prep survey, but it existed only as a working note.
+- Its per-field table isn't folded in, because K1b-4 re-runs the census on its base with the LSP.
+- Its line numbers are 32a220e9's. K1b-5 re-checks each segment at its base.
 
 **Rev 5.7** (the K1b questions decided, §9):
 - **K1b-Q1 = (a), the handler's index** (maintainer, 2026-11-25). The index is valid only within one process, and that is enforced, not only documented:
@@ -996,7 +1001,7 @@ Decided:
 
 ## Appendix A. K1b's census (draft)
 
-**Status:** draft 2. Review read draft 1 (8e61043f): sound, no must-fix, four shoulds and a nit, folded in here (A.6 S1–S4, and `serverInputMaxInFlight` in A.2). It is checked again on K1b's base. Draft 2 predates #825 (rev 5.3): K1b places what #825 adds. In Behavior: `LandDefinition.servicesType`, `acceptsServices`, and an action handler's `resolvers` declaration (closures). The `wrongServices` check in `performInitialization` reads Behavior and the services value, not Model. Draft 3 (rev 5.3, at main 32a220e9 with #825 and #819) adds F5 (K1-Q7, decided (d) by Main), F6 (turn-shaped entries §2 doesn't name: each becomes a turn body) and F8 (the loops' phase offsets move Outside; `runSync`'s fold writes stay S3's exception). It also adds each field's writes outside turns. K1b folds it into this appendix on its base, after an LSP re-check.
+**Status:** draft 2. Review read draft 1 (8e61043f): sound, no must-fix, four shoulds and a nit, folded in here (A.6 S1–S4, and `serverInputMaxInFlight` in A.2). It is checked again on K1b's base. Draft 2 predates #825 (rev 5.3): K1b places what #825 adds. In Behavior: `LandDefinition.servicesType`, `acceptsServices`, and an action handler's `resolvers` declaration (closures). The `wrongServices` check in `performInitialization` reads Behavior and the services value, not Model. Draft 3 (rev 5.3, at main 32a220e9 with #825 and #819) adds F5 (K1-Q7, decided (d) by Main), F6 (turn-shaped entries §2 doesn't name: each becomes a turn body) and F8 (the loops' phase offsets move Outside; `runSync`'s fold writes stay S3's exception). It also adds each field's writes outside turns. Rev 5.8 folds its findings (F5 to F8, in A.6) and its boundary list (A.8) into this appendix. They were read at 32a220e9 without the LSP, and K1b re-checks them on its base with the LSP. Its per-field table isn't folded: K1b-4 re-runs the census.
 
 It covers every stored property of `LandKeeper`, from `LK` at main d25ca82d: 123 declarations in the actor body (LK:113–6024), computed properties excluded. Each gets one home.
 
@@ -1104,6 +1109,48 @@ It covers every stored property of `LandKeeper`, from `LK` at main d25ca82d: 123
   - **The sync loop (LK:5806–5820)** decides a fold outside any turn. It reads `nextTickDeadline` and the clock, and writes Model: `foldedSyncs`, `overdueFoldedSyncs`, `pendingFold`, `inTurnSyncDue`. K1b lists it as a **non-turn writer of Model, until K2**, when the decision becomes the `.syncDue` step (§3.9). The census test names it as a known exception, as it does the Instants.
 - **S4 (Review on draft 1): split tables keyed by one sequence.** Two parts of an action job aren't plain: `task`, `abandonment` and `callerCancelled`, and the slot's waiter continuation. They stay on the actor in a side table keyed by the same sequence as Model's job and slot entries. That is an ECS-style split: one id, a component table per storage. A debug assertion at each step boundary checks that both tables have equal key sets, and the census test checks it after a job's whole life: admitted, resolved, abandoned and cancelled. Mutant: the side table's removal is skipped on abandonment; the assertion catches it.
 
+**From census draft 3 (rev 5.8; read at main 32a220e9 without the LSP):**
+
+- **F5: recorded resolver outputs in queued items aren't plain → K1-Q7, decided (d) by Main 2026-11-25.**
+  - `PendingActionItem.heldResolverOutputs` and `PendingLifecycleItem.heldResolverOutputs` are `[String: HeldResolverOutput]` (LandContext.swift:310 at #825). `.recorded(RecordedResolverOutput)` holds an `AnyCodable` tree.
+  - `ReplayLandOwner` holds a `KeeperModel` (§3.10), so this field must be plain in replay too.
+  - The check found:
+    - decoding at build ((a)) is possible for actions and OnInitialize only, with a decoder table on `ResolverDeclaration`. Join and leave would have to wait for R3, because public `AnyResolverExecutor` conformers declare no output type;
+    - a fourth option, **(d), decided**: hold the tree's canonical MessagePack bytes, which today's read already encodes on every call (`RecordPayloadSource.decode`). The decode stays exactly today's, every kind is covered, and the format doesn't change. So K1-Q7 doesn't gate K1a.
+  - #769 R2 later keys these outputs by position and holds the record's own bytes.
+  - K1b adds `recordedScalarResolverOutputReadsAsBefore`, which pins the one difference: `RecordPayloadSource`'s `base as? T` shortcut, which only a scalar conformer takes. None exists at rev 5.3.
+- **F6 → K1b item: name every turn-shaped entry** (decided internally; no maintainer ask). Besides §2's four (`runTickTurn`, `runInputTurn`, `runSyncOnlyTurn`, `settleTurn`), the call graph finds synchronous apply chains that write Model:
+  - `applyShutdownTurnBetweenTicks`: its apply (`applyInputs` of the shutdown item, `nextTickId`, `lastCommittedTickId`) runs before its first `await`. Only the record submission follows;
+  - `syncTurnNow` (`acceptsSyncTurn`, `endRequestedSyncWork`);
+  - `runInputDrain`'s turn end (`readyPendingItemsInOrder`, `enqueueTicklessTurnEnd`);
+  - `performInitialization`'s output segment (`runTurnOutputs`, `takeSyncRequest`, `takeSyncStreamIndex`, `takeEmittedEvents`).
+
+  **Recommendation:** K1b makes each one a turn body, a synchronous function over `(inout KeeperModel, KeeperBehavior)` like the four, with the following awaits outside it. The census test lists them as entries. §2's list is amended in the plan when K1b lands. K1b re-checks it with `incomingCalls` on its base.
+- **F7: Model writes after an `await`, live, by flow.** This is the list of segments K1b names. Each A> write below runs in a later segment of an async keeper function (the replay path excluded):
+  - **join** (`join`, `joinReportingAdmission`, `executeOnJoinResolvers`): `players`, `entryGenerations`, `pendingItems`, `outputCollector`. This is the CLAUDE.md "join/leave resolvers" exception.
+  - **leave** (`leave`): `players`, `pendingItems`, `outputCollector`.
+  - **initialize** (`performInitialization`): `state`, `initializationFailure`, `outputCollector`. `ensureInitialized` sets `didInitialize`.
+  - **action jobs** (`completeAction`, `awaitActionResult`/`awaitActionOutcome`, `submit`): `actionJobs`, `ticklessJobTurns`, `actionSlots`, `ticklessJobWork`, `outputCollector`.
+  - **client event intake** (`handleClientEvent`, after `ensureInitialized`): `pendingItems`, `outputCollector`.
+  - **server input intake** (`submitServerInputErased`, after `ensureInitialized`): `pendingItems`, `serverInputsHeldWhileFrozen`, `serverInputsInFlight`, `serverInputCapRejections`, `outputCollector`.
+  - **force shutdown and drain** (`runForceShutdown`, `drainAfterIdleCheck`, `runDestroyHandler`, `notifyTransportDestroyedAndRelease`): `pendingItems`, `players`, `shutdownRequested`, `outputCollector`, `destroyHandlersStarted`, `state`, `destructionFinished`. These are the land-stop drain (#522) and destroy-handler exceptions.
+  - **tickless drain** (`runInputDrain`): `inputDrainScheduled`.
+  - **the live tick** (`runTick`, before and around `runTickTurn`): `inputDrainScheduled`, `nextTickId`, `ticksInFlight`.
+
+  Most intake A> writes sit after the first `await ensureInitialized()`: one segment, the enqueue. K1b turns each into a named synchronous function that takes the facts it read. K2 makes it a core input. Writes classed **O** are synchronous and not in a turn:
+  - `deliverResolvedAction`, `startActionJob`, `removeActionJob`, `releaseServerInputsHeldWhileFrozen`, `submitLandFailure`, `resumeInputTurnWaiters`, `scheduleInputDrain`, `ensureTickIdForTicklessLand`, `endTickInFlight`;
+  - the transport binding: `setTransport`, `noteTransportBound`, `rejectSenderIfSuperseded`.
+
+  They are already one segment each. K1b only moves them over the model.
+- **F8 → K1b item: the loops' configuration and fold decision** (decided internally; no maintainer ask).
+  - `configureTickLoop` and `configureSyncLoop` (A<) write `appliedTickPhaseOffset` and `appliedSyncPhaseOffset` once, when the loop starts. A grep found no reader inside a turn. **Recommendation: Outside**, with the loop driver's other time state (`tickLoopConfiguredAt`, `tickLoopClock`). The census moves them from Model, and the test lists them there.
+  - `runSync` (A<) writes `foldedSyncs`, `overdueFoldedSyncs` and `inTurnSyncDue`. This is draft 2's S3, unchanged: they stay Model, and the census test lists this as a **non-turn writer until K2** (`.syncDue` step, §3.9).
+  - Re-check both with `findReferences` on K1b's base. If a turn reads an offset, it stays Model and joins S3's exception.
+- **Replay path** (the #612 exception, kept by K1b's "Replay calls the same bodies"):
+  - `runTick`'s non-turn branch (after LK:4358), `processPendingActions`, `replayRecordedPasses`, `replayInitializeBeforeTickZero` and `restoreSequenceWatermark` write `state`, `pendingItems`, `outputCollector`, `lastCommittedTickId` and `pendingItemScans` between source awaits.
+  - K1b has them call the same turn bodies over `ReplayLandOwner.model`. The awaits on the source stay between bodies.
+- **Test hooks writing Model:** `withMutableStateSync` (`state`, O), `setServerInputMaxInFlightForTesting` (Behavior: deleted, per draft 2), and `failLandForTesting` → `failLand` (T+O).
+
 ### A.7 After K1a (rev 5.6)
 
 This section was checked at #835's head a615ee85, without the LSP, against census draft 3 (main 32a220e9 with #825 and #819). It is re-checked on K1b's base.
@@ -1137,6 +1184,26 @@ This section was checked at #835's head a615ee85, without the LSP, against censu
 | K1b-2 | F1 / S1: `FailureID` and the failure table; S4's side tables, with their key-set assertion | K1b-1 |
 | K1b-3 | the land RNG into the model (K1b-Q2) | K1a |
 | K1b-4 | `KeeperModel<State>` (`@PlainData`) and `KeeperBehavior<State>`, the census test, the must-not-compile pin. The replay fields are grouped in one struct on the actor, which K2 moves into `ReplayLandOwner` (§8 lists that type as K2's) | K1b-1 to K1b-3, and P4-1 (#834) |
-| K1b-5 | the turn bodies and the named segments (draft 3's F6 to F8 list); replay calls the same bodies | K1b-4 |
+| K1b-5 | the turn bodies and the named segments (A.6's F6 to F8, and A.8); replay calls the same bodies | K1b-4 |
 
 **K1b's census test** (§6.2) checks this table against the actor's stored properties with `Mirror`: each name must appear in exactly one home. A new field fails until it is placed. `KeeperModel`'s `@PlainData` gives the compile-time half. The test's known exceptions are F4's Instants and S3's sync-loop writer, each with the slice that ends it (K2).
+
+### A.8 Boundary: turn functions also called from outside a turn (draft 3, at 32a220e9)
+
+These are the edges K1b cuts. A turn function called from an async flow either becomes part of that flow's named segment, or the call moves into a turn.
+
+- `applyInputs` ← `applyShutdownTurnBetweenTicks`, `processPendingActions` (replay), `replayRecordedPasses` (replay)
+- `takeNextSequence` ← every intake (`handleClientEvent`, `submit`, `join`, `joinReportingAdmission`, `leave`, `submitServerInputErased`, `submitLandFailure`, `runForceShutdown`), `performInitialization`, `applyShutdownTurnBetweenTicks`, `replayInitializeBeforeTickZero`. The sequence is taken at intake, outside turns. In K1b it is a model function the intake segment calls.
+- `makeContext` ← `join`, `joinReportingAdmission`, `leave`, `performInitialization`, `startActionJob`, `runSync`, `runTick`, `runDestroyHandler`, `drainAfterIdleCheck`, `replayInitializeBeforeTickZero`. The context captures `outputCollector` (a class). That is draft 2's `outputCollector` split finding again.
+- `fillActionSlot` ← `completeAction`, `resumeInputTurnWaiters`
+- `dropPendingInputs` ← `drainAfterIdleCheck`, `runForceShutdown`, `tearDownAfterFailedInitialization`
+- `debugEndWork` ← `handleClientEvent`, `kickServerInputTurn`, `runTick`, `submit` (the freeze accounting the CLAUDE.md rule names)
+- `readyPendingItemsInOrder` ← `processPendingActions`, `replayRecordedPasses`, `runInputDrain`
+- `liveStateHash` ← `applyShutdownTurnBetweenTicks`, `makeInitializeRecord`, `runTick`
+- `rejectIfLandClosed` ← `handleClientEvent`, `submit`; `validateDelivery` ← `deliverResolvedAction`
+- `cancelActionJob` ← `cancelActionJobs`; `cancelAllActionJobs`, `releaseHeldInputsForDrain`, `resumeDrainStartedWaitersForTesting`, `set` ← `shutdownIfIdle`; `set` ← `awaitActionResult`
+- `takeEmittedEvents` ← `performInitialization`, `runTick`; `takeSyncRequest`, `takeSyncStreamIndex`, `runTurnOutputs` ← `performInitialization`
+- `beginPass`, `takePassOrdinal`, `executingTickIdForPendingItems` ← `processPendingActions` (and `replayRecordedPasses`)
+- `acceptsSyncTurn`, `endRequestedSyncWork` ← `syncTurnNow`; `bindSyncRequester` ← `syncTurnTicket`; `rebind` ← `noteTransportBound`
+- `enqueueRecorderSubmission` ← `submitTurnRecord`; `enqueueTicklessTurnEnd` ← `runInputDrain`; `makeTurnRecord` ← `applyShutdownTurnBetweenTicks`
+- `noteReplayedInitializeRefusal` ← `replayInitializeBeforeTickZero`; `syncReadPosition` ← `currentStateLocated`; `failLand` ← `failLandForTesting`
