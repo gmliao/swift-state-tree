@@ -1,6 +1,6 @@
 # K1b-3: the land RNG moves into the keeper's state (#700, #765)
 
-**Status:** rev 2, plan only. K1b-Q2 is decided (a) (Main, 2026-11-25; `2026-11-22-keeper-on-turncore.md` §9). K1b-3 needs K1a only (K1b-Q3). Read at #835's head 5baa1887 (K1a). The implementation re-checks every site with the LSP on its base: #835's branch after Code-2's shoulds push, then main once #835 merges.
+**Status:** rev 2.1, plan only. Review: GO once rev 2.1's must-fix is in, with no further round (2026-11-25); rev 2.1 adds it and the shoulds and nits (§12). K1b-Q2 is decided (a) (Main, 2026-11-25; `2026-11-22-keeper-on-turncore.md` §9). K1b-3 needs K1a only (K1b-Q3). Read at #835's head 5baa1887 (K1a). The implementation re-checks every site with the LSP on its base: #835's branch after Code-2's shoulds push, then main once #835 merges.
 
 - **Rev 2** answers Review's NOT GO on rev 1.2 (1 must-fix, 7 shoulds, 3 nits, all taken; §11).
 - **Rev 1.2** folded in an LSP pre-read.
@@ -33,7 +33,16 @@ That closes #765's class:
 - **`DeterministicRng` gains `@PlainData`.** It is one `UInt64`, so this is an addition, and K1b-4's `KeeperModel` needs it.
 - **`DeterministicRngService`:**
   - It gains `init(continuing generator: DeterministicRng, seed: UInt64)` and `var generator: DeterministicRng`, read under the lock. Both are package or internal, so the public surface is unchanged.
-  - **Its lock becomes `Synchronization.Mutex<DeterministicRng>`,** stored inline, so a service is one allocation, not two (`NSLock` is a class). `Mutex` needs macOS 15, so `Package.swift`'s floor goes from `.macOS(.v14)` to `.macOS(.v15)`. That's allowed by the standing OS-floor authorization; the PR states it. Linux and Windows have `Synchronization` on the pinned 6.4.3.
+  - **Its lock becomes `Synchronization.Mutex<DeterministicRng>`,** stored inline, so a service is one allocation, not two (`NSLock` is a class). `Mutex` needs macOS 15, so the floor goes from `.macOS(.v14)` to `.macOS(.v15)`. The standing OS-floor authorization covers it, and the PR states it. Linux and Windows have `Synchronization` on the pinned 6.4.3.
+  - **The floor moves in every manifest that depends on the root package**, or a macOS build of it fails on the deployment target:
+    - `Package.swift`;
+    - `Examples/Demo/Package.swift`:8;
+    - `Examples/GameDemo/Package.swift`:8;
+    - `Tools/AutobahnEcho/Package.swift`:11;
+    - the consumer manifest that `scripts/check-must-not-compile.sh`:52 generates.
+
+    Linux CI doesn't see this; the macOS CI job (#847, non-blocking) and the Macs do. `ws-loadtest`'s poc and the inlinable negative control build only their own sources, so they stay at 14.
+  - **A comment beside `platforms`:** only macOS is listed, so other Apple platforms keep their defaults. `Mutex` would need iOS, tvOS and Mac Catalyst 18, watchOS 11 and visionOS 2 if the package ever builds for them.
   - The public `init(seed:)` and the three draws stay.
 - **`LandContext`** gains an internal stored `stepRandom: DeterministicRngService? = nil`. The default lets the 14 `@testable` initializer calls compile unchanged. `random` then returns, in order:
   1. `stepRandom`, if set;
@@ -51,9 +60,11 @@ That closes #765's class:
   No field holds a service (S1): each service is local to the call that made it.
 - **Init (LK:1176):**
   - The seed is `services.get(DeterministicRngService.self)?.seed ?? DeterministicSeed.fromLandID(landID ?? definition.id)`. `landID` is optional at LK:1161.
-  - The keeper doesn't register a service any more.
-  - Replay passes its seed exactly as before: the keeper reads the seed before any service is removed.
-- **`makeContext` strips the RNG** (S6). It removes `DeterministicRngService` from the merged services (land, override and player, LK:3580–3582), with a new internal `LandServices.removing(_:)`. This happens at the single point where every context's services are built, so no context and no resolver holds a caller's RNG instance, whichever registration it came from. The land services themselves are left as given.
+  - The keeper doesn't register a service any more. After reading the seed, it **strips the land services once**: `services = services.removing(DeterministicRngService.self)`. A replay that registered its seed service then costs no extra work per context.
+  - Replay passes its seed exactly as before: the keeper reads the seed before the removal.
+  - With the land services stripped, reverting `getRngSeed()` to the services lookup loses a custom seed, so test 6 kills R-M6.
+- **`makeContext` strips the RNG** (S6). It removes `DeterministicRngService` from the merged services (land, override and player, LK:3580–3582), with a new internal `LandServices.removing(_:)`. This is the single point where every context's services are built, so no context and no resolver holds a caller's RNG instance, whichever registration it came from. A miss costs one dictionary lookup: `removeValue` returns without copying.
+  - **The concrete key only.** `LandServices` keys by `ObjectIdentifier` of the registered type, so a service registered as `(any RngSeedProvider).self` survives, and `extractRngSeed()` scans every value. The keeper strips `DeterministicRngService.self` only. A protocol-typed registration is the caller's own object, and the land's generator never reaches it.
 - **`getRngSeed()`** returns `landRandomSeed`.
 - **The helper** replaces `withMutableStateSync` (LK:3618) at its callers:
   ```swift
@@ -88,9 +99,9 @@ That closes #765's class:
 | 3861 `applyPendingItem` | action | yes | step (helper) |
 | 3917, 3919 `applyPendingItem` | client event (decoded / undecoded) | yes | step (helper) |
 | 3969 `applyPendingItem` | server input | yes | step (helper) |
-| 4061, 4084, 4107 `applyLifecycleItem` | OnJoin, OnLeave and the other lifecycle handlers | yes | step (helper) |
+| 4061, 4084, 4107 `applyLifecycleItem` | OnJoin, OnLeave, and the legacy OnInitialize fallback (4061) | yes | step (helper) |
 | 5022 `runTickTurn` | tick, live (`routesThroughTurn`, LK:4545) | yes | step: wrap the call in the helper |
-| **4814 `runTick`, inline** | **tick, reevaluation keeper** (`mode != .live`; ctx at :4797) | **is replay** | **step: wrap `tickHandler?(&state, ctx)` in the helper** (MF1) |
+| **4814 `runTick`, inline** | **tick, reevaluation keeper** (`mode != .live`; ctx at :4797) | **is replay** | **step**: the call becomes `if !shutdownTurnApplied, let tickHandler { withHandlerStep(ctx) { … } }`, so a tickless or shutdown frame allocates nothing (MF1) |
 | 2103 `joinReportingAdmission` | CanJoin | **no**: not repeated from the record; a viewer joining a reevaluation keeper runs it live (LK:2074–2103) | detached, a fresh copy per call |
 | 6098 `runSync` | the read-only sync handler | **no**: it runs on the sync loop, also on a reevaluation keeper with its sync loop on (LK:6039–6098), never from the record | detached, a fresh copy per call |
 | 6322 `runDestroyHandler` | OnDestroyWhenEmpty, OnFinalize | **no**: only the live drain calls it | detached, **the drain's generator** |
@@ -98,6 +109,8 @@ That closes #765's class:
 
 - **Detached.** A handler that isn't repeated from the record draws from a copy of `landRandom`, and nothing is written back. Its draws never reach replayed state. Today a draw in CanJoin or the sync handler moves the land RNG, and replay can't repeat it: #765's divergence through another door.
 - **The drain's generator** (S2). `drainAfterIdleCheck` builds one service from `landRandom` when the drain starts and passes it to OnDestroyWhenEmpty, OnFinalize and AfterFinalize in order. So their draws continue one sequence instead of repeating each other's. Nothing is written back, and replay is unaffected, since the drain is live only (#826).
+  - **When it's built.** After `waitForTickInFlight` and both guards (`initializationFailure`, `mode`), just before the destroy handlers. The early exits allocate nothing.
+  - **When it's bound.** `runDestroyHandler` binds it after the handler's resolvers succeed, so a skipped handler draws nothing. AfterFinalize's context gets it before the await.
 - **A fresh copy per call** for CanJoin and the sync handler: two such calls draw the same values, and each draws what the next step will draw. That's harmless, since none of it reaches state. `random`'s doc says so.
 - **Binding at the call.** Every site's own `makeContext` is unchanged, and the binding happens at the call. That matters where an `await` sits between the two (`performInitialization` with its resolvers, `join`, `runDestroyHandler`).
 - **`runSync` stays A.6 S3's non-turn writer** until K2. Its handler is detached, so it adds no RNG write to that exception.
@@ -112,7 +125,7 @@ That closes #765's class:
 ### 3.5 Call-site reading (rev 1.2's LSP pass, plus rev 2)
 
 - **The 9 `withMutableStateSync` callers** (incoming calls): `applyLifecycleItem` ×3, `applyPendingItem` ×3, `performInitialization`, `replayInitializeBeforeTickZero` and `runDestroyHandler`. None is reached from inside another's body.
-- **Every handler call that takes a context** (rev 2, at 5baa1887; the grep covers optional calls such as `tickHandler?(&state, ctx)`, which rev 1.2's pass missed): the 15 rows of §3.3. The resolver builders' `ValidateContext(ctx)` calls (1500, 3200, 6304) have no `random`.
+- **Every handler call that takes a context** (rev 2, at 5baa1887; the grep covers optional calls such as `tickHandler?(&state, ctx)`, which rev 1.2's pass missed): 15 call expressions, in the 12 rows of §3.3. The resolver builders' `ValidateContext(ctx)` calls (1500, 3200, 6304) have no `random`.
 - **Paths by mode.** One function can branch on the mode. `runTick` sends a live tick to `runTickTurn` (LK:4545) and runs a reevaluation keeper's tick inline (LK:4814). So the table lists each mode's path as its own row.
 - **What replay repeats from the record:** `applyInputs` (reached from `replayRecordedPasses`), the inline tick (`stepTickOnce` ← `ReevaluationEngine` :388, `ReevaluationRunnerImpl` :388), and `replayInitializeBeforeTickZero`.
 - **`LandContext.random`'s references:**
@@ -133,6 +146,7 @@ That closes #765's class:
   - A `ctx.random` kept past its step no longer moves the land. Draws must be synchronous inside the handler (§1).
   - CanJoin, the sync handler and the drain's three handlers draw from detached copies (§3.3).
   - Legacy records that drew outside repeated handlers replay differently (§3.4).
+- The strip removes the concrete key `DeterministicRngService.self` only (§3.2).
 - **Census:** no resolver, CanJoin, sync or destroy handler in Sources, Tests or Examples draws. The implementation re-checks this with the LSP on its base.
 - Main approves the additive public API. The behavior changes go in the PR's Public API list.
 
@@ -146,9 +160,9 @@ That closes #765's class:
 4. **Detached handlers.**
    - CanJoin draws, including a viewer admission on a reevaluation keeper (S5).
    - The sync handler draws.
-   - OnDestroyWhenEmpty, OnFinalize and AfterFinalize each draw: they continue one sequence (S2), and the land's state isn't written.
+   - OnDestroyWhenEmpty, OnFinalize and AfterFinalize each draw: they continue one sequence (S2). A drained keeper takes no more steps, so the test compares `landRandom` before and after the drain through a package read: unchanged (R-M8).
    - The land's next draws equal an uninterrupted sequence, and a record with a drawing CanJoin replays with 0 mismatch.
-5. **Draws before a throw are kept**, with a `@testable` package-level `invoke` closure, since the public DSL can't reach it (S4). The next step's draw is the one after them.
+5. **Draws before a throw are kept.** The public DSL can't reach this (S4), so the test uses `AnyActionHandler`'s package `invoke:` initializer: an action whose handler draws, then throws. A rejected action leaves the land running, so the next step's draw can be read; a throwing OnInitialize would tear the land down. The next step's draw is the one after the thrown handler's draws.
 6. **Seed sources.**
    - `getRngSeed()` returns a caller-registered seed, else `fromLandID(landID ?? definition.id)`.
    - The record header holds it.
@@ -187,6 +201,7 @@ If the cost shows, a lazy box still allocates the box on every call, so it doesn
 - `docs/core/resolver.md`:186: resolvers don't get the land RNG.
 - `docs/core/runtime.md`:60 and :159: the RNG lines.
 - Comments: `LandContext.random`, `ResolverContext.services`, `getRngSeed`, and `LandManager`:667.
+- `docs/quickstart.md`:8 and `docs/FAQ.md`:25, EN and zh-TW: macOS 15 or later.
 - **Lesson** (`Notes/solutions/`, with `title:`, index regenerated): "a handler that replay doesn't repeat must not move replayed state; list each mode's path as its own row". The CanJoin and sync-handler doors, and the inline reevaluation tick, were found that way.
 
 ## 9. Size
@@ -213,3 +228,15 @@ If the cost shows, a lazy box still allocates the box on every call, so it doesn
 | S6: four behavior changes to list; strip player/override registrations | yes | §3.2 (`makeContext` strips), §3.4, §4 |
 | S7: two allocations; malloc/action on `wide-tickless-mp` | yes, plus the `Mutex` upgrade for one | §3.1, §7 |
 | Nits: the `landID ?? definition.id` seed, the docs list, the `stepRandom = nil` default | yes | §3.2, §8, §3.1 |
+
+## 12. Review rev 2 → rev 2.1
+
+| Finding | Where |
+|---|---|
+| MF: the floor raise misses the consuming manifests (Demo, GameDemo, AutobahnEcho, the snippet checker's generated manifest) and the docs | §3.1, §8 |
+| §10 answers: `Mutex` and the floor raise in this PR, with a comment on the other Apple platforms; `makeContext` stripping fine, plus strip the land services once at init (kills R-M6) | §3.1, §3.2 |
+| S: where the drain's generator is built and bound | §3.3 |
+| S: test 4 reads `landRandom` around the drain | §5 test 4 |
+| S: test 5 uses `AnyActionHandler`'s package `invoke:` | §5 test 5 |
+| S: the strip is by the concrete key only | §3.2, §4 |
+| Nits: 15 calls in 12 rows; the legacy OnInitialize fallback in the 4061 row; the 4814 wrap inside `if !shutdownTurnApplied, let tickHandler` | §3.5, §3.3 |
