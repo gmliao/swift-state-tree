@@ -374,6 +374,14 @@ export const INVALID_ROW_ENTRY_CLOSE_CODE = 4013
  */
 export const LAND_FAILED_CLOSE_CODE = 4016
 
+/**
+ * The close code the server sends to a session that a newer join of the same player replaced
+ * (#861; one session per player, newest wins). Only this connection is gone: the player and the
+ * land live on in the newer session. Don't reconnect on this code, or two clients of one player
+ * would replace each other in a loop; show "logged in elsewhere" and let the person decide.
+ */
+export const SUPERSEDED_CLOSE_CODE = 4017
+
 /** The longest close reason a WebSocket close frame carries, in UTF-8 bytes. */
 const MAX_CLOSE_REASON_BYTES = 123
 

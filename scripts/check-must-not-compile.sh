@@ -49,7 +49,7 @@ mkdir -p "$package/Sources"
     echo 'import PackageDescription'
     echo 'let package = Package('
     echo '    name: "MustNotCompile",'
-    echo '    platforms: [.macOS(.v14)],'
+    echo '    platforms: [.macOS(.v15)],'
     echo "    dependencies: [.package(path: \"$root\")],"
     echo '    targets: ['
     for snippet in "${snippets[@]}"; do

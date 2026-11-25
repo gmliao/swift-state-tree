@@ -59,6 +59,11 @@ public struct ResolverContext: Sendable {
     /// Available services (database, cache, etc.)
     ///
     /// Provides access to external services in a protocol-agnostic way.
+    ///
+    /// The land's generator isn't here: the keeper removes `DeterministicRngService` from every
+    /// context's services (#765). A resolver runs outside the land's step, and replay doesn't run
+    /// it, so a draw from the land's generator would move it live only. A resolver that needs
+    /// randomness brings its own; its output is recorded like any other.
     public let services: LandServices
 
     /// The land's services value, for the `Resolver` values the keeper runs (#769): the one

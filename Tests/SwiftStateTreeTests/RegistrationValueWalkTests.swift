@@ -70,7 +70,14 @@ struct RegistrationValueWalkTests {
 
     @Test("The conversion refuses the same states at their first snapshot: the backstop for what registration can't see")
     func conversionRefusesWhatRegistrationRefuses() {
+        #expect(throws: SyncError.self) { _ = try ValueCheckPlainClassRoot().snapshot(for: nil, dirtyFields: nil) }
         #expect(throws: SyncError.self) { _ = try ValueCheckClassFieldRoot().snapshot(for: nil, dirtyFields: nil) }
+        // The full-state conversion (the state hash's, `makeFull`) refuses them too.
+        #expect(throws: SyncError.self) { _ = try ValueCheckPlainClassRoot().fullStateSnapshot() }
+        #expect(throws: SyncError.self) { _ = try ValueCheckClassFieldRoot().fullStateSnapshot() }
+        // Toolchain-specific: this holds while Foundation's `Decimal` reflects as stored fields
+        // that include a tuple (`_mantissa`), which the conversion refuses. A toolchain that
+        // reflects it differently needs this line revisited; registration's walk is the guarantee.
         #expect(throws: SyncError.self) { _ = try DecimalSyncedRoot().snapshot(for: nil, dirtyFields: nil) }
     }
 }

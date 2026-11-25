@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "GameDemo",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v15),
     ],
     products: [
         .library(
