@@ -1778,6 +1778,36 @@ struct FailedLandStopTests {
         try await f.host.shutdown()
     }
 
+    /// The land has no tick, so the keeper's join admits the session, schedules the input drain and
+    /// returns; OnJoin runs in that drain's turn. The router's `.afterAdmit` comes after the
+    /// keeper's join returned, but the drain is its own task: it may not have run yet.
+    @Test("at .afterAdmit OnJoin may not have run yet; the join's input drain applies it (#833)")
+    func onJoinRunsInTheInputDrainAfterAfterAdmit() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        // The router auto-creates the land on a join; create it first to hold its drain.
+        let container = try await f.server.landManager.getOrCreateLand(
+            landID: f.landID, definition: makeLand(events: events), initialState: ShutdownState(), metadata: [:]
+        )
+        let keeper = container.keeper
+        let drain = Gate()
+        await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>().on(.inputDrain) { await drain.arrive() }.hook)
+        let admitted = Gate()
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.afterAdmit) { await admitted.arrive() }.hook)
+
+        let (_, _, joined) = try await f.startJoin("p1")
+        #expect(await admitted.waitForArrivals(1), "the join is held after its admission")
+        #expect(await drain.waitForArrivals(1), "the join's input drain is held at its start")
+        #expect(await f.players() == [], "the drain hasn't run, so OnJoin hasn't")
+
+        drain.open()
+        #expect(await bounded { await keeper.waitForInputDrainIdleForTesting() } != nil, "the join's input drain ended")
+        #expect(await f.players() == ["p1"], "the drain applied OnJoin")
+        admitted.open()
+        #expect(await bounded { await joined.value } != nil, "the join returned")
+        try await f.host.shutdown()
+    }
+
     @Test("a land that fails after an admin stop closed its sessions: the latch is set, the teardown doesn't wait, and the stop's destroy joins it")
     func failureAfterAdminStopClosedSessions() async throws {
         let events = Events()
