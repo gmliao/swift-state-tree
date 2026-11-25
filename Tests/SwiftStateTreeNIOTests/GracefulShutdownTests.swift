@@ -54,6 +54,15 @@ private final class Gate: @unchecked Sendable {
         }
     }
 
+    /// An arrival that doesn't wait: counts like `arrive()`, returns at once.
+    func signal() {
+        lock.lock()
+        arrivals += 1
+        let reached = takeReachedArrivalWaiters()
+        lock.unlock()
+        reached.forEach { $0.resume(returning: true) }
+    }
+
     /// Under the lock: the arrival waiters `arrivals` has reached, removed.
     private func takeReachedArrivalWaiters() -> [CheckedContinuation<Bool, Never>] {
         let ids = arrivalWaiters.filter { $0.value.count <= arrivals }.map(\.key)
@@ -318,6 +327,21 @@ private struct ProbeMiddleware: HostMiddleware {
 }
 
 private struct ProbeError: Error {}
+
+/// A middleware whose first `onStart` throws; later ones succeed.
+private final class FailFirstStartMiddleware: HostMiddleware, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var starts: Int { lock.withLock { count } }
+
+    func onStart(context: HostContext) async throws -> Task<Void, Never>? {
+        let n = lock.withLock { () -> Int in count += 1; return count }
+        if n == 1 { throw ProbeError() }
+        return nil
+    }
+
+    func onShutdown(context: HostContext) async throws {}
+}
 
 @Suite("Shutdown budget (#351, decision C2a)")
 struct ShutdownBudgetTests {
@@ -1009,6 +1033,19 @@ struct GracefulShutdownTests {
         }
     }
 
+    @Test("a start whose onStart throws returns the host to .idle, and a retry reaches .running (#833)")
+    func aFailedStartReturnsTheHostToIdleAndARetryRuns() async throws {
+        let failing = FailFirstStartMiddleware()
+        let f = try await Fixture.make(land: makeLand(events: Events()), middlewares: [failing], start: false)
+        await #expect(throws: ProbeError.self) { try await f.host.start() }
+        #expect(failing.starts == 1)
+        #expect(await f.host.lifecyclePhaseForTesting == .idle, "the failed start's finish wrote .idle")
+        try await f.host.start()
+        #expect(failing.starts == 2)
+        #expect(await f.host.lifecyclePhaseForTesting == .running)
+        try await f.host.shutdown()
+    }
+
     @Test("a start returns with the phase .running, for the call that starts it and for one that joins it (#833)")
     func startReturnsAfterTheRunningPhase() async throws {
         let startGate = Gate()
@@ -1023,10 +1060,14 @@ struct GracefulShutdownTests {
         }
         #expect(await startGate.waitForArrivals(1), "the start is held in a middleware's onStart")
         #expect(await f.host.lifecyclePhaseForTesting == .starting)
+        let joined = Gate()
+        await f.host.installLifecycleJoinHookForTesting { joined.signal() }
         let joiner = Task { () -> Lifecycle.Phase in
             try await f.host.start()
             return await f.host.lifecyclePhaseForTesting
         }
+        // The joiner is about to await the start's task: it can't have found the start finished.
+        #expect(await joined.waitForArrivals(1), "the joiner joined the start in flight")
         startGate.open()
         // The start's task writes the phase before either call's wait ends.
         #expect(try await runner.value == .running, "the runner returned before the phase was written")
@@ -1041,6 +1082,9 @@ struct GracefulShutdownTests {
             land: makeLand(events: Events()),
             middlewares: [ProbeMiddleware(events: Events(), name: "m", shutdownGate: shutdownGate)]
         )
+        // Installed before the stop begins: run() joins it the moment its wait is woken.
+        let joined = Gate()
+        await f.host.installLifecycleJoinHookForTesting { joined.signal() }
         let run = Task { () -> Lifecycle.Phase in
             try await f.host.run()
             return await f.host.lifecyclePhaseForTesting
@@ -1055,6 +1099,8 @@ struct GracefulShutdownTests {
             try await f.host.shutdown()
             return await f.host.lifecyclePhaseForTesting
         }
+        // Both the joiner and run() (woken by the stop beginning) are about to await the stop's task.
+        #expect(await joined.waitForArrivals(2), "the joiner and run() joined the stop in flight")
         shutdownGate.open()
         // The stop's task writes the phase before any call's wait ends, whichever call ran it.
         #expect(try await runner.value == .stopped, "the shutdown returned before the phase was written")

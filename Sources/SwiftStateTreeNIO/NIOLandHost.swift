@@ -352,6 +352,14 @@ public actor NIOLandHost {
     /// Tests: the start/stop phase.
     var lifecyclePhaseForTesting: Lifecycle.Phase { lifecycle.phase }
 
+    /// Tests: called synchronously by a `start()` or `shutdown()` that joins a call in flight,
+    /// right before it awaits that call's task, so a test knows the joiner is waiting.
+    private var lifecycleJoinHook: (@Sendable () -> Void)?
+
+    func installLifecycleJoinHookForTesting(_ hook: (@Sendable () -> Void)?) {
+        lifecycleJoinHook = hook
+    }
+
     /// Creates a new NIOLandHost.
     public init(configuration: NIOLandHostConfiguration = .init()) {
         self.configuration = configuration
@@ -544,9 +552,12 @@ public actor NIOLandHost {
     /// serving.
     func start() async throws {
         switch lifecycle.beginStart({ token in Task { try await self.runStart(token) } }) {
-        case .run(let task), .join(let task):
+        case .run(let task):
             // The task writes the phase as its last step, so a runner and a joiner both return
             // after it (if that start is still current: a stop that took over makes it a no-op).
+            try await task.value
+        case .join(let task):
+            lifecycleJoinHook?()
             try await task.value
         case .alreadyRunning:
             return
@@ -722,6 +733,7 @@ public actor NIOLandHost {
         case .join(let task):
             // `run()` joins the stop another caller runs, and returns "once the shutdown
             // finished" (#351): the task wrote `.stopped` before its result was available.
+            lifecycleJoinHook?()
             await task.value
         case .nothingToStop:
             resumeStopWaiters()

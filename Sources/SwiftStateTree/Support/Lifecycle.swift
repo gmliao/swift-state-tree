@@ -17,6 +17,11 @@
 /// both see the phase the task wrote, if that start is still current: a stop that took over
 /// before the start's task ended makes the start's finish a stale no-op.
 ///
+/// `make` must create a plain `Task { ... }`, whose body is enqueued and starts after the calling
+/// segment. Never `Task.immediate` (or anything else that runs the body inline): the body's
+/// `finishStart` / `finishStop` could then run before `beginStart` / `beginStop` stored the
+/// token and the phase, and the finish would be dropped as stale.
+///
 /// Usage, inside the owning actor:
 /// ```swift
 /// func start() async throws {

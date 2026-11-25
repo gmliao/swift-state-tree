@@ -242,6 +242,20 @@ struct ReentrancyHelpersTests {
         #expect(failed.phase == .idle)
     }
 
+    @Test("finishStop with a stale token during .stopping is a no-op: only the current stop's token ends it")
+    func staleFinishStopDuringStoppingIsANoOp() throws {
+        var lifecycle = Lifecycle()
+        let startToken = try #require(beginStart(&lifecycle))
+        lifecycle.finishStart(startToken, succeeded: true)
+        let stopToken = try #require(beginStop(&lifecycle))
+        #expect(lifecycle.phase == .stopping)
+        // The token of the start the stop replaced: not the current one.
+        lifecycle.finishStop(startToken)
+        #expect(lifecycle.phase == .stopping, "a stale token doesn't end the stop")
+        lifecycle.finishStop(stopToken)
+        #expect(lifecycle.phase == .stopped)
+    }
+
     @Test("The late finish of an earlier start leaves a retried start alone")
     func lateFinishOfAnEarlierStartLeavesTheRetry() throws {
         var lifecycle = Lifecycle()
