@@ -168,6 +168,20 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         return false
     }
 
+    /// Maps NIO's frame-decoder errors to their RFC 6455 close codes. Exhaustive so a new NIO
+    /// case breaks the build.
+    ///
+    /// - Note: Spell `NIOWebSocket.NIOWebSocketError`, not the bare name: this module declares
+    ///   its own `NIOWebSocketError`, which shadows NIO's inside `SwiftStateTreeNIO`. A bare cast
+    ///   compiles but never matches.
+    static func closeCode(for error: NIOWebSocket.NIOWebSocketError) -> WebSocketErrorCode {
+        switch error {
+        case .invalidFrameLength: return .messageTooLarge
+        case .fragmentedControlFrame: return .protocolError
+        case .multiByteControlFrameLength: return .protocolError
+        }
+    }
+
     /// Records the close decided now, in the segment that decides it: the first one only.
     private func noteCloseCause(_ cause: SessionCloseCause, code: WebSocketErrorCode?) {
         guard closeCause == nil else { return }
@@ -438,6 +452,11 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
                 "error": .string(String(describing: error)),
             ]
         )
+
+        if let decoderError = error as? NIOWebSocket.NIOWebSocketError {
+            failConnection(code: Self.closeCode(for: decoderError))
+            return
+        }
 
         noteCloseCause(Self.isConnectionLoss(error) ? .connectionLost : .error, code: nil)
 

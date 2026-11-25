@@ -204,3 +204,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-25 | [A reevaluation keeper drain runs destroy handlers](2026-11-25-a-reevaluation-keeper-drain-runs-destroy-handlers.md) | reevaluation, replay, drain, destroy-handlers, turns |
 | 2026-11-25 | [An issue read from the code gets a failing test before it shapes a plan](2026-11-25-an-issue-read-from-the-code-gets-a-failing-test-before-it-shapes-a-plan.md) | testing, premise, known-issue, replay, unicode, normalization, planning |
 | 2026-11-25 | [A drop-and-reset error path makes the next legal frame a violation](2026-11-25-a-drop-and-reset-error-path-makes-the-next-legal-frame-a-violation.md) | websocket, rfc6455, fragmentation, parser-state, stricter-check, error-path, testing |
+| 2026-11-25 | [A module's own type shadows an imported one in an `as?` cast](2026-11-25-module-type-shadows-imported-type-in-as-cast.md) | swift, name-shadowing, type-casting, imports, websocket |
