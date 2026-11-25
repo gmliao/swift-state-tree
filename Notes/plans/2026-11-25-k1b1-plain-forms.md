@@ -138,7 +138,7 @@ Review agreed to rev 1's F11 replacement: "same decode, same drop, same count" h
   - The commit re-runs the tests that build recorded outputs from values: `ReevaluationRecordLogTests.swift:476`, `ReplayJSONAllowanceTests.swift:139`, `HeldResolverOutputTests.swift:28`, and the replay suites that replay an in-memory recording. Each must stay green. A change in any of them is reported in the PR, not absorbed.
 - **The projection's contract, for `.recorded`.**
   - It decodes the bytes back to an `AnyCodable` tree with `CanonicalMessagePack`, and a `.failed` output is left out of the projection.
-  - When the bytes don't decode back to a tree, the output is left out too, with a warning that names it. One example is a `UInt` above `Int.max` under strict `integralFloats` (rev 2.1, S3).
+  - When the bytes don't decode back to a tree, the output is left out too. One example is a `UInt` above `Int.max` under strict `integralFloats` (rev 2.1, S3). Changed at the build: no warning. Nothing reads the projection today (a replay keeper has no recorder), and the projection has no logger; the read that a handler sees (`resolverOutput(_:named:)`) does warn.
   - It has no reader today, and its doc comment says so: "replay's projection has no reader; a future reader compares canonical bytes, not trees".
   - `HeldResolverOutputTests:23` builds its `.recorded` case from bytes, and still compares canonical bytes.
   - `integralFloats` can't be seen through this projection: `CanonicalMessagePack` unboxes an integer as `Int` before its `Double` branch, so both flag values give the same tree. That is why the pin is on the typed read.

@@ -268,26 +268,20 @@ Each land delays the first iteration of its loops by a per-land phase offset, so
 
 ### Event Queue Mechanism (PendingItems)
 
-`LandKeeper` uses a unified `pendingItems` queue to manage all inputs:
+`LandKeeper` keeps every input in one queue. An input joins the queue when it is ready: when it arrives, or, for an action whose handler declared resolvers, when they finish. A turn applies the queue in the order of `resolvedAtTick`, then sequence number. The queue holds:
 
-- **Action**: Actions sent by clients
-- **ClientEvent**: Events sent by clients
-- **Lifecycle Event**: `OnJoin`, `OnLeave`, `OnInitialize`
+- **Actions** that clients send;
+- **client events** that clients send;
+- **lifecycle events**: a join, a leave, and the land's initialization;
+- **server inputs** that the server submits.
 
-```swift
-// Unified PendingItem type
-public enum PendingItem: Sendable {
-    case action(PendingActionItem)
-    case clientEvent(PendingClientEventItem)
-    case lifecycle(PendingLifecycleItem)
-}
-```
+Each queued input carries:
 
-Each PendingItem records:
+- its sequence number, which increases across all kinds of input in the land;
+- the tick it was resolved at (`resolvedAtTick`): when its resolvers finished, or when it arrived if it has none;
+- its resolver outputs, for an action or a lifecycle event whose handler declared resolvers.
 
-- `sequence`: Globally incrementing sequence number (shared across Action/Event/Lifecycle)
-- `resolvedAtTick`: Tick ID when Resolver completed
-- `resolverOutputs`: Resolver outputs (Action and Lifecycle have, ClientEvent is empty)
+The queue's types are internal to the package, except the lifecycle event's (`LandKeeper.PendingLifecycleItem`). A land interacts with the queue only through its handlers.
 
 ### Tick Execution Model
 
