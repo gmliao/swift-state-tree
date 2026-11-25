@@ -100,6 +100,14 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
+    /// The encoding of the payload bytes a record of this adapter's land keeps, for the record
+    /// header (`ReevaluationRecordMetadata.payloadEncoding`, #700 K1a): `messagepack` when the
+    /// codec's frames are MessagePack, whose payloads decode through the MessagePack decoder, and
+    /// `json` otherwise (`json` and `opcodeJsonArray` frames carry JSON payloads).
+    public nonisolated var payloadEncodingForRecord: RecordPayloadEncoding {
+        codec.encoding == .messagepack ? .messagepack : .json
+    }
+
     /// The keeper's serial executor: the keeper can then call `runSyncPhaseInTurn` synchronously
     /// inside its own turn (`assumeIsolated`).
     public nonisolated var unownedExecutor: UnownedSerialExecutor {
@@ -334,6 +342,13 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let landID: String
     private let codec: any TransportCodec
     private let messageEncoder: any TransportMessageEncoder
+    /// `messageEncoder`'s reply encode from the keeper's outcome (#700 K1a), when it has one: an
+    /// action's response reaches the frame without being boxed into `AnyCodable`. Cast once here,
+    /// not per reply.
+    private let actionResponseEncoder: (any ActionResponseFrameEncoder)?
+    /// Replies sent through the boxed fallback, because `messageEncoder` has no outcome entry
+    /// (tests only: every built-in encoder has one, so this stays 0, and a lost cast shows).
+    package private(set) var boxedActionResponsesForTesting = 0
     private let stateUpdateEncoder: any StateUpdateEncoder
     /// Sync-lag tracking (#332): on with the encoding's `syncSequence`, which also makes the
     /// feature required at join.
@@ -1000,6 +1015,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 clientEventHashes: clientEventHashes
             )
             self.messageEncoder = madeMessageEncoder
+            self.actionResponseEncoder = madeMessageEncoder as? any ActionResponseFrameEncoder
             // Built here, at registration, and kept on the encoder: frames go out in the land's
             // canonical order (`CanonicalPatchOrder`).
             let madeStateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: encodingConfig.makeStateUpdateEncoder(
@@ -1035,6 +1051,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let madeMessageEncoder = JSONTransportMessageEncoder()
             let madeStateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: stateUpdateEncoder)
             self.messageEncoder = madeMessageEncoder
+            self.actionResponseEncoder = madeMessageEncoder as? any ActionResponseFrameEncoder
             self.stateUpdateEncoder = madeStateUpdateEncoder
             (self.useStateUpdateWithEvents, self.eventsMerge) = Self.mergeDecisions(madeStateUpdateEncoder, madeMessageEncoder)
             self.pathHashes = pathHashes
@@ -5390,7 +5407,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             // Submitted on the inbound chain; an action with resolvers on a tick land comes back
             // pending, and is answered from a tracked task, so the chain moves on.
-            let response: AnyCodable
+            let response: InputOutcome
             switch try await keeper.submitAction(
                 envelope,
                 playerID: playerID,
@@ -5454,7 +5471,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) {
         let keeper = self.keeper
         let task = Task { [weak self] in
-            let outcome: Result<AnyCodable, any Error>
+            let outcome: Result<InputOutcome, any Error>
             do {
                 outcome = .success(try await keeper.awaitActionResult(sequence: sequence))
             } catch {
@@ -5482,7 +5499,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func finishActionResponse(
         sequence: Int64,
         ticket: Ticket<SessionID>,
-        outcome: Result<AnyCodable, any Error>,
+        outcome: Result<InputOutcome, any Error>,
         requestID: String,
         envelope: ActionEnvelope,
         playerID: PlayerID,
@@ -5586,17 +5603,23 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func sendActionResponse(
         requestID: String,
         actionType: String,
-        response: AnyCodable,
+        response: InputOutcome,
         playerID: PlayerID,
         sessionID: SessionID,
         ticket: Ticket<SessionID>
     ) -> LandFailure? {
         do {
-            let actionResponse = TransportMessage.actionResponse(
-                requestID: requestID,
-                response: response
-            )
-            let responseData = try messageEncoder.encode(actionResponse)
+            // From the outcome, so the response isn't boxed on its way to the frame (#700 K1a);
+            // an encoder without that entry gets the boxed message, with the same bytes.
+            let responseData: Data
+            if let actionResponseEncoder {
+                responseData = try actionResponseEncoder.encodeActionResponse(requestID: requestID, outcome: response)
+            } else {
+                boxedActionResponsesForTesting += 1
+                responseData = try messageEncoder.encode(
+                    TransportMessage.actionResponse(requestID: requestID, response: response.boundaryValue)
+                )
+            }
 
             // Only compute logging metadata if info logging is enabled
             if logger.logLevel <= .info {

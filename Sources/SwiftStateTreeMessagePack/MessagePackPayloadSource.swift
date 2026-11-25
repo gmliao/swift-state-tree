@@ -43,6 +43,16 @@ package struct MessagePackPayloadSource: PayloadDecodingSource {
         }
     }
 
+    package var recordEncoding: RecordPayloadEncoding? { .messagepack }
+
+    /// The value packed: `pack` writes map entries sorted by their keys' UTF-8 bytes and each
+    /// integer in its smallest form, so one value packs to one sequence of bytes in every process.
+    /// Unpacking them gives this value back, which the live decoder reads as it read this one.
+    package func recordBytes() throws -> Data {
+        try validateRecordable()
+        return try pack(value, maxDepth: PayloadNesting.clientFrameMaxDepth)
+    }
+
     package var boxedPayload: AnyCodable {
         // The walk refused every value the conversion refuses, so this can't throw.
         (try? Self.anyCodable(from: value)) ?? AnyCodable(Optional<Int>.none)

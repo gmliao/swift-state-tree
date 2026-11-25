@@ -11,6 +11,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 /// A recorded scenario: its encoding and its script.
 enum SyncOutputGolden: String, CaseIterable, Sendable, CustomStringConvertible {
@@ -196,7 +197,11 @@ struct SyncOutputGoldenTests {
         encoder.outputFormatting = [.sortedKeys]
         let currentFrames = await (current as! ReevaluationRecordLogSource).getAllFrames()
         let legacyFrames = await (legacy as! JSONReevaluationSource).getAllFrames()
-        #expect(try encoder.encode(currentFrames) == encoder.encode(legacyFrames), "frames")
+        // The 2.6 copy holds each payload as a tree, a 3.7 record as bytes (#700 K1a).
+        let treeForm = { (frames: [ReevaluationTickFrame]) in
+            try frames.map { try RecordedPayloadTree.treeForm(frameJSON: encoder.encode($0)) }
+        }
+        #expect(try treeForm(currentFrames) == treeForm(legacyFrames), "frames, each payload as its tree")
         let maxTicks = (try await current.getMaxTickId(), try await legacy.getMaxTickId())
         #expect(maxTicks.0 == maxTicks.1)
         let streams = (try await current.getSyncStream(), try await legacy.getSyncStream())

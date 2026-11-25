@@ -62,6 +62,14 @@ public protocol TransportMessageEncoder: Sendable {
     func encode(_ message: TransportMessage) throws -> Data
 }
 
+/// An encoder that writes an action's reply from the keeper's outcome (#700 K1a): the response
+/// stays its own type up to the frame, never boxed into `Any` (`AnyCodable`), which allocates for
+/// a response that doesn't fit an existential's inline buffer. The bytes are the ones
+/// `encode(.actionResponse(requestID:response: outcome.boundaryValue))` writes.
+package protocol ActionResponseFrameEncoder: Sendable {
+    func encodeActionResponse(requestID: String, outcome: InputOutcome) throws -> Data
+}
+
 // MARK: - JSON Encoder
 
 /// JSON object-based transport message encoder.
@@ -84,15 +92,39 @@ public struct JSONTransportMessageEncoder: TransportMessageEncoder {
     }
 }
 
-// MARK: - Opcode Array Encoder
+extension JSONTransportMessageEncoder: ActionResponseFrameEncoder {
+    package func encodeActionResponse(requestID: String, outcome: InputOutcome) throws -> Data {
+        let message = ActionResponseJSONMessage(requestID: requestID, outcome: outcome)
+        try DecimalScan.check(message)
+        return try encoder.encode(message)
+    }
+}
 
-/// Opcode + JSON array transport message encoder.
-///
-/// Encodes TransportMessage as a compact JSON array:
-/// - joinResponse: [opcode, requestID, success, landType?, landInstanceId?, playerSlot?]
-/// - actionResponse: [opcode, requestID, response]
-/// - error: [opcode, code, message, details?]
-/// - Other formats as needed
+/// `TransportMessage.actionResponse`'s JSON object, written from the outcome:
+/// `{"kind": "actionResponse", "payload": {"actionResponse": {"requestID": …, "response": …}}}`,
+/// with `null` for no response, as `AnyCodable(())` writes.
+private struct ActionResponseJSONMessage: Encodable {
+    let requestID: String
+    let outcome: InputOutcome
+
+    private enum MessageKeys: String, CodingKey { case kind, payload }
+    private enum PayloadKeys: String, CodingKey { case actionResponse }
+    private enum ResponseKeys: String, CodingKey { case requestID, response }
+
+    func encode(to encoder: Encoder) throws {
+        var message = encoder.container(keyedBy: MessageKeys.self)
+        try message.encode(MessageKind.actionResponse, forKey: .kind)
+        var payload = message.nestedContainer(keyedBy: PayloadKeys.self, forKey: .payload)
+        var body = payload.nestedContainer(keyedBy: ResponseKeys.self, forKey: .actionResponse)
+        try body.encode(requestID, forKey: .requestID)
+        switch outcome {
+        case .none: try body.encodeNil(forKey: .response)
+        // Opened, not converted: the response isn't boxed again.
+        case .response(let response): try body.encode(response, forKey: .response)
+        }
+    }
+}
+
 // MARK: - Opcode Array Encoder
 
 /// Opcode + JSON array transport message encoder.
@@ -377,6 +409,56 @@ public extension TransportEncoding {
                 enablePayloadCompression: enablePayloadCompression
             )
         }
+    }
+}
+
+extension OpcodeTransportMessageEncoder: ActionResponseFrameEncoder {
+    package func encodeActionResponse(requestID: String, outcome: InputOutcome) throws -> Data {
+        let array = ActionResponseOpcodeArray(
+            opcode: MessageKindOpcode.actionResponse.rawValue,
+            requestID: requestID,
+            outcome: outcome,
+            positional: enablePayloadCompression
+        )
+        try DecimalScan.check(array)
+        return try encoder.encode(array)
+    }
+}
+
+/// The opcode array of an action's reply, `[opcode, requestID, response]`, written from the
+/// outcome. No response is `[]` in the positional form and `null` otherwise, as the encoders
+/// write `AnyCodable(())`.
+private struct ActionResponseOpcodeArray: Encodable {
+    let opcode: Int
+    let requestID: String
+    let outcome: InputOutcome
+    let positional: Bool
+
+    func encode(to encoder: Encoder) throws {
+        var array = encoder.unkeyedContainer()
+        try array.encode(opcode)
+        try array.encode(requestID)
+        switch outcome {
+        case .none:
+            if positional { try array.encode([Int]()) } else { try array.encodeNil() }
+        case .response(let response):
+            // Opened, not converted: the response isn't boxed again.
+            if positional { try Self.encodePositional(response, into: &array) } else { try array.encode(response) }
+        }
+    }
+
+    private static func encodePositional<P: PayloadCompression>(_ payload: P, into array: inout UnkeyedEncodingContainer) throws {
+        try array.encode(PositionalPayloadJSONOf(payload: payload))
+    }
+}
+
+/// `PositionalPayloadJSON` for a payload of a known type: holding it doesn't box it.
+private struct PositionalPayloadJSONOf<P: PayloadCompression>: Encodable {
+    let payload: P
+
+    func encode(to encoder: Encoder) throws {
+        var writer = JSONPayloadFieldWriter(container: encoder.unkeyedContainer())
+        try payload._writePayloadFields(into: &writer)
     }
 }
 

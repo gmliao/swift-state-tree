@@ -55,7 +55,8 @@ let package = Package(
             name: "ReevaluationRunner",
             dependencies: [
                 "DemoContent",
-                .product(name: "SwiftStateTree", package: "SwiftStateTree")
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree")
             ],
             path: "Sources/ReevaluationRunner"
         ),

@@ -19,7 +19,7 @@ import SwiftStateTreeMessagePack
 ///
 /// The array structure is identical to OpcodeTransportMessageEncoder, but uses MessagePack binary serialization
 /// instead of JSON text serialization.
-public struct MessagePackTransportMessageEncoder: TransportMessageEncoder {
+public struct MessagePackTransportMessageEncoder: TransportMessageEncoder, ActionResponseFrameEncoder {
     public let encoding: TransportEncoding = .messagepack
     
     private let eventHashes: [String: Int]?
@@ -280,6 +280,27 @@ public struct MessagePackTransportMessageEncoder: TransportMessageEncoder {
         return AnyCodable(try MessagePackPayloadFieldWriter.positional(payloadCompression))
     }
     
+    // MARK: - Action responses (#700 K1a)
+
+    /// No response: `[]` in the positional form and `nil` otherwise, as `AnyCodable(())` packs.
+    /// A response is packed from its own type, never boxed into `Any` (`AnyCodable`).
+    package func encodeActionResponse(requestID: String, outcome: InputOutcome) throws -> Data {
+        let response: MessagePackValue
+        switch outcome {
+        case .none:
+            response = try anyCodableToMessagePackValue(enablePayloadCompression ? AnyCodable([AnyCodable]()) : AnyCodable(()))
+        case .response(let value):
+            response = enablePayloadCompression
+                ? try MessagePackPayloadFieldWriter.positional(value)
+                : try MessagePackValueEncoder().encode(value)
+        }
+        return try pack(.array([
+            try anyCodableToMessagePackValue(AnyCodable(MessageKindOpcode.actionResponse.rawValue)),
+            try anyCodableToMessagePackValue(AnyCodable(requestID)),
+            response,
+        ]))
+    }
+
     // MARK: - MessagePack Conversion
     
     /// Convert AnyCodable to MessagePackValue

@@ -82,10 +82,9 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
 
         // Another macro on the type could add members this walk doesn't see (#100).
         // `@StateNodeBuilder` reports for both when it is beside this one.
-        if !PlainDataWalk.hasAttribute(named: "StateNodeBuilder", in: structDecl.attributes) {
-            StateTypeAttributes.diagnoseUnknown(
-                structDecl.attributes, allowed: StateTypeAttributes.besideSnapshotConvertible,
-                advertised: StateTypeAttributes.advertisedBesideSnapshotConvertible, in: context)
+        if PlainDataAttributes.checks("SnapshotConvertible", on: structDecl.attributes) {
+            PlainDataAttributes.diagnoseType(structDecl.attributes, rule: PlainDataAttributes.snapshotConvertible, in: context)
+            PlainDataAttributes.diagnoseMembers(structDecl.memberBlock.members, rule: PlainDataAttributes.snapshotConvertible, in: context)
         }
 
         // The conversion reads only the type's top-level members, so a stored property inside
@@ -327,21 +326,9 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                 continue
             }
 
-            // Skip computed properties. Observers keep a property stored, and converted, as the
-            // PlainData check counts it.
-            let hasComputedProperty = variableDecl.bindings.contains(where: PlainDataWalk.isComputed)
-
-            if hasComputedProperty {
-                continue
-            }
-
-            // Skip static properties (they're not part of the instance)
-            let isStatic = variableDecl.modifiers.contains { modifier in
-                modifier.name.text == "static"
-            }
-            if isStatic {
-                continue
-            }
+            // Fields only: skip computed and `static` properties. Observers keep a property
+            // stored, and converted, as the PlainData check counts it.
+            guard PlainDataWalk.isStoredInstance(variableDecl) else { continue }
 
             // Determine if the property is mutable (var) or immutable (let)
             let isMutable = variableDecl.bindingSpecifier.text == "var"

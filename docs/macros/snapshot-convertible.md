@@ -47,7 +47,7 @@ struct Position: Codable, Sendable {
 Beside another macro:
 - Beside `@PlainData` or `@Payload`, it writes no checks of its own.
 - Beside `@StateNodeBuilder`, it writes only the conformance, since the node's member is the witness.
-- Any other attached macro on the type is refused, because it could add members the checks don't see. Built-in attributes that add no members, such as `@available`, are fine.
+- Any other attached macro on the type is refused, because it could add members the checks don't see. Built-in attributes that add no members, such as `@available`, are fine. A member that could add declarations, such as a method, a computed property or a nested type, takes only built-in attributes that add none, such as `@inlinable`; a nested type may also carry this project's macros.
 
 A stored property inside `#if` is refused, because the conversion reads only the type's top-level members. This holds beside `@StateNodeBuilder` too: on a convertible node, an `@Internal` field inside `#if` is refused, although `@StateNodeBuilder` alone accepts it.
 

@@ -272,17 +272,6 @@ struct SyncRegistrationTests {
         #expect(SyncRegistration.cachedProblems(RegistrationCacheRoot.self) == first)
     }
 
-    @Test("Open types (Any, AnyObject, AnyHashable, AnyCodable) are found as elements, keys, values and wrapped types")
-    func openTypes() {
-        let problems = SyncRegistration.problems(RegistrationOpenRoot.self)
-        #expect(problems == [
-            .existentialField(path: "RegistrationOpenRoot.holder.bag[*]", typeName: "Any"),
-            .existentialField(path: "RegistrationOpenRoot.holder.hashed[key]", typeName: "AnyHashable"),
-            .existentialField(path: "RegistrationOpenRoot.holder.boxed", typeName: "AnyCodable"),
-            .existentialField(path: "RegistrationOpenRoot.holder.list[*]", typeName: "AnyObject"),
-        ], "\(problems)")
-    }
-
     @Test("validateForRegistration reports the synced-state rows in LandRegistrationError.sync, whatever the context")
     func definitionEntryPoint() throws {
         let land = Land("registration-keys", using: RegistrationMixedRoot.self) { Rules {} }

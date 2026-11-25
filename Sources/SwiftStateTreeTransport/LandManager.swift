@@ -694,7 +694,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 extensions: nil,
                 hardwareInfo: hardwareInfo,
                 recordsSyncStream: true,
-                syncConfig: transportAdapter.syncConfigForRecord
+                syncConfig: transportAdapter.syncConfigForRecord,
+                payloadEncoding: transportAdapter.payloadEncodingForRecord
             )
             await recorder.setMetadata(recordingMetadata)
         }

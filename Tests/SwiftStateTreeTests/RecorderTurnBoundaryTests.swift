@@ -19,7 +19,7 @@ private let turnMetadata = ReevaluationRecordMetadata(
 private func turnAction(_ sequence: Int64, tick: Int64) -> ReevaluationRecordedAction {
     ReevaluationRecordedAction(
         kind: "action", sequence: sequence, typeIdentifier: "Move",
-        payload: AnyCodable(["x": AnyCodable(Int(sequence))]),
+        payload: Data(#"{"x":\#(sequence)}"#.utf8), payloadEncoding: .json,
         playerID: "p1", clientID: "c1", sessionID: "s1", resolverOutputs: [:], resolvedAtTick: tick
     )
 }

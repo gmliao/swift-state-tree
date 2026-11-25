@@ -2,8 +2,9 @@
 
 # Hero Defense replay fixtures
 
-Record format 3.6 (#521): each record carries the land's schema fingerprint, and replay refuses a
-record whose fingerprint is missing or differs from the current definition's. So re-create these
+Record format 3.7 (#521, #700): each record carries the land's schema fingerprint, and replay refuses a
+record whose fingerprint is missing or differs from the current definition's. From 3.7 each input's
+payload is recorded as the bytes the server decoded, and replay refuses a record from before 3.7. So re-create these
 with the current server whenever the record version changes, and whenever a change to the
 hero-defense land's types changes its fingerprint (`RecordSchemaFingerprintTests` pins it).
 
@@ -49,7 +50,7 @@ The scenario's client leaves at the end, the land is destroyed and the server wr
 `swift run -c release ReevaluationRunner --input reevaluation-records/3-hero-defense.sstr --verify`.
 
 A capture's length depends on when the scenario's steps land against the server's ticks, so a new
-capture differs in length: the current file has 390 ticks, the capture it replaced 314.
+capture differs in length: the current file has 350 ticks, the capture it replaced 390.
 
 The JSON records these replaced (format 2.5) have no fingerprint and no longer replay; the one the
 canonical MessagePack tests encode is kept as `Tests/SwiftStateTreeTests/Fixtures/hero-defense-record-2.5.json`.

@@ -20,6 +20,16 @@ package protocol PayloadDecodingSource: Sendable {
     /// `action` properties. Built on each read, from what the decoder already refused, so it
     /// can't fail.
     var boxedPayload: AnyCodable { get }
+
+    /// The encoding of the decoder this source decodes with live, which is the encoding a record
+    /// keeps its bytes in (#700 K1a): `.json` for a tree, whose decode is the JSON round trip
+    /// whatever built it, and `.messagepack` for a MessagePack value. Nil for a recorded tree
+    /// (`RecordPayloadSource`), which no client input holds.
+    var recordEncoding: RecordPayloadEncoding? { get }
+
+    /// The bytes a record keeps, in `recordEncoding`, that its decoder reads to the value this
+    /// source decodes. Throws where `validateRecordable()` does. Called only when the land records.
+    func recordBytes() throws -> Data
 }
 
 extension PayloadDecodingSource {
@@ -66,6 +76,15 @@ package struct AnyCodablePayloadSource: PayloadDecodingSource {
     package func validateRecordable() throws {}
 
     package var boxedPayload: AnyCodable { payload }
+
+    package var recordEncoding: RecordPayloadEncoding? { .json }
+
+    /// The tree's canonical JSON: the bytes the live round trip decodes, with its keys sorted. The
+    /// nesting is checked first, as the round trip checks it before its encode recurses.
+    package func recordBytes() throws -> Data {
+        try PayloadNesting.check(payload.base)
+        return try RecordPayloadEncoding.canonicalJSON(payload)
+    }
 }
 
 /// A recorded payload, decoded with the codec that wrote its record (#521 PR 1b): the tree is
@@ -96,4 +115,16 @@ package struct RecordPayloadSource: PayloadDecodingSource {
     package func validateRecordable() throws {}
 
     package var boxedPayload: AnyCodable { payload }
+
+    /// Not a client input's source: a record doesn't record it again.
+    package var recordEncoding: RecordPayloadEncoding? { nil }
+
+    package func recordBytes() throws -> Data {
+        throw RecordPayloadSourceHasNoBytes()
+    }
+}
+
+/// `RecordPayloadSource.recordBytes()`: a recorded tree has no client bytes to record.
+package struct RecordPayloadSourceHasNoBytes: Error, CustomStringConvertible {
+    package var description: String { "a recorded payload tree is not recorded again" }
 }

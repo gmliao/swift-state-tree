@@ -49,7 +49,7 @@ private let fixedMetadata = ReevaluationRecordMetadata(
 private func action(_ sequence: Int64, tick: Int64) -> ReevaluationRecordedAction {
     ReevaluationRecordedAction(
         kind: "action", sequence: sequence, typeIdentifier: "Move",
-        payload: AnyCodable(["x": AnyCodable(Int(sequence)), "speed": AnyCodable(1.5)]),
+        payload: Data(#"{"speed":1.5,"x":\#(sequence)}"#.utf8), payloadEncoding: .json,
         playerID: "p1", clientID: "c1", sessionID: "s1", resolverOutputs: [:], resolvedAtTick: tick
     )
 }
@@ -122,7 +122,7 @@ func logRoundTripsToTheLegacyFrames() async throws {
     let frames = await (source as! ReevaluationRecordLogSource).getAllFrames()
     #expect(try json(frames) == json(legacy))
     #expect(try await source.getMaxTickId() == 5)
-    #expect(try await source.getMetadata().version == "3.6")
+    #expect(try await source.getMetadata().version == "3.7")
     #expect(try await source.getSyncStream().map(\.streamIndex) == Array(0..<10))
     // The late seeds landed in their ticks.
     #expect(frames.first { $0.tickId == 0 }?.syncMarkers.map(\.streamIndex) == [0, 5])
@@ -435,7 +435,7 @@ func submissionDrainHasADeadline() async throws {
 
 @Test("Version rules for 3.x: 2.5+ and 3.x up to this build's minor read; a named requirement compares majors")
 func recordVersionRulesForThree() {
-    #expect(ReevaluationRecordVersion.current == "3.6")
+    #expect(ReevaluationRecordVersion.current == "3.7")
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.0"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.1"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.2"))
@@ -443,11 +443,12 @@ func recordVersionRulesForThree() {
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.4"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.5"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.6"))
+    #expect(ReevaluationRecordVersion.isReadable(recorded: "3.7"))
     #expect(ReevaluationRecordVersion.isCompatible(recorded: "3.0", required: "3.1"))
     // A newer minor may hold keys this build ignores (#387): refused.
-    #expect(!ReevaluationRecordVersion.isReadable(recorded: "3.7"))
     #expect(!ReevaluationRecordVersion.isReadable(recorded: "3.8"))
-    #expect(!ReevaluationRecordVersion.isCompatible(recorded: "3.7", required: "3.0"))
+    #expect(!ReevaluationRecordVersion.isReadable(recorded: "3.9"))
+    #expect(!ReevaluationRecordVersion.isCompatible(recorded: "3.8", required: "3.0"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "2.6"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "2.5"))
     #expect(!ReevaluationRecordVersion.isReadable(recorded: "2.4"))
@@ -465,12 +466,17 @@ func recordVersionRulesForThree() {
 
 // MARK: - Closing (review of #266)
 
-/// A payload with a `Date` past year 9999: encoding a turn with it throws (`dateOutOfRange`).
+/// A resolver output with a `Date` past year 9999: encoding a turn with it throws
+/// (`dateOutOfRange`). The payload is bytes from 3.7 (#700 K1a), which always encode.
 private func unencodableAction(tick: Int64) -> ReevaluationRecordedAction {
     ReevaluationRecordedAction(
         kind: "action", sequence: 999, typeIdentifier: "Late",
-        payload: AnyCodable(["at": Date(timeIntervalSince1970: 1e13)]),
-        playerID: "p1", clientID: "c1", sessionID: "s1", resolverOutputs: [:], resolvedAtTick: tick
+        payload: Data("{}".utf8), payloadEncoding: .json,
+        playerID: "p1", clientID: "c1", sessionID: "s1",
+        resolverOutputs: ["late": ReevaluationRecordedResolverOutput(
+            typeIdentifier: "Late", value: AnyCodable(["at": Date(timeIntervalSince1970: 1e13)])
+        )],
+        resolvedAtTick: tick
     )
 }
 

@@ -91,7 +91,7 @@ struct SessionLifecycleLogTests {
         let (channel, _) = try makeSession("client-session", lines: lines)
         var payload = ByteBuffer()
         payload.write(webSocketErrorCode: WebSocketErrorCode(codeNumber: 4321))
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: payload))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .connectionClose, data: payload))
         _ = try? channel.finish()
         #expect(lines.records.map(\.cause) == [.clientClose])
         #expect(lines.records.first?.code == 4321)
@@ -103,7 +103,7 @@ struct SessionLifecycleLogTests {
         let (channel, handler) = try makeSession("server-session", lines: lines)
         handler.close(code: .policyViolation)
         // The client answers the close frame: no second line.
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .connectionClose, data: ByteBuffer()))
         _ = try? channel.finish()
         #expect(lines.records.map(\.cause) == [.serverClose])
         #expect(lines.records.first?.code == 1008)
@@ -158,11 +158,11 @@ extension SessionLifecycleLogTests {
         let transport = WebSocketTransport()
         await transport.setDelegate(delegate)
         let (channel, _) = try makeSession("held-join", lines: lines, transport: transport)
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: "join")))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .text, data: ByteBuffer(string: "join")))
         channel.embeddedEventLoop.run()
         try #require(await delegate.hold.waitForArrivals(1), "the join reached the land and is held")
 
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .connectionClose, data: ByteBuffer()))
         #expect(lines.records.map(\.event) == [.sessionClosed], "the close is logged while the join is held")
 
         delegate.release()

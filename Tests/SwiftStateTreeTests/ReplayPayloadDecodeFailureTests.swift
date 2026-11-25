@@ -24,8 +24,9 @@ struct ReplayPayloadDecodeFailureTests {
         case event(String)
     }
 
-    /// A version 2.6 record of one tick frame. Each input's sequence is its index in `inputs`, so
-    /// the frame's actions and client events interleave. `rejected` is the frame's list of
+    /// A record of this build's version with one tick frame; each input's payload is its JSON
+    /// text's bytes (#700 K1a). Each input's sequence is its index in `inputs`, so the frame's
+    /// actions and client events interleave. `rejected` is the frame's list of
     /// refused inputs; nil leaves it out.
     static func record(_ inputs: [Input], rejected: [Int64]? = nil) -> Data {
         var actions: [String] = []
@@ -33,13 +34,13 @@ struct ReplayPayloadDecodeFailureTests {
         for (sequence, input) in inputs.enumerated() {
             switch input {
             case .action(let payload):
-                actions.append(#"{"kind":"action","sequence":\#(sequence),"typeIdentifier":"\#(String(describing: ReplayDecodeAction.self))","payload":\#(payload),"playerID":"p","clientID":"c","sessionID":"s","resolverOutputs":{},"resolvedAtTick":0}"#)
+                actions.append(#"{"kind":"action","sequence":\#(sequence),"typeIdentifier":"\#(String(describing: ReplayDecodeAction.self))","payload":"\#(Data(payload.utf8).base64EncodedString())","playerID":"p","clientID":"c","sessionID":"s","resolverOutputs":{},"resolvedAtTick":0}"#)
             case .event(let payload):
-                events.append(#"{"kind":"clientEvent","sequence":\#(sequence),"typeIdentifier":"\#(payloadEventName(for: ReplayDecodeEvent.self))","payload":\#(payload),"playerID":"p","clientID":"c","sessionID":"s","resolvedAtTick":0}"#)
+                events.append(#"{"kind":"clientEvent","sequence":\#(sequence),"typeIdentifier":"\#(payloadEventName(for: ReplayDecodeEvent.self))","payload":"\#(Data(payload.utf8).base64EncodedString())","playerID":"p","clientID":"c","sessionID":"s","resolvedAtTick":0}"#)
             }
         }
         let rejectedField = rejected.map { #","rejected":[\#($0.map(String.init).joined(separator: ","))]"# } ?? ""
-        let text = #"{"recordMetadata":{"landID":"l","landType":"replay-decode","createdAt":"1970-01-01T00:00:00Z","metadata":{},"version":"2.6"},"tickFrames":[{"tickId":0,"actions":["#
+        let text = #"{"recordMetadata":{"landID":"l","landType":"replay-decode","createdAt":"1970-01-01T00:00:00Z","metadata":{},"version":"\#(ReevaluationRecordVersion.current)"},"tickFrames":[{"tickId":0,"actions":["#
             + actions.joined(separator: ",") + #"],"clientEvents":["# + events.joined(separator: ",")
             + #"],"lifecycleEvents":[]"# + rejectedField + "}]}"
         return Data(text.utf8)

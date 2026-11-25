@@ -291,7 +291,8 @@ enum ReevaluationRecordLogReader {
                 guard let tick = record.tickRecord else {
                     throw ReevaluationRecordLogError.unexpectedRecord("turn without tickId")
                 }
-                turns.append(tick)
+                // An entry without an encoding has the header's in force here (#700 K1a).
+                turns.append(tick.payloadEncodings(resolvedAgainst: metadata?.effectivePayloadEncoding ?? .json))
                 newestTick = max(newestTick ?? tick.tickId, tick.tickId)
             case .footer:
                 footer = record

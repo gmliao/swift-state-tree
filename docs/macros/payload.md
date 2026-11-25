@@ -235,6 +235,8 @@ struct JoinAction: ActionPayload {
 3. **Must mark @Payload**: An unmarked payload doesn't compile, because every payload protocol refines `PlainData`. A type that writes by hand what `@Payload` generates uses `@PlainData`
 4. **Not inside a function**: Swift doesn't attach the macro to a type declared in a function. Declare the payload at file scope or nested in another type
 5. **Constrained generic parameters**: Each stored generic parameter must be `PlainData`: `struct Box<T: Codable & Sendable & PlainData>`
+6. **Observed properties are fields**: a property with only `willSet`/`didSet` has storage, so it is in `getFieldMetadata()` and on the wire. A computed property isn't
+7. **No other attached macro**: on the type, or on a member that could add declarations (a method, an initializer, a computed or `static` property, a nested type), because it could add members the checks don't see. Built-in attributes that add none, such as `@available` and `@inlinable`, are fine
 
 ## Use Cases
 

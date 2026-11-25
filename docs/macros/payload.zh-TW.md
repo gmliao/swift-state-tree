@@ -235,6 +235,8 @@ struct JoinAction: ActionPayload {
 3. **必須標記 @Payload**：未標記的 payload 無法編譯，因為每個 payload protocol 都 refine `PlainData`。手寫 `@Payload` 所產生內容的型別改用 `@PlainData`
 4. **不能宣告在函式內**：Swift 不會把 macro 套用到函式內宣告的型別。請把 payload 宣告在檔案層級，或巢狀於另一個型別內
 5. **泛型參數要加約束**：每個被儲存的泛型參數都必須是 `PlainData`：`struct Box<T: Codable & Sendable & PlainData>`
+6. **observer property 也是欄位**：只有 `willSet`/`didSet` 的 property 有儲存空間，所以會出現在 `getFieldMetadata()` 裡，也會送上 wire。computed property 則不會
+7. **不能有其他 attached macro**：型別本身或可能加入宣告的成員（method、initializer、computed 或 `static` property、巢狀型別）都不行，因為它可能加入檢查看不到的成員。不加入宣告的內建 attribute（例如 `@available` 與 `@inlinable`）沒有問題
 
 ## 使用場景
 
