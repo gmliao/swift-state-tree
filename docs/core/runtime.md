@@ -57,15 +57,22 @@ HandleAction(SomeAction.self) { state, action, ctx in
 }
 ```
 
-`LandKeeper` runs every handler through `withMutableStateSync`, which mutates the actor's state in place:
+`LandKeeper` runs every handler through `withHandlerStep`, which mutates the actor's state in place and binds `ctx.random` for that call:
 
 ```swift
 // Internal implementation (simplified)
-func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows -> T {
+func withHandlerStep<T>(_ ctx: LandContext, _ operation: (inout State, LandContext) throws -> T) rethrows -> T {
+    // A service that continues the land's generator, for this call only
+    let random = DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
+    defer { landRandom = random.generator }   // the draws move the land's generator
+    var bound = ctx
+    bound.stepRandom = random
     // Actor serialization ensures thread safety
-    return try operation(&state)
+    return try operation(&state, bound)
 }
 ```
+
+The land's generator is keeper state. A handler that replay repeats from the record draws from it, and the keeper writes it back when the handler returns. CanJoin, the sync handler and the destroy-phase handlers aren't repeated from the record, so they draw from a copy that is never written back ([`ctx.random`](#landcontext-functions)).
 
 ### State Reading
 
@@ -103,7 +110,7 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
     let outputs = try await run(resolvers)
 
     // In a later turn: the handler gets the outputs as a typed parameter
-    return try withMutableStateSync { state in
+    return try withHandlerStep(ctx) { state, ctx in
         try handler.invoke(&state, action: action, outputs: outputs, ctx: ctx)
     }
 }
@@ -114,7 +121,8 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
 `LandContext` provides the following functions:
 
 - **Identification**: `playerID`, `clientID`, `sessionID`, `landID`
-- **Service access**: `services` - External service abstraction (database, logging, etc.)
+- **Service access**: `services` - External service abstraction (database, logging, etc.). The land's generator isn't in it.
+- **Deterministic randomness**: `random` - The land's generator. Draw synchronously inside the handler: a `random` kept past the handler, or used from a `Task`, doesn't move the land, or moves it where replay can't repeat it
 - **Deterministic events**: `emitEvent(_:to:)` - Enqueue an event to be flushed deterministically at end of tick
 - **Deterministic sync**: `requestSyncNow()` / `requestSyncBroadcastOnly()` - Request sync to be flushed deterministically at end of tick
 - **Resolver output**: The handler gets each resolver's output as a typed parameter, after the input ([Resolver](resolver.md))
@@ -168,7 +176,7 @@ func handleEvent<E: EventPayload>(_ event: E, ...) {
     let ctx = makeContext(...)
 
     // Execute handler (no return value)
-    withMutableStateSync { state in
+    withHandlerStep(ctx) { state, ctx in
         handler.invoke(&state, event: event, ctx: ctx)
     }
 }
@@ -207,7 +215,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // Execute Resolver (if any)
         // Execute handler
-        withMutableStateSync { state in
+        withHandlerStep(ctx) { state, ctx in
             onJoinHandler(&state, ctx)
         }
     }
@@ -224,7 +232,7 @@ When a player leaves, `OnLeave` handler is executed:
 public func leave(playerID: PlayerID, ...) async throws {
     // Execute OnLeave handler (if defined)
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
-        withMutableStateSync { state in
+        withHandlerStep(ctx) { state, ctx in
             onLeaveHandler(&state, ctx)
         }
     }
@@ -335,6 +343,7 @@ Deterministic methods provided by `LandContext`:
 | `emitEvent(_:to:)`           | Enqueue event, sent at end of tick              |
 | `requestSyncNow()`           | Request immediate sync, executed at end of tick |
 | `requestSyncBroadcastOnly()` | Request broadcast sync, executed at end of tick |
+| `random`                     | The land's generator, replayed with the record  |
 
 ### Tick Execution
 

@@ -183,7 +183,7 @@ Lifetime {
 
 ### Join 的 Resolver
 
-`CanJoin`、`OnJoin` 與 `OnLeave` 仍以名稱指定 `ContextResolver` 型別。`ContextResolver` 讀取 join 的 context：`ctx.playerID`、`ctx.landID`、`ctx.currentState` 與 `ctx.services`。
+`CanJoin`、`OnJoin` 與 `OnLeave` 仍以名稱指定 `ContextResolver` 型別。`ContextResolver` 讀取 join 的 context：`ctx.playerID`、`ctx.landID`、`ctx.currentState` 與 `ctx.services`。land 的產生器不在 `ctx.services` 中：replay 不會執行 resolver，所以 resolver 的抽取只會在 live 時推進它（#765）。需要亂數的 resolver 請自備產生器；它的輸出會像其他輸出一樣被錄製。
 
 ```swift
 struct UserProfileResolver: ContextResolver {

@@ -183,7 +183,7 @@ Limit: in `OnInitialize`, `ctx.metadata` is empty. The land's creation metadata 
 
 ### Join Resolvers
 
-`CanJoin`, `OnJoin` and `OnLeave` still name `ContextResolver` types. A `ContextResolver` reads the join's context: `ctx.playerID`, `ctx.landID`, `ctx.currentState` and `ctx.services`.
+`CanJoin`, `OnJoin` and `OnLeave` still name `ContextResolver` types. A `ContextResolver` reads the join's context: `ctx.playerID`, `ctx.landID`, `ctx.currentState` and `ctx.services`. The land's generator isn't in `ctx.services`: replay doesn't run resolvers, so a resolver's draw would move it live only (#765). A resolver that needs randomness brings its own generator; its output is recorded like any other.
 
 ```swift
 struct UserProfileResolver: ContextResolver {
