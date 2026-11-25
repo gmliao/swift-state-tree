@@ -1396,9 +1396,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // replay never calls `resolve`.
         let missingServices = mode == .live && resolverServices == nil
             ? definition.servicesType.map { String(reflecting: $0) } : nil
+        // A value of another type would fail every resolving input with `servicesMismatch`.
+        var wrongServices: String?
+        if mode == .live, let value = resolverServices, let accepts = definition.acceptsServices, !accepts(value),
+           let declared = definition.servicesType {
+            wrongServices = "declared \(String(reflecting: declared)), given \(String(reflecting: type(of: value)))"
+        }
         if !problems.isEmpty || !definition.duplicateHandlers.isEmpty || !definition.clientEventMismatches.isEmpty
             || !definition.unrecognizedNodes.isEmpty || !definition.resolverDeclarationProblems.isEmpty
-            || missingServices != nil {
+            || missingServices != nil || wrongServices != nil {
             let error = LandRegistrationError(
                 landType: definition.id,
                 payload: nil,
@@ -1407,6 +1413,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 clientEventMismatches: definition.clientEventMismatches,
                 unrecognizedNodes: definition.unrecognizedNodes,
                 missingServices: missingServices,
+                wrongServices: wrongServices,
                 resolverDeclarations: definition.resolverDeclarationProblems
             )
             logger.error("❌ The land fails the registration check: the land is torn down", metadata: [

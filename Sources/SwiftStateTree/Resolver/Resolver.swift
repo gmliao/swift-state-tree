@@ -41,8 +41,9 @@ public protocol Resolver: PlainData, Codable, Hashable, Sendable {
 /// The errors the runtime adds around a `Resolver` value.
 public enum ResolverServicesError: Error, Sendable, Equatable {
     /// The land's services value isn't the resolver's `Dependencies`. Registration refuses a
-    /// land whose declarations name other services (`LandRegistrationError`), so only a keeper
-    /// built by hand can get here.
+    /// land whose declarations name other services, and a live keeper given a value of another
+    /// type fails its initialization (`LandRegistrationError.wrongServices`), so this is a
+    /// backstop.
     case servicesMismatch(resolver: String, expected: String, actual: String)
 }
 

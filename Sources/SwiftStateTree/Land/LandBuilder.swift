@@ -11,7 +11,8 @@ enum LandBuilder {
         id: String,
         stateType: State.Type,
         nodes: [LandNode],
-        servicesType: Any.Type? = nil
+        servicesType: Any.Type? = nil,
+        acceptsServices: (@Sendable (any Sendable) -> Bool)? = nil
     ) -> LandDefinition<State> {
         var accessControl = AccessControlConfig()
         var allowedClientEvents: Set<AllowedEventIdentifier> = []
@@ -292,7 +293,8 @@ enum LandBuilder {
             unrecognizedNodes: unrecognizedNodes,
             resolverDeclarationProblems: resolverDeclarationProblems,
             lifetimeHandlers: lifetimeHandlers,
-            servicesType: servicesType
+            servicesType: servicesType,
+            acceptsServices: acceptsServices
         )
     }
 }

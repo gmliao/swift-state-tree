@@ -350,6 +350,42 @@ struct ResolverValueTests {
         #expect(registration.missingServices == String(reflecting: PriceServices.self))
     }
 
+    @Test("A live keeper given services of another type fails its initialization, before any input")
+    func wrongServicesFailInitialization() async throws {
+        // What an erased factory (`LandManager(resolverServicesFactory:)`) can hand the keeper.
+        let keeper = LandKeeper<ResolverValueState>(
+            definition: makePriceLand().definition,
+            resolverServices: NoServices(),
+            initialState: ResolverValueState(),
+            autoStartLoops: false,
+            landID: "resolver-price:wrong"
+        )
+        let refusal = await #expect(throws: JoinError.self) {
+            try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        }
+        guard case .landShuttingDown? = refusal else {
+            Issue.record("Expected landShuttingDown, got \(String(describing: refusal))")
+            return
+        }
+        let failure = try await #require(throws: LandInitializationError.self) {
+            try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
+        }
+        let registration = try #require(failure.underlying as? LandRegistrationError)
+        #expect(registration.missingServices == nil)
+        #expect(registration.wrongServices
+            == "declared \(String(reflecting: PriceServices.self)), given \(String(reflecting: NoServices.self))")
+
+        // The right type initializes.
+        let right = LandKeeper<ResolverValueState>(
+            definition: makePriceLand().definition,
+            resolverServices: PriceServices(prices: [:]),
+            initialState: ResolverValueState(),
+            autoStartLoops: false,
+            landID: "resolver-price:right"
+        )
+        try await right.join(playerID: p1, clientID: c1, sessionID: s1)
+    }
+
     @Test("Registration without services refuses a services land; the schema's and a replay's checks don't")
     func registrationWithoutServicesRefuses() throws {
         let definition = makePriceLand().definition

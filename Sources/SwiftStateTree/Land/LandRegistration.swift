@@ -109,6 +109,11 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// Register it with `register(landType:land:services:…)`, or build its keeper with
     /// `LandKeeper(land:resolverServices:…)`. Nil when there is no such problem.
     public let missingServices: String?
+    /// The land declares a services type, and the services value a live keeper was given is of
+    /// another type (#769): "declared, given", by name. Only an erased services factory can get
+    /// here (`LandManager(resolverServicesFactory:)`); the typed entry points don't compile with a
+    /// value of the wrong type. Nil when there is no such problem.
+    public let wrongServices: String?
     /// Resolver declarations the land can't run (#769), one line each: resolvers that depend on
     /// services other than the land's (a node built by hand under another services type), or two
     /// resolvers of one base type in one declaration. Empty when there are none.
@@ -128,6 +133,7 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         typeNameCollisions: [SchemaTypeNameCollision] = [],
         decimalFields: [String] = [],
         missingServices: String? = nil,
+        wrongServices: String? = nil,
         resolverDeclarations: [String] = []
     ) {
         self.landType = landType
@@ -143,6 +149,7 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         self.typeNameCollisions = typeNameCollisions
         self.decimalFields = decimalFields
         self.missingServices = missingServices
+        self.wrongServices = wrongServices
         self.resolverDeclarations = resolverDeclarations
     }
 
@@ -174,11 +181,12 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
             "it declares services \($0), and none were given; register it with register(landType:land:services:…), "
                 + "or build its keeper with LandKeeper(land:resolverServices:…)"
         }
+        let wrong = wrongServices.map { "its services value is the wrong type (\($0))" }
         let resolvers = resolverDeclarations.isEmpty ? nil
             : "these resolver declarations can't run: " + resolverDeclarations.joined(separator: ", ")
         return "land type '\(landType)' can't be registered: "
             + ([payload?.description, sync?.description, decimals].compactMap { $0 } + duplicateHandlers.map(\.description)
-                + [unrecognized, resolvers, services, unmatchedEvents, mismatched, unhashed, schemaFingerprint?.description, collided, undecodable].compactMap { $0 })
+                + [unrecognized, resolvers, services, wrong, unmatchedEvents, mismatched, unhashed, schemaFingerprint?.description, collided, undecodable].compactMap { $0 })
             .joined(separator: "; ")
     }
 }

@@ -1211,6 +1211,7 @@ public func Land<State: StateNodeProtocol, Services: Sendable>(
         id: id,
         stateType: stateType,
         nodes: content(),
-        servicesType: services
+        servicesType: services,
+        acceptsServices: { $0 is Services }
     ))
 }

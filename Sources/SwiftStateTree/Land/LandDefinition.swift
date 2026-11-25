@@ -58,6 +58,10 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// The services type the land declares (`Land(_:using:services:)`), nil for a land without
     /// services (`Land(_:using:)`). Read by registration and the keeper from #769 R1 on.
     package let servicesType: Any.Type?
+    /// Whether a value is of the declared services type (`value is Services`), nil for a land
+    /// without services. A live keeper checks the value it was given before it initializes, so an
+    /// erased factory of the wrong type fails the land's creation, not its first resolving input.
+    package let acceptsServices: (@Sendable (any Sendable) -> Bool)?
     /// This definition's record schema fingerprint, computed once (#521 D15). A copy of the
     /// definition shares it; a definition built again computes its own.
     let schemaFingerprintCache = SchemaFingerprintCache()
@@ -80,7 +84,8 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
             unrecognizedNodes: unrecognizedNodes,
             resolverDeclarationProblems: resolverDeclarationProblems,
             lifetimeHandlers: lifetimeHandlers,
-            servicesType: servicesType
+            servicesType: servicesType,
+            acceptsServices: acceptsServices
         )
     }
 }
