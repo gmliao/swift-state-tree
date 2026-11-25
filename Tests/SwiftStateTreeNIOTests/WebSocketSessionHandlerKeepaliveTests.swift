@@ -79,7 +79,7 @@ struct WebSocketSessionHandlerKeepaliveTests {
             channel.embeddedEventLoop.advanceTime(by: millisecond)
             #expect(try written(channel) == [.ping], "\(id): its first ping at its offset")
             // Then every interval, keeping the phase.
-            try channel.writeInbound(WebSocketFrame(fin: true, opcode: .pong, data: ByteBuffer()))
+            try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .pong, data: ByteBuffer()))
             channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.pingInterval - millisecond)
             #expect(try written(channel) == [])
             channel.embeddedEventLoop.advanceTime(by: millisecond)
@@ -113,7 +113,7 @@ struct WebSocketSessionHandlerKeepaliveTests {
 
         // No pong, but a message from the peer just before the deadline.
         channel.embeddedEventLoop.advanceTime(by: timeout - millisecond)
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: opcode, data: ByteBuffer(string: "x")))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: opcode, data: ByteBuffer(string: "x")))
         // Past the deadline (+1 ms) and up to the next ping, one interval after the first.
         channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.pingInterval - timeout + millisecond)
         #expect(try written(channel) == [.ping], "still open: the next ping, one interval after the first")
@@ -152,7 +152,7 @@ struct WebSocketSessionHandlerKeepaliveTests {
         let channel = try makeSession("live-peer")
         channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.initialPingDelay(for: SessionID("live-peer")))
         #expect(try written(channel) == [.ping])
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .pong, data: ByteBuffer()))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .pong, data: ByteBuffer()))
 
         channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.defaultPongTimeout + .seconds(1))
         #expect(try written(channel) == [])

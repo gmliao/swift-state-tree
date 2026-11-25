@@ -185,7 +185,7 @@ private func readOne(_ fixture: Fixture, _ text: String) async throws -> Bool {
     let before = fixture.reads.count
     try await onLoop(fixture) { fixture.channel.pipeline.read() }
     guard fixture.reads.count > before else { return false }
-    try await fixture.channel.writeInbound(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: text)))
+    try await fixture.channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .text, data: ByteBuffer(string: text)))
     try await drain(fixture.loop)
     return true
 }
@@ -331,7 +331,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         let (counted, paused) = try await channel.eventLoop.submit {
             try channel.pipeline.syncOperations.addHandler(handler)
             for text in messages(5) {
-                channel.pipeline.fireChannelRead(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: text)))
+                channel.pipeline.fireChannelRead(WebSocketFrame.client(fin: true, opcode: .text, data: ByteBuffer(string: text)))
             }
             // Read in this loop task: once it ends, the rejection may drop the batches and resume.
             return (handler.inboundQueuedMessagesForTesting, handler.isInboundReadPausedForTesting)
@@ -418,7 +418,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         f.loop.execute {
             refillGate.wait()
             for text in messages(6, size: 2) {
-                channel.pipeline.fireChannelRead(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: text)))
+                channel.pipeline.fireChannelRead(WebSocketFrame.client(fin: true, opcode: .text, data: ByteBuffer(string: text)))
             }
         }
         f.delegate.releaseAll()
