@@ -12,6 +12,12 @@ sync-output verdict `passed`.
 | `settle-failure-queued-tick` | `main` at a7ed4d2b (`DebugFreezeSettleFailureTests`' scenario) | a settle whose plan throws: the failure is submitted and applied by the next tick, whose frame ends its inputs |
 | `portless-initialize-tick`, `portless-initialize-tickless` | #546 L2d-1's head 72fb9436, and reproduced byte for byte by `main` at f6cc9b28 (`PortlessInitializeScenario` in `PortlessInitializeRecordTests.swift`, copied into that build, `PORTLESS_INITIALIZE_RECORD_DIR` set) | OnInitialize run before the transport was attached, recorded through the legacy record calls |
 
+They are 3.6 records, whose payloads are trees. From 3.7 (#700 K1a) replay refuses such a
+record, so the tests replay a copy that `LegacyRecordUpgrader` (in `SwiftStateTreeTestSupport`)
+writes: each payload tree becomes its canonical JSON bytes. The files here stay as they are.
+`ReplayCompatibilityRecordTests.upgraderPremiseHolds` checks that every payload decodes to the
+same value both ways.
+
 Since #546 L2d-1 the settle is a sync-only turn: it records a `syncOnly` output, and its failure
 ends the land in the settle's own turn.
 

@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import SwiftStateTree
+import SwiftStateTreeMessagePack
 
 public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError, LocalizedError {
     case landTypeMismatch(expected: String, actual: String)
@@ -12,12 +13,16 @@ public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError
     /// The record has no schema fingerprint: it is older than
     /// `ReevaluationRecordVersion.minimumReplayable`, or was written without one (#521 D15).
     case schemaFingerprintMissing(recordedVersion: String?)
+    /// The record is a 3.6 record: its payloads are trees, which replay no longer decodes
+    /// (#700 K1a). Re-record it.
+    case recordPayloadsNotReplayable(recordedVersion: String)
 
     /// The replay error for a record the fingerprint check refused.
     public init(_ error: ReevaluationRecordFingerprintError) {
         switch error {
         case let .mismatch(recorded, current): self = .schemaFingerprintMismatch(recorded: recorded, current: current)
         case let .missing(recordedVersion): self = .schemaFingerprintMissing(recordedVersion: recordedVersion)
+        case let .payloadsNotReplayable(recordedVersion): self = .recordPayloadsNotReplayable(recordedVersion: recordedVersion)
         }
     }
 
@@ -35,6 +40,8 @@ public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError
             return 2004
         case .schemaFingerprintMissing:
             return 2005
+        case .recordPayloadsNotReplayable:
+            return 2006
         }
     }
 
@@ -52,6 +59,8 @@ public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError
             return "Replay record " + ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current).description + "."
         case let .schemaFingerprintMissing(recordedVersion):
             return "Replay record refused: " + ReevaluationRecordFingerprintError.missing(recordedVersion: recordedVersion).description + "."
+        case let .recordPayloadsNotReplayable(recordedVersion):
+            return "Replay record refused: " + ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: recordedVersion).description + "."
         }
     }
 
@@ -85,6 +94,12 @@ public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError
             return [
                 "code": "RECORD_SCHEMA_FINGERPRINT_MISSING",
                 "recordedRecordVersion": recordedVersion as Any,
+                "minimumReplayableVersion": ReevaluationRecordVersion.minimumReplayable,
+            ]
+        case let .recordPayloadsNotReplayable(recordedVersion):
+            return [
+                "code": "RECORD_PAYLOADS_NOT_REPLAYABLE",
+                "recordedRecordVersion": recordedVersion,
                 "minimumReplayableVersion": ReevaluationRecordVersion.minimumReplayable,
             ]
         }
@@ -162,7 +177,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         definition: LandDefinition<State>,
         recordFilePath: String,
         requiredRecordVersion: String? = nil,
-        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks,
+        payloadDecoders: RecordPayloadDecoders = .standard
     ) async throws {
         precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         self.definition = definition
@@ -177,6 +193,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
+        // A record whose payloads these decoders can't read is refused before anything is
+        // replayed (#700 K1a).
+        try payloadDecoders.check(metadata.effectivePayloadEncoding)
         // EV8 (#521 PR 1b), after the record's own checks: every recorded server event is
         // decoded in `step()`, so a server event type without a decoder can't replay.
         try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
@@ -222,6 +241,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             initialState: initialState,
             mode: .reevaluation,
             reevaluationSource: source,
+            payloadDecoders: payloadDecoders,
             reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,
@@ -241,7 +261,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         recordFilePath: String,
         requiredRecordVersion: String? = nil,
         services: LandServices = LandServices(),
-        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks,
+        payloadDecoders: RecordPayloadDecoders = .standard
     ) async throws {
         precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         self.definition = definition
@@ -256,6 +277,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
+        // A record whose payloads these decoders can't read is refused before anything is
+        // replayed (#700 K1a).
+        try payloadDecoders.check(metadata.effectivePayloadEncoding)
         // EV8 (#521 PR 1b), after the record's own checks: every recorded server event is
         // decoded in `step()`, so a server event type without a decoder can't replay.
         try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
@@ -295,6 +319,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             initialState: initialState,
             mode: .reevaluation,
             reevaluationSource: source,
+            payloadDecoders: payloadDecoders,
             reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,

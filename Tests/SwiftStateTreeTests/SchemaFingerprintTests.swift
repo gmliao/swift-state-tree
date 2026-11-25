@@ -697,7 +697,7 @@ struct SchemaFingerprintTests {
         let path = try await recordFixtureLand(fpBase(), initialState: FPv1.FPState())
         defer { try? FileManager.default.removeItem(atPath: path) }
         let metadata = try await ReevaluationRecordFile.openSource(filePath: path).getMetadata()
-        #expect(metadata.version == "3.6")
+        #expect(metadata.version == "3.7")
         #expect(metadata.schemaFingerprint == (try fingerprint(fpBase())))
     }
 
@@ -707,7 +707,7 @@ struct SchemaFingerprintTests {
         let path = try await recordFixtureLand(land, initialState: FPv1.FPState())
         defer { try? FileManager.default.removeItem(atPath: path) }
         #expect(try await ReevaluationRecordFile.openSource(filePath: path).getMetadata().schemaFingerprint == nil)
-        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "3.6")) {
+        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "3.7")) {
             _ = try await ReevaluationEngine.run(definition: fpBase(), initialState: FPv1.FPState(), recordFilePath: path)
         }
     }

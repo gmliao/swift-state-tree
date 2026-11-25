@@ -23,6 +23,36 @@ extension RecordPayloadEncoding {
     }
 }
 
+/// A client input's payload as a record keeps it (#700 K1a): the bytes, in the encoding of the
+/// decoder that reads them.
+package struct RecordedPayloadBytes: Sendable, Equatable {
+    package let bytes: Data
+    package let encoding: RecordPayloadEncoding
+
+    package init(bytes: Data, encoding: RecordPayloadEncoding) {
+        self.bytes = bytes
+        self.encoding = encoding
+    }
+
+    /// The bytes of `source`'s own decoder (K1-Q8 (a)): canonical JSON for a tree, the canonical
+    /// pack for a MessagePack value, whatever transport delivered it. A source with no client
+    /// encoding gives its tree's canonical JSON.
+    package init(of source: any PayloadDecodingSource) throws {
+        if let encoding = source.recordEncoding {
+            self.init(bytes: try source.recordBytes(), encoding: encoding)
+        } else {
+            self.init(bytes: try RecordPayloadEncoding.canonicalJSON(source.boxedPayload), encoding: .json)
+        }
+    }
+
+    /// A typed value with no source (K1-Q8 (a)): its canonical JSON. The caller applies the value
+    /// these bytes decode to, whether the land records or not, so a `Codable` that normalizes on
+    /// decode applies the same value on both.
+    package init<T: Encodable>(typed value: T) throws {
+        self.init(bytes: try RecordPayloadEncoding.canonicalJSON(value), encoding: .json)
+    }
+}
+
 /// A recorded payload's bytes, decoded with `JSONDecoder`: the decode a JSON transport's payload
 /// gets live, without its `AnyCodable` tree.
 package struct JSONRecordBytesSource: PayloadDecodingSource {

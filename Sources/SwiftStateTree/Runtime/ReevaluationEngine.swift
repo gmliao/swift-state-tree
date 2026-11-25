@@ -247,7 +247,8 @@ public enum ReevaluationEngine {
         diffWithPath: String? = nil,
         requiredRecordVersion: String? = nil,
         logger: Logger? = nil,
-        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks,
+        payloadDecoders: RecordPayloadDecoders = .jsonOnly
     ) async throws -> RunResult {
         precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         try definition.validateForRegistration(context: .encodingIndependent)
@@ -269,6 +270,9 @@ public enum ReevaluationEngine {
         // A record without a schema fingerprint, or with another one, is refused before anything
         // is replayed (#521 D15).
         try ReevaluationSchemaFingerprint.checkRecord(metadata, against: definition)
+        // A record whose payloads these decoders can't read is refused before anything is
+        // replayed (#700 K1a).
+        try payloadDecoders.check(metadata.effectivePayloadEncoding)
         // The rows that hold for a land whose records replay (EV8, #521 PR 1b), after the
         // record's own checks: a bad file, version or fingerprint is the more basic error.
         try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
@@ -300,6 +304,7 @@ public enum ReevaluationEngine {
             initialState: initialState,
             mode: .reevaluation,
             reevaluationSource: source,
+            payloadDecoders: payloadDecoders,
             reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,

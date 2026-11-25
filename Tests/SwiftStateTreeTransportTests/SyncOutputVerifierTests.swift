@@ -1625,13 +1625,45 @@ struct ReplayCompatibilityRecordTests {
         directory.appendingPathComponent("\(name).reeval.sstr").path
     }
 
+    /// Replays an upgraded copy of the record at `path`: from 3.7 replay refuses a record whose
+    /// payloads are trees (#700 K1a, K1-Q1 (a)), and these records are never regenerated.
+    static func replayUpgraded(
+        _ path: String, definition: LandDefinition<VerifierState> = makeVerifierLand()
+    ) async throws -> ReevaluationEngine.RunResult {
+        let copy = try LegacyRecordUpgrader.upgradedCopy(ofRecordAt: path)
+        defer { try? FileManager.default.removeItem(atPath: copy) }
+        return try await VerifierFixture.replay(recordAt: copy, definition: definition)
+    }
+
+    @Test("Each frozen record's payloads decode to the same value from their canonical JSON as from their tree (the upgrader's premise)")
+    func upgraderPremiseHolds() throws {
+        var checked = 0
+        for (name, definition) in [
+            ("freeze-resume-legacy-cycle-messagepack", makeVerifierLand()),
+            ("settle-failure-queued-tick", makeVerifierLand()),
+            (PortlessInitializeScenario.name(tick: true), PortlessInitializeScenario.definition(tick: true)),
+            (PortlessInitializeScenario.name(tick: false), PortlessInitializeScenario.definition(tick: false)),
+        ] {
+            let result = try LegacyRecordUpgrader.premiseViolations(ofRecordAt: Self.path(name), definition: definition)
+            #expect(result.violations == [], "\(name)")
+            checked += result.checked
+        }
+        let hybrid = try LegacyRecordUpgrader.premiseViolations(
+            ofRecordAt: HybridEventFrameGoldenTests.recordPath, definition: makeHybridGoldenLand()
+        )
+        #expect(hybrid.violations == [], "hybrid-record")
+        checked += hybrid.checked
+        // The records hold payloads, so the check ran on some.
+        #expect(checked > 0)
+    }
+
     @Test("A freeze settle recorded as a legacy cycle replays with every hash reproduced")
     func legacyCycleSettleReplays() async throws {
         let path = Self.path("freeze-resume-legacy-cycle-messagepack")
         let source = try ReevaluationRecordFile.openSource(filePath: path)
         let stream = try #require(try await source.getSyncStream())
         #expect(stream.contains { if case .output(let o) = $0 { o.turnKind == .legacyCycle } else { false } }, "the record holds the legacy-cycle settle")
-        let result = try await VerifierFixture.replay(recordAt: path)
+        let result = try await Self.replayUpgraded(path)
         #expect(result.tickHashes == result.recordedStateHashes, "state hashes")
         #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
         #expect(result.initialize == .passed)
@@ -1644,7 +1676,7 @@ struct ReplayCompatibilityRecordTests {
         let recorded = try #require(try await source.getLandFailure(), "the record holds the land failure")
         #expect(recorded.failure.kind == .syncConversion)
         #expect(recorded.failure.position.endsInputs == true, "the queued failure ended the next tick's inputs")
-        let result = try await VerifierFixture.replay(recordAt: path)
+        let result = try await Self.replayUpgraded(path)
         // The replay may run past the last recorded tick to the one that applied the failure:
         // every recorded hash is reproduced.
         #expect(!result.recordedStateHashes.isEmpty)

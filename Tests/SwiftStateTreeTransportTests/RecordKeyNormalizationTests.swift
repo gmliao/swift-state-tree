@@ -4,18 +4,19 @@
 // NFC "\u{E9}") replays as it applied live, on every encoding, for an action and a client event.
 //
 // Live, the decoders match keys with `String ==` (canonical equivalence). The record keeps the
-// client's spelling byte for byte (pinned below). Replay rebuilds a recorded action or client
-// event from its tree with `AnyCodablePayloadSource`, a JSON round trip that matches keys with
-// `String ==` too. A replay decoder that matched keys by their bytes (as `CanonicalMessagePack`'s
-// keyed decoder does) would refuse the NFD key, and the replayed state would differ from live:
-// the class #806 described. These tests guard against it, in particular when replay moves to
-// decoding recorded bytes (#700 K1a): the decoder it uses must match keys as live does. The NFC
-// case is the control.
+// client's spelling byte for byte (pinned below). From 3.7 (#700 K1a) the record keeps the bytes
+// the live decoder read, and replay decodes them with the live decoder for their encoding
+// (`RecordPayloadDecoders`), which matches keys with `String ==` too. A replay decoder that matched
+// keys by their bytes (as `CanonicalMessagePack`'s keyed decoder does) would refuse the NFD key,
+// and the replayed state would differ from live: the class #806 described. These tests guard
+// against it. The NFC case is the control.
 
 import Foundation
 import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
+import SwiftStateTreeMessagePack
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 struct KeyNormalizationState: StateNodeProtocol {
@@ -116,7 +117,8 @@ private func recordKeyNormalizationRun(
         landDefinitionID: "key-normalization",
         rngSeed: DeterministicSeed.fromLandID(keyNormalizationLandID),
         recordsSyncStream: await keeper.recordsSyncStream,
-        syncConfig: adapter.syncConfigForRecord
+        syncConfig: adapter.syncConfigForRecord,
+        payloadEncoding: adapter.payloadEncodingForRecord
     ))
 
     // A tick land joins through the router's path, as ActionJobReplayOrderTests' does.
@@ -150,8 +152,13 @@ private func recordKeyNormalizationRun(
 
     let source = try #require(try ReevaluationRecordFile.openSource(filePath: path) as? ReevaluationRecordLogSource)
     let frames = await source.getAllFrames()
-    let recordedPayload: AnyCodable? = clientEvent ? frames.flatMap(\.clientEvents).first?.payload : frames.flatMap(\.actions).first?.payload
-    let map = try #require(recordedPayload?.base as? [String: Any], "the input is recorded with a map payload")
+    let recordedPayload: AnyCodable
+    if clientEvent {
+        recordedPayload = try RecordedPayloadTree.tree(of: try #require(frames.flatMap(\.clientEvents).first))
+    } else {
+        recordedPayload = try RecordedPayloadTree.tree(of: try #require(frames.flatMap(\.actions).first))
+    }
+    let map = try #require(recordedPayload.base as? [String: Any], "the input is recorded with a map payload")
     return KeyNormalizationRun(liveApplied: liveApplied, recordPath: path, recordedKeyBytes: map.keys.map { Array($0.utf8) })
 }
 
@@ -160,7 +167,9 @@ private func replayMatchesLive(_ run: KeyNormalizationRun) async throws {
     let result = try await ReevaluationEngine.run(
         definition: makeKeyNormalizationLand(),
         initialState: KeyNormalizationState(),
-        recordFilePath: run.recordPath
+        recordFilePath: run.recordPath,
+        // A MessagePack land's payloads decode with the MessagePack decoder (#700 K1a).
+        payloadDecoders: .standard
     )
     #expect(result.recordCompleteness == .complete)
     #expect(!result.recordedStateHashes.isEmpty)

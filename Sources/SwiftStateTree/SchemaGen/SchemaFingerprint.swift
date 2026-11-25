@@ -262,6 +262,10 @@ public enum ReevaluationRecordFingerprintError: Error, Equatable, Sendable, Cust
     /// policy, whether a state field has a default or an action's response changed, or an
     /// action, an event or a server input was added or removed.
     case mismatch(recorded: String, current: String)
+    /// The record has a schema fingerprint but is older than
+    /// `ReevaluationRecordVersion.minimumReplayable` (3.6): its payloads are trees, which replay no
+    /// longer decodes (#700 K1a). Re-record it.
+    case payloadsNotReplayable(recordedVersion: String)
 
     public var description: String {
         switch self {
@@ -272,6 +276,9 @@ public enum ReevaluationRecordFingerprintError: Error, Equatable, Sendable, Cust
         case .mismatch(let recorded, let current):
             return "the record's schema fingerprint \(recorded) differs from the current definition's \(current): "
                 + "the land's types or fields changed since it was recorded"
+        case .payloadsNotReplayable(let version):
+            return "the record (version \(version)) holds its payloads as trees, which replay no longer decodes; "
+                + "replay reads records from \(ReevaluationRecordVersion.minimumReplayable) on: re-record it with the current server"
         }
     }
 }
@@ -287,6 +294,10 @@ extension ReevaluationSchemaFingerprint {
         against definition: LandDefinition<State>
     ) throws {
         let recorded = try recordedFingerprint(of: metadata)
+        // A 3.6 record has a fingerprint, but its payloads are trees (#700 K1a).
+        if ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.payloadBytesMinor) {
+            throw ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: metadata.version ?? "missing")
+        }
         let current = try cached(for: definition)
         guard recorded == current else {
             throw ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current)

@@ -225,13 +225,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     public struct PendingActionItem: Sendable {
         public let sequence: Int64
-        /// The payload as its decoder received it (#521). Stored once: `action` is built from it.
-        package let source: any PayloadDecodingSource
-        /// The action decoded at intake, which the apply step runs without decoding again (#521).
-        /// Nil for an item from the public init (a replayed or hand-built one): decoded at apply.
-        package let decoded: (any ActionPayload)?
-        public var action: AnyCodable { source.boxedPayload }
+        /// The action as the apply step runs it (#521, #700 K1a): decoded at intake live, and
+        /// when replay builds the item. A recorded payload that doesn't decode is kept as its
+        /// failure, thrown when the item is applied, where a decode at apply threw before.
+        package let decoded: Result<any ActionPayload, RecordedPayloadDecodeFailure>
+        /// The handler's action type: found by the recorded type identifier in replay, so it is
+        /// known even when the payload didn't decode.
         public let actionType: any ActionPayload.Type
+        /// The bytes the record keeps (#700 K1a): set only when the land records inputs, and on
+        /// an item from the public init, which computes them to decode its action.
+        package let recorded: RecordedPayloadBytes?
         public let playerID: PlayerID
         public let clientID: ClientID
         public let sessionID: SessionID
@@ -239,21 +242,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         package let heldResolverOutputs: [String: HeldResolverOutput]
         public let resolvedAtTick: Int64
 
-        public init(
+        /// A hand-built action (K1-Q8 (a)): it has no client bytes, so it is encoded once as
+        /// canonical JSON, and the item holds the value those bytes decode to, recording or not.
+        public init<A: ActionPayload>(
             sequence: Int64,
-            action: AnyCodable,
-            actionType: any ActionPayload.Type,
+            action: A,
             playerID: PlayerID,
             clientID: ClientID,
             sessionID: SessionID,
             resolverOutputs: [String: any ResolverOutput],
             resolvedAtTick: Int64
-        ) {
+        ) throws {
+            let recorded = try RecordedPayloadBytes(typed: action)
             self.init(
                 sequence: sequence,
-                source: AnyCodablePayloadSource(action),
-                decoded: nil,
-                actionType: actionType,
+                decoded: .success(try JSONDecoder().decode(A.self, from: recorded.bytes)),
+                actionType: A.self,
+                recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
@@ -262,36 +267,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
         }
 
-        /// A recorded action in replay: its payload decoded at apply, its outputs as read.
         package init(
             sequence: Int64,
-            action: AnyCodable,
+            decoded: Result<any ActionPayload, RecordedPayloadDecodeFailure>,
             actionType: any ActionPayload.Type,
-            playerID: PlayerID,
-            clientID: ClientID,
-            sessionID: SessionID,
-            heldResolverOutputs: [String: HeldResolverOutput],
-            resolvedAtTick: Int64
-        ) {
-            self.init(
-                sequence: sequence,
-                source: AnyCodablePayloadSource(action),
-                decoded: nil,
-                actionType: actionType,
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: sessionID,
-                heldResolverOutputs: heldResolverOutputs,
-                resolvedAtTick: resolvedAtTick
-            )
-        }
-
-        /// An action decoded at intake (#521).
-        package init(
-            sequence: Int64,
-            source: any PayloadDecodingSource,
-            decoded: (any ActionPayload)?,
-            actionType: any ActionPayload.Type,
+            recorded: RecordedPayloadBytes?,
             playerID: PlayerID,
             clientID: ClientID,
             sessionID: SessionID,
@@ -299,9 +279,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolvedAtTick: Int64
         ) {
             self.sequence = sequence
-            self.source = source
             self.decoded = decoded
             self.actionType = actionType
+            self.recorded = recorded
             self.playerID = playerID
             self.clientID = clientID
             self.sessionID = sessionID
@@ -309,13 +289,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             self.resolvedAtTick = resolvedAtTick
         }
 
-        /// This item with other resolver outputs and tick, its source and decoded value kept.
+        /// This item with other resolver outputs and tick, its value and bytes kept.
         package func with(heldResolverOutputs: [String: HeldResolverOutput], resolvedAtTick: Int64) -> PendingActionItem {
             PendingActionItem(
                 sequence: sequence,
-                source: source,
                 decoded: decoded,
                 actionType: actionType,
+                recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
@@ -325,17 +305,33 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// A client event's payload as its item holds it.
+    package enum PendingClientEventPayload: Sendable {
+        /// Decoded at intake live, or when replay built the item (#521, #700 K1a).
+        case decoded(any ClientEventPayload)
+        /// A recorded payload that didn't decode when replay built the item: the event is dropped
+        /// at apply, as its handler dropped it when it decoded there (a nesting refusal is also
+        /// logged and counted, #362).
+        case failed(RecordedPayloadDecodeFailure)
+        /// An event whose descriptor has no decode (one built with the public descriptor init):
+        /// its handler decodes it when applied, as before.
+        case undecoded(AnyClientEvent)
+    }
+
     public struct PendingClientEventItem: Sendable {
         public let sequence: Int64
-        public let event: AnyClientEvent
-        /// The event decoded at intake (#521), which its handler runs without decoding again. Nil
-        /// for an item from the public init (a replayed or hand-built one): decoded by its handler.
-        package let decoded: (any ClientEventPayload)?
+        /// The event's wire type, its descriptor's name.
+        public let typeIdentifier: String
+        package let payload: PendingClientEventPayload
+        /// The bytes the record keeps (#700 K1a): set only when the land records inputs, and on
+        /// an item from the public init.
+        package let recorded: RecordedPayloadBytes?
         public let playerID: PlayerID
         public let clientID: ClientID
         public let sessionID: SessionID
         public let resolvedAtTick: Int64
 
+        /// A hand-built event: its handler decodes it when applied, as before.
         public init(
             sequence: Int64,
             event: AnyClientEvent,
@@ -343,11 +339,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             clientID: ClientID,
             sessionID: SessionID,
             resolvedAtTick: Int64
-        ) {
+        ) throws {
             self.init(
                 sequence: sequence,
-                event: event,
-                decoded: nil,
+                typeIdentifier: event.type,
+                payload: .undecoded(event),
+                recorded: try RecordedPayloadBytes(of: event.source),
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
@@ -355,19 +352,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
         }
 
-        /// An event decoded at intake (#521).
         package init(
             sequence: Int64,
-            event: AnyClientEvent,
-            decoded: (any ClientEventPayload)?,
+            typeIdentifier: String,
+            payload: PendingClientEventPayload,
+            recorded: RecordedPayloadBytes?,
             playerID: PlayerID,
             clientID: ClientID,
             sessionID: SessionID,
             resolvedAtTick: Int64
         ) {
             self.sequence = sequence
-            self.event = event
-            self.decoded = decoded
+            self.typeIdentifier = typeIdentifier
+            self.payload = payload
+            self.recorded = recorded
             self.playerID = playerID
             self.clientID = clientID
             self.sessionID = sessionID
@@ -505,6 +503,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Without either, an action or client event isn't recorded, and its payload's tree is never
     /// built from a MessagePack source (#521).
     private var recordsInputs: Bool { reevaluationRecorder != nil || mode != .live }
+
+    /// The record's bytes for an item that holds none, which only an item queued before the land
+    /// recorded can be: the value's canonical JSON, the bytes of a typed value with no source
+    /// (K1-Q8 (a)).
+    private static func fallbackRecordBytes(_ action: any ActionPayload) throws -> Data {
+        try RecordPayloadEncoding.canonicalJSON(AnyCodable(action))
+    }
+
+    private static func fallbackRecordBytes(_ payload: PendingClientEventPayload) throws -> Data {
+        switch payload {
+        case .decoded(let event): return try RecordPayloadEncoding.canonicalJSON(AnyCodable(event))
+        case .undecoded(let event): return try RecordedPayloadBytes(of: event.source).bytes
+        case .failed: return Data()
+        }
+    }
     /// Position of the next sync-stream entry (output or marker). Advanced only while the land
     /// records its sync stream (a recorder and in-turn sync), in the same synchronous segment as
     /// the entry it numbers; replay orders the stream by it.
@@ -523,6 +536,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
     private var reevaluationSource: (any ReevaluationSource)?
+    /// The decoders a replay reads recorded client payloads with (#700 K1a, K1-Q6 (i)). A live
+    /// keeper doesn't use them.
+    private let payloadDecoders: RecordPayloadDecoders
+    /// The encoding of a replayed entry that names none: the record header's (#700 K1a).
+    private var replayHeaderPayloadEncoding: RecordPayloadEncoding = .json
 
     /// Optional sink for emitting recorded outputs during re-evaluation.
     private var reevaluationSink: (any ReevaluationSink)?
@@ -984,6 +1002,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         pendingItems.map(\.sequence)
     }
 
+    /// Tests only: the queued inputs, in queue order (#700 K1a: whether each holds its bytes).
+    func pendingItemsForTesting() -> [PendingItem] {
+        pendingItems
+    }
+
     /// Tests only: how many input-turn outcomes are kept for callers (`inputTurnResults`).
     func inputTurnResultCountForTesting() -> Int {
         inputTurnResults.count
@@ -1022,6 +1045,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - initialState: The initial state of the Land.
     ///   - mode: The execution mode (live or re-evaluation). Defaults to .live.
     ///   - reevaluationSource: Optional re-evaluation source. Required when mode is .reevaluation.
+    ///   - payloadDecoders: The decoders a replay reads recorded client payloads with (#700 K1a).
+    ///                `.jsonOnly` reads a record whose header says `json`; a record of a MessagePack
+    ///                land needs `RecordPayloadDecoders.standard` (SwiftStateTreeMessagePack), and is
+    ///                refused at initialization without it. A live keeper ignores it.
     ///   - reevaluationSink: Optional sink for emitted events. Used when mode is .reevaluation.
     ///   - reevaluationOutputMode: When mode is .reevaluation, controls whether emitted events go to sink only (.sinkOnly) or both transport and sink (.transportAndSink). Defaults to .sinkOnly.
     ///   - enableLoopPhaseOffset: Delay the first tick and the first sync by a per-land offset in
@@ -1045,6 +1072,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         initialState: State,
         mode: LandMode = .live,
         reevaluationSource: (any ReevaluationSource)? = nil,
+        payloadDecoders: RecordPayloadDecoders = .jsonOnly,
         reevaluationSink: (any ReevaluationSink)? = nil,
         reevaluationOutputMode: ReevaluationOutputMode = .sinkOnly,
         services: LandServices = LandServices(),
@@ -1061,6 +1089,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             initialState: initialState,
             mode: mode,
             reevaluationSource: reevaluationSource,
+            payloadDecoders: payloadDecoders,
             reevaluationSink: reevaluationSink,
             reevaluationOutputMode: reevaluationOutputMode,
             services: services,
@@ -1083,6 +1112,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         initialState: State,
         mode: LandMode = .live,
         reevaluationSource: (any ReevaluationSource)? = nil,
+        payloadDecoders: RecordPayloadDecoders = .jsonOnly,
         reevaluationSink: (any ReevaluationSink)? = nil,
         reevaluationOutputMode: ReevaluationOutputMode = .sinkOnly,
         services: LandServices = LandServices(),
@@ -1099,6 +1129,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             initialState: initialState,
             mode: mode,
             reevaluationSource: reevaluationSource,
+            payloadDecoders: payloadDecoders,
             reevaluationSink: reevaluationSink,
             reevaluationOutputMode: reevaluationOutputMode,
             services: services,
@@ -1119,6 +1150,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         initialState: State,
         mode: LandMode = .live,
         reevaluationSource: (any ReevaluationSource)? = nil,
+        payloadDecoders: RecordPayloadDecoders = .jsonOnly,
         reevaluationSink: (any ReevaluationSink)? = nil,
         reevaluationOutputMode: ReevaluationOutputMode = .sinkOnly,
         services: LandServices = LandServices(),
@@ -1138,6 +1170,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         outputCollector.checksOverflow = mode == .reevaluation
         self.reevaluationSink = reevaluationSink
         self.reevaluationOutputMode = reevaluationOutputMode
+        self.payloadDecoders = payloadDecoders
 
         // Ensure DeterministicRngService is always registered for deterministic behavior
         // If not provided, seed it from the instance ID when known, else from definition.id.
@@ -1428,6 +1461,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return
         }
         if mode == .reevaluation {
+            // A record whose payloads this replay has no decoder for is refused before anything
+            // is replayed (#700 K1a): `ReevaluationRecordPayloadError.noDecoder`.
+            if let source = reevaluationSource, let metadata = try? await source.getMetadata() {
+                replayHeaderPayloadEncoding = metadata.effectivePayloadEncoding
+                do {
+                    try payloadDecoders.check(replayHeaderPayloadEncoding)
+                } catch {
+                    logger.error("❌ The record's payloads can't be decoded by this replay: the land is torn down", metadata: [
+                        "error": .string(String(describing: error)),
+                    ])
+                    initializationFailure = LandInitializationError(underlying: error)
+                    Task { await self.tearDownAfterFailedInitialization() }
+                    return
+                }
+            }
             await replayInitializeBeforeTickZero()
         }
         // Execute OnInitialize immediately in live mode (preserve existing semantics).
@@ -3129,6 +3177,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let source = envelope.source
         try source.validateRecordable()
         let decodedAction = try source.decodeAction(actionPayloadType)
+        // The bytes the record keeps (#700 K1a), only when something reads records: those of the
+        // decoder this action was just decoded with.
+        let recorded = recordsInputs ? try RecordedPayloadBytes(of: source) : nil
 
         // Intake segment: the sender check, the sequence and the ticket (the sender's entry
         // generation). After the resolvers' await, only `deliverResolvedAction` runs, which
@@ -3176,9 +3227,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             startActionJob(
                 PendingActionItem(
                     sequence: sequence,
-                    source: source,
-                    decoded: decodedAction,
+                    decoded: .success(decodedAction),
                     actionType: actionPayloadType,
+                    recorded: recorded,
                     playerID: playerID,
                     clientID: clientID,
                     sessionID: sessionID,
@@ -3196,9 +3247,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try deliverResolvedAction(
             PendingActionItem(
                 sequence: sequence,
-                source: source,
-                decoded: decodedAction,
+                decoded: .success(decodedAction),
                 actionType: actionPayloadType,
+                recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
@@ -3298,16 +3349,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // refuses in its whole tree, is refused with an error to the client and never queued or
         // recorded (#537). A descriptor without the decode (the public init's) keeps the decode
         // in its handler, at apply.
-        let decodedEvent: (any ClientEventPayload)?
+        let payload: PendingClientEventPayload
         if let decode = descriptor.decodeClientEvent {
             do {
                 try event.source.validateRecordable()
-                decodedEvent = try decode(event.source)
+                payload = .decoded(try decode(event.source))
             } catch {
                 throw ClientEventPayloadError(eventType: event.type, underlying: error)
             }
         } else {
-            decodedEvent = nil
+            payload = .undecoded(event)
+        }
+        // The bytes the record keeps (#700 K1a), only when something reads records: those of the
+        // decoder this event was decoded with (its handler's, for an undecoded one).
+        let recorded: RecordedPayloadBytes?
+        do {
+            recorded = recordsInputs ? try RecordedPayloadBytes(of: event.source) : nil
+        } catch {
+            throw ClientEventPayloadError(eventType: event.type, underlying: error)
         }
 
         try rejectIfLandClosed()
@@ -3323,8 +3382,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let pendingItem = PendingItem.clientEvent(
             PendingClientEventItem(
                 sequence: sequence,
-                event: event,
-                decoded: decodedEvent,
+                typeIdentifier: event.type,
+                payload: payload,
+                recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
@@ -3761,9 +3821,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return .skipped
             }
 
-            // Decoded at intake (#521); an item from the public init (replay, a hand-built item)
-            // is decoded here, as before.
-            let decodedAction = try actionItem.decoded ?? actionItem.source.decodeAction(actionItem.actionType)
+            // Decoded at intake (#521), or when replay built the item (#700 K1a). A recorded
+            // payload that didn't decode throws here, before the record, where its decode threw.
+            let decodedAction: any ActionPayload
+            switch actionItem.decoded {
+            case .success(let value): decodedAction = value
+            case .failure(let failure): throw failure.error
+            }
 
             // Create context with resolver outputs
             let ctx = makeContext(
@@ -3783,7 +3847,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     kind: "action",
                     sequence: actionItem.sequence,
                     typeIdentifier: String(describing: actionItem.actionType),
-                    payload: actionItem.action,
+                    payload: try actionItem.recorded?.bytes ?? Self.fallbackRecordBytes(decodedAction),
+                    payloadEncoding: actionItem.recorded?.encoding ?? .json,
                     playerID: actionItem.playerID.rawValue,
                     clientID: actionItem.clientID.rawValue,
                     sessionID: actionItem.sessionID.rawValue,
@@ -3804,9 +3869,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         case let .clientEvent(eventItem):
             // Find handlers for this event type
-            guard let descriptor = definition.clientEventRegistry.findDescriptor(for: eventItem.event.type) else {
+            guard let descriptor = definition.clientEventRegistry.findDescriptor(for: eventItem.typeIdentifier) else {
                 logger.error("Event descriptor not found", metadata: [
-                    "eventType": .string(eventItem.event.type),
+                    "eventType": .string(eventItem.typeIdentifier),
                 ])
                 return .skipped
             }
@@ -3814,7 +3879,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // One handler per event type (#586).
             guard let handler = definition.eventHandlers.first(where: { $0.canHandle(descriptor.type) }) else {
                 logger.error("No handler found for client event", metadata: [
-                    "eventType": .string(eventItem.event.type),
+                    "eventType": .string(eventItem.typeIdentifier),
                 ])
                 return .skipped
             }
@@ -3833,8 +3898,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 applied.recordedClientEvents.append(ReevaluationRecordedClientEvent(
                     kind: "clientEvent",
                     sequence: eventItem.sequence,
-                    typeIdentifier: eventItem.event.type,
-                    payload: eventItem.event.payload,
+                    typeIdentifier: eventItem.typeIdentifier,
+                    payload: try eventItem.recorded?.bytes ?? Self.fallbackRecordBytes(eventItem.payload),
+                    payloadEncoding: eventItem.recorded?.encoding ?? .json,
                     playerID: eventItem.playerID.rawValue,
                     clientID: eventItem.clientID.rawValue,
                     sessionID: eventItem.sessionID.rawValue,
@@ -3843,21 +3909,30 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             applied.appliedOrder.append(eventItem.sequence)
 
-            // Throws only from `validate`, before anything is written (#586). A live event runs the
-            // value decoded at intake (#521); a replayed one is decoded by its handler, as before.
+            // Throws only from `validate`, before anything is written (#586). An event runs the
+            // value decoded at intake (#521) or when replay built it (#700 K1a); one whose
+            // descriptor has no decode is decoded by its handler, as before. A recorded payload
+            // that didn't decode is dropped, as its handler dropped it (#362 counts a too-deep one).
             var ranHandler = true
             try withMutableStateSync { state in
-                if let decoded = eventItem.decoded {
+                switch eventItem.payload {
+                case .decoded(let decoded):
                     ranHandler = try handler.invokeDecoded(&state, event: decoded, ctx: ctx)
-                } else {
-                    try handler.invoke(&state, event: eventItem.event, ctx: ctx)
+                case .undecoded(let event):
+                    try handler.invoke(&state, event: event, ctx: ctx)
+                case .failed(let failure):
+                    if case .tooDeep(let limit) = failure {
+                        PayloadNesting.noteDroppedClientEvent(
+                            type: String(describing: handler.handledType), PayloadNesting.TooDeep(limit: limit)
+                        )
+                    }
                 }
             }
             if !ranHandler {
                 // A hand-built handler whose type differs from its descriptor's: skipped, as when
                 // the handler decoded it (A7's land stop comes with A8's registration refusal).
                 logger.error("Client event skipped: its handler's type differs from its descriptor's", metadata: [
-                    "eventType": .string(eventItem.event.type),
+                    "eventType": .string(eventItem.typeIdentifier),
                     "handlerType": .string(String(describing: handler.handledType)),
                 ])
             }
@@ -4548,11 +4623,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
                     let resolverOutputs = replayedResolverOutputs(recordedAction.resolverOutputs)
 
+                    // Decoded here, once, with the decoder its encoding's transport uses live
+                    // (#700 K1a), never the record codec's byte-matching one (#806's class). A
+                    // payload that doesn't decode is still queued, and fails when it is applied.
+                    let recorded = RecordedPayloadBytes(
+                        bytes: recordedAction.payload,
+                        encoding: recordedAction.payloadEncoding ?? replayHeaderPayloadEncoding
+                    )
+                    let decoded = Result {
+                        let source = try payloadDecoders.makeSource(recorded.bytes, recorded.encoding)
+                        try source.validateRecordable()
+                        return try source.decodeAction(actionType)
+                    }.mapError { RecordedPayloadDecodeFailure($0) }
                     let pendingItem = PendingItem.action(
                         PendingActionItem(
                             sequence: recordedAction.sequence,
-                            action: recordedAction.payload,
+                            decoded: decoded,
                             actionType: actionType,
+                            recorded: recorded,
                             playerID: PlayerID(recordedAction.playerID),
                             clientID: ClientID(recordedAction.clientID),
                             sessionID: SessionID(recordedAction.sessionID),
@@ -4563,15 +4651,32 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     pendingItems.append(pendingItem)
                 }
 
-                // Convert recorded client events to PendingItem
+                // Convert recorded client events to PendingItem: decoded here, as an action is.
+                // A descriptor without the decode leaves it to the handler, from the bytes.
                 for recordedClientEvent in recordedClientEvents {
+                    let recorded = RecordedPayloadBytes(
+                        bytes: recordedClientEvent.payload,
+                        encoding: recordedClientEvent.payloadEncoding ?? replayHeaderPayloadEncoding
+                    )
+                    let payload: PendingClientEventPayload
+                    do {
+                        let source = try payloadDecoders.makeSource(recorded.bytes, recorded.encoding)
+                        let descriptor = definition.clientEventRegistry.findDescriptor(for: recordedClientEvent.typeIdentifier)
+                        if let decode = descriptor?.decodeClientEvent {
+                            try source.validateRecordable()
+                            payload = .decoded(try decode(source))
+                        } else {
+                            payload = .undecoded(AnyClientEvent(type: recordedClientEvent.typeIdentifier, source: source))
+                        }
+                    } catch {
+                        payload = .failed(RecordedPayloadDecodeFailure(error))
+                    }
                     let pendingItem = PendingItem.clientEvent(
                         PendingClientEventItem(
                             sequence: recordedClientEvent.sequence,
-                            event: AnyClientEvent(
-                                type: recordedClientEvent.typeIdentifier,
-                                payload: recordedClientEvent.payload
-                            ),
+                            typeIdentifier: recordedClientEvent.typeIdentifier,
+                            payload: payload,
+                            recorded: recorded,
                             playerID: PlayerID(recordedClientEvent.playerID),
                             clientID: ClientID(recordedClientEvent.clientID),
                             sessionID: SessionID(recordedClientEvent.sessionID),
