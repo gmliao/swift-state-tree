@@ -113,20 +113,22 @@ For each flow, K1b-5's segment before an await ends with `turn.run(.someEffect(c
 
 The core's `Behavior` contract (Machine.swift's doc) says a step is synchronous and deterministic and touches nothing outside the model; anything that waits or does I/O goes out as an effect. After K2, handlers run inside steps, and `ctx.services` lets a handler reach any registered service. That is the one place where today's API and the core's contract disagree (survey §2).
 
-What the repository's handlers do with it today: they note facts into sinks outside the state.
-- `InputProbe.noteApplied()` (VisibilityTestLand) is a counter for the benchmark.
-- `HeroDefenseStats` is a JSONL stats sink, which GameServer registers for live lands only.
-- No repository handler reads a service's answer into state. Resolvers do that (`SimulatedExternalService` in ResolverTestLand), and resolvers run outside steps, as effects.
+What the repository's handlers do with it today falls into three kinds:
+- **Constant reads (config).** HeroDefenseLand, and its `CombatSystem` and `MonsterSystem` called from handlers and the tick, read `GameConfigProviderService`. Damage, the spawn ramp and the like go into state. The config doesn't change during the land's life, so the reads are deterministic and replay repeats them. They fit the Behavior side of the contract: fixed configuration.
+- **Write-only sinks.** `InputProbe.noteApplied()` (VisibilityTestLand) is a counter for the benchmark. `HeroDefenseStats` is a JSONL stats sink that GameServer registers for live lands only. Nothing they return reaches state.
+- **External I/O.** `SimulatedExternalService` (ResolverTestLand) is called only from resolvers, which run outside steps, as effects.
 
-A service that a handler reads into state breaks replay today already: the record doesn't hold the answer. So the question is what K2 promises, not what it fixes.
+A service whose answer changes between runs (a clock, a remote call) and that a handler reads into state breaks replay today already: the record doesn't hold the answer. So the question is what K2 promises, not what it fixes.
+
+**Prior art in this repository.** #586 already has a marker for the first kind: `ReadOnlyLandService`, with `ReadOnlyLandServices` as the only services `validate` can fetch (ValidateContext.swift). Its doc states the contract: it only reads, and the same inputs give the same answer.
 
 | Option | What it means | For a land author | Cost |
 |---|---|---|---|
-| **(a) A documented exception (recommended for K2)** | Handlers keep `ctx.services`. The docs state the contract: a service used in a handler is synchronous and doesn't block, and nothing it returns may change state; data from outside goes through a resolver. The same status as an `@Internal` field holding a class | Nothing changes | Docs only; K2 keeps "no public change" (parent §8) |
-| (b) Observation-only services by type | Handlers see only services that conform to a new marker protocol (say `HandlerSink`), registered as such; others are reachable only from resolvers | A sink adopts the marker; a land that reads a service in a handler moves the read to a resolver | A public break; a marker can't prove a method returns nothing useful, so it states intent rather than enforcing it |
-| (c) No services in handlers | `ctx.services` is removed from `LandContext` in handlers. Observation goes out as outputs: a handler stages a note, and `flush` delivers it to a sink registered on the keeper, after the step | Sinks become output consumers; reads move to resolvers | A public break; the purest fit with the core (the Elm and Redux shape: no I/O in `update` or a reducer; effects outside). The flush adds a hop per note |
+| **(a) A documented exception (recommended for K2)** | Handlers keep `ctx.services`. The docs name the three kinds: a handler may read constant services and write to sinks, and external I/O goes through a resolver. The same status as an `@Internal` field holding a class | Nothing changes | Docs only; K2 keeps "no public change" (parent §8) |
+| (b) The kinds by type, reusing #586's marker | A handler's context fetches only services marked for steps: `ReadOnlyLandService` for constant reads (already the `validate` rule), plus a new sink marker for write-only services. Other services are reachable only from resolvers | Config services already conforming to `ReadOnlyLandService` need nothing more; a sink adopts the sink marker; a land that reads anything else in a handler moves the read to a resolver | A public break. Like `ReadOnlyLandService`, the markers state a trust contract the compiler can't check |
+| (c) No services in handlers | `ctx.services` is removed from `LandContext` in handlers. Constant config moves into the land's configuration (Behavior). Observation goes out as outputs: a handler stages a note, and `flush` delivers it to a sink registered on the keeper, after the step | Config becomes land configuration; sinks become output consumers; reads move to resolvers | A public break; the purest fit with the core (the Elm and Redux shape: no I/O in `update` or a reducer; effects outside). The flush adds a hop per note |
 
-**Recommendation:** (a) in K2, so the cut-over stays free of public changes. (c) is the clean end state, so I propose a separate before-release issue to decide (b) or (c), with the demo's two sinks as the worked cases. Prior art for (a): Erlang's `gen_server` lets `handle_call` do side effects and relies on convention. For (c): Elm's `update` returns `Cmd`, and Redux keeps side effects in middleware.
+**Recommendation:** (a) in K2, so the cut-over stays free of public changes. For the end state, (b) now looks the better candidate than (c): it extends a marker the repository already uses for `validate`, and it keeps the config reads that hero-defense depends on. I propose a separate before-release issue to decide between (b) and (c), with the three kinds as the worked cases. Prior art beyond the repository: for (a), Erlang's `gen_server` lets `handle_call` do side effects and relies on convention; for (c), Elm's `update` returns `Cmd`, and Redux keeps side effects in middleware.
 
 ## 6. Slicing K2 into PRs (a proposal for Review)
 
@@ -169,5 +171,5 @@ The risk of K2-1: a machine that isn't wired in can drift from the keeper's bodi
 
 | # | Question | For | Blocks |
 |---|---|---|---|
-| K2-Q1 | `ctx.services` in steps (§5): (a) recommended for K2 | the maintainer | K2-2's docs |
+| K2-Q1 | `ctx.services` in steps (§5): (a) recommended for K2; (b), reusing `ReadOnlyLandService`, the likelier end state | the maintainer | K2-2's docs |
 | K2-Q2 | Three PRs instead of one (§6) | Review | K2-1 |
