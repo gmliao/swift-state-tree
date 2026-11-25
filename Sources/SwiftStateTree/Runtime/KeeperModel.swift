@@ -10,6 +10,102 @@ import SwiftStateTurns
 /// it as `model`; field names are the ones the keeper's stored properties had.
 @PlainData
 struct KeeperModel<State: StateNodeProtocol> {
+    // Counters and flags.
+    var stateHashUnavailableTotal: Int = 0
+    /// Server inputs submitted and not yet applied (`SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND`).
+    var serverInputsInFlight: Int = 0
+    /// Server inputs refused because the in-flight cap was reached.
+    var serverInputCapRejections: Int = 0
+    /// The ordinal of a tickless land's last pass, 0 before its first (#563). Replay counts the
+    /// same passes; a sync output records the value it read after (`afterPass`).
+    var passOrdinal: Int64 = 0
+    /// Syncs the sync loop folded into a coincident tick turn (diagnostics).
+    var foldedSyncs: Int = 0
+    /// Of `foldedSyncs`, those whose tick deadline had already passed at the fold. Mostly a race
+    /// between the phase-locked tick and sync loops, not tick lateness (#232; diagnostics).
+    var overdueFoldedSyncs: Int = 0
+    /// Folded syncs whose tick turn started later than `coincidentSyncWindow` after the deadline
+    /// the sync folded on (#232): counted when that turn starts (diagnostics).
+    var lateFoldedSyncs: Int = 0
+    /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
+    var inTurnDeferredTurns: Int = 0
+    /// Recorder submissions enqueued so far: a turn compares it with its start to know whether
+    /// it recorded anything (a tickless sync-only turn then ends its turn record, #327).
+    var recorderSubmissionCount: Int = 0
+    /// Inputs `applyPendingItem` skipped because the destroy handlers had started (tests read it;
+    /// every append path checks `isDraining`, so it stays 0).
+    var inputsSkippedAfterDestroy: Int = 0
+    /// Tick turns that ran their sync phase only for ready joins (no sync due by the cadence).
+    var joinSyncTicks: Int = 0
+    /// Inputs rejected by `rejectSenderIfSuperseded` so far.
+    var supersededSenderRejections: Int = 0
+    /// Next tick ID (0-based, increments with each tick) for deterministic replay.
+    /// This represents the ID that will be assigned to the next tick execution.
+    /// Using Int64 for long-running servers and replay compatibility.
+    var nextTickId: Int64 = 0
+    /// Last committed tick ID (the most recent tick that has completed execution).
+    /// This represents the world state's current committed tick.
+    /// Action/Event handlers should use this to bind to the committed world state.
+    /// Initialized to -1 to indicate no ticks have been committed yet.
+    var lastCommittedTickId: Int64 = -1
+    /// Ticks with a handler running (`runTick`), possibly suspended in their awaits. A count,
+    /// not a flag: a manual `stepTickOnce` can overlap a suspended tick, and the drain waits for
+    /// all of them.
+    var ticksInFlight: Int = 0
+    /// Follow-ups armed and not yet run or retired: the writer-drain retry, the join-sync turn
+    /// and a pending requested turn.
+    var requestedSyncWork: Int = 0
+    /// The destruction made its last call to the transport (`notifyTransportDestroyedAndRelease`).
+    var destructionFinished: Bool = false
+    /// `transport?.recordsInTurnSyncFolds`, read when the transport is attached.
+    var transportRecordsFolds: Bool = false
+    var didInitialize: Bool = false
+    /// The next tick turn includes the sync phase: set when the sync loop fires within
+    /// `coincidentSyncWindow` of the next tick (the coincident-sync rule).
+    var inTurnSyncDue: Bool = false
+    /// Tickless lands: an input drain is scheduled or running (one at a time).
+    var inputDrainScheduled: Bool = false
+    /// A join-only sync phase was deferred by back-pressure; cleared when a sync phase commits.
+    var joinSyncWaitsForCommit: Bool = false
+    /// Set by a tick land's forced shutdown before it waits for the tick in flight: `runTick`
+    /// starts no tick from then on (#382).
+    var shutdownRequested: Bool = false
+    /// Whether a transport was ever attached: from the init's `transport:` argument or
+    /// `setTransport`. A keeper that never had one accepts sync requests from the first adapter
+    /// that asks (`bindSyncRequester`), and only from it.
+    var hasHeldTransport: Bool = false
+    /// Set when the drain starts the destroy handlers; `applyPendingItem` applies nothing after.
+    var destroyHandlersStarted: Bool = false
+    /// Set by the shutdown turn (#382). In re-evaluation, the tick that replays it runs no
+    /// tick handler, so its state hash is the last tick's, as live recorded it.
+    var shutdownTurnApplied: Bool = false
+    /// The ordinal the pass applying now will take, between `beginPass` and `takePassOrdinal`
+    /// (one synchronous segment); nil otherwise.
+    var passInProgress: Int64?
+    /// While true, tick and sync bodies do not start and tickless inputs are held.
+    var debugFrozen: Bool = false
+    /// Tick bodies and tickless input processing currently running.
+    var debugInFlightWork: Int = 0
+    var debugNextWaiterID: UInt64 = 0
+    /// Generation of the freeze in effect, if any.
+    var debugActiveGeneration: UInt64?
+    /// Highest generation released by `debugResume(generation:)`; such a generation cannot freeze again.
+    var debugReleasedGeneration: UInt64 = 0
+    /// Tests: requests that passed `requestJoinSyncTurn`'s own guards (counted before
+    /// `runSyncOnlyTurn`, whose guards may still skip the phase).
+    var joinSyncRequestTurnsForTesting: Int = 0
+    /// Sync-only turns run for waiting joins (tests).
+    var joinSyncTurnsForTesting: Int = 0
+    /// Requests by reason, made so far (tests and diagnostics).
+    var requestedSyncTurnsForTesting: [SyncTurnReason: Int] = [:]
+#if DEBUG
+    /// Debug only: the most recent filled slots, so a second fill is caught even after the
+    /// first was read and the slot removed. A bounded ring: memory stays fixed.
+    var filledActionSlotsForAssert: Set<Int64> = []
+    var filledActionSlotsOrderForAssert: [Int64] = []
+    var filledActionSlotsNextForAssert: Int = 0
+#endif
+
     init() {}
 }
 
