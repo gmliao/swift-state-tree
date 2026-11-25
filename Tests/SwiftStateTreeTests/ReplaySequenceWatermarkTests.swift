@@ -321,7 +321,8 @@ private func recordedAction(sequence: Int64, amount: Int, resolvedAtTick: Int64)
         kind: "action",
         sequence: sequence,
         typeIdentifier: String(describing: WatermarkEmitAction.self),
-        payload: AnyCodable(WatermarkEmitAction(amount: amount)),
+        payload: try! RecordPayloadEncoding.canonicalJSON(WatermarkEmitAction(amount: amount)),
+        payloadEncoding: .json,
         playerID: "p1",
         clientID: "c1",
         sessionID: "s1",
@@ -856,9 +857,9 @@ struct ReplaySequenceWatermarkTests {
         // tick 1's watermarks and tick 2's first watermark.
         let tick1 = try #require(frames.first { $0.tickId == 1 })
         let tick2 = try #require(frames.first { $0.tickId == 2 })
+        // A keeper without a transport records its payloads as JSON bytes (#700 K1a).
         let actionAmount: (ReevaluationRecordedAction) -> Int? = { record in
-            guard let data = try? JSONEncoder().encode(record.payload) else { return nil }
-            return (try? JSONDecoder().decode(WatermarkEmitAction.self, from: data))?.amount
+            (try? JSONDecoder().decode(WatermarkEmitAction.self, from: record.payload))?.amount
         }
         let midTick = try #require(frames.flatMap(\.actions).first { actionAmount($0) == 2 })
         let tick1W2 = try #require(tick1.sequenceBeforeTickHandler)

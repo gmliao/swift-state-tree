@@ -92,8 +92,8 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
     let site: String?
     /// Throws only before it writes: from `validate` (#586).
     private let handler: @Sendable (inout State, any ServerInputPayload, LandContext) throws -> Void
-    /// `decode(_:integralFloats:)`'s body, which knows the handler's type.
-    private let decodePayload: @Sendable (AnyCodable, Bool) throws -> any ServerInputPayload
+    /// `decode(_:)`'s body, which knows the handler's type.
+    private let decodePayload: @Sendable (Data) throws -> any ServerInputPayload
 
     init<I: ServerInputPayload>(
         inputType: I.Type,
@@ -103,8 +103,8 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
         self.inputType = inputType
         self.typeIdentifier = String(describing: inputType)
         self.site = site
-        self.decodePayload = { payload, integralFloats in
-            try ServerInputCodec.decode(I.self, from: payload, integralFloats: integralFloats)
+        self.decodePayload = { bytes in
+            try ServerInputCodec.decode(I.self, from: bytes)
         }
         self.handler = { state, input, ctx in
             // The item's value came from this handler's `decode` (at submit, after the type's
@@ -116,13 +116,13 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
         }
     }
 
-    /// Decodes a payload in its record form as this handler's type, with the record codec: at
-    /// submit live, and when replay builds the item, so live and replay apply the same value.
-    /// `integralFloats` is the JSON record view's allowance (`RecordPayloadSource.integralFloats`):
-    /// JSON doesn't keep the float/integer split, so an integer decodes into `Double` or `Float`
-    /// when it converts exactly (#818). False (strict) live and for a saved record.
-    func decode(_ payload: AnyCodable, integralFloats: Bool = false) throws -> any ServerInputPayload {
-        try decodePayload(payload, integralFloats)
+    /// Decodes a payload's record bytes as this handler's type, with the record codec: at submit
+    /// live, and when replay builds the item, so live and replay apply the same value. The bytes
+    /// are canonical MessagePack in every record, a JSON one included (#700 K1a, K1-Q4 (a)), so
+    /// the float/integer split survives and no allowance is needed (#818's was for a tree in the
+    /// JSON view).
+    func decode(_ bytes: Data) throws -> any ServerInputPayload {
+        try decodePayload(bytes)
     }
 
     func invoke(_ state: inout State, input: any ServerInputPayload, ctx: LandContext) throws {
@@ -206,25 +206,27 @@ public func HandleServerInput<State: StateNodeProtocol, I: ServerInputPayload>(
 /// The form a server input is applied in, live and in replay: the canonical record encoding
 /// (`CanonicalMessagePack`), so a live apply and its replay decode the same value.
 enum ServerInputCodec {
-    /// `input` encoded canonically and decoded back as a type-erased value: what the record
-    /// holds, and what live applies.
+    /// `input` encoded canonically, decoded back as a type-erased tree, and that tree's canonical
+    /// bytes: what the record holds (as `bin`, #700 K1a, K1-Q4 (a)) and what live decodes, never a
+    /// re-encode of the decoded value (#817).
     ///
-    /// Also encodes it inside the turn record it will be written in. The record nests the
-    /// payload a few levels deep, so a payload within the depth limit alone can exceed it there,
-    /// and an accepted input must never stop the recorder.
-    static func recordedForm(of input: any ServerInputPayload) throws -> AnyCodable {
-        let payload = try CanonicalMessagePack.decode(AnyCodable.self, from: CanonicalMessagePack.encode(AnyCodable(input)))
+    /// Also encodes the tree inside the turn record it was written in before 3.7. The record
+    /// nested the payload a few levels deep, so a payload within the depth limit alone could
+    /// exceed it there; the check is kept so no submit's outcome changes.
+    static func recordedForm(of input: any ServerInputPayload) throws -> Data {
+        let tree = try CanonicalMessagePack.decode(AnyCodable.self, from: CanonicalMessagePack.encode(AnyCodable(input)))
         _ = try ReevaluationRecordLog.framed(.turn(ReevaluationTickRecord(
             tickId: 0,
-            serverInputs: [ReevaluationRecordedServerInput(sequence: 0, typeIdentifier: "", payload: payload, resolvedAtTick: 0)]
+            serverInputs: [ReevaluationRecordedServerInput(
+                sequence: 0, typeIdentifier: "", payload: Data(), legacyPayload: tree, resolvedAtTick: 0
+            )]
         )))
-        return payload
+        return Data(try CanonicalMessagePack.encode(tree))
     }
 
-    /// Decodes a recorded payload as `I`, with the record codec; with `integralFloats`, the JSON
-    /// record view's integer-to-float allowance.
-    static func decode<I: Decodable>(_ type: I.Type, from payload: AnyCodable, integralFloats: Bool = false) throws -> I {
-        try CanonicalMessagePack.decode(type, from: CanonicalMessagePack.encode(payload), integralFloats: integralFloats)
+    /// Decodes a recorded payload's bytes as `I`, with the record codec.
+    static func decode<I: Decodable>(_ type: I.Type, from bytes: Data) throws -> I {
+        try CanonicalMessagePack.decode(type, from: Array(bytes))
     }
 }
 

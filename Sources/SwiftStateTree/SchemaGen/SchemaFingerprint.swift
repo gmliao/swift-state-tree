@@ -262,6 +262,10 @@ public enum ReevaluationRecordFingerprintError: Error, Equatable, Sendable, Cust
     /// policy, whether a state field has a default or an action's response changed, or an
     /// action, an event or a server input was added or removed.
     case mismatch(recorded: String, current: String)
+    /// The record has a schema fingerprint but is older than
+    /// `ReevaluationRecordVersion.minimumReplayable` (3.6): its payloads are trees, which replay no
+    /// longer decodes (#700 K1a). Re-record it.
+    case payloadsNotReplayable(recordedVersion: String)
 
     public var description: String {
         switch self {
@@ -272,6 +276,9 @@ public enum ReevaluationRecordFingerprintError: Error, Equatable, Sendable, Cust
         case .mismatch(let recorded, let current):
             return "the record's schema fingerprint \(recorded) differs from the current definition's \(current): "
                 + "the land's types or fields changed since it was recorded"
+        case .payloadsNotReplayable(let version):
+            return "the record (version \(version)) holds its payloads as trees, which replay no longer decodes; "
+                + "replay reads records from \(ReevaluationRecordVersion.minimumReplayable) on: re-record it with the current server"
         }
     }
 }
@@ -293,17 +300,33 @@ extension ReevaluationSchemaFingerprint {
         }
     }
 
-    /// The record's schema fingerprint.
+    /// The schema fingerprint of a record replay can run. Every admission path compares this
+    /// one (`checkRecord`, and the admin start routes against the land server's), so the
+    /// replayable version gate lives here and no path can skip it.
     ///
-    /// - Throws: `ReevaluationRecordFingerprintError.missing` for a record older than
-    ///   `ReevaluationRecordVersion.minimumReplayable`, or one without the field.
+    /// - Throws: `ReevaluationRecordVersionError.incompatible` for a record whose version is
+    ///   missing, malformed or newer than this build reads (`ReevaluationRecordVersion.isReadable`);
+    ///   `ReevaluationRecordFingerprintError.missing` for a record older than 3.6 or one
+    ///   without the field; `.payloadsNotReplayable` for a 3.6 record, which has a fingerprint
+    ///   but holds its payloads as trees (#700 K1a): below
+    ///   `ReevaluationRecordVersion.minimumReplayable`.
     public static func recordedFingerprint(of metadata: ReevaluationRecordMetadata) throws -> String {
+        // A version this build can't read is refused first: the checks below read it as
+        // "not before 3.x", so a missing, malformed or future version would pass them.
+        guard ReevaluationRecordVersion.isReadable(recorded: metadata.version) else {
+            throw ReevaluationRecordVersionError.incompatible(
+                recorded: metadata.version, required: ReevaluationRecordVersion.current
+            )
+        }
         guard !ReevaluationRecordVersion.isBefore3(
                 metadata.version, minor: ReevaluationRecordVersion.fingerprintMinor
               ),
               let recorded = metadata.schemaFingerprint
         else {
             throw ReevaluationRecordFingerprintError.missing(recordedVersion: metadata.version)
+        }
+        if ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.payloadBytesMinor) {
+            throw ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: metadata.version ?? "")
         }
         return recorded
     }

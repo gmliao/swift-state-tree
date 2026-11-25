@@ -222,7 +222,7 @@ private func ack(_ value: AnyCodable) -> TicklessJobAck? {
 
 private func readResult(_ keeper: LandKeeper<TicklessJobState>, _ sequence: Int64, sourceLocation: SourceLocation = #_sourceLocation) async throws -> Result<AnyCodable, any Error>? {
     try await withinDeadline("reading the job's result", sourceLocation: sourceLocation) {
-        do { return .success(try await keeper.awaitActionResult(sequence: sequence)) } catch { return .failure(error) }
+        do { return .success(try await keeper.awaitActionResult(sequence: sequence).boundaryValue) } catch { return .failure(error) }
     }
 }
 

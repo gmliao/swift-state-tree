@@ -110,6 +110,85 @@ extension DifferentialHarness {
             #expect(DiffCompare.differences(base, changed, checkBytes: false).isEmpty)
         }
 
+        @Test("A JSON payload's spelling differs only in the bytes; a changed payload value is reported at its path in both modes")
+        func jsonRecordPayloadComparesAsTreeOffThePinnedToolchain() async throws {
+            /// A saved record of one action whose payload is `payloadJSON`'s bytes.
+            func capture(_ payloadJSON: String) async throws -> DiffRecordCapture {
+                let recorder = ReevaluationRecorder()
+                await recorder.setMetadata(ReevaluationRecordMetadata(
+                    landID: "self-check:1", landType: "self-check", createdAt: Date(timeIntervalSince1970: 0), metadata: [:]
+                ))
+                await recorder.record(tickId: 0, actions: [ReevaluationRecordedAction(
+                    kind: "action", sequence: 0, typeIdentifier: "SelfCheckAction",
+                    payload: Data(payloadJSON.utf8), payloadEncoding: .json,
+                    playerID: "p", clientID: "c", sessionID: "s", resolverOutputs: [:], resolvedAtTick: 0
+                )], clientEvents: [], lifecycleEvents: [])
+                let path = FileManager.default.temporaryDirectory.appendingPathComponent("self-check-\(UUID().uuidString).sstr").path
+                defer { try? FileManager.default.removeItem(atPath: path) }
+                try await recorder.save(to: path)
+                let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+                let contents = try ReevaluationRecordLog.decodeForTesting(Array(bytes))
+                #expect(contents.frames.count == 1)
+                return DiffRecordCapture(bytes: bytes, decoded: try DiffRun.decodedView(contents), complete: true)
+            }
+            let escaped = try await capture(#"{"k":"a\/b"}"#)
+            let plain = try await capture(#"{"k":"a/b"}"#)
+            #expect(escaped.decoded == plain.decoded, "the view holds the tree, not the spelling")
+            #expect(DiffCompare.compareRecord(escaped, plain, checkBytes: true).map(\.place) == [DiffCompare.recordBytesPlace])
+            #expect(DiffCompare.compareRecord(escaped, plain, checkBytes: false).isEmpty)
+
+            let changed = try await capture(#"{"k":"c"}"#)
+            let path = "frames[0].actions[0].payload.k"
+            #expect(DiffCompare.compareRecord(plain, changed, checkBytes: true).map(\.place) == [DiffCompare.recordBytesPlace, path])
+            #expect(DiffCompare.compareRecord(plain, changed, checkBytes: false).map(\.place) == [path])
+        }
+
+        @Test("A recorded payload that isn't base64 in the record view fails the run")
+        func nonBase64PayloadFailsTheView() throws {
+            let view = DiffValue.object(["frames": .array([.object(["actions": .array([
+                .object(["payload": .string("not base64!"), "sequence": .int(0)]),
+            ])])])])
+            #expect(throws: DiffRunFailure.self) { _ = try DiffRun.payloadsAsTrees(view) }
+        }
+
+        @Test("A server input's bytes are shown as their MessagePack tree, under a JSON header too")
+        func serverInputPayloadIsAMessagePackTreeInTheView() async throws {
+            /// A saved record, with no header encoding (`json`), of one server input whose bytes
+            /// are `payload`'s canonical MessagePack.
+            func view(_ payload: [String: Any]) async throws -> DiffValue {
+                let recorder = ReevaluationRecorder()
+                await recorder.setMetadata(ReevaluationRecordMetadata(
+                    landID: "self-check:1", landType: "self-check", createdAt: Date(timeIntervalSince1970: 0), metadata: [:]
+                ))
+                let bytes = Data(try CanonicalMessagePack.encode(AnyCodable(payload)))
+                await recorder.record(
+                    tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [],
+                    serverInputs: [ReevaluationRecordedServerInput(sequence: 0, typeIdentifier: "SelfCheckInput", payload: bytes, resolvedAtTick: 0)]
+                )
+                let path = FileManager.default.temporaryDirectory.appendingPathComponent("self-check-\(UUID().uuidString).sstr").path
+                defer { try? FileManager.default.removeItem(atPath: path) }
+                try await recorder.save(to: path)
+                let contents = try ReevaluationRecordLog.decodeForTesting(Array(try Data(contentsOf: URL(fileURLWithPath: path))))
+                return try DiffRun.decodedView(contents)
+            }
+            let shown = try await view(["k": "v"])
+            guard case .object(let root) = shown, case .array(let frames)? = root["frames"],
+                  case .object(let frame)? = frames.first, case .array(let inputs)? = frame["serverInputs"],
+                  case .object(let input)? = inputs.first else {
+                Issue.record("no server input in the view: \(DiffValue.canonicalText(shown))")
+                return
+            }
+            #expect(input["payload"] == .object(["k": .string("v")]))
+            var paths: [(String, String)] = []
+            DiffCompare.walk(shown, try await view(["k": "w"]), path: "", into: &paths)
+            #expect(paths.map(\.0) == ["frames[0].serverInputs[0].payload.k"])
+            // Nested past a client payload's limit (32) and within a server input's: the view reads
+            // it with the record codec, as replay does.
+            var deep: Any = 1
+            for _ in 0..<60 { deep = [deep] }
+            _ = try await view(["k": deep])
+        }
+
         @Test("A golden whose decoded view isn't its bytes is corrupt")
         func corruptGolden() async throws {
             let base = try await baseRun()

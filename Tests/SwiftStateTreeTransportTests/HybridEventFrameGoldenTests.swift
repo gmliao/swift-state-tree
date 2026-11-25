@@ -18,6 +18,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 enum HybridEventFrameGoldenEnvKeys {
     /// Set to `1` to rewrite this sync mode's fixture instead of checking it.
@@ -224,10 +225,13 @@ struct HybridEventFrameGoldenTests {
 
     @Test("An old hybrid record replays: its state hashes and events match, and every event counts as sent alone")
     func oldRecordReplays() async throws {
+        // An upgraded copy: from 3.7 replay refuses a record whose payloads are trees (#700 K1a).
+        let copy = try LegacyRecordUpgrader.upgradedCopy(ofRecordAt: Self.recordPath)
+        defer { try? FileManager.default.removeItem(atPath: copy) }
         let result = try await ReevaluationEngine.run(
             definition: makeHybridGoldenLand(),
             initialState: HybridGoldenState(),
-            recordFilePath: Self.recordPath
+            recordFilePath: copy
         )
         #expect(result.maxTickId == 1)
         #expect(!result.recordedStateHashes.isEmpty)

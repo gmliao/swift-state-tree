@@ -66,6 +66,12 @@ public protocol ReevaluationSource: Sendable {
     /// state hashes may then differ from this build's (`ReevaluationRecordVersion.hashIncomparability`).
     func getHoldsNonNFCText() async throws -> Bool
 
+    /// The encodings of the record's action and client event payloads (#700 K1a): the header's,
+    /// and any an entry names. A replay checks each against its `RecordPayloadDecoders` before it
+    /// applies any input. It has no default: a source that wraps another forwards it, so a
+    /// per-entry encoding can't hide behind the header's.
+    func getPayloadEncodings() async throws -> Set<RecordPayloadEncoding>
+
     /// True only when this source parsed its frames from JSON bytes — the two JSON-reading
     /// initializers (`init(data:)` and `init(filePath:)`). JSON's number representation loses the
     /// float/integer distinction, so a runner reading such a source decodes with the integral-float
@@ -159,6 +165,10 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
     /// tick from 0 to the last one, the ticks without a frame included, so a last tick of
     /// `lastTick` costs `lastTick + 1` steps; `limit` is the most steps allowed.
     case replayTooLong(lastTick: Int64, limit: Int64)
+    /// A record from 3.7 on holds a payload that isn't bytes (#700 K1a): an action's, a client
+    /// event's or a server input's payload read as a tree (a JSON payload that isn't base64, or a
+    /// map where `bin` belongs). A live run writes bytes.
+    case payloadNotBytes(tickId: Int64, sequence: Int64)
 
     public var description: String {
         switch self {
@@ -176,6 +186,8 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
             "the replay needed an output sequence past \(Int64.max): the record's sequence counter leaves too little room for the events the land emits"
         case let .replayTooLong(lastTick, limit):
             "the record's last tick is \(lastTick), so a replay would take \(lastTick) + 1 steps, past the limit of \(limit)"
+        case let .payloadNotBytes(tickId, sequence):
+            "the record holds input \(sequence) of tick \(tickId) with a payload that isn't bytes; a live run from 3.7 on writes each payload's bytes"
         }
     }
 
@@ -190,6 +202,42 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
 }
 
 enum ReevaluationRecordContentCheck {
+    /// From 3.7 an action's, a client event's and a server input's payload is bytes (#700 K1a).
+    /// One read as a tree makes the record malformed: it is refused when the record is read, not
+    /// left to fail when the input is applied. A record before 3.7 holds trees, and is read.
+    static func checkPayloadsAreBytes(_ frames: [ReevaluationTickFrame], recordVersion: String?) throws {
+        guard !ReevaluationRecordVersion.isBefore3(recordVersion, minor: ReevaluationRecordVersion.payloadBytesMinor) else { return }
+        for frame in frames {
+            if let action = frame.actions.first(where: { $0.legacyPayload != nil }) {
+                throw ReevaluationRecordContentError.payloadNotBytes(tickId: frame.tickId, sequence: action.sequence)
+            }
+            if let event = frame.clientEvents.first(where: { $0.legacyPayload != nil }) {
+                throw ReevaluationRecordContentError.payloadNotBytes(tickId: frame.tickId, sequence: event.sequence)
+            }
+            if let input = frame.serverInputs.first(where: { $0.legacyPayload != nil }) {
+                throw ReevaluationRecordContentError.payloadNotBytes(tickId: frame.tickId, sequence: input.sequence)
+            }
+        }
+    }
+
+    /// The encodings a replay needs a decoder for (#700 K1a): the header's, and each action's
+    /// and client event's own, which is the header's when the entry names none. The last header
+    /// can name `json` over MessagePack entries: a host that sets the recorder's metadata itself
+    /// (`ReevaluationRecorder.setMetadata`) without `payloadEncoding` over a MessagePack
+    /// transport, or a later header without it over entries written under an earlier one.
+    static func payloadEncodings(_ frames: [ReevaluationTickFrame], header: RecordPayloadEncoding) -> Set<RecordPayloadEncoding> {
+        var encodings: Set<RecordPayloadEncoding> = [header]
+        for frame in frames {
+            for action in frame.actions where action.legacyPayload == nil {
+                encodings.insert(action.payloadEncoding ?? header)
+            }
+            for event in frame.clientEvents where event.legacyPayload == nil {
+                encodings.insert(event.payloadEncoding ?? header)
+            }
+        }
+        return encodings
+    }
+
     /// The frames indexed by tick. Throws at the first frame, in record order, whose tick is out
     /// of range or is already indexed, or that holds a sequence or pass ordinal out of range (#729).
     /// After every frame has passed, throws `replayTooLong` when the last tick + 1 is past
@@ -304,6 +352,7 @@ public actor JSONReevaluationSource: ReevaluationSource {
         self.frames = frames
         // A record is untrusted input: a duplicate tick or an out-of-range number throws, it never traps (#639, #640, #729).
         self.framesByTickId = try ReevaluationRecordContentCheck.checkedIndex(frames, maxReplayTicks: maxReplayTicks)
+        try ReevaluationRecordContentCheck.checkPayloadsAreBytes(frames, recordVersion: recordFile.recordMetadata.version)
         self.maxTickId = frames.map { $0.tickId }.max() ?? -1
         // Every 2.x record is older than 3.3 (#446).
         self.holdsNonNFCText = Self.holdsNonNFCText(try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]))
@@ -320,6 +369,10 @@ public actor JSONReevaluationSource: ReevaluationSource {
     }
 
     public func getHoldsNonNFCText() async throws -> Bool { holdsNonNFCText }
+
+    public func getPayloadEncodings() async throws -> Set<RecordPayloadEncoding> {
+        ReevaluationRecordContentCheck.payloadEncodings(frames, header: metadata.effectivePayloadEncoding)
+    }
     
     /// Initialize from tick frames (for testing). The frames are taken as this build's: their
     /// text is not scanned, and `getHoldsNonNFCText()` is false.
@@ -436,6 +489,7 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
         // The checks see the assembled frames, after the reader has merged and trimmed the turns,
         // not the raw records: a value the assembler drops is not refused.
         framesByTickId = try ReevaluationRecordContentCheck.checkedIndex(contents.frames, maxReplayTicks: maxReplayTicks)
+        try ReevaluationRecordContentCheck.checkPayloadsAreBytes(contents.frames, recordVersion: contents.metadata.version)
         maxTickId = contents.frames.map(\.tickId).max() ?? -1
         completeness = contents.completeness
         holdsNonNFCText = contents.holdsNonNFCText
@@ -497,6 +551,10 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
 
     public func getHoldsNonNFCText() async throws -> Bool { holdsNonNFCText }
 
+    public func getPayloadEncodings() async throws -> Set<RecordPayloadEncoding> {
+        ReevaluationRecordContentCheck.payloadEncodings(frames, header: metadata.effectivePayloadEncoding)
+    }
+
     /// The frames, as the 2.6 JSON view holds them (`ReevaluationRecordFile.jsonView`).
     public func getAllFrames() -> [ReevaluationTickFrame] { frames }
 }
@@ -535,6 +593,8 @@ public enum ReevaluationRecordFile {
     public static func jsonView(ofRecordData data: Data) throws -> Data {
         guard ReevaluationRecordLog.hasMagic(data) else { return data }
         let contents = try ReevaluationRecordLogReader.read(Array(data))
+        // A 3.7 record holding a tree is malformed: no view of it, as `openSource` refuses it.
+        try ReevaluationRecordContentCheck.checkPayloadsAreBytes(contents.frames, recordVersion: contents.metadata.version)
         return try jsonViewData(metadata: contents.metadata, frames: contents.frames)
     }
 

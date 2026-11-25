@@ -244,7 +244,7 @@ struct ActionJobTests {
         #expect(await counts(keeper) == [1, 1])
 
         ActionJobGates.gate(amount).release()
-        let response = try await keeper.awaitActionResult(sequence: sequence)
+        let response = try await keeper.awaitActionResult(sequence: sequence).boundaryValue
         #expect(response.base is Void)
         #expect(await counts(keeper) == [0, 0])
         await keeper.stepTickOnce()
@@ -261,7 +261,7 @@ struct ActionJobTests {
         try await settle(keeper)
         // Completed and delivered; nobody has read it yet.
         #expect(await counts(keeper) == [0, 1])
-        let response = try await keeper.awaitActionResult(sequence: sequence)
+        let response = try await keeper.awaitActionResult(sequence: sequence).boundaryValue
         #expect(response.base is Void)
         #expect(await counts(keeper) == [0, 0])
     }
@@ -276,7 +276,7 @@ struct ActionJobTests {
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
         ActionJobGates.gate(amount).release()
         try await settle(keeper)
-        try await expectRejection(.senderSuperseded) { try await keeper.awaitActionResult(sequence: sequence) }
+        try await expectRejection(.senderSuperseded) { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
         #expect(await counts(keeper) == [0, 0])
     }
 
@@ -296,12 +296,12 @@ struct ActionJobTests {
         let newerSequence = try await submitPending(keeper, newer)
 
         // Rejected while its resolver still holds (its gate is released only at the end).
-        try await expectRejection(.senderSuperseded) { try await keeper.awaitActionResult(sequence: oldSequence) }
+        try await expectRejection(.senderSuperseded) { try await keeper.awaitActionResult(sequence: oldSequence).boundaryValue }
 
         ActionJobGates.gate(other).release()
         ActionJobGates.gate(newer).release()
-        #expect(try await keeper.awaitActionResult(sequence: otherSequence).base is Void)
-        #expect(try await keeper.awaitActionResult(sequence: newerSequence).base is Void)
+        #expect(try await keeper.awaitActionResult(sequence: otherSequence).boundaryValue.base is Void)
+        #expect(try await keeper.awaitActionResult(sequence: newerSequence).boundaryValue.base is Void)
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().total == other + newer)
 
@@ -319,7 +319,7 @@ struct ActionJobTests {
         guard await ActionJobGates.gate(amount).waitUntilEntered() else { return }
 
         let shutdown = Task { await keeper.forceShutdown() }
-        try await expectRejection(.landClosed) { try await keeper.awaitActionResult(sequence: sequence) }
+        try await expectRejection(.landClosed) { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
         await shutdown.value
 
         ActionJobGates.gate(amount).release()
@@ -360,7 +360,7 @@ struct ActionJobTests {
             Issue.record("Expected a resolver-free action to complete in submit")
             return
         }
-        #expect(ack.base is Void)
+        #expect(ack.boundaryValue.base is Void)
 
         let tickless = await makeKeeper(tick: false)
         try await tickless.join(playerID: p1, clientID: c1, sessionID: s1)
@@ -370,7 +370,7 @@ struct ActionJobTests {
             Issue.record("Expected a tickless land's action with resolvers to become a job")
             return
         }
-        let response = try await tickless.awaitActionResult(sequence: sequence)
+        let response = try await tickless.awaitActionResult(sequence: sequence).boundaryValue
         let handlerAck = (response.base as? ActionJobAck) ?? ((response.base as? AnyCodable)?.base as? ActionJobAck)
         #expect(handlerAck?.ok == true, "unexpected response: \(response.base)")
         #expect(await counts(tickless) == [0, 0])
@@ -419,7 +419,7 @@ struct ActionJobTests {
         let hold = await holdCompletions(keeper)
         let amount = ActionJobGates.freshKey()
         let sequence = try await submitPending(keeper, amount)
-        let caller = Task { try await keeper.awaitActionResult(sequence: sequence) }
+        let caller = Task { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
         ActionJobGates.gate(amount).release()
         // The resolvers returned; the completion waits at its hold point.
         guard await hold.waitUntilEntered() else { return }
@@ -449,7 +449,7 @@ struct ActionJobTests {
             try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
         }
         let expected: LandInputRejection = drain ? .landClosed : .senderSuperseded
-        try await expectRejection(expected) { try await keeper.awaitActionResult(sequence: sequence) }
+        try await expectRejection(expected) { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
         // The held completion then finds its job cancelled and leaves the outcome alone.
         hold.release()
         try await settle(keeper)
@@ -472,7 +472,7 @@ struct ActionJobTests {
         #expect(completionTick == intakeTick + 2)
 
         ActionJobGates.gate(amount).release()
-        #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        #expect(try await keeper.awaitActionResult(sequence: sequence).boundaryValue.base is Void)
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().total == amount)
         let recorder = try #require(await keeper.getReevaluationRecorder())
@@ -487,12 +487,12 @@ struct ActionJobTests {
         let amount = ActionJobGates.freshKey()
         let sequence = try await submitPending(keeper, amount)
         ActionJobGates.gate(amount).release()
-        #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        #expect(try await keeper.awaitActionResult(sequence: sequence).boundaryValue.base is Void)
         await #expect(throws: ActionResultUnavailable(sequence: sequence)) {
-            try await keeper.awaitActionResult(sequence: sequence)
+            try await keeper.awaitActionResult(sequence: sequence).boundaryValue
         }
         await #expect(throws: ActionResultUnavailable(sequence: 9_999)) {
-            try await keeper.awaitActionResult(sequence: 9_999)
+            try await keeper.awaitActionResult(sequence: 9_999).boundaryValue
         }
     }
 }
@@ -538,7 +538,7 @@ private func expectLimit(
 
 /// Waits until a resolver timeout has abandoned the job at `sequence`: its caller gets the timeout.
 private func expectTimedOut(_ keeper: LandKeeper<ActionJobTestState>, _ sequence: Int64) async throws {
-    let result = try await withinDeadline("the deadline") { await outcome(of: { try await keeper.awaitActionResult(sequence: sequence) }) }
+    let result = try await withinDeadline("the deadline") { await outcome(of: { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }) }
     guard case .failure(let error)? = result, case .timedOut? = error as? ResolverExecutionError else {
         Issue.record("Expected a resolver timeout, got \(String(describing: result))")
         return
@@ -572,7 +572,7 @@ struct ActionJobLimitTests {
 
         [a, b, other].forEach { ActionJobGates.gate($0).release() }
         for sequence in pending {
-            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+            #expect(try await keeper.awaitActionResult(sequence: sequence).boundaryValue.base is Void)
         }
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().total == a + b + other + 7)
@@ -607,7 +607,7 @@ struct ActionJobLimitTests {
         #expect(state.maybeSeen == -1)
 
         ActionJobGates.gate(held).release()
-        #expect(try await keeper.awaitActionResult(sequence: first).base is Void)
+        #expect(try await keeper.awaitActionResult(sequence: first).boundaryValue.base is Void)
         await keeper.stepTickOnce()
         state = await keeper.currentState()
         #expect(state.total == cached + held)
@@ -633,8 +633,8 @@ struct ActionJobLimitTests {
                 Issue.record("Expected the cache hit to be applied inline")
                 return first
             }
-            let handlerAck = (response.base as? ActionJobAck) ?? ((response.base as? AnyCodable)?.base as? ActionJobAck)
-            #expect(handlerAck?.ok == true, "unexpected response: \(response.base)")
+            let handlerAck = (response.boundaryValue.base as? ActionJobAck) ?? ((response.boundaryValue.base as? AnyCodable)?.base as? ActionJobAck)
+            #expect(handlerAck?.ok == true, "unexpected response: \(response.boundaryValue.base)")
             // Its work ended when it returned; the job's is still counted.
             #expect(await keeper.debugInFlightWorkForTesting() == 1)
             #expect(await keeper.actionJobCountsForTesting().jobs == 1)
@@ -646,7 +646,7 @@ struct ActionJobLimitTests {
         #expect(state.maybeSeen == -1)
 
         ActionJobGates.gate(held).release()
-        _ = try await keeper.awaitActionResult(sequence: first)
+        _ = try await keeper.awaitActionResult(sequence: first).boundaryValue
         state = await keeper.currentState()
         #expect(state.total == cached + held)
         #expect(await keeper.debugInFlightWorkForTesting() == 0)
@@ -676,7 +676,7 @@ struct ActionJobLimitTests {
 
         try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
             let sequence = try await submitPending(keeper, next)
-            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+            #expect(try await keeper.awaitActionResult(sequence: sequence).boundaryValue.base is Void)
         }
     }
 
@@ -689,7 +689,7 @@ struct ActionJobLimitTests {
         try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
             let sequence = try await submitPending(keeper, stuck)
             guard await ActionJobGates.gate(stuck).waitUntilEntered() else { return }
-            let caller = Task { try await keeper.awaitActionResult(sequence: sequence) }
+            let caller = Task { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
             caller.cancel()
             expectCancellation(try await withinDeadline("the cancelled caller") { await caller.result })
             #expect(metrics.snapshot.abandonedActions == 1)
@@ -731,7 +731,7 @@ struct ActionJobLimitTests {
         #expect(metrics.snapshot.abandonedActions == 0)
         try await withLimits(inFlight: 0, abandoned: 1, metrics: metrics) {
             let sequence = try await submitPending(keeper, next, player: p2, client: c2, session: s2)
-            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+            #expect(try await keeper.awaitActionResult(sequence: sequence).boundaryValue.base is Void)
         }
     }
 
@@ -785,7 +785,7 @@ struct ActionJobLimitTests {
         ActionJobGates.gate(next).release()
         try await withLimits(inFlight: 8, abandoned: 0, metrics: metrics) {
             let sequence = try await submitPending(keeper, next)
-            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+            #expect(try await keeper.awaitActionResult(sequence: sequence).boundaryValue.base is Void)
         }
     }
 
@@ -808,7 +808,7 @@ struct ActionJobLimitTests {
                 try await submitPending(keeper, amount)
             }
             _ = try await withinDeadline("the job reaches its race") { await atWait.waitAsync() }
-            let caller = Task { try await keeper.awaitActionResult(sequence: sequence) }
+            let caller = Task { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
             _ = try await withinDeadline("the caller waits") { () async -> Void in
                 while !(await keeper.actionResultHasWaiterForTesting(sequence)) { await Task.yield() }
             }
@@ -1054,14 +1054,14 @@ struct ResolverAbandonmentTests {
             // The other land's count is its own.
             let sequence = try await submitPending(b, onB)
             ActionJobGates.gate(onB).release()
-            #expect(try await b.awaitActionResult(sequence: sequence).base is Void)
+            #expect(try await b.awaitActionResult(sequence: sequence).boundaryValue.base is Void)
 
             ActionJobGates.gate(stuck1).release()
             ActionJobGates.gate(stuck2).release()
             try await expectAbandoned(a, .action, 0)
             let next = try await submitPending(a, after)
             ActionJobGates.gate(after).release()
-            #expect(try await a.awaitActionResult(sequence: next).base is Void)
+            #expect(try await a.awaitActionResult(sequence: next).boundaryValue.base is Void)
         }
         ActionJobGates.gate(refused).release()
         #expect(String(describing: ActionLimitRejection.landAbandonedResolverLimit(limit: 2)).hasPrefix("action rejected: abandoned-resolver limit reached"))
@@ -1086,7 +1086,7 @@ struct ResolverAbandonmentTests {
             // The cap is 1 and a group of another kind is abandoned: actions still run.
             let sequence = try await submitPending(keeper, action)
             ActionJobGates.gate(action).release()
-            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+            #expect(try await keeper.awaitActionResult(sequence: sequence).boundaryValue.base is Void)
         }
         gate?.release()
         try await expectAbandoned(keeper, kind, 0)
@@ -1132,7 +1132,7 @@ struct ResolverAbandonmentTests {
         try await withLimits(inFlight: 0, abandoned: 0, metrics: metrics, groupEnded: { await endGate.enterAndWait() }) {
             let sequence = try await submitPending(keeper, stuck)
             guard await ActionJobGates.gate(stuck).waitUntilEntered() else { return }
-            let caller = Task { try await keeper.awaitActionResult(sequence: sequence) }
+            let caller = Task { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
             caller.cancel()
             expectCancellation(try await withinDeadline("the cancelled caller") { await caller.result })
         }
@@ -1188,7 +1188,7 @@ struct CacheHitActionReplayTests {
             return
         }
         ActionJobGates.gate(fetched).release()
-        #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        #expect(try await keeper.awaitActionResult(sequence: sequence).boundaryValue.base is Void)
         await keeper.stepTickOnce()
         let liveSecond = await keeper.currentState()
         #expect(liveSecond.maybeSeen == fetched)
@@ -1248,7 +1248,7 @@ struct CacheHitActionReplayTests {
         #expect(state.maybeSeen == -1)
 
         ActionJobGates.gate(fetched).release()
-        _ = try await keeper.awaitActionResult(sequence: sequence)
+        _ = try await keeper.awaitActionResult(sequence: sequence).boundaryValue
         state = await keeper.currentState()
         #expect(state.total == cached + fetched)
         #expect(state.maybeSeen == fetched)

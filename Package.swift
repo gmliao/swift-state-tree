@@ -150,6 +150,8 @@ let package = Package(
             name: "SwiftStateTreeReevaluationMonitor",
             dependencies: [
                 "SwiftStateTree",
+                // The runner replays a MessagePack land's record with the live decoder (#700 K1a).
+                "SwiftStateTreeMessagePack",
             ],
             path: "Sources/SwiftStateTreeReevaluationMonitor"
         ),
@@ -270,6 +272,7 @@ let package = Package(
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeTransport",
+                "SwiftStateTreeMessagePack",
             ],
             path: "Tests/SwiftStateTreeTestSupport"
         ),

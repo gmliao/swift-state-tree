@@ -32,6 +32,7 @@ private nonisolated(unsafe) let recordSamples: [any Decodable] = [
     ReevaluationRecordedSyncMarker.ViewDrop.extraction, ReevaluationRecordedSyncMarker.ViewDrop.encode,
     LandFailure.Kind.syncPlan, LandFailure.Kind.handlerWrite,
     LandFailurePosition.Stage.input, LandFailurePosition.Stage.actionResponse,
+    RecordPayloadEncoding.json, RecordPayloadEncoding.messagepack,
 ]
 
 /// Dynamic values: their content is a payload or a state value, not a fixed field set, so the
@@ -43,12 +44,13 @@ private nonisolated(unsafe) let recordBoundaries: [any Decodable] = [
 ]
 
 /// Where the record holds dynamic values: payloads, resolver outputs, patch values and the
-/// metadata's free-form maps.
+/// metadata's free-form maps. An action's and a client event's payload are bytes from 3.7
+/// (#700 K1a), a leaf.
 private let recordBoundaryPaths: Set<String> = [
-    "frames[].actions[].payload", "frames[].actions[].resolverOutputs[].value",
-    "frames[].clientEvents[].payload", "frames[].initialize.serverEvents[].payload",
+    "frames[].actions[].resolverOutputs[].value",
+    "frames[].initialize.serverEvents[].payload",
     "frames[].lifecycleEvents[].resolverOutputs[].value", "frames[].serverEvents[].payload",
-    "frames[].serverInputs[].payload", "frames[].syncOutputs[].patches[][].value",
+    "frames[].syncOutputs[].patches[][].value",
     "metadata.extensions[]", "metadata.landConfig[]", "metadata.ruleParams[]",
 ]
 
