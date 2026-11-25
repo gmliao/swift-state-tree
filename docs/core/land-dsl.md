@@ -258,7 +258,7 @@ struct GameLand {
 let definition = GameLand.definition
 ```
 
-Limit: `@Land` makes a land without services. A land with services is built with `Land(_:using:services:)`.
+`@Land(GameState.self)` makes a land without services. `@Land(GameState.self, services: AppServices.self)` makes one with services: its `definition` is a `TypedLand<GameState, AppServices>`, its `body` returns `LandRules<GameState, AppServices>`, and it is registered with `register(landType:land:services:…)` ([Resolver: Services](resolver.md#services)).
 
 ## LandContext
 

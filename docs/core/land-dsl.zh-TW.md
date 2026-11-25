@@ -258,7 +258,7 @@ struct GameLand {
 let definition = GameLand.definition
 ```
 
-限制：`@Land` 建立的是沒有 services 的 land。有 services 的 land 用 `Land(_:using:services:)` 建立。
+`@Land(GameState.self)` 建立沒有 services 的 land。`@Land(GameState.self, services: AppServices.self)` 建立有 services 的 land：它的 `definition` 是 `TypedLand<GameState, AppServices>`，`body` 回傳 `LandRules<GameState, AppServices>`，並以 `register(landType:land:services:…)` 註冊（[Resolver：服務](resolver.zh-TW.md#服務)）。
 
 ## LandContext
 

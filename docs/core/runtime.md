@@ -87,22 +87,24 @@ Each Action/Event request creates a new `LandContext`, which is released after p
 - **Isolated Transport**: Through closure delegation, doesn't expose Transport details
 
 ```swift
-// LandKeeper internally creates LandContext
+// LandKeeper, simplified: an action with resolvers
 func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable {
-    var ctx = makeContext(
+    let ctx = makeContext(
         playerID: playerID,
         clientID: clientID,
         sessionID: sessionID
     )
 
-    // Execute Resolver (if any)
-    if !handler.resolverExecutors.isEmpty {
-        ctx = try await ResolverExecutor.executeResolvers(...)
-    }
+    // In the turn that admits the action: build the resolver values
+    // from the State and the action
+    let resolvers = handler.resolvers?.build((state, action), ValidateContext(ctx)) ?? []
 
-    // Execute handler
+    // Off the actor: run them in parallel with the land's services
+    let outputs = try await run(resolvers)
+
+    // In a later turn: the handler gets the outputs as a typed parameter
     return try withMutableStateSync { state in
-        try handler.invoke(&state, action: action, ctx: ctx)
+        try handler.invoke(&state, action: action, outputs: outputs, ctx: ctx)
     }
 }
 ```
@@ -145,7 +147,7 @@ sequenceDiagram
 
 ### Inputs and Turns
 
-Handlers (actions, client events, server inputs, lifecycle, `Tick`) are synchronous: `(inout State, …, LandContext)`. State changes only inside them, one input at a time, in the order the keeper applied them, and that order is what the reevaluation record keeps. A handler cannot await. Async work (a database read, a call to another service) goes in a resolver: resolvers run before the handler, outside the turn, and their outputs reach the handler through `ctx` and are recorded, so replay reuses them instead of calling the service again. See [Resolver Mechanism](resolver.md).
+Handlers (actions, client events, server inputs, lifecycle, `Tick`) are synchronous: `(inout State, …, LandContext)`. State changes only inside them, one input at a time, in the order the keeper applied them, and that order is what the reevaluation record keeps. A handler cannot await. Async work (a database read, a call to another service) goes in a resolver: resolvers run before the handler, outside the turn, and their outputs reach the handler as a typed parameter and are recorded, so replay reuses them instead of calling the service again. See [Resolver Mechanism](resolver.md).
 
 A handler can't throw after it writes (#586). The bodies of `HandleAction`, `HandleEvent`, `HandleServerInput`, `OnJoin` and `OnLeave` don't throw. An input that can be refused declares `validate` and `apply` ([Land DSL: Two-Phase Handlers](land-dsl.md#two-phase-handlers)): `validate` reads the state and may throw, `apply` writes and can't, and the two run back to back in the same turn. An input whose `validate` throws fails alone, with nothing written:
 
@@ -158,21 +160,16 @@ A handler can't throw after it writes (#586). The bodies of `HandleAction`, `Han
 
 ### Event Handler Flow
 
-Event handler flow is similar, but has no return value:
+Event handler flow is similar, but has no return value, and a client event takes no resolvers:
 
 ```swift
-// Event handler execution
-func handleEvent<E: EventPayload>(_ event: E, ...) async {
-    var ctx = makeContext(...)
-
-    // Execute Resolver (if any)
-    if !handler.resolverExecutors.isEmpty {
-        ctx = try await ResolverExecutor.executeResolvers(...)
-    }
+// Event handler execution: a client event takes no resolvers
+func handleEvent<E: EventPayload>(_ event: E, ...) {
+    let ctx = makeContext(...)
 
     // Execute handler (no return value)
-    try withMutableStateSync { state in
-        try handler.invoke(&state, event: event, ctx: ctx)
+    withMutableStateSync { state in
+        handler.invoke(&state, event: event, ctx: ctx)
     }
 }
 ```

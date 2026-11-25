@@ -87,22 +87,24 @@ let current = await keeper.currentState()
 - **隔離 Transport**：透過閉包委派，不暴露 Transport 細節
 
 ```swift
-// LandKeeper 內部建立 LandContext
+// LandKeeper 簡化版：帶 resolver 的 action
 func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable {
-    var ctx = makeContext(
+    let ctx = makeContext(
         playerID: playerID,
         clientID: clientID,
         sessionID: sessionID
     )
 
-    // 執行 Resolver（如果有的話）
-    if !handler.resolverExecutors.isEmpty {
-        ctx = try await ResolverExecutor.executeResolvers(...)
-    }
+    // 在接收 action 的 turn 中：從 State 與 action
+    // 建立 resolver 值
+    let resolvers = handler.resolvers?.build((state, action), ValidateContext(ctx)) ?? []
 
-    // 執行 handler
+    // 在 actor 之外：以 land 的服務並行執行
+    let outputs = try await run(resolvers)
+
+    // 在之後的 turn 中：handler 以具型別的參數拿到輸出
     return try withMutableStateSync { state in
-        try handler.invoke(&state, action: action, ctx: ctx)
+        try handler.invoke(&state, action: action, outputs: outputs, ctx: ctx)
     }
 }
 ```
@@ -145,7 +147,7 @@ sequenceDiagram
 
 ### Input 與 Turn
 
-Handler（action、client event、server input、lifecycle、`Tick`）都是同步的：`(inout State, …, LandContext)`。狀態只在 handler 內改變，一次一個 input，依 keeper 套用的順序，而 reevaluation 錄製保留的正是這個順序。Handler 不能 await。非同步工作（讀資料庫、呼叫其他服務）請放在 resolver：resolver 在 handler 之前、turn 之外執行，其輸出透過 `ctx` 交給 handler 並被錄製，因此 replay 會重用輸出，而不是再呼叫一次服務。見 [Resolver 機制](resolver.zh-TW.md)。
+Handler（action、client event、server input、lifecycle、`Tick`）都是同步的：`(inout State, …, LandContext)`。狀態只在 handler 內改變，一次一個 input，依 keeper 套用的順序，而 reevaluation 錄製保留的正是這個順序。Handler 不能 await。非同步工作（讀資料庫、呼叫其他服務）請放在 resolver：resolver 在 handler 之前、turn 之外執行，其輸出以具型別的參數交給 handler 並被錄製，因此 replay 會重用輸出，而不是再呼叫一次服務。見 [Resolver 機制](resolver.zh-TW.md)。
 
 Handler 寫入後不能再拋出錯誤（#586）。`HandleAction`、`HandleEvent`、`HandleServerInput`、`OnJoin` 與 `OnLeave` 的 body 都不會拋出錯誤。可被拒絕的 input 宣告 `validate` 與 `apply`（[Land DSL：兩段式 Handler](land-dsl.zh-TW.md#兩段式-handler)）：`validate` 讀取狀態且可拋出錯誤，`apply` 寫入且不能拋出，兩者在同一個 turn 內接連執行。`validate` 拋出錯誤的 input 單獨失敗，什麼都不寫入：
 
@@ -158,21 +160,16 @@ Handler 寫入後不能再拋出錯誤（#586）。`HandleAction`、`HandleEvent
 
 ### Event Handler 流程
 
-Event handler 的流程類似，但沒有返回值：
+Event handler 的流程類似，但沒有返回值，而且 client event 不帶 resolver：
 
 ```swift
-// Event handler 執行
-func handleEvent<E: EventPayload>(_ event: E, ...) async {
-    var ctx = makeContext(...)
-
-    // 執行 Resolver（如果有的話）
-    if !handler.resolverExecutors.isEmpty {
-        ctx = try await ResolverExecutor.executeResolvers(...)
-    }
+// Event handler 執行：client event 不帶 resolver
+func handleEvent<E: EventPayload>(_ event: E, ...) {
+    let ctx = makeContext(...)
 
     // 執行 handler（無返回值）
-    try withMutableStateSync { state in
-        try handler.invoke(&state, event: event, ctx: ctx)
+    withMutableStateSync { state in
+        handler.invoke(&state, event: event, ctx: ctx)
     }
 }
 ```

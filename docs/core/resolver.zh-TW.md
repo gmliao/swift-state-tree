@@ -69,11 +69,12 @@ try await host.register(
     land: shop,
     services: { _, _ in ShopServices(productDatabase: database) },
     initialState: ShopState(),
-    webSocketPath: "/game/shop"
+    webSocketPath: "/game/shop",
+    configuration: NIOLandServerConfiguration()
 )
 ```
 
-`Land(_:using:services:)` 回傳 `TypedLand<State, Services>`。它的 `definition` 是一般的 `LandDefinition`。有服務的 land 必須透過帶有服務 factory 的 typed overload 註冊。直接註冊它的 `definition` 會被拒絕：`LandRegistrationError` 指出該 land「declares services, and none were given」。在測試中建立的 `LandKeeper` 直接接收這個值：`LandKeeper(land: shop, resolverServices: ShopServices(...), initialState: ShopState())`。
+`Land(_:using:services:)` 回傳 `TypedLand<State, Services>`。它的 `definition` 是一般的 `LandDefinition`。有服務的 land 必須透過帶有服務 factory 的 typed overload 註冊。直接註冊它的 `definition` 會被拒絕：`LandRegistrationError` 會寫出服務型別，並指出沒有提供服務。在測試中建立的 `LandKeeper` 直接接收這個值：`LandKeeper(land: shop, resolverServices: ShopServices(...), initialState: ShopState())`。
 
 ### ResolverOutput
 
@@ -145,7 +146,7 @@ HandleAction(PurchaseAction.self, resolvers: { _, action, ctx in
 }
 ```
 
-一個 action 帶一到兩個 resolver；`OnInitialize`、`OnFinalize` 與 join 的 entry 帶一到三個。同一個 entry 中有兩個基礎型別相同的 resolver（兩個 `ProductInfo`），在註冊時會被拒絕：錄製以型別為每個輸出命名。
+一個 action 帶一到兩個 resolver；`OnInitialize`、`OnFinalize` 與 join 的 entry 帶一到三個。同一個 entry 中有兩個輸出名稱相同的 resolver，在註冊時會被拒絕，因為錄製以名稱區分每個輸出（[輸出名稱](#輸出名稱)）。這包括兩個基礎型別相同的 resolver（兩個 `ProductInfo`），也包括 `Price` 與 `PriceResolver`，兩者的輸出都叫 `price`。
 
 ### 兩段式 Handler
 
@@ -163,16 +164,18 @@ HandleAction(AdminAction.self, resolvers: { _, _, ctx in UserPermission(playerID
 
 ### 生命週期 Handler
 
-`OnInitialize` 的 closure 拿到初始 State 與唯讀的 context，其 `metadata` 帶有 land 的建立 metadata。`OnFinalize` 的 closure 拿到最終 State 與唯讀的 context（`ctx.landID`）：
+`OnInitialize` 的 closure 拿到初始 State 與唯讀的 context（`ctx.landID`）。`OnFinalize` 的 closure 拿到最終 State 與唯讀的 context。每個 body 在 State 之後拿到輸出，接著是 `LandContext`：
 
 ```swift
 Lifetime {
     OnInitialize(resolvers: { _, ctx in RoomConfig(roomID: ctx.landID) }) { state, config, _ in
         state.maxPlayers = config?.maxPlayers ?? 4
     }
-    OnFinalize(resolvers: { state, ctx in SaveResults(landID: ctx.landID, scores: state.scores) }) { _, _ in }
+    OnFinalize(resolvers: { state, ctx in SaveResults(landID: ctx.landID, scores: state.scores) }) { _, _, _ in }
 }
 ```
+
+限制：在 `OnInitialize` 中，`ctx.metadata` 是空的。Land 的建立 metadata 不會傳到這裡。
 
 ### Join 的 Resolver
 

@@ -69,11 +69,12 @@ try await host.register(
     land: shop,
     services: { _, _ in ShopServices(productDatabase: database) },
     initialState: ShopState(),
-    webSocketPath: "/game/shop"
+    webSocketPath: "/game/shop",
+    configuration: NIOLandServerConfiguration()
 )
 ```
 
-`Land(_:using:services:)` returns a `TypedLand<State, Services>`. Its `definition` is the plain `LandDefinition`. A land with services must be registered through the typed overload, which takes the services factory. Registering its bare `definition` is refused: `LandRegistrationError` says the land "declares services, and none were given". A `LandKeeper` built in a test takes the value directly: `LandKeeper(land: shop, resolverServices: ShopServices(...), initialState: ShopState())`.
+`Land(_:using:services:)` returns a `TypedLand<State, Services>`. Its `definition` is the plain `LandDefinition`. A land with services must be registered through the typed overload, which takes the services factory. Registering its bare `definition` is refused: `LandRegistrationError` names the services type and says none were given. A `LandKeeper` built in a test takes the value directly: `LandKeeper(land: shop, resolverServices: ShopServices(...), initialState: ShopState())`.
 
 ### ResolverOutput
 
@@ -145,7 +146,7 @@ HandleAction(PurchaseAction.self, resolvers: { _, action, ctx in
 }
 ```
 
-An action takes one or two resolvers; `OnInitialize`, `OnFinalize` and the join entries take one to three. Two resolvers of the same base type (`ProductInfo` twice) in one entry are refused at registration: the record names each output by its type.
+An action takes one or two resolvers; `OnInitialize`, `OnFinalize` and the join entries take one to three. Two resolvers in one entry whose outputs have the same name are refused at registration, because the record names each output ([Output Names](#output-names)). That covers two of the same base type (`ProductInfo` twice), and also `Price` and `PriceResolver`, whose outputs are both named `price`.
 
 ### Two-Phase Handlers
 
@@ -163,16 +164,18 @@ HandleAction(AdminAction.self, resolvers: { _, _, ctx in UserPermission(playerID
 
 ### Lifecycle Handlers
 
-`OnInitialize`'s closure gets the initial State and a read-only context, whose `metadata` holds the land's creation metadata. `OnFinalize`'s gets the final State and a read-only context (`ctx.landID`):
+`OnInitialize`'s closure gets the initial State and a read-only context (`ctx.landID`). `OnFinalize`'s gets the final State and a read-only context. Each body gets its output after the State, then a `LandContext`:
 
 ```swift
 Lifetime {
     OnInitialize(resolvers: { _, ctx in RoomConfig(roomID: ctx.landID) }) { state, config, _ in
         state.maxPlayers = config?.maxPlayers ?? 4
     }
-    OnFinalize(resolvers: { state, ctx in SaveResults(landID: ctx.landID, scores: state.scores) }) { _, _ in }
+    OnFinalize(resolvers: { state, ctx in SaveResults(landID: ctx.landID, scores: state.scores) }) { _, _, _ in }
 }
 ```
+
+Limit: in `OnInitialize`, `ctx.metadata` is empty. The land's creation metadata doesn't reach it.
 
 ### Join Resolvers
 
