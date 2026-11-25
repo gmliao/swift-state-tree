@@ -194,6 +194,39 @@ struct ReentrancyHelpersTests {
         #expect(lifecycle.phase == .stopped)
     }
 
+    @Test("A joined stop returns after the stopped phase is written (#833)")
+    func joinedStopReturnsAfterTheStoppedPhase() async {
+        let owner = LifecycleOwner()
+        await owner.startAndFinish()
+        let began = AsyncGateForHelpers()
+        let beforeFinish = AsyncGateForHelpers()
+        let runner = Task { await owner.runStop(began: began, beforeFinish: beforeFinish) }
+        await began.wait()
+        // The stop's task has ended, and the runner is held before its `finishStop`: the joiner's
+        // return is the only thing that can have written the phase.
+        let phaseAfterJoin = await owner.joinStop()
+        #expect(phaseAfterJoin == .stopped, "the joined stop returned in the phase \(phaseAfterJoin)")
+        await beforeFinish.open()
+        await runner.value
+        // The runner's late `finishStop` is a no-op.
+        #expect(await owner.phase == .stopped)
+    }
+
+    @Test("A joined start returns after the running phase is written (#833)")
+    func joinedStartReturnsAfterTheRunningPhase() async {
+        let owner = LifecycleOwner()
+        let began = AsyncGateForHelpers()
+        let beforeFinish = AsyncGateForHelpers()
+        let runner = Task { await owner.runStart(began: began, beforeFinish: beforeFinish) }
+        await began.wait()
+        let phaseAfterJoin = await owner.joinStart()
+        #expect(phaseAfterJoin == .running, "the joined start returned in the phase \(phaseAfterJoin)")
+        await beforeFinish.open()
+        await runner.value
+        // The runner's late `finishStart` is a no-op.
+        #expect(await owner.phase == .running)
+    }
+
     // MARK: - HoldPoints
 
     @Test("HoldPoints calls the installed hook at each point and is a no-op without one")
@@ -230,5 +263,46 @@ private actor AsyncGateForHelpers {
         let pending = waiters
         waiters.removeAll()
         pending.forEach { $0.resume() }
+    }
+}
+
+/// An actor that owns a `Lifecycle`, so a runner's finish and a joiner's return are two
+/// continuations on one executor, as on `NIOLandHost`. The runner is held before its finish call.
+private actor LifecycleOwner {
+    private var lifecycle = Lifecycle()
+    var phase: Lifecycle.Phase { lifecycle.phase }
+
+    /// Brings a fresh lifecycle to `.running`, so a stop has something to stop.
+    func startAndFinish() {
+        guard case .run(_, let token) = lifecycle.beginStart({ Task {} }) else { return }
+        lifecycle.finishStart(token, succeeded: true)
+    }
+
+    func runStop(began: AsyncGateForHelpers, beforeFinish: AsyncGateForHelpers) async {
+        guard case .run(let task, let token) = lifecycle.beginStop({ _ in Task {} }) else { return }
+        await began.open()
+        await task.value
+        await beforeFinish.wait()
+        lifecycle.finishStop(token)
+    }
+
+    func joinStop() async -> Lifecycle.Phase {
+        guard case .join(let task) = lifecycle.beginStop({ _ in Task {} }) else { return lifecycle.phase }
+        await task.value
+        return lifecycle.phase
+    }
+
+    func runStart(began: AsyncGateForHelpers, beforeFinish: AsyncGateForHelpers) async {
+        guard case .run(let task, let token) = lifecycle.beginStart({ Task {} }) else { return }
+        await began.open()
+        let result = await task.result
+        await beforeFinish.wait()
+        lifecycle.finishStart(token, succeeded: (try? result.get()) != nil)
+    }
+
+    func joinStart() async -> Lifecycle.Phase {
+        guard case .join(let task) = lifecycle.beginStart({ Task {} }) else { return lifecycle.phase }
+        try? await task.value
+        return lifecycle.phase
     }
 }
