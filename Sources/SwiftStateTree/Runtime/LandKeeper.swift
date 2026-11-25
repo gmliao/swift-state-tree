@@ -45,6 +45,7 @@ public enum ReevaluationOutputMode: Sendable {
 }
 
 /// The one key of a keeper's sync binding generations (#546 L2a).
+@PlainData
 package enum SyncBindingKey: Hashable, Sendable {
     case binding
 }
@@ -393,6 +394,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             self.resolvedAtTick = resolvedAtTick
         }
     }
+
+    /// The keeper's plain state (#700 K1b-4): every field a turn reads or writes. A step takes
+    /// it with one `inout` access and reaches each field through that binding.
+    private var model = KeeperModel<State>()
 
     public let definition: LandDefinition<State>
     /// The land's services value, which its `Resolver` values get (#769 §3.4): the one the typed
@@ -2433,21 +2438,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         throw LandInputRejection.landClosed
     }
 
-    /// What an action captured at intake about its sender, checked when its resolvers' result
-    /// is delivered (`deliverResolvedAction`).
-    @PlainData
-    struct ActionTicket: Sendable {
-        /// The sender's entry generation at intake; `nil` when the player had no entry (direct
-        /// callers that send before or without a join) or the sender is exempt (the system
-        /// player or client).
-        let entryGeneration: Epoch?
-    }
-
-    private func actionTicket(for playerID: PlayerID, clientID: ClientID) -> ActionTicket {
+    private func actionTicket(for playerID: PlayerID, clientID: ClientID) -> KeeperActionTicket {
         guard playerID != systemPlayerID, clientID != systemClientID else {
-            return ActionTicket(entryGeneration: nil)
+            return KeeperActionTicket(entryGeneration: nil)
         }
-        return ActionTicket(entryGeneration: players[playerID]?.generation)
+        return KeeperActionTicket(entryGeneration: players[playerID]?.generation)
     }
 
     /// Delivers an action whose resolvers finished: the only code that runs after their
@@ -2466,7 +2461,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// recorded watermarks.
     private func deliverResolvedAction(
         _ item: PendingActionItem,
-        ticket: ActionTicket,
+        ticket: KeeperActionTicket,
         input: String
     ) throws {
         try validateDelivery(of: item, ticket: ticket, input: input)
@@ -2476,7 +2471,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// The delivery checks (`deliverResolvedAction`): the land isn't draining, and the sender's
     /// entry is still the one the ticket names.
-    private func validateDelivery(of item: PendingActionItem, ticket: ActionTicket, input: String) throws {
+    private func validateDelivery(of item: PendingActionItem, ticket: KeeperActionTicket, input: String) throws {
         // The land started draining during the resolvers: nothing is appended any more.
         try rejectIfLandClosed()
         if let generation = ticket.entryGeneration, players[item.playerID]?.generation != generation {
@@ -2494,21 +2489,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - Action jobs
 
-    /// An action whose resolvers run in their own task, keyed by its sequence: the part the
-    /// model keeps (#700 K1b-2). The task, the abandonment and the caller's cancellation flag are
-    /// in `actionJobTasks`.
-    private struct ActionJob {
-        /// The action as taken in; its resolver outputs are filled in at delivery.
-        let item: PendingActionItem
-        let ticket: ActionTicket
-        let input: String
-        /// The completion ran; the job stays registered only while its abandoned resolvers run.
-        var completed = false
-        /// Cancelled by the keeper (the sender's entry ended, or the land is draining): its slot
-        /// already holds the delivery checks' rejection, and its completion only removes it.
-        var cancelledByKeeper = false
-    }
-
     /// A job's references, beside the model until K5 (the task, the abandonment) and K2's
     /// `JobCancellation` (the caller's flag). Keyed as `actionJobs`; the two are inserted and
     /// removed together.
@@ -2522,16 +2502,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let callerCancelled = ActionJobCallerCancellation()
     }
 
-    /// The outcome of a job, kept from `submitAction` until `awaitActionResult` reads it. It's
-    /// created in the intake's segment, so a reader that arrives after the completion still finds
-    /// it. A failure is held by its ID in the failure table.
-    private struct ActionSlot {
-        var result: InputResult?
-    }
-
-    private var actionJobs: [Int64: ActionJob] = [:]
+    private var actionJobs: [Int64: KeeperActionJob<State>] = [:]
     private var actionJobTasks: [Int64: ActionJobTask] = [:]
-    private var actionSlots: [Int64: ActionSlot] = [:]
+    private var actionSlots: [Int64: KeeperActionSlot] = [:]
     /// The caller waiting on a slot, until K2's `InputID`. A slot holds at most one of a result
     /// and a waiter.
     private var actionSlotWaiters: [Int64: CheckedContinuation<InputOutcome, any Error>] = [:]
@@ -2696,7 +2669,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         _ item: PendingActionItem,
         executors: [any AnyResolverExecutor],
         ctx: LandContext,
-        ticket: ActionTicket,
+        ticket: KeeperActionTicket,
         input: String
     ) {
         let sequence = item.sequence
@@ -2704,8 +2677,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let abandonment = resolverAbandonment(.action) { [weak self] in
             Task { await self?.releaseCompletedActionJob(sequence) }
         }
-        actionSlots[sequence] = ActionSlot()
-        actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input)
+        actionSlots[sequence] = KeeperActionSlot()
+        actionJobs[sequence] = KeeperActionJob(item: item, ticket: ticket, input: input)
         actionJobTasks[sequence] = ActionJobTask(task: nil, abandonment: abandonment)
         actionJobsStarted += 1
         // A copy, so the task doesn't hop to the keeper for it: with no hook it returns at once.
@@ -5796,19 +5769,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// A follow-up a turn armed (the writer-drain retry, the join-sync turn, a requested
     /// turn after this one): the port of the turn that armed it, and the binding it was
     /// armed under. It runs only while that binding holds.
-    /// The keeper's sync binding as a generation: each bind or rebind issues a new ticket, and a
-    /// ticket from an earlier binding is never current again (also after A → B → A).
-    private struct SyncBindingState {
-        private var table = GenerationTable<SyncBindingKey>()
-        private(set) var current: SyncTurnTicket
-
-        init() { current = table.issue(.binding) }
-
-        mutating func rebind() { current = table.issue(.binding) }
-
-        func isCurrent(_ ticket: SyncTurnTicket) -> Bool { table.isCurrent(ticket) }
-    }
-
     private struct SyncTurnFollowUp {
         let port: any LandKeeperTransport
         let binding: SyncTurnTicket
@@ -5821,7 +5781,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Bumped when the binding changes (`setTransport` with a transport, or the first requester
     /// bound): a follow-up or a delayed request armed under an older binding is stale, so
     /// A → B → A doesn't make an old request from A current again.
-    private var syncBinding = SyncBindingState()
+    private var syncBinding = KeeperSyncBinding()
     /// The adapter bound by the first sync request of a keeper never attached. Weak: the adapter
     /// holds this keeper. Cleared at the destruction's end.
     private weak var boundSyncRequesterObject: AnyObject?

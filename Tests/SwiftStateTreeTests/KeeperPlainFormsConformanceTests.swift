@@ -57,6 +57,15 @@ struct KeeperPlainFormsConformanceTests {
         requirePlain(EpochCounter.self)
         requirePlain(FailureID.self)
         requirePlain(InputResult.self)
-        requirePlain(LandKeeper<KeeperPlainFormsPinState>.ActionTicket.self)
+        requirePlain(KeeperActionTicket.self)
+        // K1b-4: the types the keeper's model holds, and the model.
+        requirePlain(Ticket<SyncBindingKey>.self)
+        requirePlain(GenerationTable<SyncBindingKey>.self)
+        requirePlain(SyncTurnReason.self)
+        requirePlain(ReevaluationRecordedSyncOutput.TurnKind.self)
+        requirePlain(KeeperSyncBinding.self)
+        requirePlain(KeeperActionSlot.self)
+        requirePlain(KeeperActionJob<KeeperPlainFormsPinState>.self)
+        requirePlain(KeeperModel<KeeperPlainFormsPinState>.self)
     }
 }

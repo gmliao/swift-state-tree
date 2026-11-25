@@ -10,6 +10,7 @@ import SwiftStateTurns
 /// One committed sync plan's output.
 public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     /// How the plan ran.
+    @PlainData
     public enum TurnKind: String, Codable, Sendable {
         /// In a tick turn (or an input or initialize turn) of the keeper.
         case tick
