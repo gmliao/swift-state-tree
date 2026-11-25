@@ -173,6 +173,27 @@ struct RecordPayloadFormatTests {
         #expect(result.maxTickId == 0)
     }
 
+    @Test("A binary record with a MessagePack entry under a JSON header lists both encodings, and a JSON-only replay refuses it")
+    func binaryMessagePackEntryUnderJSONHeaderIsRefused() async throws {
+        let recorder = ReevaluationRecorder()
+        await recorder.setMetadata(try formatMetadata(payloadEncoding: nil))
+        await recorder.record(tickId: 0, actions: [try formatAction(0, "x", .messagepack)], clientEvents: [], lifecycleEvents: [])
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("payload-format-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try await recorder.save(to: path)
+        let source = try ReevaluationRecordFile.openSource(filePath: path)
+        #expect(source is ReevaluationRecordLogSource)
+        #expect(try await source.getMetadata().effectivePayloadEncoding == .json)
+        #expect(try await source.getPayloadEncodings() == [.json, .messagepack])
+        await #expect(throws: ReevaluationRecordPayloadError.noDecoder(encoding: .messagepack)) {
+            _ = try await ReevaluationEngine.run(definition: makePayloadFormatLand(), initialState: PayloadFormatState(), recordFilePath: path)
+        }
+        let result = try await ReevaluationEngine.run(
+            definition: makePayloadFormatLand(), initialState: PayloadFormatState(), recordFilePath: path, payloadDecoders: .standard
+        )
+        #expect(result.maxTickId == 0)
+    }
+
     @Test("Each replay entry refuses a MessagePack record with JSON decoders only, itself: the runner at its init, a keeper at its initialization")
     func eachReplayEntryChecksTheDecoders() async throws {
         let bytes = Data(try CanonicalMessagePack.encode(PayloadFormatAction(label: "x")))
