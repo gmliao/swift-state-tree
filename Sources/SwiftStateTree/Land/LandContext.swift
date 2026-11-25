@@ -274,9 +274,10 @@ public struct LandContext: Sendable {
     /// The output held under `member` (`ProductInfoResolver` -> `productInfo`), as `T`. The
     /// entries' typed parameters read through here (#769).
     ///
-    /// **Replay:** a recorded output is held as `RecordedResolverOutput`, and this read decodes
-    /// it into the requested type with the record's own codec (`RecordPayloadSource`, #707), as a
-    /// replayed server event is: a `Data` field reads back in the form the recorder wrote. An
+    /// **Replay:** a recorded output is held as `RecordedResolverOutput`, its canonical
+    /// MessagePack bytes, and this read decodes them into the requested type
+    /// (`CanonicalMessagePack.decode`, with the record's integral-float allowance), so a `Data`
+    /// field reads back in the form the recorder wrote, as a replayed server event's does. An
     /// output that doesn't decode into the requested type reads as `nil`, with a warning naming
     /// the output and the error: in replay a `nil` the live handler didn't see is a divergence,
     /// and a silent one is how #707 went unnoticed.

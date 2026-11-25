@@ -195,6 +195,9 @@ struct QueuedItemPlainFormsTests {
     func replayFindsTheHandlerAfterTheHandlersAreReordered() async throws {
         let (keeper, path, live) = try await recordSecondAction()
         await keeper.forceShutdown()
+        // Pinned here, not only by the record test: a first-handler mutant runs First live and in
+        // replay alike, and its type check rejects both, so comparing the two alone would pass.
+        #expect(live.applied == ["second:a"], "live applied the second handler")
         // Recorded with the target at position 1; replayed with it at position 2. Taking the
         // recorded position runs Third, and taking the first handler runs First or Third.
         let rotated = makePlainFormsLand(.rotated)
@@ -208,7 +211,7 @@ struct QueuedItemPlainFormsTests {
         )
         let ticks = try await ReevaluationRecordFile.openSource(filePath: path).getMaxTickId()
         for _ in 0...ticks { await replay.stepTickOnce() }
-        #expect(await replay.currentState().applied == live.applied)
+        #expect(await replay.currentState().applied == ["second:a"])
     }
 
     @Test("A recorded resolver output of a scalar type reads back as the live value (K1-Q7)")

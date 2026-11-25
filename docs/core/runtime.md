@@ -260,7 +260,7 @@ Each land delays the first iteration of its loops by a per-land phase offset, so
 
 ### Event Queue Mechanism (PendingItems)
 
-`LandKeeper` keeps every input in one queue, in the order the inputs arrived:
+`LandKeeper` keeps every input in one queue. An input joins the queue when it is ready: when it arrives, or, for an action whose handler declared resolvers, when they finish. A turn applies the queue in the order of `resolvedAtTick`, then sequence number. The queue holds:
 
 - **Actions** that clients send;
 - **client events** that clients send;
@@ -273,7 +273,7 @@ Each queued input carries:
 - the tick it was resolved at (`resolvedAtTick`): when its resolvers finished, or when it arrived if it has none;
 - its resolver outputs, for an action or a lifecycle event whose handler declared resolvers.
 
-The queue's types are internal to the package. A land interacts with it only through its handlers.
+The queue's types are internal to the package, except the lifecycle event's (`LandKeeper.PendingLifecycleItem`). A land interacts with the queue only through its handlers.
 
 ### Tick Execution Model
 

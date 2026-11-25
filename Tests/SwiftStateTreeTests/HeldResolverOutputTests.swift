@@ -49,6 +49,11 @@ struct HeldResolverOutputTests {
         }
         // An unsigned value above Int.max, read with strict integral floats.
         let big = RecordedResolverOutput(typeIdentifier: "Big", value: AnyCodable(UInt64.max), integralFloats: false)
+        // The encode succeeded, so a missing entry below is the strict read's, not the encode's.
+        guard case .bytes = big.payload else {
+            Issue.record("UInt64.max was held as \(big.payload)")
+            return
+        }
         let held: [String: HeldResolverOutput] = [
             "deep": .recorded(tooDeep),
             "big": .recorded(big),
