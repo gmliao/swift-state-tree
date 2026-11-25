@@ -174,6 +174,12 @@ struct ReplayServerInputDecodeFailureTests {
             autoStartLoops: false,
             logger: Logger(label: "replay-si-decode") { _ in ResolverReplayLogHandler(records: logs) }
         )
+        // Idle before the replay runs (#872): the keeper starts its own initialization in tasks that
+        // don't inherit the caller's task executor, and an actor runs a queued job on whichever
+        // thread holds it. The replay's handler, and the decode of the deep tree, then run on
+        // this task's executor.
+        await keeper.awaitInitialization()
+        _ = await keeper.currentState()
         // As for a record from 3.5 on, which lists every refused input.
         await keeper.setReplayRecordsRejected(true)
         await keeper.stepTickOnce()
