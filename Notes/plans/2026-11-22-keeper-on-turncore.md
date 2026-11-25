@@ -1,6 +1,6 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 5.4, plan only; every K1 question is decided: K1-Q4 and K1-Q5 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
+**Status:** rev 5.5, plan only; every K1 question is decided: K1-Q4, K1-Q5 and K1-Q8 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). K1a is in implementation (#835); rev 5.5 writes down the decisions made during it. Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
 
 Code pointers are at main 8e622a20:
 - `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
@@ -12,6 +12,19 @@ Code pointers are at main 8e622a20:
 - `awaitActionResult` (LK:2611–2612);
 - `submitAction`'s `.completed` exits (LK:3071, :3217, :3222);
 - the adapter's `submitAction` and `awaitActionResult` calls (TA:5391, :5456) and `sendActionResponse` (TA:5583).
+
+**Rev 5.5** (decisions made while implementing K1a, #835):
+- **Per-entry payload encoding (K1-Q8, decided (a) 2026-11-25).** Rev 5 said a source in the other encoding, or none, records "the decoded typed value, encoded once in the record's encoding". That doesn't replay the live value. `CanonicalMessagePack` writes a `Date` as an ISO string at whole seconds, while the live MessagePack decoder reads a Double (MessagePackValueEncoder.swift:61), and the matching encoder isn't reachable from `SwiftStateTree`. The rule also re-encodes `decoded`, which K1-Q4's rule rules out. The decision:
+  - each recorded action and client event keeps the bytes of the decoder live used, in that decoder's encoding;
+  - an entry names its own `payloadEncoding` only when it differs from the header's;
+  - a typed value with no source records its canonical JSON, tagged `json`, and live applies the value decoded from those bytes;
+  - nothing re-encodes `decoded`.
+
+  So a tree, whatever built it, records `json` even on a `messagepack` land, because it decodes live through the JSON round trip; a MessagePack value records `messagepack` (§3.11, "What the bytes are"). Not chosen: (b) an encode seam handed over with the header, which keeps the re-encode; (c) refusing such items at intake, a behavior change on public paths (§9).
+- **The typed-only round trip runs whether the land records or not** (Main, 2026-11-25). An item with no source goes through canonical JSON and `JSONDecoder` at intake, and live applies the result, as P3b does for server inputs. Only a recording land keeps the bytes.
+- **A 3.6 record's refusal has its own error** (§3.11, "Format version 3.7"). Today's error below `minimumReplayable` says the record has no schema fingerprint, which a 3.6 record has. Committed 3.6 records whose point is a shape the 3.7 recorder never writes are replayed through a test-only upgrader, with its premise pinned.
+- **Server inputs have no integer-to-float allowance from 3.7** (§3.11, "Server inputs"). Rev 5.3 kept #823's allowance on the 3.6 read path, which never decodes a server input now that 3.6 isn't replayed.
+- **Review's early look 3 on #835** (§3.11, "The header" and the harness rule): a 3.7 record holding a payload tree is malformed; the decoder check covers each entry's encoding, not only the header's; the harness view leaves out an entry's encoding on purpose and fails on a payload that isn't base64.
 
 **Rev 5.4** (#806 run before K1a; a guard, not a fix):
 - **#806 doesn't reproduce.** Its test, run on main (8c46944d) before any K1a code, passes on all three encodings for an action and a client event. Replay rebuilds a recorded action with `PendingActionItem.init(action:)` and a client event with `AnyClientEvent(type:payload:)`. Both use `AnyCodablePayloadSource`, a JSON round trip that matches keys with `String ==`, as live does. `RecordPayloadSource` reads only server-encoded trees (resolver outputs, the monitor's server events). The record keeps the client's key bytes, and the test pins that.
@@ -545,7 +558,7 @@ K1a does that, and it is what lets a queued item become `PlainData` without an `
 
   Prior art: RFC 8785 (JCS) and RFC 8949 §4.2 (deterministic CBOR) define canonical forms across implementations. Neither is needed here: within one toolchain one encoder configuration is deterministic once keys are sorted. JCS's ECMAScript number form would mean a hand-written serializer. The record log's own MessagePack is already canonical (`CanonicalMessagePack`).
 - **MessagePack** (`MessagePackPayloadSource`). The frame decoder has unpacked the payload into a `MessagePackValue`; the client's byte range isn't kept. K1a writes the value packed canonically. Unpacking it gives the same value (a non-finite number is refused at intake by `validateRecordable`), so replay's `MessagePackValueDecoder` decodes the same result. Its keyed container looks keys up in a `[String: MessagePackValue]`, with `String ==`, as live: the #806 condition holds here too. Keeping the client's exact slice needs the frame decoder to keep offsets: **K1-Q2**.
-- **A source in the other encoding, or none:** a hand-built `AnyClientEvent` or an item from a test. The bytes are the decoded typed value, encoded once in the record's encoding at intake. Nothing was received, so there is nothing to keep. A server input is its own case (below).
+- **A source in the other encoding, or none (K1-Q8 (a), rev 5.5).** Each entry keeps the bytes of the decoder live used, in that decoder's encoding, and names its own `payloadEncoding` when that differs from the header's. A tree decodes live through the JSON round trip whatever built it, so it records its canonical JSON, tagged `json`, even on a `messagepack` land. A typed value with no source (a hand-built `AnyClientEvent`, an item from a test) records its canonical JSON, tagged `json`. Live applies the value decoded from those bytes, whether the land records or not, so a `Codable` that normalizes on decode applies the same value live and in replay. Nothing re-encodes `decoded`. A server input is its own case (below).
 - **Where the byte-matching decoder stays.** Server inputs (`ServerInputCodec.decode`), resolver outputs (LandContext.swift:311) and the monitor's replay frames (ReevaluationReplayFrame.swift:202) keep `CanonicalMessagePack`'s decoder, which matches keys by bytes. Their keys are written by a Swift encoder from the same `CodingKey` strings the decode reads, so no client spelling reaches them, and #806 doesn't apply.
 
 **Where replay decodes (K1-Q6, decided (i) 2026-11-25).** The rule above says replay decodes with the decoder the live run used. For JSON that is `JSONDecoder`, in `SwiftStateTree`. For MessagePack it is `MessagePackValueDecoder(clientPayload: true)` behind `MessagePackPayloadSource`, in `SwiftStateTreeMessagePack`, which depends on `SwiftStateTree`, not the other way. The keeper builds replay items in `SwiftStateTree`, and the reevaluation monitor target depends on `SwiftStateTree` only. Intake has no such problem: the frame's source, in the MessagePack module, produces its own bytes (`recordBytes(as:)`).
@@ -557,7 +570,7 @@ K1a does that, and it is what lets a queued item become `PlainData` without an `
     - `LandKeeper.init(definition:initialState:mode:reevaluationSource:…)`: defaulted to `.jsonOnly`. A live keeper ignores it;
     - `ReevaluationEngine.run(definition:initialState:recordFilePath:…)`: defaulted to `.jsonOnly`;
     - `ConcreteReevaluationRunner.init(definition:recordFilePath:…)` and `init(definition:initialState:recordFilePath:…)`: defaulted to `.standard`. The monitor target gains a dependency on `SwiftStateTreeMessagePack`, which depends only on `SwiftStateTree` and `SwiftStateTurns`, so a runner replays a MessagePack land's record with no change at its call sites (the GameDemo and GameServer factories).
-  - **The named refusal.** A record whose header says `messagepack`, replayed with `.jsonOnly`, is refused before any input is applied, with `ReevaluationRecordPayloadError.noDecoder(encoding: .messagepack)`. Its description: "this record's payloads are MessagePack, and this replay has no MessagePack decoder: pass `RecordPayloadDecoders.standard` (SwiftStateTreeMessagePack)". `ReevaluationEngine.run` throws it when it reads the header. A reevaluation `LandKeeper` checks the header when it initializes and fails its initialization with it (`initializationFailure`), before OnInitialize is replayed.
+  - **The named refusal.** A record whose header says `messagepack`, or that holds an entry tagged `messagepack` (rev 5.5), replayed with `.jsonOnly`, is refused before any input is applied, with `ReevaluationRecordPayloadError.noDecoder(encoding: .messagepack)`. Its description: "this record's payloads are MessagePack, and this replay has no MessagePack decoder: pass `RecordPayloadDecoders.standard` (SwiftStateTreeMessagePack)". `ReevaluationEngine.run` throws it when it reads the header. A reevaluation `LandKeeper` checks the header when it initializes and fails its initialization with it (`initializationFailure`), before OnInitialize is replayed.
   - **A keeper with no transport writes `json` in the header**, not `messagepack` (rev 5.3, under (i)). So a test or tool keeper in `SwiftStateTree` records and replays its own records without the MessagePack module, and the `SwiftStateTreeTests` replays keep their call sites. The transport layer still writes its land's encoding.
   - Call sites that replay a MessagePack land's record pass `.standard` in K1a: `Examples/Demo` and `Examples/GameDemo`'s `ReevaluationRunner` mains and the GameDemo tests that call `ReevaluationEngine.run`, and the Transport and NIO tests that replay a `messagepack` land.
   - Public API: the struct, its two values, the parameters (each defaulted, so no source break), the error type, and the new target dependency.
@@ -565,7 +578,7 @@ K1a does that, and it is what lets a queued item become `PlainData` without an `
 - **Not chosen, (iii):** move `MessagePackValue` and its decoder into `SwiftStateTree`. It is a module move across Transport and NIO, larger than K1a, and it puts the client codec in the core module.
 
 **Server inputs (K1-Q4, decided (a) 2026-11-25).** A server input has no wire form. P3b's rule (#817, #387): live applies the value decoded from the record form, and replay decodes the same form; the record never writes a re-encode of `decoded`, because a `Codable` that normalizes on decode would then replay another value.
-- **The bytes live decodes.** The item holds `bytes = CanonicalMessagePack.encode(recordedForm)`, exactly what `ServerInputCodec.decode` feeds the decoder today, so the applied value doesn't change from P3b. Live decodes them at submit and replay when it builds the item. The record writes them as `bin` (base64 in the JSON view), whatever the header's `payloadEncoding` says; the entry type states the encoding. `CanonicalMessagePack` is this repository's codec, so the bytes are the same on every toolchain. A JSON-view replay decodes the bytes, so #823's allowance stays only on the 3.6 path, which isn't replayed. Today's submit-time refusal (`ReevaluationRecordLog.framed`, nesting inside the turn record) is kept, so K1a changes no submit outcome; relaxing it is its own change. Encoding the typed value directly, without the `AnyCodable` hop, is a later step after a byte-equality test.
+- **The bytes live decodes.** The item holds `bytes = CanonicalMessagePack.encode(recordedForm)`, exactly what `ServerInputCodec.decode` feeds the decoder today, so the applied value doesn't change from P3b. Live decodes them at submit and replay when it builds the item. The record writes them as `bin` (base64 in the JSON view), whatever the header's `payloadEncoding` says; the entry type states the encoding. `CanonicalMessagePack` is this repository's codec, so the bytes are the same on every toolchain. A JSON-view replay decodes the bytes, which the view carries as base64, so the integer/float split survives and the server-input decode has no integer-to-float allowance from 3.7 (rev 5.5). Rev 5.3 kept #823's allowance on the 3.6 read path, but a 3.6 record is refused for replay (K1-Q1 (a)), so that path never decodes a server input. `readsJSONRecord` stays for resolver outputs (#818). #823's `savedRecordStaysStrict` pins the strict decode of bytes. Today's submit-time refusal (`ReevaluationRecordLog.framed`, nesting inside the turn record) is kept, so K1a changes no submit outcome; relaxing it is its own change. Encoding the typed value directly, without the `AnyCodable` hop, is a later step after a byte-equality test.
 - **Not chosen:** the typed value in the header's encoding (rev 5.2's text). Replay would decode other bytes than live, with another decoder, so P3b's rule would hold only by an audit of every server input type.
 
 Prior art: Temporal stores an activity's result as a `Payload` (bytes plus a per-payload `encoding`) and replay decodes those bytes; rr feeds back the bytes a nondeterministic input delivered; Protocol Buffers' "serialization is not canonical" is why bytes aren't regenerated where they're compared. The options note with the full comparison went to Main with the drift note.
@@ -574,9 +587,14 @@ Prior art: Temporal stores an activity's result as a `Payload` (bytes plus a per
 
 **The header.** `ReevaluationRecordMetadata` gains `payloadEncoding: RecordPayloadEncoding` (`json` or `messagepack`), written once. `TransportEncoding` is in SwiftStateTreeTransport and the keeper can't name it. So SwiftStateTree gets the two-case enum, and the transport layer passes it when it creates the land's recorder (`LandManager`, from `NIOLandServerConfiguration.transportEncoding`). A keeper with no transport (tests, the reevaluation runner) uses `json` (K1-Q6 (i); see "Where replay decodes"), so it replays its own records without the MessagePack module. The header describes client-originated payloads (actions and client events) only; a server input's bytes are always canonical MessagePack.
 
+**An entry's own encoding** (K1-Q8 (a), rev 5.5). The recorder writes an entry's `payloadEncoding` only when it differs from the header in force when its turn is written, and a reader fills it in from the header in force where the entry is read. The decoder check reads every encoding the record needs: the header's and each entry's (`ReevaluationSource.getPayloadEncodings`). The last header alone isn't enough. A host that sets the recorder's metadata itself (`ReevaluationRecorder.setMetadata`, public) without `payloadEncoding` over a MessagePack transport writes a `json` header over MessagePack entries, and so does a later header without it. JSON entries under a `messagepack` header are typed-only values; they need the JSON decoder, which every reader has.
+
 **Format version 3.7.**
 - A 3.7 record's payloads are bytes in the header's encoding.
 - Replay of a 3.6 record: not replayable; `minimumReplayable` becomes 3.7 (**K1-Q1 (a)**, decided). A 3.6 record is still read.
+- **The refusal** (rev 5.5): `ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion:)` ("holds its payloads as trees, which replay no longer decodes … re-record it"), checked after the fingerprint. Today's error below `minimumReplayable` is `.missing` ("has no schema fingerprint"), which would be false for a 3.6 record. The monitor reports it as `RECORD_PAYLOADS_NOT_REPLAYABLE` (code 2006), the admin route with the same code, and GameDemo's `ReevaluationRunner` exits 10 for it, as for `.missing`.
+- **A malformed 3.7 record** (rev 5.5): an action's, client event's or server input's payload that reads as a tree (JSON that isn't base64, a map where `bin` belongs) is refused when the record is read, with `ReevaluationRecordContentError.payloadNotBytes`, not left to fail at apply.
+- **Committed 3.6 records in tests** (rev 5.5). A record whose point is a shape the 3.7 recorder never writes (the ReplayCompatibility records, the hybrid record) is replayed through a test-only upgrader (`LegacyRecordUpgrader`, SwiftStateTreeTestSupport). It writes a 3.7 copy, each payload tree as its canonical JSON bytes, and never touches the committed file. Its premise, that a JSON tree's canonical JSON decodes to the value the tree decoded to (the old live round trip), is pinned on those records by `ReplayCompatibilityRecordTests.upgraderPremiseHolds`. The product still doesn't replay 3.6.
 - A newer reader refuses nothing older than `minimumSupported` that it can read today. The JSON view renders a 3.6 tree as before and a 3.7 payload as base64.
 
 **Public API (K1a):**
@@ -587,7 +605,8 @@ Prior art: Temporal stores an activity's result as a `Payload` (bytes plus a per
 - `actionType` stays, computed;
 - `AnyClientEvent.payload` stays, built from `decoded` or the source as today. The keeper's item no longer holds the `AnyClientEvent`;
 - `handleActionEnvelope` keeps returning `AnyCodable` (decided by Main, 2026-11-25): it boxes the `any ResponsePayload` at its own boundary, so the response's move to the transport is no public change;
-- K1-Q6 (i): `RecordPayloadDecoders`, its `payloadDecoders:` parameters and `ReevaluationRecordPayloadError` (above).
+- K1-Q6 (i): `RecordPayloadDecoders`, its `payloadDecoders:` parameters and `ReevaluationRecordPayloadError` (above);
+- rev 5.5: an entry's optional `payloadEncoding` (K1-Q8 (a)); `ReevaluationRecordedServerInput.payload` becomes `Data` (K1-Q4 (a)); additive: `ReevaluationRecordFingerprintError.payloadsNotReplayable` with monitor code 2006, `ReevaluationRecordContentError.payloadNotBytes`, and `ReevaluationSource.getPayloadEncodings()`, a requirement with a default.
 
 Each change is listed in K1a's PR. There's no deprecation step: there are no external users (as #593).
 
@@ -636,12 +655,12 @@ K1a keeps it green with 3.7 records whose bytes fail the same way, and #803's `r
 - **Per encoding** (JSON, opcode JSON, MessagePack), an action and a client event: the recorded bytes decode, with the live decoder, to a value equal to the live `decoded`. The actions cover each way the intake builds the item (#825): one without resolvers, one whose closure built a value (a job), and one whose closure built none (inline).
 - **Server inputs (K1-Q4 (a)):** on a `json` header, a server input's bytes equal `CanonicalMessagePack.encode` of its record form, not any JSON; a normalizing `Codable` replays the value live applied; #817's `serverInputRecordFormUnchanged` stays green, adapted to bytes.
 - **`canonicalJSONIsStableAcrossProcesses`:** the same 16-key object, recorded in two child processes (Swift Testing exit tests, each writing its bytes to standard output) with default hashing, gives equal bytes. A one-process check under `SWIFT_DETERMINISTIC_HASHING` can't show it. With 16 keys, two seeds that happen to give the same unsorted order are negligible (1 in 16!).
-- **`jsonSourcedItemUnderMessagePackHeaderRecordsTheTypedValue`:** on a land whose header is `messagepack`, an action that arrives through `AnyCodablePayloadSource` is recorded as its typed value's canonical MessagePack. The test checks equality with `CanonicalMessagePack` of the typed value, and inequality with that payload's canonical JSON bytes.
+- **A tree on a `messagepack` land** (K1-Q8 (a), replacing rev 5's typed-value test): an action that arrives through `AnyCodablePayloadSource` records its canonical JSON, tagged `json`, and replays as live.
 - **An integral float:** a JSON `1` into a `Double` field replays equal without `integralFloats`.
-- **A hand-built item:** recorded in the header's encoding.
+- **A hand-built item:** recorded as its canonical JSON, tagged `json` (K1-Q8 (a)).
 - **A non-recording land:** its items hold no bytes. A `Mirror` test fails if `bytes` is set when `recordsInputs` is false.
 - **The header:** written once, and read back.
-- **3.6 records:** per K1-Q1 (a): read, listed, and refused for replay with today's `minimumReplayable` error.
+- **3.6 records:** per K1-Q1 (a): read, listed, and refused for replay with `payloadsNotReplayable` (rev 5.5).
 
 **Mutants:**
 - `.sortedKeys` dropped from `canonicalJSON`. Caught by `canonicalJSONIsStableAcrossProcesses`;
@@ -656,6 +675,8 @@ The E2E record/replay runs in three encodings and the game's reevaluation E2E en
 **Harness.** The wire frames don't change. Every golden's record changes: the header's new field, the version, and each recorded payload's form.
 
 **Rule `recordPayloadAsTree` (rev 5.2).** The harness compares record bytes only when a golden was recorded with the running toolchain (`checkBytes`, DifferentialHarnessTests.swift:91). Elsewhere it compares the record's decoded view (`DiffRunner.decodedView`, DiffRunner.swift:656). Canonical JSON bytes are stable within a toolchain and platform only. If the view showed a 3.7 payload as its base64 string, a run off the pinned image would report a payload difference that is only a spelling (a number's form, an escape). So the view renders each recorded payload as its tree: the bytes decoded with the header's `payloadEncoding` (JSON parsed, MessagePack unpacked), in the form a 3.6 golden's tree has. A server input's bytes are unpacked as MessagePack whatever the header says (K1-Q4 (a)). The byte comparison on the pinned image still sees the bytes.
+
+The view leaves an entry's `payloadEncoding` out on purpose (rev 5.5): it compares what a payload holds, so a JSON and a MessagePack payload holding the same value compare equal in decoded-only mode. The header's encoding is still compared, and so are the bytes on the pinned image. A payload that isn't base64 in the view fails the run. `DiffSelfCheckTests.serverInputPayloadIsAMessagePackTreeInTheView` pins the server-input rule before a golden carries one.
 
 `classify-golden-changes.py` compares decoded views, so with that rule a 3.6 → 3.7 golden shows no payload leaf change. Its `recordPayload` class then covers only `metadata.payloadEncoding` appearing and `metadata.version` 3.6 → 3.7, and a changed payload leaf stays `other`. K1a adds the rule and the class in a tool-only commit first. Then:
 - the goldens are re-recorded by the recorder script in the pinned image;
@@ -814,7 +835,7 @@ For the maintainer, once rev 3 is GO.
 
 ## 9. Questions
 
-For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depended on K1-Q1 to K1-Q3, decided (a) each on 2026-11-24, K1-Q4 and K1-Q5 decided (a) and K1-Q6 decided (i) on 2026-11-25; K1b's K1-Q7 is decided (d) by Main (2026-11-25); K2 depends on Q1.
+For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depended on K1-Q1 to K1-Q3, decided (a) each on 2026-11-24, K1-Q4, K1-Q5 and K1-Q8 decided (a) and K1-Q6 decided (i) on 2026-11-25; K1b's K1-Q7 is decided (d) by Main (2026-11-25); K2 depends on Q1.
 
 **Q1. Where does a re-evaluation (replay) keeper keep its state until #612?** (§3.10)
 
@@ -896,6 +917,14 @@ Not chosen:
 - **(a) decode each output into its type at the replay build.** The type isn't there: it would need a per-name decoder table on `ResolverDeclaration`, for actions and OnInitialize only. Join and leave can't have it before R3, because public `AnyResolverExecutor` conformers declare no output type. It would also build R2's type table two slices early, keyed by name, for R2 to re-key.
 - **(b) the 3.7 record keeps each output's bytes.** It changes K1a's format for a form R2 rewrites (positions), and it would gate K1a on this question.
 - **(c) `.recorded` stays a tree, as a known exception until #612.** `KeeperModel` then isn't `@PlainData`, which K1b's compile-time half of the census needs, so replay would need its own item type.
+
+**K1-Q8. A source in the other encoding, or none** (§3.11, "What the bytes are"). **Decided (a)** (maintainer, 2026-11-25). Rev 5's "the decoded typed value, encoded once in the record's encoding" doesn't replay the live value (a `Date` packs as an ISO string, while the live MessagePack decoder reads a Double), and it re-encodes `decoded`.
+
+| Option | What it is | Cost |
+|---|---|---|
+| **(a) Decided** | each entry keeps the bytes of the decoder live used, in that decoder's encoding, with its own `payloadEncoding` when it differs from the header's; a typed value with no source records canonical JSON, tagged `json`, and live applies the value decoded from it | a record can hold two encodings; the decoder check reads each entry's |
+| (b) | an encode seam for the header's encoding, handed over with the header | keeps the re-encode of `decoded` |
+| (c) | refuse an item in the other encoding, or with no source, at intake | a behavior change on public paths |
 
 **Q4. When is #698 fixed?** (A teardown can notify a transport other than the one it closed. Production attaches once, so it doesn't happen there today; `setTransport` is public.)
 
