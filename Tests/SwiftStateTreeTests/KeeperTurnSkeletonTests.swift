@@ -134,11 +134,11 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
         case .joinsAwaitingSync, .nowhere: break
         }
         // Otherwise a success, so only the re-entry can fail the turn. Kept events would ask
-        // for a follow-up turn if the answer were read.
+        // for a follow-up turn if the answer were read, and an applied commit leaves its probe.
         return InTurnSyncOutput(
             .committed(clearDirtyFlags: false),
             syncStream: [outputDraft(1)],
-            keepsEvents: reenter == .joinsAwaitingSync
+            keepsEvents: reenter != .nowhere
         )
     }
     func waitForWriterDrainForInTurnSync() async {}
@@ -179,6 +179,8 @@ struct KeeperTurnSkeletonTests {
     ])
     func reentryEndsTheLandInTheTurn(at reenter: TurnSkeletonReenteringTransport.Where) async throws {
         let (keeper, transport, tracker) = await attachedKeeper(reenter)
+        let probes = OrderLog()
+        await keeper.setInTurnProbeForTesting { probes.add($0) }
 
         // An otherwise idle land: this turn is the only step it takes.
         let result = await keeper.syncTurnNow(via: transport, reason: .syncNow)
@@ -204,9 +206,13 @@ struct KeeperTurnSkeletonTests {
         default:
             #expect(trace == ["terminal", "endTurn"])
         }
-        // Nothing was asked for from the refused answers: no kept-events turn, no join sync.
+        // Nothing was asked for from the refused answers: no kept-events turn, and no join sync
+        // turn, counted where one is scheduled (a scheduled one could retire before a later read).
+        #expect(await keeper.joinSyncTurnsScheduledForTesting == 0)
         #expect(await keeper.hasRequestedSyncWorkForTesting == false)
         #expect(await keeper.requestedSyncTurnsForTesting[.keptEvents] == nil)
+        // A refused phase's answer is never applied; the witness's phase was answered first.
+        #expect(probes.entries.contains("sync-committed") == (reenter == .joinsAwaitingSync))
         // The refused `syncTurnNow` changed nothing: only the outer request was counted.
         #expect(await keeper.requestedSyncTurnsForTesting[.syncNow] == 1)
         // The backstop had nothing left to apply.
@@ -229,10 +235,13 @@ struct KeeperTurnSkeletonTests {
         #expect(keeper.isDraining)
         #expect(keeper.failure == nil)
         #expect(transport.gateClosedAtReentry == true)
-        // No draft of the refused phase was numbered or submitted.
+        // Nothing of the refused phase was numbered or submitted, and no terminal entry or
+        // turn end either.
         #expect(await keeper.syncStreamCounterForTesting() == counterBefore)
-        #expect(!tracker.traceForTesting.contains("sync-output"))
+        #expect(tracker.traceForTesting.isEmpty)
         #expect(await keeper.bodyDepthForTesting == 0)
+        // Applied in the turn: the backstop, whose guard skips a draining land, had nothing.
+        #expect(await keeper.lateReentriesAppliedForTesting == 0)
     }
 
     @Test("Without a re-entry the same turn commits, and nothing is refused")
@@ -314,6 +323,26 @@ struct KeeperTurnSkeletonTests {
         #expect(order.entries == ["effect-0", "effect-1", "call", "body end"])
     }
 
+    @Test("A staged effect that re-enters during a call out's flush: the call isn't made, and it is refused")
+    func reentryInTheFlushSkipsTheCall() async throws {
+        let keeper = makeKeeper(recording: false)
+        let order = OrderLog()
+        let refused = try await keeper.runTestBodyForTesting(
+            staging: 1,
+            effect: { _ in
+                order.add("effect")
+                keeper.assumeIsolated { $0.submitSyncStream([outputDraft(5)]) } // lint-allow: turns-isolated: a staged effect that re-enters during a call out's flush
+            },
+            callingOut: { order.add("call") },
+            observe: { _ in order.add("body end") }
+        )
+        #expect(refused)
+        #expect(order.entries == ["effect", "body end"], "the call wasn't made")
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(await keeper.lateReentriesAppliedForTesting == 0, "applied by the call out, not the backstop")
+    }
+
     @Test("The backstop applies a re-entry a body didn't apply, once, and only while the land runs")
     func backstopAppliesLateReentry() async throws {
         let keeper = makeKeeper(recording: false)
@@ -343,16 +372,29 @@ struct KeeperTurnSkeletonTests {
         let tracker = await keeper.recorderSubmissionsForTesting
         let blocker = TestGate()
 
-        let record = Task { await keeper.submitTurnRecordForTesting(tickId: 0) }
+        // Open from the start: the record's task arrives when the call returns, and the test
+        // waits for that arrival, which ends on its bound instead of hanging.
+        let returned = TestGate()
+        returned.open()
+        let record = Task {
+            await keeper.submitTurnRecordForTesting(tickId: 0)
+            await returned.arrive()
+        }
+        defer {
+            hold.open()
+            blocker.open()
+        }
         #expect(await hold.waitForArrivals(1))
         // A later submission that can't finish until the blocker opens.
         tracker.submit(label: "later") { await blocker.arrive() }
         hold.open()
         // Returns while the later submission is still blocked: awaiting the tracker's tail
         // instead would wait for the blocker, which opens only after this returns.
-        await record.value
-        #expect(blocker.arrivalCount <= 1)
+        #expect(await returned.waitForArrivals(1), "submitTurnRecord returned")
+        // Its own submission is applied, and only the later one is pending.
+        #expect(tracker.pendingCount == 1)
         blocker.open()
+        await record.value
         await tracker.waitForAll()
     }
 }

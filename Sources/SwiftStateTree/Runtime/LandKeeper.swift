@@ -5659,8 +5659,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// A call out of the keeper during a turn body (a port call, a transport's property read).
     /// The body's staged outputs flush first, so the callee sees today's order. If the flush's
-    /// actions or the callee re-entered the keeper and were refused (`noteReentry`), the land
-    /// ends here, before the body could read the answer, and the outcome is `.refused`.
+    /// actions re-entered the keeper and were refused (`noteReentry`), the land ends there and
+    /// the call isn't made. If the callee re-entered, the land ends after the call, before the
+    /// body could read the answer. Either way the outcome is `.refused`.
     private func callOut<Answer>(
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -5668,6 +5669,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) -> CallOutcome<Answer> {
         let before = reentryViolations
         side.flush(&outputs)
+        guard reentryViolations == before else { return .refused(applyReentryFailure()) }
         let answer = call()
         guard reentryViolations == before else { return .refused(applyReentryFailure()) }
         return .answered(answer)
@@ -5765,6 +5767,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return refused
         }
     }
+
+    /// Tests: join sync turns scheduled, counted where they are scheduled (before the turn's own
+    /// guards could retire it).
+    package private(set) var joinSyncTurnsScheduledForTesting = 0
 
     /// Tests: `submitTurnRecord` on an empty record of `tickId`.
     package func submitTurnRecordForTesting(tickId: Int64) async {
@@ -6001,12 +6007,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         joinSyncOnly: joinSyncOnly,
                         keepsEvents: output.keepsEvents,
                         joinsAwaitingSync: {
-                            switch callOut(&side, &outputs, { transportHasJoinsAwaitingSync }) {
-                            case .answered(let awaiting):
-                                return awaiting
+                            // `transportHasJoinsAwaitingSync`, one check per witness: whether the
+                            // transport runs this keeper's phase, then whether joins wait.
+                            switch callOut(&side, &outputs, { syncsInTurn }) {
                             case .refused(let refused):
                                 reentry = refused
                                 return nil
+                            case .answered(let runsPhase):
+                                guard runsPhase, mode == .live, let attached = self.transport else { return false }
+                                switch callOut(&side, &outputs, { attached.hasJoinsAwaitingSync }) {
+                                case .answered(let awaiting):
+                                    return awaiting
+                                case .refused(let refused):
+                                    reentry = refused
+                                    return nil
+                                }
                             }
                         }
                     )
@@ -6063,6 +6078,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func scheduleJoinSyncTurn(after delay: Duration, transport port: any LandKeeperTransport) {
         guard joinSyncTurnBinding != syncBinding.current else { return }
         joinSyncTurnBinding = syncBinding.current
+        joinSyncTurnsScheduledForTesting += 1
         beginRequestedSyncWork()
         let followUp = SyncTurnFollowUp(port: port, binding: syncBinding.current)
         Task { [weak self] in

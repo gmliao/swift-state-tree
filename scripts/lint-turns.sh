@@ -58,7 +58,7 @@ Sources/SwiftStateTreeTransport/TransportAdapter.swift 3 the adapter submits syn
 ALLOW_MARKERS='
 Tests/SwiftStateTurnsTests/Support/DemoActor.swift 6 the runtime stops (reentry, a replaced core, a class machine and its checks)
 Tests/SwiftStateTreeTests/DecimalRegistrationTests.swift 1 a Decimal in state for the registration walk (#597), which keeps guarding hand-written witnesses
-Tests/SwiftStateTreeTests/KeeperTurnSkeletonTests.swift 3 the keeper refuses a synchronous re-entry from a transport during a turn body, and its backstop applies one (#700)
+Tests/SwiftStateTreeTests/KeeperTurnSkeletonTests.swift 4 the keeper refuses a synchronous re-entry from a transport or a staged effect during a turn body, and its backstop applies one (#700)
 Tests/SwiftStateTreeTests/NestedNodePolicyTests.swift 1 a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 Tests/SwiftStateTreeTests/SyncRegistrationTests.swift 3 a class, open types and an Any in state for the runtime walks (#464, #535), which keep guarding hand-written witnesses
 Tests/SwiftStateTreeTests/SyncTableDiffTests.swift 2 classes in state for the reference-type fallback of the sync tables (SyncTables.swift), which stays in every build
