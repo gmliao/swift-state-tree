@@ -9,8 +9,8 @@
       "connections" : {
         "A" : {
           "close" : {
-            "code" : 1000,
-            "reason" : ""
+            "code" : 4017,
+            "reason" : "logged in elsewhere"
           },
           "frames" : [
             {
@@ -537,8 +537,8 @@
       "connections" : {
         "A" : {
           "close" : {
-            "code" : 1000,
-            "reason" : ""
+            "code" : 4017,
+            "reason" : "logged in elsewhere"
           },
           "frames" : [
             {
