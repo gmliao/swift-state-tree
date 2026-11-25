@@ -505,4 +505,42 @@ struct StatePlainDataMacroTests {
         let count = expanded.components(separatedBy: "func _plainDataCheck()").count - 1
         #expect(count == (attribute == "@StateNodeBuilder" ? 1 : 0), "\(expanded)")
     }
+
+    @Test("An attribute on a member that could add declarations is refused, in #if too; built-ins and a nested type's own macros pass (#837)")
+    func memberAttributes() {
+        let rest = " can't be in a state type: a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable"
+        let refused: [(member: String, name: String)] = [
+            ("@Memoized func cost() -> Int { 0 }", "@Memoized on 'cost()'"),
+            ("@AddRef var view: Int { 0 }", "@AddRef on 'view'"),
+            ("@AddRef static var shared: Int = 0", "@AddRef on 'shared'"),
+            ("@Peer init(x: Int) { self.init() }", "@Peer on 'init(...)'"),
+            ("@Peer subscript(i: Int) -> Int { i }", "@Peer on 'subscript(...)'"),
+            ("@Peer struct Inner {}", "@Peer on 'Inner'"),
+            ("@Peer typealias Alias = Int", "@Peer on 'Alias'"),
+            ("#if DEBUG\n@Memoized func debugCost() -> Int { 0 }\n#endif", "@Memoized on 'debugCost()'"),
+        ]
+        let shapes: [(String, (String) -> String)] = [
+            ("@StateNodeBuilder", { "@StateNodeBuilder\nstruct Node: StateNodeProtocol {\n@Sync(.broadcast) var hp: Int = 0\ninit() {}\n\($0)\n}" }),
+            ("@SnapshotConvertible", { "@SnapshotConvertible\nstruct Value {\nvar hp: Int = 0\ninit() {}\n\($0)\n}" }),
+        ]
+        for (macro, source) in shapes {
+            for (member, name) in refused {
+                let (_, messages) = expand(source(member))
+                #expect(messages.filter { $0.contains("a macro attached to a member") } == [name + rest], "\(macro) \(member): \(messages)")
+            }
+        let allowed = """
+            @inlinable func a() -> Int { 0 }
+            @available(*, deprecated) var b: Int { 0 }
+            @discardableResult mutating func c() -> Int { 0 }
+            @TaskLocal static var d: Int = 0
+            @_spi(Test) public init(e: Int) { self.init() }
+            @PlainData struct Inner { var f: Int }
+            """
+            let (_, messages) = expand(source(allowed))
+            #expect(!messages.contains { $0.contains("a macro attached to a member") }, "\(macro): \(messages)")
+        }
+        // Both state macros on one type: one report.
+        let (_, both) = expand("@StateNodeBuilder\n@SnapshotConvertible\nstruct Both: StateNodeProtocol {\n@Sync(.broadcast) var hp: Int = 0\ninit() {}\n@Memoized func cost() -> Int { 0 }\n}")
+        #expect(both.filter { $0.contains("a macro attached to a member") } == ["@Memoized on 'cost()'" + rest], "\(both)")
+    }
 }

@@ -32,6 +32,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
         // Another macro on the type could add members this macro doesn't see (#100).
         PlainDataAttributes.diagnoseType(structDecl.attributes, rule: PlainDataAttributes.stateNodeBuilder, in: context)
+        PlainDataAttributes.diagnoseMembers(structDecl.memberBlock.members, rule: PlainDataAttributes.stateNodeBuilder, in: context)
 
         // Collect all stored properties
         let propertiesWithNodes = collectStoredProperties(from: structDecl)

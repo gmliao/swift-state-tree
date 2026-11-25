@@ -95,6 +95,95 @@ public enum PlainDataAttributes {
         }
     }
 
+    /// Built-in attributes a member other than a stored property may carry: none adds a
+    /// declaration. `TaskLocal` is a property wrapper, and on a `static` property its storage is
+    /// static too.
+    public static let memberBuiltins: Set<String> = [
+        "available", "inlinable", "inline", "usableFromInline", "discardableResult", "_spi",
+        "preconcurrency", "backDeployed", "_alwaysEmitIntoClient", "_disfavoredOverload", "_documentation",
+        "_effects", "_transparent", "_optimize", "_semantics", "_specialize", "warn_unqualified_access",
+        "nonobjc", "objc", "MainActor", "TaskLocal",
+    ]
+
+    /// The project macros a nested type may carry: each writes the nested type's own members and
+    /// extensions, never a peer of the outer type's.
+    private static let nestedTypeMacros = ["StateNodeBuilder", "SnapshotConvertible", "Payload", "PlainData"]
+
+    /// Diagnoses every attribute on a member that could add declarations to the type: on a
+    /// function, an initializer, a subscript, a computed or `static` property, an enum case, a
+    /// typealias or a nested type, in `#if` clauses too. A peer macro there can add a stored
+    /// property that nothing checks. Stored instance properties are left to the PlainData walk,
+    /// which refuses every attribute on them that isn't storage-neutral or read through, and
+    /// freestanding expansions too, which it refuses.
+    public static func diagnoseMembers(
+        _ members: MemberBlockItemListSyntax,
+        rule: Rule,
+        in context: some MacroExpansionContext
+    ) {
+        for member in members {
+            let decl = member.decl
+            if let ifConfig = decl.as(IfConfigDeclSyntax.self) {
+                for clause in ifConfig.clauses {
+                    if case .decls(let nested) = clause.elements { diagnoseMembers(nested, rule: rule, in: context) }
+                }
+                continue
+            }
+            if let variable = decl.as(VariableDeclSyntax.self), isStoredInstance(variable) { continue }
+            guard let attributes = decl.asProtocol(WithAttributesSyntax.self)?.attributes else { continue }
+            let isType = decl.is(StructDeclSyntax.self) || decl.is(EnumDeclSyntax.self)
+                || decl.is(ClassDeclSyntax.self) || decl.is(ActorDeclSyntax.self) || decl.is(ProtocolDeclSyntax.self)
+            for element in attributes {
+                switch element {
+                case .attribute(let attribute):
+                    if isAllowedOnMember(attribute, isType: isType) { continue }
+                    context.diagnose(Diagnostic(
+                        node: attribute,
+                        message: MemberAttributeDiagnostic(name: "@" + attribute.attributeName.trimmedDescription, member: memberName(decl), noun: rule.noun)
+                    ))
+                case .ifConfigDecl(let ifConfig):
+                    context.diagnose(Diagnostic(
+                        node: ifConfig,
+                        message: MemberAttributeDiagnostic(name: "an attribute inside #if", member: memberName(decl), noun: rule.noun)
+                    ))
+                }
+            }
+        }
+    }
+
+    /// A non-`static` property with storage: some binding isn't computed (observers keep it
+    /// stored).
+    private static func isStoredInstance(_ variable: VariableDeclSyntax) -> Bool {
+        let isStatic = variable.modifiers.contains {
+            $0.name.tokenKind == .keyword(.static) || $0.name.tokenKind == .keyword(.class)
+        }
+        return !isStatic && !variable.bindings.allSatisfy(PlainDataWalk.isComputed)
+    }
+
+    private static func isAllowedOnMember(_ attribute: AttributeSyntax, isType: Bool) -> Bool {
+        if let identifier = attribute.attributeName.as(IdentifierTypeSyntax.self) {
+            let name = identifier.name.text
+            if memberBuiltins.contains(name) || (isType && builtins.contains(name)) { return true }
+        }
+        return isType && nestedTypeMacros.contains { PlainDataWalk.isProjectAttribute(attribute, named: $0) }
+    }
+
+    /// The member as a diagnostic names it: `cost()`, `init(...)`, `subscript(...)`, `view`,
+    /// `case a`, `Inner`.
+    private static func memberName(_ decl: DeclSyntax) -> String {
+        if let function = decl.as(FunctionDeclSyntax.self) { return function.name.text + "()" }
+        if decl.is(InitializerDeclSyntax.self) { return "init(...)" }
+        if decl.is(SubscriptDeclSyntax.self) { return "subscript(...)" }
+        if let variable = decl.as(VariableDeclSyntax.self) {
+            return variable.bindings.map { $0.pattern.trimmedDescription }.joined(separator: ", ")
+        }
+        if let cases = decl.as(EnumCaseDeclSyntax.self) {
+            return "case " + cases.elements.map { $0.name.text }.joined(separator: ", ")
+        }
+        if let alias = decl.as(TypeAliasDeclSyntax.self) { return alias.name.text }
+        if let named = decl.asProtocol(NamedDeclSyntax.self) { return named.name.text }
+        return "member"
+    }
+
     private static func isAllowed(_ attribute: AttributeSyntax, allowed: Set<String>) -> Bool {
         if let identifier = attribute.attributeName.as(IdentifierTypeSyntax.self), builtins.contains(identifier.name.text) {
             return true
@@ -113,5 +202,18 @@ struct TypeAttributeDiagnostic: DiagnosticMessage {
     }
 
     var diagnosticID: MessageID { MessageID(domain: "PlainDataMacroSupport", id: "unknownTypeAttribute") }
+    var severity: DiagnosticSeverity { .error }
+}
+
+struct MemberAttributeDiagnostic: DiagnosticMessage {
+    let name: String
+    let member: String
+    let noun: String
+
+    var message: String {
+        "\(name) on '\(member)' can't be in a \(noun): a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable"
+    }
+
+    var diagnosticID: MessageID { MessageID(domain: "PlainDataMacroSupport", id: "unknownMemberAttribute") }
     var severity: DiagnosticSeverity { .error }
 }

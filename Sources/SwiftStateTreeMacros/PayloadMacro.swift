@@ -356,6 +356,7 @@ extension PayloadMacro: ExtensionMacro {
         // extension role reports, so the member role's expansion doesn't report twice.
         if PlainDataAttributes.checks("Payload", on: structDecl.attributes) {
             PlainDataAttributes.diagnoseType(structDecl.attributes, rule: PlainDataAttributes.payload, in: context)
+            PlainDataAttributes.diagnoseMembers(structDecl.memberBlock.members, rule: PlainDataAttributes.payload, in: context)
         }
         var failed = false
         for attribute in structDecl.attributes {

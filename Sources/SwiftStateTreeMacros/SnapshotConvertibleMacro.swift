@@ -84,6 +84,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         // `@StateNodeBuilder` reports for both when it is beside this one.
         if PlainDataAttributes.checks("SnapshotConvertible", on: structDecl.attributes) {
             PlainDataAttributes.diagnoseType(structDecl.attributes, rule: PlainDataAttributes.snapshotConvertible, in: context)
+            PlainDataAttributes.diagnoseMembers(structDecl.memberBlock.members, rule: PlainDataAttributes.snapshotConvertible, in: context)
         }
 
         // The conversion reads only the type's top-level members, so a stored property inside

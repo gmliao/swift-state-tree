@@ -22,6 +22,7 @@ public struct PlainDataMacro: ExtensionMacro {
         // Another macro on the type could add members the witness doesn't see (#837).
         if PlainDataAttributes.checks("PlainData", on: declaration.attributes) {
             PlainDataAttributes.diagnoseType(declaration.attributes, rule: PlainDataAttributes.plainData, in: context)
+            PlainDataAttributes.diagnoseMembers(declaration.memberBlock.members, rule: PlainDataAttributes.plainData, in: context)
         }
         return PlainDataExtension.build(of: node, attachedTo: declaration, providingExtensionsOf: type, conformingTo: protocols, in: context)
     }

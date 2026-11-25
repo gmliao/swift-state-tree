@@ -224,4 +224,33 @@ struct PayloadExtensionRoleTests {
             #expect(!messages.contains { $0.contains("can't be on a payload type") }, "\(other): \(messages)")
         }
     }
+
+    @Test("An attribute on a payload's member that could add declarations is refused; built-ins pass (#837)")
+    func memberAttributes() {
+        let rest = " can't be in a payload type: a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable"
+        let refused: [(member: String, name: String)] = [
+            ("@Memoized func cost() -> Int { 0 }", "@Memoized on 'cost()'"),
+            ("@AddRef var view: Int { 0 }", "@AddRef on 'view'"),
+            ("@AddRef static var shared: Int = 0", "@AddRef on 'shared'"),
+            ("@Peer init(x: Int) { self.init() }", "@Peer on 'init(...)'"),
+            ("@Peer subscript(i: Int) -> Int { i }", "@Peer on 'subscript(...)'"),
+            ("@Peer struct Inner {}", "@Peer on 'Inner'"),
+            ("@Peer typealias Alias = Int", "@Peer on 'Alias'"),
+            ("#if DEBUG\n@Memoized func debugCost() -> Int { 0 }\n#endif", "@Memoized on 'debugCost()'"),
+        ]
+        for (member, name) in refused {
+            let (_, messages) = expand("@Payload\nstruct Hit: ServerEventPayload {\nlet n: Int\ninit() { n = 0 }\n\(member)\n}", conforming: false)
+            #expect(messages.filter { $0.contains("a macro attached to a member") } == [name + rest], "\(member): \(messages)")
+        }
+        let allowed = """
+            @inlinable func a() -> Int { 0 }
+            @available(*, deprecated) var b: Int { 0 }
+            @discardableResult mutating func c() -> Int { 0 }
+            @TaskLocal static var d: Int = 0
+            @_spi(Test) public init(e: Int) { self.init() }
+            @PlainData struct Inner { var f: Int }
+            """
+        let (_, messages) = expand("@Payload\nstruct Hit: ServerEventPayload {\nlet n: Int\ninit() { n = 0 }\n\(allowed)\n}", conforming: false)
+        #expect(!messages.contains { $0.contains("a macro attached to a member") }, "\(messages)")
+    }
 }
