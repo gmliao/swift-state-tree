@@ -69,20 +69,31 @@ extension GameState {
     func isDirty() -> Bool { ... }
     func getDirtyFields() -> Set<String> { ... }
     mutating func clearDirty() { ... }
+}
+```
 
-    // The PlainData witness: compiled, never called. Each line compiles only
-    // when the field's value is PlainData.
+The macro also writes the `PlainData` witness, as a member inside the type's body:
+
+```swift
+struct GameState: StateNodeProtocol {
+    // ...the fields above...
+
+    /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
     static func _plainDataCheck() {
+        @available(*, deprecated, message: "the PlainData checks; never called")
         func check(_ value: inout Self) {
-            PlainDataCheck.field(value.players)
-            PlainDataCheck.field(value.hands)
-            PlainDataCheck.field(value.hiddenDeck)
+            SwiftStateTurns.PlainDataCheck.field(value._players)
+            SwiftStateTurns.PlainDataCheck.field(value.players)
+            SwiftStateTurns.PlainDataCheck.field(value._hands)
+            SwiftStateTurns.PlainDataCheck.field(value.hands)
+            SwiftStateTurns.PlainDataCheck.field(value._hiddenDeck)
+            SwiftStateTurns.PlainDataCheck.field(value.hiddenDeck)
         }
     }
 }
 ```
 
-`StateNodeProtocol` refines `PlainData` ([what counts as plain data](../turns/README.md#what-counts-as-plain-data)), and `_plainDataCheck` is the witness. It has one line per `@Sync` and `@Internal` field, `#if` members included, so a field that holds a class, a closure, `Any` or a type that isn't `PlainData` fails to compile on that line.
+`StateNodeProtocol` refines `PlainData` ([what counts as plain data](../turns/README.md#what-counts-as-plain-data)), and `_plainDataCheck` is the witness. Each `@Sync` and `@Internal` field gets two lines: `value._players` reads the wrapper's storage, and `value.players` reads its value. A field that holds a class, a closure, `Any` or a type that isn't `PlainData` fails to compile on one of them. The storage line also catches a wrapper of your own that is named `Sync` or `Internal`. An `@Internal` field inside `#if` is checked under its condition.
 
 ## Validation Rules
 
@@ -126,12 +137,14 @@ error: Stored property 'score' in GameState must be marked with @Sync or @Intern
 
 ### Validation Rules Explained
 
-1. **Stored properties**: Must be explicitly marked with `@Sync` or `@Internal`, inside `#if` too
+1. **Stored properties**: Must be explicitly marked with `@Sync` or `@Internal`, inside `#if` too. An observed property (`willSet`, `didSet`) is stored
 2. **Computed properties**: Automatically skip validation, no marking needed
 3. **Unmarked stored properties**: Compile error
 4. **Field values are `PlainData`**: every `@Sync` and `@Internal` field, `.serverOnly` included ([Sync](../core/sync.md#synced-state-is-made-of-value-types))
 5. **No other property wrapper on a field**: the `PlainData` check reads only `@Sync` and `@Internal` fields
 6. **No `@PlainData` beside `@StateNodeBuilder`**: the macro already writes the witness. `@SnapshotConvertible` beside it is fine
+7. **No `@Sync` inside `#if`**: the sync reads only top-level fields, so such a field would never be synced. `@Internal` inside `#if` is fine
+8. **No freestanding macro expansion among the members**: the check can't see the storage it adds
 
 ## Generated Methods
 
@@ -265,7 +278,7 @@ struct Slot<Item: PlainData & Codable & Equatable & Sendable>: StateNodeProtocol
 }
 ```
 
-A state node that conforms to `StateNodeProtocol` by hand, without `@StateNodeBuilder`, adds `@PlainData`.
+A state node that conforms to `StateNodeProtocol` by hand, without `@StateNodeBuilder`, adds `@PlainData`. That works only when its stored properties have no property wrapper, because `@PlainData` refuses every wrapper. A node with `@Sync` or `@Internal` fields uses `@StateNodeBuilder`.
 
 ## Common Questions
 

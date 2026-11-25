@@ -37,6 +37,17 @@ struct Position: Codable, Sendable {
 }
 ```
 
+### 型別是 PlainData
+
+`@SnapshotConvertible` 也會讓型別成為 [`PlainData`](../turns/README.zh-TW.md#什麼算純資料)，並寫出與 `@PlainData` 相同的檢查，因此這個型別可以存放在 state 中。檢查遵循 `@PlainData` 的規則：
+- 每個 stored property 都要標註型別。
+- 以下欄位無法編譯：`Date`、`UUID`、`URL` 與 `Decimal`；tuple、closure 或 class；`weak` 或 `unowned` property；metatype；property wrapper；以及不是 `PlainData` 的 struct 或 enum。
+- generic 型別只在型別參數是 `PlainData` 時才是 `PlainData`，例如 `where T: PlainData`。
+
+與其他 macro 並用時：
+- 與 `@PlainData` 或 `@Payload` 並用時，不寫自己的檢查。
+- 與 `@StateNodeBuilder` 並用時，只寫 conformance，因為 node 的成員就是 witness。
+
 ### 生成的程式碼
 
 Macro 會自動生成以下 extension：
@@ -125,6 +136,8 @@ public extension SnapshotValue {
 1. **基本型別**：String、Int、Bool 等已經優化
 2. **簡單的型別**：只有一兩個欄位的簡單結構可能不需要
 3. **不常轉換的型別**：很少被轉換的型別
+
+存放在 state 中的 struct 或 enum，若不是 `@SnapshotConvertible`，仍需要 `@PlainData`：state 欄位的值必須是 `PlainData`（[同步](../core/sync.zh-TW.md#同步狀態只能由-value-type-組成)）。
 
 ## 使用範例
 
@@ -315,7 +328,7 @@ struct SimpleState: Codable {
 
 ```swift
 // ⚠️ 考慮：只有一個欄位的簡單結構
-@SnapshotConvertible  // 可能不需要
+@SnapshotConvertible  // 可能不需要；在 state 中請改用 @PlainData
 struct SimpleWrapper: Codable {
     var value: String
 }
@@ -347,7 +360,7 @@ A: 當型別滿足以下條件時建議使用：
 
 ### Q: 不標記會怎樣？
 
-A: 不標記的型別會使用 Mirror 作為 fallback，效能較差但功能完整。
+A: 在 state 中，不標記的 struct 或 enum 無法編譯：state 欄位的值必須是 `PlainData`。請標記 `@SnapshotConvertible`；若可以接受透過 Mirror（較慢的 fallback）轉換，也可以標記 `@PlainData`。
 
 ### Q: 可以手動實作 SnapshotValueConvertible 嗎？
 
@@ -355,7 +368,7 @@ A: 可以，但建議使用 macro 自動生成，避免手寫錯誤。
 
 ### Q: 巢狀結構需要都標記嗎？
 
-A: 建議標記所有巢狀結構，確保整個轉換路徑都使用 macro。
+A: 在 state 中需要：每個巢狀 struct 或 enum 都必須是 `@SnapshotConvertible` 或 `@PlainData`。`@SnapshotConvertible` 還能讓整個轉換路徑都不經過 Mirror。
 
 ## 相關文檔
 

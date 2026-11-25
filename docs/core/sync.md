@@ -86,8 +86,9 @@ Before 2026-11-05 (#178), a `@SnapshotConvertible` node inside a `[String: X]` o
 
 Every state field holds plain data: structs, enums, collections of them and state nodes, at any depth (#464). The diff compares values with a copy of the state taken earlier; a write through a shared object would change that copy too, so the diff wouldn't see it.
 
-**At compile time.** `StateNodeProtocol` refines `PlainData` ([what counts as plain data](../turns/README.md#what-counts-as-plain-data)). `@StateNodeBuilder` writes the conformance's check: one line per `@Sync` and `@Internal` field, `#if` members included, that compiles only when the field's value is `PlainData`. So the compiler refuses, in any field (synced, `.serverOnly` or `@Internal`):
-- a class, a closure, a tuple, `Any`, `AnyObject` or an existential `any P`, at any depth, also behind a typealias;
+**At compile time.** `StateNodeProtocol` refines `PlainData` ([what counts as plain data](../turns/README.md#what-counts-as-plain-data)). `@StateNodeBuilder` writes the conformance's check. Each `@Sync` and `@Internal` field gets two lines, one for the wrapper's storage and one for its value, and each compiles only when what it reads is `PlainData`. `@Internal` fields inside `#if` are checked under their condition. So the compiler refuses, in any field (synced, `.serverOnly` or `@Internal`):
+- a class, a closure, a tuple, `Any` or `AnyObject`, at any depth, also behind a typealias;
+- an existential `any P` in the field itself. A nested `@PlainData` type may hold `any P` when `P` refines `PlainData`, since the value is then plain data too;
 - `Date`, `UUID`, `URL` and `Decimal`; the error names what to store instead;
 - a struct or enum of your own that isn't `PlainData`. Mark it `@PlainData`, or `@SnapshotConvertible`, which writes the same conformance. `SwiftStateTree` re-exports `@PlainData` from `SwiftStateTurns`.
 
@@ -106,14 +107,21 @@ struct TableState: StateNodeProtocol {
 
 The same rule shapes a few declarations:
 - A generic node's parameter needs `PlainData`: `struct Box<T: PlainData & Sendable>: StateNodeProtocol`.
-- A state node that conforms by hand, without `@StateNodeBuilder`, adds `@PlainData`.
-- A property wrapper other than `@Sync` and `@Internal` on a state field is refused: the check can't read another wrapper's storage.
+- A state node that conforms by hand, without `@StateNodeBuilder`, adds `@PlainData`. That works only for a node whose stored properties have no property wrapper, since `@PlainData` refuses every wrapper. A node with `@Sync` or `@Internal` fields uses `@StateNodeBuilder`.
+- A property wrapper other than `@Sync` and `@Internal` on a state field is refused: the check can't read another wrapper's storage. A wrapper of your own named `Sync` or `Internal` is read through, but its storage is checked, so it compiles only when it is plain data.
+- A `@Sync` field inside `#if` is refused: the sync reads only the type's top-level fields, so it would never be synced. Declare it outside `#if`, or mark it `@Internal`.
+- An observed property (`willSet`, `didSet`) is stored. It needs a marker like any other, and a `@Sync` one is synced.
+- A freestanding macro expansion among the members (`#someMacro()`) is refused, since the storage it adds isn't in the syntax the check reads.
 - `@PlainData` beside `@StateNodeBuilder` is refused, since the macro already writes the check. `@SnapshotConvertible` beside it is fine.
 - Every stored property of a `@SnapshotConvertible` type needs a type annotation, as under `@PlainData`.
 
 A reference the land needs but doesn't sync, such as a cache or a service handle, goes in the land's services.
 
-**At registration and conversion.** A type can also conform to `PlainData` through a hand-written witness (`static func _plainDataCheck() {}`), which checks nothing. This repository's lint refuses one; a project outside it compiles one, so two runtime checks stay behind the compiler:
+**At registration and conversion.** Two things get past the compile-time check:
+- **A hand-written witness.** A type can conform to `PlainData` through one (`static func _plainDataCheck() {}`), and it checks nothing. This repository's lint refuses one, but a project outside it compiles one.
+- **Members another attached macro adds.** A member macro attached to the state type beside `@StateNodeBuilder` adds members that `@StateNodeBuilder` doesn't see: they get no marker check, no `PlainData` check and no field metadata. Such a macro isn't refused today.
+
+For both, two runtime checks stay behind the compiler:
 - **At registration.** `LandTypeRegistry.init` (so every host that serves the land), `NIOLandHost.register`, `SchemaExtractor.extract` and `SchemaGenCLI.generateSchema` throw a `LandRegistrationError` whose `sync` holds a `.valueSemantics` problem, a `SyncValueSemanticsError` that names each field and class, for example `GameState.inventory: Inventory is a class; synced state must be value types`. The check walks every synced field's type, `.serverOnly` ones included, through optionals, arrays, sets, dictionary keys and values, and nested state nodes. It looks into plain structs, tuples, enum payloads and existential properties (`any P`) through a default instance.
 - **When the state is converted.** A class the check couldn't see (one stored later in an existential field, one in an enum case the default instance doesn't take, or one added to a collection that was empty at registration) makes the conversion throw `SyncError.unsupportedValue`. A dictionary key is the exception: it is converted through its description, so a class held inside a key of a value type (a `CustomStringConvertible` struct with a class property) is refused only at registration, when the default instance's first key holds one (the check samples a dictionary's first entry). Conversion runs for every sync, so that land's syncs fail (a `.serverOnly` field is converted only when the state is recorded or hashed, so those fail instead); when the class is in an event payload, the sync-output verifier can't canonicalize the event and reports its events scope as unverifiable.
 

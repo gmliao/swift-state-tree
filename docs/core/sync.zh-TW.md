@@ -86,8 +86,9 @@ struct GameState: StateNodeProtocol {
 
 每個 state 欄位在任何深度都只能放純資料：struct、enum、由它們組成的集合與 state node（#464）。Diff 拿值與先前取得的狀態副本比較；透過共用物件的寫入也會改到那份副本，diff 看不到。
 
-**編譯期。** `StateNodeProtocol` 繼承 `PlainData`（[什麼算純資料](../turns/README.zh-TW.md#什麼算純資料)）。`@StateNodeBuilder` 會寫出這個 conformance 的檢查：每個 `@Sync` 與 `@Internal` 欄位一行（包含 `#if` 裡的成員），只有欄位的值是 `PlainData` 時才能編譯。因此在任何欄位（同步、`.serverOnly` 或 `@Internal`），編譯器都會拒絕：
-- class、closure、tuple、`Any`、`AnyObject` 或 existential `any P`，不論位於哪一層，藏在 typealias 後面也一樣；
+**編譯期。** `StateNodeProtocol` 繼承 `PlainData`（[什麼算純資料](../turns/README.zh-TW.md#什麼算純資料)）。`@StateNodeBuilder` 會寫出這個 conformance 的檢查。每個 `@Sync` 與 `@Internal` 欄位有兩行，一行檢查 wrapper 的儲存內容，一行檢查它的值，只有讀到的東西是 `PlainData` 時才能編譯。`#if` 裡的 `@Internal` 欄位在同樣的條件下檢查。因此在任何欄位（同步、`.serverOnly` 或 `@Internal`），編譯器都會拒絕：
+- class、closure、tuple、`Any` 或 `AnyObject`，不論位於哪一層，藏在 typealias 後面也一樣；
+- 欄位本身的 existential `any P`。巢狀的 `@PlainData` 型別可以存放 `any P`，只要 `P` 繼承 `PlainData`，因為這時它的值也是純資料；
 - `Date`、`UUID`、`URL` 與 `Decimal`；錯誤訊息會指出改存什麼；
 - 不是 `PlainData` 的自訂 struct 或 enum。請加上 `@PlainData`，或 `@SnapshotConvertible`（它會寫出同樣的 conformance）。`SwiftStateTree` 會 re-export `SwiftStateTurns` 的 `@PlainData`。
 
@@ -106,14 +107,21 @@ struct TableState: StateNodeProtocol {
 
 同一條規則也影響幾種宣告：
 - generic node 的型別參數必須是 `PlainData`：`struct Box<T: PlainData & Sendable>: StateNodeProtocol`。
-- 不用 `@StateNodeBuilder`、手寫 conformance 的 state node 要加上 `@PlainData`。
-- state 欄位上 `@Sync` 與 `@Internal` 以外的 property wrapper 會被拒絕：檢查讀不到其他 wrapper 的儲存內容。
+- 不用 `@StateNodeBuilder`、手寫 conformance 的 state node 要加上 `@PlainData`。這只適用於 stored property 都沒有 property wrapper 的 node，因為 `@PlainData` 拒絕所有 wrapper。有 `@Sync` 或 `@Internal` 欄位的 node 請用 `@StateNodeBuilder`。
+- state 欄位上 `@Sync` 與 `@Internal` 以外的 property wrapper 會被拒絕：檢查讀不到其他 wrapper 的儲存內容。自己定義、名為 `Sync` 或 `Internal` 的 wrapper 會被讀穿，但它的儲存內容會被檢查，所以只有它是純資料時才能編譯。
+- `#if` 裡的 `@Sync` 欄位會被拒絕：同步只讀型別最上層的欄位，所以它永遠不會被同步。請宣告在 `#if` 之外，或標記為 `@Internal`。
+- 有 observer（`willSet`、`didSet`）的 property 是 stored property。它和其他欄位一樣需要標記，標記 `@Sync` 的會被同步。
+- 成員中的 freestanding macro 展開（`#someMacro()`）會被拒絕，因為它加入的儲存內容不在檢查所讀的語法裡。
 - `@StateNodeBuilder` 旁邊加 `@PlainData` 會被拒絕，因為這個 macro 已經寫出檢查。旁邊加 `@SnapshotConvertible` 沒有問題。
 - `@SnapshotConvertible` 型別的每個 stored property 都要標註型別，與 `@PlainData` 相同。
 
 Land 需要但不同步的參照（例如快取或 service handle）放在 land 的 services。
 
-**註冊與轉換時。** 型別也能用手寫的 witness（`static func _plainDataCheck() {}`）符合 `PlainData`，這樣什麼都不檢查。本 repository 的 lint 會拒絕它；在 repository 之外的專案可以編譯，因此編譯器之後還留著兩道執行期檢查：
+**註冊與轉換時。** 有兩種情況會通過編譯期檢查：
+- **手寫的 witness。** 型別可以用它（`static func _plainDataCheck() {}`）符合 `PlainData`，這樣什麼都不檢查。本 repository 的 lint 會拒絕它，但在 repository 之外的專案可以編譯。
+- **其他 attached macro 加入的成員。** 與 `@StateNodeBuilder` 一起掛在 state 型別上的 member macro 所加入的成員，`@StateNodeBuilder` 看不到：它們沒有標記檢查、沒有 `PlainData` 檢查，也沒有欄位 metadata。目前不會拒絕這種 macro。
+
+對這兩種情況，編譯器之後還留著兩道執行期檢查：
 - **註冊時。** `LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會拋出 `LandRegistrationError`，其 `sync` 含有 `.valueSemantics` 問題，也就是列出每個欄位與 class 的 `SyncValueSemanticsError`，例如 `GameState.inventory: Inventory is a class; synced state must be value types`。檢查會走訪每個同步欄位的型別（包含 `.serverOnly` 欄位），穿過 optional、array、set、dictionary 的 key 與 value，以及巢狀 state node，並透過預設實例檢查一般 struct、tuple、enum payload 與 existential property（`any P`）的內容。
 - **轉換狀態時。** 檢查看不到的 class（之後才存入 existential 欄位的、位於預設實例沒有採用的 enum case 裡的、或加進註冊時還是空的集合裡的）會讓轉換拋出 `SyncError.unsupportedValue`。Dictionary 的 key 是例外：key 是透過它的 description 轉換的，因此放在 value type key 內部的 class（例如含有 class 屬性的 `CustomStringConvertible` struct）只有在註冊時、且預設實例的第一個 key 含有 class 時才會被拒絕（檢查只取 dictionary 的第一個項目）。每次同步都會轉換，因此該 Land 的同步會失敗（`.serverOnly` 欄位只在錄製或計算狀態雜湊時才會轉換，因此失敗的是這些步驟）；若 class 位於事件 payload 中，sync-output verifier 無法將該事件正規化，會把 events 範圍回報為無法驗證。
 

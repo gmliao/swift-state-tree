@@ -47,6 +47,7 @@ struct GameState: StateNodeProtocol {
 ```swift
 import SwiftStateTree
 
+// PlayerState and HandState are state nodes; Card is a @PlainData struct.
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     // Must mark with @Sync or @Internal
@@ -408,10 +409,10 @@ Recommended to use `@SnapshotConvertible` in the following scenarios:
 @SnapshotConvertible
 struct PlayerState: Codable {
     var name: String
-    var position: Position  // ❌ Position not marked with @SnapshotConvertible
+    var position: Position  // ❌ Compile error: Position isn't PlainData
 }
 
-struct Position: Codable {  // Will use Mirror, worse performance
+struct Position: Codable {  // Neither @SnapshotConvertible nor @PlainData
     var x: Double
     var y: Double
 }

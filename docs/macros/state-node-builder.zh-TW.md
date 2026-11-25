@@ -69,20 +69,31 @@ extension GameState {
     func isDirty() -> Bool { ... }
     func getDirtyFields() -> Set<String> { ... }
     mutating func clearDirty() { ... }
+}
+```
 
-    // PlainData 的 witness：會編譯，但從不呼叫。每一行只有在欄位的值
-    // 是 PlainData 時才能編譯。
+macro 也會寫出 `PlainData` 的 witness，它是型別主體裡的成員：
+
+```swift
+struct GameState: StateNodeProtocol {
+    // ...上面的欄位...
+
+    /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
     static func _plainDataCheck() {
+        @available(*, deprecated, message: "the PlainData checks; never called")
         func check(_ value: inout Self) {
-            PlainDataCheck.field(value.players)
-            PlainDataCheck.field(value.hands)
-            PlainDataCheck.field(value.hiddenDeck)
+            SwiftStateTurns.PlainDataCheck.field(value._players)
+            SwiftStateTurns.PlainDataCheck.field(value.players)
+            SwiftStateTurns.PlainDataCheck.field(value._hands)
+            SwiftStateTurns.PlainDataCheck.field(value.hands)
+            SwiftStateTurns.PlainDataCheck.field(value._hiddenDeck)
+            SwiftStateTurns.PlainDataCheck.field(value.hiddenDeck)
         }
     }
 }
 ```
 
-`StateNodeProtocol` 繼承 `PlainData`（[什麼算純資料](../turns/README.zh-TW.md#什麼算純資料)），`_plainDataCheck` 就是它的 witness。每個 `@Sync` 與 `@Internal` 欄位各一行（包含 `#if` 裡的成員），因此存放 class、closure、`Any` 或非 `PlainData` 型別的欄位，會在那一行編譯失敗。
+`StateNodeProtocol` 繼承 `PlainData`（[什麼算純資料](../turns/README.zh-TW.md#什麼算純資料)），`_plainDataCheck` 就是它的 witness。每個 `@Sync` 與 `@Internal` 欄位有兩行：`value._players` 讀 wrapper 的儲存內容，`value.players` 讀它的值。存放 class、closure、`Any` 或非 `PlainData` 型別的欄位，會在其中一行編譯失敗。檢查儲存內容的那一行也能抓到自己定義、名為 `Sync` 或 `Internal` 的 wrapper。`#if` 裡的 `@Internal` 欄位在同樣的條件下檢查。
 
 ## 驗證規則
 
@@ -126,12 +137,14 @@ error: Stored property 'score' in GameState must be marked with @Sync or @Intern
 
 ### 驗證規則詳解
 
-1. **Stored properties**：必須明確標記 `@Sync` 或 `@Internal`，`#if` 裡的也一樣
+1. **Stored properties**：必須明確標記 `@Sync` 或 `@Internal`，`#if` 裡的也一樣。有 observer（`willSet`、`didSet`）的 property 是 stored property
 2. **Computed properties**：自動跳過驗證，不需要標記
 3. **未標記的 stored property**：編譯錯誤
 4. **欄位的值是 `PlainData`**：每個 `@Sync` 與 `@Internal` 欄位，包含 `.serverOnly`（[同步](../core/sync.zh-TW.md#同步狀態只能由-value-type-組成)）
 5. **欄位上不能有其他 property wrapper**：`PlainData` 檢查只讀 `@Sync` 與 `@Internal` 欄位
 6. **`@StateNodeBuilder` 旁邊不能加 `@PlainData`**：這個 macro 已經寫出 witness。旁邊加 `@SnapshotConvertible` 沒有問題
+7. **`#if` 裡不能有 `@Sync`**：同步只讀最上層的欄位，所以這種欄位永遠不會被同步。`#if` 裡的 `@Internal` 沒有問題
+8. **成員中不能有 freestanding macro 展開**：檢查看不到它加入的儲存內容
 
 ## 生成的方法
 
@@ -265,7 +278,7 @@ struct Slot<Item: PlainData & Codable & Equatable & Sendable>: StateNodeProtocol
 }
 ```
 
-不用 `@StateNodeBuilder`、手寫 `StateNodeProtocol` conformance 的 state node 要加上 `@PlainData`。
+不用 `@StateNodeBuilder`、手寫 `StateNodeProtocol` conformance 的 state node 要加上 `@PlainData`。這只適用於 stored property 都沒有 property wrapper 的 node，因為 `@PlainData` 拒絕所有 wrapper。有 `@Sync` 或 `@Internal` 欄位的 node 請用 `@StateNodeBuilder`。
 
 ## 常見問題
 

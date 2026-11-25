@@ -47,6 +47,7 @@ struct GameState: StateNodeProtocol {
 ```swift
 import SwiftStateTree
 
+// PlayerState 與 HandState 是 state node；Card 是 @PlainData struct。
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     // 必須標記 @Sync 或 @Internal
@@ -408,10 +409,10 @@ extension PlayerState: SnapshotValueConvertible {
 @SnapshotConvertible
 struct PlayerState: Codable {
     var name: String
-    var position: Position  // ❌ Position 未標記 @SnapshotConvertible
+    var position: Position  // ❌ 編譯錯誤：Position 不是 PlainData
 }
 
-struct Position: Codable {  // 會使用 Mirror，效能較差
+struct Position: Codable {  // 既不是 @SnapshotConvertible，也不是 @PlainData
     var x: Double
     var y: Double
 }

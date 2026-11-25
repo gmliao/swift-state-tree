@@ -60,8 +60,8 @@ Tests/SwiftStateTurnsTests/Support/DemoActor.swift 6 the runtime stops (reentry,
 Tests/SwiftStateTreeTests/DecimalRegistrationTests.swift 1 a Decimal in state for the registration walk (#597), which keeps guarding hand-written witnesses
 Tests/SwiftStateTreeTests/NestedNodePolicyTests.swift 1 a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 Tests/SwiftStateTreeTests/SyncRegistrationTests.swift 3 a class, open types and an Any in state for the runtime walks (#464, #535), which keep guarding hand-written witnesses
-Tests/SwiftStateTreeTests/SyncTableDiffTests.swift 2 classes in state for the runtime walk (#464), which keeps guarding hand-written witnesses
-Tests/SwiftStateTreeTests/SyncTableFallbackFieldsTests.swift 1 a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
+Tests/SwiftStateTreeTests/SyncTableDiffTests.swift 2 classes in state for the reference-type fallback of the sync tables (SyncTables.swift), which stays in every build
+Tests/SwiftStateTreeTests/SyncTableFallbackFieldsTests.swift 1 a class in state for the reference-type fallback of the sync tables (SyncTables.swift), which stays in every build
 Tests/SwiftStateTreeTests/SyncWrapperInPlaceTests.swift 1 a shared box that tells a copy of a synced value from an in-place change (the probe is a class holder on purpose)
 Tests/SwiftStateTreeTests/SyncValueSemanticsTests.swift 9 classes in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 Tests/SwiftStateTreeTransportTests/LandTypeRegistryTests.swift 1 a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
