@@ -198,6 +198,53 @@ struct StatePlainDataMacroTests {
         #expect(messages.contains("the PlainData check can't see the storage a macro expansion adds; declare the stored properties in the type"), "\(messages)")
     }
 
+    @Test("A state type takes only this project's macros and built-in attributes", arguments: [
+        "@StateNodeBuilder", "@SnapshotConvertible",
+    ])
+    func stateTypeAttributeRefusals(site: String) {
+        let unknown = "can't be on a state type: a macro there can add members the PlainData check doesn't see; a state type takes only @StateNodeBuilder, @SnapshotConvertible, @PlainData, @Payload and attributes that add no members"
+        let conformance = site == "@StateNodeBuilder" ? "StateNodeProtocol" : "Codable"
+        // A macro this project doesn't list, a namesake qualified by another module, and an
+        // attribute inside #if.
+        let (_, messages) = expand("""
+            \(site)
+            @Observable
+            @Other.SnapshotConvertible
+            #if DEBUG
+            @available(*, deprecated)
+            #endif
+            struct Node: \(conformance) {
+                @Sync(.broadcast) var count: Int = 0
+            }
+            """)
+        #expect(messages.filter { $0.hasSuffix(unknown) } == [
+            "@Observable " + unknown,
+            "@Other.SnapshotConvertible " + unknown,
+            "an attribute inside #if " + unknown,
+        ], "\(messages)")
+    }
+
+    @Test("A state type's allowed attributes, qualified or not, add no diagnostic")
+    func stateTypeAttributesAllowed() {
+        let (_, messages) = expand("""
+            @available(macOS 10.15, *)
+            @usableFromInline
+            @StateNodeBuilder
+            @SwiftStateTree.SnapshotConvertible
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+            }
+
+            @SnapshotConvertible
+            @SwiftStateTurns.PlainData
+            @SwiftStateTree.Payload
+            struct Value: Codable {
+                var count: Int = 0
+            }
+            """)
+        #expect(!messages.contains { $0.contains("can't be on a state type") }, "\(messages)")
+    }
+
     @Test("A property wrapper other than @Sync and @Internal is refused, by name")
     func unknownWrapper() {
         let (_, messages) = expand("""

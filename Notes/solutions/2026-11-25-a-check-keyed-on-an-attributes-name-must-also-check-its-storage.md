@@ -44,3 +44,4 @@ For every read-through field, annotated or not, the witness also checks the stor
 
 - When a macro treats an attribute (a wrapper, a macro, a type name) as a known library type, check a value the compiler resolves (the storage, a conformance, a member only the real type has), not only the spelling.
 - A fallback that says "the type's own constraint checks the rest" holds only if the type is the one you think it is. Test it with a namesake and with a typealias.
+- The same limit applies to the macros beside yours. A macro can't see the members another attached macro adds, so a check that must see every stored property lists the attributes it accepts (#100). Even then, a bare namesake of a listed macro passes, so document that gap where the other unchecked cases are documented.

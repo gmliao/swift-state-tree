@@ -145,6 +145,7 @@ error: Stored property 'score' in GameState must be marked with @Sync or @Intern
 6. **`@StateNodeBuilder` 旁邊不能加 `@PlainData`**：這個 macro 已經寫出 witness。旁邊加 `@SnapshotConvertible` 沒有問題
 7. **`#if` 裡不能有 `@Sync`**：同步只讀最上層的欄位，所以這種欄位永遠不會被同步。`#if` 裡的 `@Internal` 沒有問題
 8. **成員中不能有 freestanding macro 展開**：檢查看不到它加入的儲存內容
+9. **型別上不能有其他 attached macro**：除了 `@StateNodeBuilder`，只能有 `@SnapshotConvertible` 與不加入成員的內建 attribute（例如 `@available`）。其他 macro 可能加入這個 macro 看不到的成員
 
 ## 生成的方法
 

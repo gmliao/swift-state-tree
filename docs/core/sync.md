@@ -112,6 +112,7 @@ The same rule shapes a few declarations:
 - A `@Sync` field inside `#if` is refused: the sync reads only the type's top-level fields, so it would never be synced. Declare it outside `#if`, or mark it `@Internal`.
 - An observed property (`willSet`, `didSet`) is stored. It needs a marker like any other, and a `@Sync` one is synced.
 - A freestanding macro expansion among the members (`#someMacro()`) is refused, since the storage it adds isn't in the syntax the check reads.
+- A state type, or a `@SnapshotConvertible` type, takes only this project's macros (`@StateNodeBuilder`, `@SnapshotConvertible`, `@PlainData`, `@Payload`) and built-in attributes that add no members, such as `@available`. Another attached macro is refused, because it could add members the check doesn't see.
 - `@PlainData` beside `@StateNodeBuilder` is refused, since the macro already writes the check. `@SnapshotConvertible` beside it is fine.
 - Every stored property of a `@SnapshotConvertible` type needs a type annotation, as under `@PlainData`.
 
@@ -119,7 +120,7 @@ A reference the land needs but doesn't sync, such as a cache or a service handle
 
 **At registration and conversion.** Two things get past the compile-time check:
 - **A hand-written witness.** A type can conform to `PlainData` through one (`static func _plainDataCheck() {}`), and it checks nothing. This repository's lint refuses one, but a project outside it compiles one.
-- **Members another attached macro adds.** A member macro attached to the state type beside `@StateNodeBuilder` adds members that `@StateNodeBuilder` doesn't see: they get no marker check, no `PlainData` check and no field metadata. Such a macro isn't refused today.
+- **A macro of your own with one of this project's names.** A macro sees spellings, not declarations. So a macro named `SnapshotConvertible` in your own module, written bare beside `@StateNodeBuilder`, passes as this project's, and the members it adds aren't checked.
 
 For both, two runtime checks stay behind the compiler:
 - **At registration.** `LandTypeRegistry.init` (so every host that serves the land), `NIOLandHost.register`, `SchemaExtractor.extract` and `SchemaGenCLI.generateSchema` throw a `LandRegistrationError` whose `sync` holds a `.valueSemantics` problem, a `SyncValueSemanticsError` that names each field and class, for example `GameState.inventory: Inventory is a class; synced state must be value types`. The check walks every synced field's type, `.serverOnly` ones included, through optionals, arrays, sets, dictionary keys and values, and nested state nodes. It looks into plain structs, tuples, enum payloads and existential properties (`any P`) through a default instance.

@@ -30,6 +30,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
             throw error
         }
 
+        // Another macro on the type could add members this macro doesn't see (#100).
+        StateTypeAttributes.diagnoseUnknown(
+            structDecl.attributes, allowed: StateTypeAttributes.besideStateNodeBuilder, in: context)
+
         // Collect all stored properties
         let propertiesWithNodes = collectStoredProperties(from: structDecl)
         let properties = propertiesWithNodes.map { $0.0 }

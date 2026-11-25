@@ -112,6 +112,7 @@ struct TableState: StateNodeProtocol {
 - `#if` 裡的 `@Sync` 欄位會被拒絕：同步只讀型別最上層的欄位，所以它永遠不會被同步。請宣告在 `#if` 之外，或標記為 `@Internal`。
 - 有 observer（`willSet`、`didSet`）的 property 是 stored property。它和其他欄位一樣需要標記，標記 `@Sync` 的會被同步。
 - 成員中的 freestanding macro 展開（`#someMacro()`）會被拒絕，因為它加入的儲存內容不在檢查所讀的語法裡。
+- state 型別與 `@SnapshotConvertible` 型別只能掛本專案的 macro（`@StateNodeBuilder`、`@SnapshotConvertible`、`@PlainData`、`@Payload`），以及不加入成員的內建 attribute（例如 `@available`）。其他 attached macro 會被拒絕，因為它可能加入檢查看不到的成員。
 - `@StateNodeBuilder` 旁邊加 `@PlainData` 會被拒絕，因為這個 macro 已經寫出檢查。旁邊加 `@SnapshotConvertible` 沒有問題。
 - `@SnapshotConvertible` 型別的每個 stored property 都要標註型別，與 `@PlainData` 相同。
 
@@ -119,7 +120,7 @@ Land 需要但不同步的參照（例如快取或 service handle）放在 land 
 
 **註冊與轉換時。** 有兩種情況會通過編譯期檢查：
 - **手寫的 witness。** 型別可以用它（`static func _plainDataCheck() {}`）符合 `PlainData`，這樣什麼都不檢查。本 repository 的 lint 會拒絕它，但在 repository 之外的專案可以編譯。
-- **其他 attached macro 加入的成員。** 與 `@StateNodeBuilder` 一起掛在 state 型別上的 member macro 所加入的成員，`@StateNodeBuilder` 看不到：它們沒有標記檢查、沒有 `PlainData` 檢查，也沒有欄位 metadata。目前不會拒絕這種 macro。
+- **自己定義、與本專案 macro 同名的 macro。** macro 只看得到寫法，看不到宣告。因此在自己的 module 裡定義、名為 `SnapshotConvertible` 的 macro，不加 module 名稱掛在 `@StateNodeBuilder` 旁邊時，會被當成本專案的 macro，它加入的成員不會被檢查。
 
 對這兩種情況，編譯器之後還留著兩道執行期檢查：
 - **註冊時。** `LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會拋出 `LandRegistrationError`，其 `sync` 含有 `.valueSemantics` 問題，也就是列出每個欄位與 class 的 `SyncValueSemanticsError`，例如 `GameState.inventory: Inventory is a class; synced state must be value types`。檢查會走訪每個同步欄位的型別（包含 `.serverOnly` 欄位），穿過 optional、array、set、dictionary 的 key 與 value，以及巢狀 state node，並透過預設實例檢查一般 struct、tuple、enum payload 與 existential property（`any P`）的內容。

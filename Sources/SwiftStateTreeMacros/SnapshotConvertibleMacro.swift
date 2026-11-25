@@ -80,6 +80,13 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             throw error
         }
 
+        // Another macro on the type could add members this walk doesn't see (#100).
+        // `@StateNodeBuilder` reports for both when it is beside this one.
+        if !PlainDataWalk.hasAttribute(named: "StateNodeBuilder", in: structDecl.attributes) {
+            StateTypeAttributes.diagnoseUnknown(
+                structDecl.attributes, allowed: StateTypeAttributes.besideSnapshotConvertible, in: context)
+        }
+
         // Collect all stored properties
         let properties = collectStoredProperties(from: structDecl)
 

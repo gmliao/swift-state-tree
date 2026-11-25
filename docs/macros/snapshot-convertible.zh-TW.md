@@ -47,6 +47,7 @@ struct Position: Codable, Sendable {
 與其他 macro 並用時：
 - 與 `@PlainData` 或 `@Payload` 並用時，不寫自己的檢查。
 - 與 `@StateNodeBuilder` 並用時，只寫 conformance，因為 node 的成員就是 witness。
+- 型別上的其他 attached macro 會被拒絕，因為它可能加入檢查看不到的成員。不加入成員的內建 attribute（例如 `@available`）沒有問題。
 
 ### 生成的程式碼
 

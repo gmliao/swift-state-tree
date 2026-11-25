@@ -47,6 +47,7 @@ struct Position: Codable, Sendable {
 Beside another macro:
 - Beside `@PlainData` or `@Payload`, it writes no checks of its own.
 - Beside `@StateNodeBuilder`, it writes only the conformance, since the node's member is the witness.
+- Any other attached macro on the type is refused, because it could add members the checks don't see. Built-in attributes that add no members, such as `@available`, are fine.
 
 ### Generated Code
 
