@@ -29,11 +29,11 @@ func testOnLeaveTriggersSyncBroadcastOnly() async throws {
         using: BroadcastOnlyTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout BroadcastOnlyTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Guest"
             }
             
-            OnLeave { (state: inout BroadcastOnlyTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }
@@ -81,11 +81,11 @@ func testSyncBroadcastOnlyIsCalledOnLeave() async throws {
         using: BroadcastOnlyTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout BroadcastOnlyTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Guest"
             }
             
-            OnLeave { (state: inout BroadcastOnlyTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }

@@ -97,7 +97,7 @@ struct DecimalSendPathHolder: Encodable {
 private func makeDecimalEmitLand(_ event: @escaping @Sendable () -> AnyServerEvent) -> LandDefinition<UntypedPayloadState> {
     Land("decimal-emit", using: UntypedPayloadState.self) {
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout UntypedPayloadState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.round += 1
                 ctx.emitAnyServerEventForTesting(event(), to: .all)
                 ctx.requestSyncNow()

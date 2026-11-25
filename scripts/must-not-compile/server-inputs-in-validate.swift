@@ -1,6 +1,5 @@
-// expect-error: cannot convert value of type 'T?' to specified type 'ServerInputSubmitter'
+// expect-error: value of type 'ValidateContext' has no member 'serverInputs'
 // validate's context can't submit server inputs (#586).
-// Only the resolver-output lookup answers the name, so its value can't be the member's type.
 import SwiftStateTree
 
 let serverInputsInValidate = Land("snippet", using: SnippetState.self) {

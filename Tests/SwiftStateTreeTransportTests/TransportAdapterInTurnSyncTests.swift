@@ -59,19 +59,19 @@ private func makeInTurnSyncLand() -> LandDefinition<InTurnSyncTestState> {
     Land("in-turn-sync-test", using: InTurnSyncTestState.self) {
         ServerEvents { Register(InTurnSyncEvent.self) }
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout InTurnSyncTestState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(InTurnSyncEvent(message: "tick-event-\(state.ticks)"), to: .all)
                 ctx.requestSyncNow()
             }
         }
         Rules {
-            HandleAction(InTurnEmitAction.self) { (state: inout InTurnSyncTestState, action: InTurnEmitAction, ctx: LandContext) in
+            HandleAction(InTurnEmitAction.self) { state, action, ctx in
                 state.total += action.amount
                 ctx.emitEvent(InTurnSyncEvent(message: "input-event-\(action.amount)"), to: .all)
                 return InTurnEmitResponse(ok: true)
             }
-            HandleAction(InTurnMixedAction.self) { (state: inout InTurnSyncTestState, _: InTurnMixedAction, ctx: LandContext) in
+            HandleAction(InTurnMixedAction.self) { state, _, ctx in
                 ctx.emitEvent(InTurnSyncEvent(message: "input-event-targeted"), to: .player(ctx.playerID))
                 ctx.emitEvent(InTurnSyncEvent(message: "input-event-broadcast"), to: .all)
                 return InTurnEmitResponse(ok: true)
@@ -631,10 +631,10 @@ struct TransportAdapterInTurnSyncTests {
     ) async throws -> (keeper: LandKeeper<InTurnSyncTestState>, adapter: TransportAdapter<InTurnSyncTestState>, transport: InTurnSyncTransport, session: SessionID) {
         let definition = Land("in-turn-timed-test", using: InTurnSyncTestState.self) {
             Lifetime {
-                Tick(every: tick) { (state: inout InTurnSyncTestState, _: LandContext) in
+                Tick(every: tick) { state, _ in
                     state.ticks += 1
                 }
-                StateSync(every: sync) { (_: InTurnSyncTestState, _: LandContext) in }
+                StateSync(every: sync) { _, _ in }
             }
         }
         let transport = InTurnSyncTransport()

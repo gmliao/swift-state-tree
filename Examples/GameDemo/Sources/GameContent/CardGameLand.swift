@@ -19,7 +19,7 @@ public enum CardGame {
             }
             
             Rules {
-                OnJoin { (state: inout CardGameState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     let playerID = ctx.playerID
                     
                     // Initialize player state
@@ -45,7 +45,7 @@ public enum CardGame {
             
             Lifetime {
                 // Tick every 100ms to update game state
-                Tick(every: .milliseconds(100)) { (state: inout CardGameState, ctx: LandContext) in
+                Tick(every: .milliseconds(100)) { state, ctx in
                     guard let tickId = ctx.tickId else {
                         return
                     }

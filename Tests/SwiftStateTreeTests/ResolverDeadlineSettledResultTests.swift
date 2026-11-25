@@ -63,7 +63,7 @@ struct ResolverDeadlineSettledResultTests {
         let metrics = ResolverDeadlineMetrics()
         let result = await runWithDeliveryHeld(player: "p-1", metrics: metrics)
         let context = try result.get()
-        #expect(context.getResolverOutput(DeadlineResolverOutput.self, forPropertyName: "deadlineJoin")?.value == 0)
+        #expect(context.resolverOutput(DeadlineResolverOutput.self, named: "deadlineJoin")?.value == 0)
         #expect(metrics.snapshot == .init(timeouts: 0, abandoned: 0, onLeaveDropped: 0))
     }
 

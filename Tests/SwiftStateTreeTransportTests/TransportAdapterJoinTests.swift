@@ -33,7 +33,7 @@ func testConnectDoesNotAutoJoin() async throws {
         using: JoinTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout JoinTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -74,7 +74,7 @@ func testManualJoinSimulatingRouter() async throws {
         using: JoinTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout JoinTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -161,7 +161,7 @@ func testMessagesBeforeAndAfterJoin() async throws {
         using: JoinTestState.self
     ) {
         Rules {
-            HandleEvent(TestIncrementEvent.self) { (state: inout JoinTestState, event: TestIncrementEvent, _) in
+            HandleEvent(TestIncrementEvent.self) { state, event, _ in
                 state.ticks += 1
             }
         }

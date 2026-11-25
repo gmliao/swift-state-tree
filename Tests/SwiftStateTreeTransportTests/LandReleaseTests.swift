@@ -35,13 +35,13 @@ struct LandReleaseAck: ResponsePayload {
 private func releaseTestLand(_ landID: LandID) -> LandDefinition<LandReleaseTestState> {
     Land(landID.landType, using: LandReleaseTestState.self) {
         Rules {
-            HandleAction(LandReleaseSetAction.self) { (state: inout LandReleaseTestState, action: LandReleaseSetAction, _: LandContext) in
+            HandleAction(LandReleaseSetAction.self) { state, action, _ in
                 state.value = action.value
                 return LandReleaseAck(ok: true)
             }
         }
         Lifetime {
-            DestroyWhenEmpty(after: .milliseconds(10)) { (_: inout LandReleaseTestState, _: LandContext) in }
+            DestroyWhenEmpty(after: .milliseconds(10)) { _, _ in }
         }
     }
 }
@@ -70,10 +70,14 @@ enum LandReleaseGates {
 
 /// Never returns, and ignores cancellation, until its land's gate opens: the land's
 /// initialization times out and fails.
-struct LandReleaseStuckResolver: ContextResolver {
+@PlainData
+struct LandReleaseStuckResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = LandReleaseInitOutput
-    static func resolve(ctx: ResolverContext) async throws -> LandReleaseInitOutput {
-        await LandReleaseGates.gate(ctx.landID).arrive()
+    func resolve(_ deps: NoServices) async throws -> LandReleaseInitOutput {
+        await LandReleaseGates.gate(landID).arrive()
         return LandReleaseInitOutput(value: 0)
     }
 }
@@ -82,7 +86,7 @@ private func failingInitLand(_ landID: LandID) -> LandDefinition<LandReleaseTest
     Land(landID.landType, using: LandReleaseTestState.self) {
         Rules {}
         Lifetime {
-            OnInitialize(resolvers: LandReleaseStuckResolver.self) { (_: inout LandReleaseTestState, _: LandContext) in }
+            OnInitialize(resolvers: { _, ctx in LandReleaseStuckResolver(landID: ctx.landID) }) { _, _, _ in }
         }
     }
 }
@@ -100,11 +104,16 @@ struct LandReleaseHeldOutput: ResolverOutput {
 
 /// Holds the action at its land's gate (`LandReleaseGates`, keyed by land ID) until the test
 /// opens it; ignores cancellation, like a resolver blocked in a call that doesn't check it.
-struct LandReleaseHeldResolver: ContextResolver {
+@PlainData
+struct LandReleaseHeldResolver: Resolver {
+    typealias Dependencies = NoServices
+    let value: Int
+    let landID: String
+
     typealias Output = LandReleaseHeldOutput
-    static func resolve(ctx: ResolverContext) async throws -> LandReleaseHeldOutput {
-        await LandReleaseGates.gate(ctx.landID).arrive()
-        return LandReleaseHeldOutput(value: (ctx.actionPayload as? LandReleaseHeldAction)?.value ?? -1)
+    func resolve(_ deps: NoServices) async throws -> LandReleaseHeldOutput {
+        await LandReleaseGates.gate(landID).arrive()
+        return LandReleaseHeldOutput(value: value)
     }
 }
 
@@ -112,8 +121,8 @@ struct LandReleaseHeldResolver: ContextResolver {
 private func ticklessJobLand(_ landID: LandID) -> LandDefinition<LandReleaseTestState> {
     Land(landID.landType, using: LandReleaseTestState.self) {
         Rules {
-            HandleAction(LandReleaseHeldAction.self, resolvers: LandReleaseHeldResolver.self) {
-                (state: inout LandReleaseTestState, action: LandReleaseHeldAction, _: LandContext) in
+            HandleAction(LandReleaseHeldAction.self, resolvers: { _, action, ctx in LandReleaseHeldResolver(value: action.value, landID: ctx.landID) }) {
+                state, action, _, _ in
                 state.value = action.value
                 return LandReleaseAck(ok: true)
             }

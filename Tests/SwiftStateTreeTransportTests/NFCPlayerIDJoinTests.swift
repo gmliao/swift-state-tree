@@ -26,7 +26,7 @@ func nfdPlayerIDJoinsAsNFC() async throws {
     let nfc = "\u{E9}-player", nfd = "e\u{301}-player"
     let definition = Land("nfc-join-test", using: NFCJoinState.self) {
         Rules {
-            OnJoin { (state: inout NFCJoinState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.joined[ctx.playerID, default: 0] += 1
                 state.last = ctx.playerID
             }

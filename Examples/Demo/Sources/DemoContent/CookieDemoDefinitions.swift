@@ -174,13 +174,13 @@ public enum CookieGame {
             Rules {
                 // MARK: - Join / Leave
 
-                CanJoin { (_: CookieGameState, session: PlayerSession, _: LandContext) in
+                CanJoin { _, session, _ in
                     // maxPlayers is automatically checked by LandKeeper before this handler is called
                     let playerID = PlayerID(session.playerID)
                     return .allow(playerID: playerID)
                 }
 
-                OnJoin { (state: inout CookieGameState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     let playerID = ctx.playerID
 
                     // Derive a display name from JWT metadata or fall back to PlayerID.
@@ -204,7 +204,7 @@ public enum CookieGame {
                     state.recomputeTotalCookies()
                 }
 
-                OnLeave { (state: inout CookieGameState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     let playerID = ctx.playerID
                     state.players.removeValue(forKey: playerID)
                     state.privateStates.removeValue(forKey: playerID)
@@ -215,7 +215,7 @@ public enum CookieGame {
 
                 // MARK: - Client Events
 
-                HandleEvent(ClickCookieEvent.self) { (state: inout CookieGameState, event: ClickCookieEvent, ctx: LandContext) in
+                HandleEvent(ClickCookieEvent.self) { state, event, ctx in
                     let playerID = ctx.playerID
 
                     // Ensure player state exists (should normally be true after OnJoin).
@@ -234,7 +234,7 @@ public enum CookieGame {
 
                 // MARK: - Actions
 
-                HandleAction(BuyUpgradeAction.self) { (state: inout CookieGameState, action: BuyUpgradeAction, ctx: LandContext) -> BuyUpgradeResponse in
+                HandleAction(BuyUpgradeAction.self) { state, action, ctx in
                     let playerID = ctx.playerID
 
                     // Ensure player state exists.
@@ -290,7 +290,7 @@ public enum CookieGame {
 
             Lifetime {
                 // Game logic updates (can modify state)
-                Tick(every: .milliseconds(300)) { (state: inout CookieGameState, _: LandContext) in
+                Tick(every: .milliseconds(300)) { state, _ in
                     state.ticks += 1
 
                     var total = 0
@@ -307,23 +307,23 @@ public enum CookieGame {
                 }
 
                 // Network synchronization (read-only callback will be called during sync)
-                StateSync(every: .milliseconds(300)) { (state: CookieGameState, ctx: LandContext) in
+                StateSync(every: .milliseconds(300)) { state, ctx in
                     // Read-only callback - will be called during sync
                     // Do NOT modify state here - use Tick for state mutations
                     // Use for logging, metrics, or other read-only operations
                 }
 
-                DestroyWhenEmpty(after: .seconds(5)) { (_: inout CookieGameState, ctx: LandContext) in
+                DestroyWhenEmpty(after: .seconds(5)) { _, ctx in
                     ctx.logger.info("Cookie land is empty, destroying...")
                 }
 
-                OnInitialize { (_: inout CookieGameState, _: LandContext) in
+                OnInitialize { _, _ in
                 }
 
-                OnFinalize { (_: inout CookieGameState, _: LandContext) in
+                OnFinalize { _, _ in
                 }
 
-                AfterFinalize { (state: CookieGameState, ctx: LandContext) async in
+                AfterFinalize { state, ctx async in
                     ctx.logger.info(
                         "Cookie land finalized",
                         metadata: [

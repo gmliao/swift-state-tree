@@ -58,7 +58,7 @@ func testTransportAdapterForwardsEvents() async throws {
         Rules {
             // Registered for the schema only; a registered client event needs a handler (#771).
             HandleEvent(TestChatEvent.self) { _, _, _ in }
-            HandleEvent(TestIncrementEvent.self) { (state: inout TestState, event: TestIncrementEvent, _) in
+            HandleEvent(TestIncrementEvent.self) { state, event, _ in
                     state.count += 1
             }
         }
@@ -124,10 +124,10 @@ func testTransportAdapterConnectionLifecycle() async throws {
         using: TestState.self
     ) {
         Rules {
-            OnJoin { (state: inout TestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
-            OnLeave { (state: inout TestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }

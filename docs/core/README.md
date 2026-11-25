@@ -59,7 +59,7 @@ Resolver mechanism allows parallel loading of external data before an action, jo
 
 - **Parallel Execution**: Multiple resolvers execute in parallel, improving performance
 - **Error Handling**: Any resolver failure aborts the entire processing flow
-- **Type Safety**: Provides type-safe access through `@dynamicMemberLookup`
+- **Typed outputs**: The handler gets each resolver's output as a typed parameter
 - **Data Loading**: Load data from external sources like databases, Redis, APIs, etc.
 
 ### Usage
@@ -68,9 +68,10 @@ Declare resolver in Land DSL:
 
 ```swift
 Rules {
-    HandleAction(UpdateCartAction.self, resolvers: ProductInfoResolver.self) { state, action, ctx in
-        // Resolver has already executed, can use directly
-        let productInfo = ctx.productInfo  // Type: ProductInfo?
+    HandleAction(UpdateCartAction.self, resolvers: { _, action, _ in
+        ProductInfo(productID: action.productID)
+    }) { state, action, productInfo, ctx in
+        // The resolver has already run; productInfo is its output (ProductInfoOutput?)
         // ...
     }
 }

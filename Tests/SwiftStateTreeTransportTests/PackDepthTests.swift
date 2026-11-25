@@ -76,7 +76,7 @@ private func writeNestedLeaf(depth: Int) throws -> MessagePackValue {
 private func makeNestedLeafLand(depth: Int, target: SwiftStateTree.EventTarget) -> LandDefinition<UntypedPayloadState> {
     Land("pack-depth-event", using: UntypedPayloadState.self) {
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout UntypedPayloadState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.round += 1
                 ctx.emitEvent(NestedLeafEvent(leaf: NestedObjectsLeaf(depth: depth)), to: target)
                 ctx.requestSyncNow()
@@ -116,7 +116,7 @@ private func packDepthChain(levels: Int) -> PackDepthNode {
 private func makeDeepStateLand(levels: Int) -> LandDefinition<PackDepthState> {
     Land("pack-depth-state", using: PackDepthState.self) {
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout PackDepthState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.round += 1
                 state.tree = packDepthChain(levels: levels)
                 ctx.requestSyncNow()
@@ -177,7 +177,7 @@ private func makeDeepResponseLand() -> LandDefinition<UntypedPayloadState> {
     Land("pack-depth-response", using: UntypedPayloadState.self) {
         Rules {
             HandleAction(PackDepthAction.self) {
-                (_: inout UntypedPayloadState, action: PackDepthAction, _: LandContext) in
+                _, action, _ in
                 PackDepthReply(leaf: NestedObjectsLeaf(depth: action.depth))
             }
         }

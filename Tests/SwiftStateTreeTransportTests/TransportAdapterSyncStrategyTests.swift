@@ -52,7 +52,7 @@ private func makeEnvConfig(strategy: SyncStrategy, useSnapshotForSync: Bool) -> 
 func testFullSnapshotSendsEverySync(useSnapshotForSync: Bool) async throws {
     let definition = Land("strategy-test", using: StrategyTestState.self) {
         Rules {
-            OnJoin { (state: inout StrategyTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.scores[ctx.playerID] = 0
             }
         }
@@ -102,7 +102,7 @@ func testFullSnapshotSendsEverySync(useSnapshotForSync: Bool) async throws {
 func testDeltaSendsNothingWhenUnchanged(useSnapshotForSync: Bool) async throws {
     let definition = Land("strategy-test-delta", using: StrategyTestState.self) {
         Rules {
-            OnJoin { (state: inout StrategyTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.scores[ctx.playerID] = 0
             }
         }

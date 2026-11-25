@@ -171,7 +171,7 @@ struct EventNameHostRegistrationTests {
         let land = Land("eh-hidden", using: EventNameHostState.self) {
             ServerEvents { Register(EHCollidingKeys.self) }
             Rules {
-                HandleServerInput(EHInputs.EHCollidingKeys.self) { (_: inout EventNameHostState, _: EHInputs.EHCollidingKeys, _: LandContext) in }
+                HandleServerInput(EHInputs.EHCollidingKeys.self) { _, _, _ in }
             }
         }
         // The input no longer hides the event's wire-key collision: the base's own fingerprint

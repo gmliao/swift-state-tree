@@ -31,13 +31,13 @@ struct LandRouterJoinEventOverflowTests {
         let definition = Land("overflow-test", using: OverflowRouterTestState.self) {
             ServerEvents { Register(OverflowRouterTestEvent.self) }
             Rules {
-                OnJoin { (state: inout OverflowRouterTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players[ctx.playerID] = "Joined"
                     for n in 0..<3 {
                         ctx.emitEvent(OverflowRouterTestEvent(n: n), to: .session(ctx.sessionID))
                     }
                 }
-                OnLeave { (state: inout OverflowRouterTestState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.players.removeValue(forKey: ctx.playerID)
                 }
             }

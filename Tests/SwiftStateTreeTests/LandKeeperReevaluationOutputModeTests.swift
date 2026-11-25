@@ -28,7 +28,7 @@ func makeOutputModeTestDefinition() -> LandDefinition<OutputModeTestState> {
         }
         Rules { }
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout OutputModeTestState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(OutputModeTestEvent(value: state.ticks), to: .all)
             }
@@ -68,7 +68,7 @@ private func makeOutputModeSyncLoopDefinition() -> LandDefinition<OutputModeTest
     Land("output-mode-sync-loop-test", using: OutputModeTestState.self) {
         Rules { }
         Lifetime {
-            StateSync(every: .seconds(3600)) { (_: OutputModeTestState, _: LandContext) in }
+            StateSync(every: .seconds(3600)) { _, _ in }
         }
     }
 }

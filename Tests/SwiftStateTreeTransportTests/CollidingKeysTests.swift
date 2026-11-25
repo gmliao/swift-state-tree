@@ -76,13 +76,13 @@ struct CollidingKeysTests {
     func collidingFieldEndsTheLand(atJoin: Bool) async throws {
         let definition = Land("colliding-keys-test", using: CollidingKeysState.self) {
             Rules {
-                OnJoin { (state: inout CollidingKeysState, _: LandContext) in
+                OnJoin { state, _ in
                     state.round += 1
                     if atJoin { state.byCode = [CollidingCode(id: 1): 1, CollidingCode(id: 2): 2] }
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (state: inout CollidingKeysState, ctx: LandContext) in
+                Tick(every: .seconds(3600)) { state, ctx in
                     if !atJoin {
                         state.byCode[CollidingCode(id: state.byCode.count + 1)] = state.round
                     }

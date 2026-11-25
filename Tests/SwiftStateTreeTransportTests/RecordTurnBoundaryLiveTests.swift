@@ -41,7 +41,7 @@ private func makeTurnBoundaryLand(tick: Bool) -> LandDefinition<TurnBoundaryStat
         Rules { turnBoundaryRule() }
         Lifetime {
             turnBoundaryInitialize()
-            Tick(every: .seconds(3600)) { (state: inout TurnBoundaryState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(SyncStreamTestEvent(message: "tick-\(state.ticks)"), to: .all)
                 ctx.requestSyncNow()
@@ -51,7 +51,7 @@ private func makeTurnBoundaryLand(tick: Bool) -> LandDefinition<TurnBoundaryStat
 }
 
 private func turnBoundaryRule() -> AnyActionHandler<TurnBoundaryState> {
-    HandleAction(TurnBoundaryAction.self) { (state: inout TurnBoundaryState, action: TurnBoundaryAction, ctx: LandContext) in
+    HandleAction(TurnBoundaryAction.self) { state, action, ctx in
         state.total += action.value
         state.scores[ctx.playerID] = action.value
         // From 5 on, the action asks for a sync: in-turn, its turn's sync phase records sync
@@ -64,7 +64,7 @@ private func turnBoundaryRule() -> AnyActionHandler<TurnBoundaryState> {
 }
 
 private func turnBoundaryInitialize() -> LifetimeDirective<TurnBoundaryState> {
-    OnInitialize { (state: inout TurnBoundaryState, ctx: LandContext) in
+    OnInitialize { state, ctx in
         state.total = 1
         ctx.emitEvent(SyncStreamTestEvent(message: "init"), to: .all)
     }

@@ -22,7 +22,7 @@ struct RecordSchemaFingerprintTests {
                 try ReevaluationSchemaFingerprint.compute(for: VisibilityTest.makeLand(VisibilityTestBroadcastState.self)),
                 "cc2e49beb441b438"
             ),
-            ("resolver-test", try ReevaluationSchemaFingerprint.compute(for: ResolverTest.makeLand()), "b3f9fe2ca2424670"),
+            ("resolver-test", try ReevaluationSchemaFingerprint.compute(for: ResolverTest.makeLand().definition), "b3f9fe2ca2424670"),
             ("card-game", try ReevaluationSchemaFingerprint.compute(for: CardGame.makeLand()), "1e311682d1720885"),
         ]
         for entry in fingerprints {

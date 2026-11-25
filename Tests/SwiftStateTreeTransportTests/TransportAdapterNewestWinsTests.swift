@@ -64,11 +64,15 @@ private enum NewestWinsActionHold {
     static let gates = KeyedGates<ClientID, TestGate> { TestGate() }
 }
 
-struct NewestWinsActionResolver: ContextResolver {
+@PlainData
+struct NewestWinsActionResolver: Resolver {
+    typealias Dependencies = NoServices
+    let clientID: ClientID
+
     typealias Output = NewestWinsActionOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> NewestWinsActionOutput {
-        if let gate = NewestWinsActionHold.gates.registeredGate(ctx.clientID) {
+    func resolve(_ deps: NoServices) async throws -> NewestWinsActionOutput {
+        if let gate = NewestWinsActionHold.gates.registeredGate(clientID) {
             await gate.arrive()
         }
         return NewestWinsActionOutput()
@@ -162,18 +166,18 @@ private struct NewestWinsFixture {
 private func makeFixture(legacyJoin: Bool = false) async -> NewestWinsFixture {
     let definition = Land("newest-wins", using: NewestWinsTestState.self) {
         Rules {
-            OnJoin(resolvers: NewestWinsJoinResolver.self) { (state: inout NewestWinsTestState, _: LandContext) in
+            OnJoin(resolvers: NewestWinsJoinResolver.self) { state, _, _ in
                 state.joins += 1
             }
-            OnLeave { (state: inout NewestWinsTestState, _: LandContext) in
+            OnLeave { state, _ in
                 state.leaves += 1
             }
-            HandleAction(NewestWinsBumpAction.self) { (state: inout NewestWinsTestState, action: NewestWinsBumpAction, _: LandContext) in
+            HandleAction(NewestWinsBumpAction.self) { state, action, _ in
                 state.bumps += action.by
                 return NewestWinsBumpResponse(bumps: state.bumps)
             }
-            HandleAction(NewestWinsHeldBumpAction.self, resolvers: NewestWinsActionResolver.self) {
-                (state: inout NewestWinsTestState, action: NewestWinsHeldBumpAction, _: LandContext) in
+            HandleAction(NewestWinsHeldBumpAction.self, resolvers: { _, _, ctx in NewestWinsActionResolver(clientID: ctx.clientID) }) {
+                state, action, _, _ in
                 state.bumps += action.by
                 return NewestWinsBumpResponse(bumps: state.bumps)
             }

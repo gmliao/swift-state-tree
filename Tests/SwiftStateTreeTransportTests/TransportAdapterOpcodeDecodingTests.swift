@@ -43,7 +43,7 @@ struct TransportAdapterOpcodeDecodingTests {
             using: OpcodeDecodingTestState.self
         ) {
             Rules {
-                HandleAction(OpcodeDecodingTestAction.self) { (state: inout OpcodeDecodingTestState, action: OpcodeDecodingTestAction, _: LandContext) in
+                HandleAction(OpcodeDecodingTestAction.self) { state, action, _ in
                     state.lastAction = action.message
                     return OpcodeDecodingTestActionResponse(success: true)
                 }
@@ -106,7 +106,7 @@ struct TransportAdapterOpcodeDecodingTests {
                 Register(OpcodeDecodingTestIncrementEvent.self)
             }
             Rules {
-                HandleEvent(OpcodeDecodingTestIncrementEvent.self) { (state: inout OpcodeDecodingTestState, _: OpcodeDecodingTestIncrementEvent, _: LandContext) in
+                HandleEvent(OpcodeDecodingTestIncrementEvent.self) { state, _, _ in
                     state.ticks += 1
                 }
             }
@@ -162,7 +162,7 @@ struct TransportAdapterOpcodeDecodingTests {
             using: OpcodeDecodingTestState.self
         ) {
             Rules {
-                HandleAction(OpcodeDecodingTestAction.self) { (state: inout OpcodeDecodingTestState, action: OpcodeDecodingTestAction, _: LandContext) in
+                HandleAction(OpcodeDecodingTestAction.self) { state, action, _ in
                     state.lastAction = action.message
                     return OpcodeDecodingTestActionResponse(success: true)
                 }

@@ -16,7 +16,7 @@ struct SchemaGen {
             AnyLandDefinition(HeroDefense.makeLand()),
             AnyLandDefinition(ReevaluationMonitor.makeLand()),
             AnyLandDefinition(VisibilityTest.makeLand()),
-            AnyLandDefinition(ResolverTest.makeLand()),
+            AnyLandDefinition(ResolverTest.makeLand().definition),
         ]
 
         do {

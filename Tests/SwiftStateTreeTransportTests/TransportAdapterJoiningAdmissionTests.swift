@@ -81,18 +81,18 @@ private func makeFixture(
         ? Land("joining-admission", using: JoiningAdmissionTestState.self) {
             ServerEvents { Register(JoiningAdmissionTestEvent.self) }
             Rules {
-                OnJoin { (state: inout JoiningAdmissionTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.joins += 1
                 }
             }
             Lifetime {
-                Tick(every: .milliseconds(50)) { (_: inout JoiningAdmissionTestState, _: LandContext) in }
+                Tick(every: .milliseconds(50)) { _, _ in }
             }
         }
         : Land("joining-admission", using: JoiningAdmissionTestState.self) {
             ServerEvents { Register(JoiningAdmissionTestEvent.self) }
             Rules {
-                OnJoin { (state: inout JoiningAdmissionTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.joins += 1
                 }
             }

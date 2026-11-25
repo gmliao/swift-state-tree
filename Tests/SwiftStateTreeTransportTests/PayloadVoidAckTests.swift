@@ -78,13 +78,13 @@ struct PayloadVoidAckTests {
         let definition = Land("void-ack", using: VoidAckTestState.self) {
             Rules {
                 HandleAction(VoidAckTestAction.self) {
-                    (state: inout VoidAckTestState, action: VoidAckTestAction, _: LandContext) in
+                    state, action, _ in
                     state.total += action.amount
                     return VoidAckTestResponse(total: state.total)
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout VoidAckTestState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
         let transport = VoidAckTestTransport()

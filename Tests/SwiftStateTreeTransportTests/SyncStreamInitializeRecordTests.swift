@@ -34,11 +34,15 @@ struct InitRecordResolverOutput: ResolverOutput {
 private let initResolverGates = KeyedGates<String, TestGate> { TestGate() }
 
 /// Waits at the land's gate (if any), then resolves 7.
-struct GatedInitResolver: ContextResolver {
+@PlainData
+struct GatedInitResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = InitRecordResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> InitRecordResolverOutput {
-        let gate = initResolverGates.registeredGate(ctx.landID)
+    func resolve(_ deps: NoServices) async throws -> InitRecordResolverOutput {
+        let gate = initResolverGates.registeredGate(landID)
         await gate?.arrive()
         return InitRecordResolverOutput(value: 7)
     }
@@ -48,12 +52,12 @@ private func makeInitRecordLand() -> LandDefinition<InitRecordTestState> {
     Land("init-record-test", using: InitRecordTestState.self) {
         ServerEvents { Register(InitRecordEvent.self) }
         Lifetime {
-            OnInitialize(resolvers: GatedInitResolver.self) { (state: inout InitRecordTestState, ctx: LandContext) in
-                let resolved: InitRecordResolverOutput? = ctx.gatedInit
+            OnInitialize(resolvers: { _, ctx in GatedInitResolver(landID: ctx.landID) }) { state, gatedInit, ctx in
+                let resolved: InitRecordResolverOutput? = gatedInit
                 state.value = resolved?.value ?? -1
                 ctx.emitEvent(InitRecordEvent(message: "initialized"), to: .all)
             }
-            Tick(every: .seconds(3600)) { (state: inout InitRecordTestState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
         }

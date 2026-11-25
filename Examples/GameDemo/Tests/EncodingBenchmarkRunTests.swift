@@ -220,11 +220,11 @@ struct EncodingBenchmarkRunTests {
         let resolvedHandler = land.actionHandlers.first(where: { $0.canHandle(SetMotionResolvedAction.self) })
         let plainHandler = land.actionHandlers.first(where: { $0.canHandle(SetMotionAction.self) })
         #expect(resolvedHandler != nil, "SetMotionResolvedAction handler not registered")
-        #expect(resolvedHandler?.resolverExecutors.count == 1,
-                "expected 1 resolver, got \(resolvedHandler?.resolverExecutors.count ?? -1)")
+        #expect(resolvedHandler?.resolverCount == 1,
+                "expected 1 resolver, got \(resolvedHandler?.resolverCount ?? -1)")
         #expect(plainHandler != nil, "SetMotionAction handler not registered")
-        #expect(plainHandler?.resolverExecutors.count == 0,
-                "expected 0 resolvers, got \(plainHandler?.resolverExecutors.count ?? -1)")
+        #expect(plainHandler?.resolverCount == 0,
+                "expected 0 resolvers, got \(plainHandler?.resolverCount ?? -1)")
     }
 
     @Test("--resolver-action refusals: needs --actions-per-player, tickless only, not with --wide-response")

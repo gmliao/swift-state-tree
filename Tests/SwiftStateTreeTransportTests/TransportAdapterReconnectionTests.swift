@@ -281,11 +281,11 @@ func testSinglePlayerReconnectNoPreviousLeaveRecords() async throws {
         using: SinglePlayerReconnectTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout SinglePlayerReconnectTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
             
-            OnLeave { (state: inout SinglePlayerReconnectTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }

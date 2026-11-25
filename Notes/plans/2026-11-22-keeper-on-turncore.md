@@ -1,11 +1,28 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 5.2, plan only. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
+**Status:** rev 5.4, plan only; every K1 question is decided: K1-Q4 and K1-Q5 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
 
 Code pointers are at main 8e622a20:
 - `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
 - `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`;
 - `LKT` is `Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift`.
+
+**Rev 5.4** (#806 run before K1a; a guard, not a fix):
+- **#806 doesn't reproduce.** Its test, run on main (8c46944d) before any K1a code, passes on all three encodings for an action and a client event. Replay rebuilds a recorded action with `PendingActionItem.init(action:)` and a client event with `AnyClientEvent(type:payload:)`. Both use `AnyCodablePayloadSource`, a JSON round trip that matches keys with `String ==`, as live does. `RecordPayloadSource` reads only server-encoded trees (resolver outputs, the monitor's server events). The record keeps the client's key bytes, and the test pins that.
+- **K1a must keep #806's class out (C1 guards it).** C1 is `RecordKeyNormalizationTests`: the NFD and NFC cases replay as live on every encoding, with no known issue. It passes today and must still pass after K1a's replay change.
+- **The reverse risk:** a K1a that decoded 3.7 client bytes with a byte-matching decoder (`CanonicalMessagePack`'s, through `RecordPayloadSource`) would introduce the class. A mutant that builds the replayed action from `RecordPayloadSource` fails the NFD case on all three encodings. K1-Q6 (i) decodes with the live decoders, which match with `String ==`.
+
+**Rev 5.3** (the drift note against main 32a220e9, #819, #825 and P4; Review's GO on the note):
+- **K1a must keep #806's class out (C1 guards it)** (§3.11, JSON and MessagePack bullets; rev 5.3 had "#806 lands with K1a", and rev 5.4 found #806 doesn't reproduce today). A payload key in another Unicode normalization matches live (`String ==`). A replay decoder that matched bytes would not. K1a keeps that out for actions and client events in 3.7 records, on one condition this rev writes down: replay decodes their bytes with the live decoder for the header's encoding, never through `RecordPayloadSource`. #806's test is C1, a regression guard. 3.6 is answered by K1-Q1 (a). The paths that keep the byte-matching decoder take keys a Swift encoder wrote.
+- **Server inputs (K1-Q4, decided (a) 2026-11-25).** Rev 5.2's "the typed value encoded in the record's encoding" contradicts P3b (#817): the record never writes a re-encode of `decoded`. A server input records the canonical MessagePack bytes live decodes, as `bin`, whatever the header says (§3.11, "Server inputs").
+- **P3 has landed** (#790, #817, #823, #803, #804, #778; #819 open). §3.11 reuses what it shipped: `RecordedPayloadDecodeFailure` (three cases), #778's pin, #803's pin. "What P3 must leave for K1a" is checked and met. The response exit after #819 is `InputOutcome.boundaryValue` (§5, K1a's row).
+- **The P4 gate (K1-Q5, decided (a) 2026-11-25).** K1a's content doesn't read P4's changes, so K1a starts once #819 and #825 are merged, with P4 in parallel. K1b still waits for K1a and P4 (§5). This replaces rev 5's "K1a's order: after PlainData P3 and P4".
+- **#825 (#769 R1)** makes an action whose `resolvers:` closure built no value an inline action: §3.3's table gets that row, K1a builds the item in two branches, and Appendix A notes the census fields #825 adds.
+- **Where replay decodes (K1-Q6, decided (i) 2026-11-25).** `SwiftStateTree`, where the keeper builds replay items, doesn't depend on `SwiftStateTreeMessagePack`, so it can't reach the live MessagePack decoder that #806's condition and §3.11's rule need. The replay entry points take a decoder value, `RecordPayloadDecoders`, with defaulted parameters, a named refusal, and transport-less keepers recording `json` (§3.11).
+- **A recorded resolver output in a queued item (K1-Q7, decided (d) by Main 2026-11-25; K1b).** `HeldResolverOutput.recorded` holds an `AnyCodable` tree, and `ReplayLandOwner` holds a `KeeperModel` (§3.10), so `pendingItems` can't be `@PlainData` in replay. No slice covered it. The replay build holds the tree's canonical MessagePack bytes, which the read already encodes today. That is no format change and no public change, it doesn't gate K1a, and #769 R2 re-keys the outputs by position later, as planned (§9, Appendix A, F5).
+- **The response exit (decided by Main, 2026-11-25; no public change).** `handleActionEnvelope` keeps returning `AnyCodable`, boxing at its own boundary; responses stay unrecorded and uncompared (§3.11, §5).
+- **Pinned toolchain:** 6.4.3 since #775, not 6.2.4 (§3.11, §5).
+- **Anchors:** §3.11's pointers are re-resolved at 32a220e9. K1a re-resolves them on its own base.
 
 **Rev 5.2** (Review's GO on rev 5.1, two shoulds for K1a):
 - **The harness off the pinned toolchain** (§3.11, Harness). There canonical JSON bytes may differ, so the record's decoded view renders a recorded payload as its tree, not as base64. The rule is named `recordPayloadAsTree`. The classify script then sees no payload leaf change. Tests are named.
@@ -253,7 +270,8 @@ A `query` is a synchronous step whose answer returns at once. It can't register 
 |---|---|---|---|
 | Action, no resolvers, tick land | empty ACK at intake (LK:3049–3051) | `query(.admitAction)` | the answer: `.completed(empty)` or the refusal |
 | Action, no resolvers, tickless | waits for the applying turn and its response (LK:3047) | `sendAndWait(.action)` | from the applying turn's record-wait completion |
-| Action **with resolvers**, either land kind | **two-phase**: `.pending(sequence:)` at intake (LK:3023), then the adapter releases its inbound chain (TA:5382–5404); the result from a separate `awaitActionResult` | admission: `query(.admitAction(…, token))`; result: `sendAndWait(.awaitResult(seq))` (§3.2) | admission: `.pending(sequence:)`. Result, tick land: from the `.actionResolved` step, at delivery, before the tick. Result, tickless: from the applying turn's record-wait completion |
+| Action whose `resolvers:` closure built no value (#825), either land kind | as an action without resolvers, on its land kind: outside the job lane and its caps | as the matching row above | as the matching row above |
+| Action **whose closure built a value**, either land kind | **two-phase**: `.pending(sequence:)` at intake (LK:3023), then the adapter releases its inbound chain (TA:5382–5404); the result from a separate `awaitActionResult` | admission: `query(.admitAction(…, token))`; result: `sendAndWait(.awaitResult(seq))` (§3.2) | admission: `.pending(sequence:)`. Result, tick land: from the `.actionResolved` step, at delivery, before the tick. Result, tickless: from the applying turn's record-wait completion |
 | Client event, tick land | returns after intake | `query(.admitClientEvent)` | the answer, or the thrown refusal |
 | Client event, tickless | waits for application; throws the handler's error (LK:3166–3178) | `sendAndWait(.clientEvent)` | from the applying turn's record-wait completion: success or the handler's error |
 | Server input (`submitServerInput` LK:3198; `ServerInputSubmitter.submit`, which is async "from any task", ServerInput.swift:61–79; a turn's requested work submits later, LK:3306–3312) | `.accepted`/`.refused` at intake. While frozen, accepted at once and held (LK:3246–3253). An initialization failure answers `.refused(.draining)` (LK:3203–3207) | `query(.admitServerInput)` from the caller's task. That includes the work a turn requested, which submits from its own task. It waits at the initialization barrier only, never at the freeze barrier (§3.3.1) | the answer. While frozen: `.accepted(sequence:)`, with the input held in the model's held list |
@@ -487,15 +505,16 @@ The maintainer's decision (PlainData plan Q4):
 
 K1a does that, and it is what lets a queued item become `PlainData` without an `AnyCodable` (`base: Any`) in it.
 
-**Today** (main 5e8bc586):
-- `PendingActionItem` (LK:196) holds:
+**Today** (main 32a220e9; rev 5.3 re-resolved the pointers):
+- `PendingActionItem` (LK:223) holds:
   - `source: any PayloadDecodingSource` (an `AnyCodable` tree, or a `MessagePackValue`);
   - `decoded: (any ActionPayload)?`, nil for an item from the public init;
   - `actionType: any ActionPayload.Type`, a metatype.
 - Its public `action: AnyCodable` is built from the source on each read.
 - A client event item holds `AnyClientEvent`, with the same `source`.
-- The record writes `actionItem.action`, the tree, as `ReevaluationRecordedAction.payload: AnyCodable` (LK:3592). The log stores the tree as canonical MessagePack.
-- Replay builds the item from that tree with the public init (LK:4361), so it decodes at apply, through the JSON round trip. `RecordPayloadSource`, with its `integralFloats` allowance for the JSON view, decodes recorded events in the monitor's replay frames (ReevaluationReplayFrame.swift:202) and resolver outputs (LandContext.swift:315).
+- The record writes `actionItem.action`, the tree, as `ReevaluationRecordedAction.payload: AnyCodable` (LK:3654–3656; a client event at LK:3706–3707). The log stores the tree as canonical MessagePack.
+- A server input (P3b, #817) holds `payload: AnyCodable`, its record form (`ServerInputCodec.recordedForm`: the input encoded with `CanonicalMessagePack` and decoded back to a tree), and `decoded: Result<any ServerInputPayload, RecordedPayloadDecodeFailure>`, decoded once from that form at submit, or when replay builds the item. The record writes the record form (LK:3755), never a re-encode of `decoded`.
+- Replay builds the item from that tree with the public init (LK:4426), so it decodes at apply, through the JSON round trip. `RecordPayloadSource`, with its `integralFloats` allowance for the JSON view, decodes recorded events in the monitor's replay frames (ReevaluationReplayFrame.swift:202) and resolver outputs (LandContext.swift:311). #823 gave a replayed server input the same allowance when the source is `JSONReevaluationSource`.
 
 **After K1a:**
 
@@ -503,7 +522,7 @@ K1a does that, and it is what lets a queued item become `PlainData` without an `
 |---|---|---|
 | Action | `decoded: any ActionPayload`, always set: intake decodes, and replay decodes when it builds the item. `bytes: Data`, the payload in the record's encoding | `payload` becomes the bytes (MessagePack `bin`; base64 in the JSON view). `typeIdentifier` is unchanged (`String(describing:)` of the type) |
 | Client event | the same pair | the same |
-| Server input | `any ServerInputPayload` (P3 types it) | P3 keeps today's tree. K1a writes the typed value encoded in the record's encoding: a server input has no wire bytes |
+| Server input | `bytes` and `decoded` (P3b keeps the decoded value; K1a replaces the tree) | The canonical MessagePack bytes live decodes (`CanonicalMessagePack.encode` of the record form), whatever the header says (K1-Q4 (a), decided 2026-11-25). See "Server inputs" below |
 | Resolver outputs | `[String: any ResolverOutput]` (P3: `PlainData`) | unchanged: Q4 covers payloads only |
 
 **`actionType`** stops being stored. It becomes a computed `type(of: decoded)`, so the public property stays. The handler lookup by it is unchanged in K1a; K2's brief turns it into a dictionary keyed by wire name (Main). The PlainData plan's "the metatype becomes a name" is met this way, without storing a name: nothing in the model is a metatype.
@@ -511,18 +530,43 @@ K1a does that, and it is what lets a queued item become `PlainData` without an `
 **What the bytes are.** The record's encoding is one of two: `json` (the `json` and `opcodeJsonArray` transports, whose payloads are JSON text) or `messagepack`. The rule: the bytes the record keeps decode, with the decoder the live run used, to the value the live run decoded. Per source:
 - **JSON** (`AnyCodablePayloadSource`). The live decode encodes the tree with a default `JSONEncoder` and decodes that data (`InboundPayloadDecoding.decode`, InboundPayloadDecoding.swift:13–15). Those bytes can't be the record's (rev 5.1): the encoder doesn't sort keys, and an `AnyCodable` object's keys come out in hash-seed order, so the bytes vary per process. Instead, a recording land encodes the tree once more, for the record, with one fixed configuration: `outputFormatting = [.sortedKeys, .withoutEscapingSlashes]` and the default number strategies, in one place (`RecordPayloadEncoding.canonicalJSON`). This is **canonical JSON**:
   - **Key order** is sorted.
-  - **Numbers and escapes** come from one encoder configuration, so the form is fixed within a toolchain and platform. The goldens are recorded in the pinned 6.2.4 image. Bytes across platforms aren't claimed: replay's correctness rests on decode equality, not on bytes.
+  - **Numbers and escapes** come from one encoder configuration, so the form is fixed within a toolchain and platform. The goldens are recorded in the pinned 6.4.3 image (#775). Bytes across platforms aren't claimed: replay's correctness rests on decode equality, not on bytes.
   - **Decode equality:** the tree is the one the live run decoded. Its JSON decodes with the same `JSONDecoder` to the same value, since key order doesn't change what `Decodable` reads from an object with distinct keys.
   - **The live round trip is unchanged.** So the live decode can't change, and a land that doesn't record pays nothing. A recording JSON land pays one extra encode per input.
   - **A 3.7 payload needs no `integralFloats` allowance:** the JSON view decodes the bytes, not a tree rendered from them.
+  - **Replay decodes with the live decoder (keeps #806's class out).** An action's or client event's JSON bytes go to `JSONDecoder`, as live, never to `RecordPayloadSource`. `JSONDecoder` looks keys up with `String ==`, as the live decode does, so a key in another Unicode normalization (NFD against an NFC `CodingKey`) matches the same way in both. `canonicalJSON` keeps the client's spelling of a key; sorting doesn't normalize it. Two keys that `String ==` equates in one object (#805) are already merged in the `AnyCodable` tree: K1a doesn't change #805.
+  - **The reverse risk** (rev 5.4): decoding these bytes with a byte-matching decoder (`CanonicalMessagePack`'s, through `RecordPayloadSource`) would introduce #806's class, which today's JSON round trip doesn't have. C1's mutant shows it on all three encodings.
 
   Prior art: RFC 8785 (JCS) and RFC 8949 §4.2 (deterministic CBOR) define canonical forms across implementations. Neither is needed here: within one toolchain one encoder configuration is deterministic once keys are sorted. JCS's ECMAScript number form would mean a hand-written serializer. The record log's own MessagePack is already canonical (`CanonicalMessagePack`).
-- **MessagePack** (`MessagePackPayloadSource`). The frame decoder has unpacked the payload into a `MessagePackValue`; the client's byte range isn't kept. K1a writes the value packed canonically. Unpacking it gives the same value (a non-finite number is refused at intake by `validateRecordable`), so replay's `MessagePackValueDecoder` decodes the same result. Keeping the client's exact slice needs the frame decoder to keep offsets: **K1-Q2**.
-- **A source in the other encoding, or none:** a hand-built `AnyClientEvent`, an item from a test, or a server input. The bytes are the decoded typed value, encoded once in the record's encoding at intake. Nothing was received, so there is nothing to keep.
+- **MessagePack** (`MessagePackPayloadSource`). The frame decoder has unpacked the payload into a `MessagePackValue`; the client's byte range isn't kept. K1a writes the value packed canonically. Unpacking it gives the same value (a non-finite number is refused at intake by `validateRecordable`), so replay's `MessagePackValueDecoder` decodes the same result. Its keyed container looks keys up in a `[String: MessagePackValue]`, with `String ==`, as live: the #806 condition holds here too. Keeping the client's exact slice needs the frame decoder to keep offsets: **K1-Q2**.
+- **A source in the other encoding, or none:** a hand-built `AnyClientEvent` or an item from a test. The bytes are the decoded typed value, encoded once in the record's encoding at intake. Nothing was received, so there is nothing to keep. A server input is its own case (below).
+- **Where the byte-matching decoder stays.** Server inputs (`ServerInputCodec.decode`), resolver outputs (LandContext.swift:311) and the monitor's replay frames (ReevaluationReplayFrame.swift:202) keep `CanonicalMessagePack`'s decoder, which matches keys by bytes. Their keys are written by a Swift encoder from the same `CodingKey` strings the decode reads, so no client spelling reaches them, and #806 doesn't apply.
+
+**Where replay decodes (K1-Q6, decided (i) 2026-11-25).** The rule above says replay decodes with the decoder the live run used. For JSON that is `JSONDecoder`, in `SwiftStateTree`. For MessagePack it is `MessagePackValueDecoder(clientPayload: true)` behind `MessagePackPayloadSource`, in `SwiftStateTreeMessagePack`, which depends on `SwiftStateTree`, not the other way. The keeper builds replay items in `SwiftStateTree`, and the reevaluation monitor target depends on `SwiftStateTree` only. Intake has no such problem: the frame's source, in the MessagePack module, produces its own bytes (`recordBytes(as:)`).
+- **(i), decided: the replay entry points take a decoder value.**
+  - `public struct RecordPayloadDecoders: Sendable`, in `SwiftStateTree`, holding a package factory from `(Data, RecordPayloadEncoding)` to `any PayloadDecodingSource`. Two values:
+    - `.jsonOnly`, in `SwiftStateTree`: JSON bytes decode with `JSONDecoder`;
+    - `.standard`, in an extension in `SwiftStateTreeMessagePack`: JSON as `.jsonOnly`, and MessagePack bytes unpacked and decoded through `MessagePackPayloadSource`, the live path.
+  - The public replay entry points that gain a parameter `payloadDecoders:`:
+    - `LandKeeper.init(definition:initialState:mode:reevaluationSource:…)`: defaulted to `.jsonOnly`. A live keeper ignores it;
+    - `ReevaluationEngine.run(definition:initialState:recordFilePath:…)`: defaulted to `.jsonOnly`;
+    - `ConcreteReevaluationRunner.init(definition:recordFilePath:…)` and `init(definition:initialState:recordFilePath:…)`: defaulted to `.standard`. The monitor target gains a dependency on `SwiftStateTreeMessagePack`, which depends only on `SwiftStateTree` and `SwiftStateTurns`, so a runner replays a MessagePack land's record with no change at its call sites (the GameDemo and GameServer factories).
+  - **The named refusal.** A record whose header says `messagepack`, replayed with `.jsonOnly`, is refused before any input is applied, with `ReevaluationRecordPayloadError.noDecoder(encoding: .messagepack)`. Its description: "this record's payloads are MessagePack, and this replay has no MessagePack decoder: pass `RecordPayloadDecoders.standard` (SwiftStateTreeMessagePack)". `ReevaluationEngine.run` throws it when it reads the header. A reevaluation `LandKeeper` checks the header when it initializes and fails its initialization with it (`initializationFailure`), before OnInitialize is replayed.
+  - **A keeper with no transport writes `json` in the header**, not `messagepack` (rev 5.3, under (i)). So a test or tool keeper in `SwiftStateTree` records and replays its own records without the MessagePack module, and the `SwiftStateTreeTests` replays keep their call sites. The transport layer still writes its land's encoding.
+  - Call sites that replay a MessagePack land's record pass `.standard` in K1a: `Examples/Demo` and `Examples/GameDemo`'s `ReevaluationRunner` mains and the GameDemo tests that call `ReevaluationEngine.run`, and the Transport and NIO tests that replay a `messagepack` land.
+  - Public API: the struct, its two values, the parameters (each defaulted, so no source break), the error type, and the new target dependency.
+- **Not chosen, (ii):** the canonical decoder matches keys with `String ==` and copies `clientPayload`'s rules. Replay would then decode MessagePack bytes with a second implementation that must agree with the live one on every rule (a missing key, integer widths, `nil`): equality by audit, which K1-Q4 (a) avoided for server inputs.
+- **Not chosen, (iii):** move `MessagePackValue` and its decoder into `SwiftStateTree`. It is a module move across Transport and NIO, larger than K1a, and it puts the client codec in the core module.
+
+**Server inputs (K1-Q4, decided (a) 2026-11-25).** A server input has no wire form. P3b's rule (#817, #387): live applies the value decoded from the record form, and replay decodes the same form; the record never writes a re-encode of `decoded`, because a `Codable` that normalizes on decode would then replay another value.
+- **The bytes live decodes.** The item holds `bytes = CanonicalMessagePack.encode(recordedForm)`, exactly what `ServerInputCodec.decode` feeds the decoder today, so the applied value doesn't change from P3b. Live decodes them at submit and replay when it builds the item. The record writes them as `bin` (base64 in the JSON view), whatever the header's `payloadEncoding` says; the entry type states the encoding. `CanonicalMessagePack` is this repository's codec, so the bytes are the same on every toolchain. A JSON-view replay decodes the bytes, so #823's allowance stays only on the 3.6 path, which isn't replayed. Today's submit-time refusal (`ReevaluationRecordLog.framed`, nesting inside the turn record) is kept, so K1a changes no submit outcome; relaxing it is its own change. Encoding the typed value directly, without the `AnyCodable` hop, is a later step after a byte-equality test.
+- **Not chosen:** the typed value in the header's encoding (rev 5.2's text). Replay would decode other bytes than live, with another decoder, so P3b's rule would hold only by an audit of every server input type.
+
+Prior art: Temporal stores an activity's result as a `Payload` (bytes plus a per-payload `encoding`) and replay decodes those bytes; rr feeds back the bytes a nondeterministic input delivered; Protocol Buffers' "serialization is not canonical" is why bytes aren't regenerated where they're compared. The options note with the full comparison went to Main with the drift note.
 
 **Cost.** Only a land that records pays for the bytes (`recordsInputs`, as the tree today, LK:3584). A land that doesn't record keeps `decoded` alone, and its item holds no bytes (`bytes: Data?`). So the hot path of a non-recording land changes by one stored optional. A recording MessagePack land packs once per input, where today it built an `AnyCodable` tree and the log packed that. K1a's A/B tier is small: the default cell and `rows-mp`, with recording on.
 
-**The header.** `ReevaluationRecordMetadata` gains `payloadEncoding: RecordPayloadEncoding` (`json` or `messagepack`), written once. `TransportEncoding` is in SwiftStateTreeTransport and the keeper can't name it. So SwiftStateTree gets the two-case enum, and the transport layer passes it when it creates the land's recorder (`LandManager`, from `NIOLandServerConfiguration.transportEncoding`). A keeper with no transport (tests, the reevaluation runner) uses `messagepack`, the record log's own codec.
+**The header.** `ReevaluationRecordMetadata` gains `payloadEncoding: RecordPayloadEncoding` (`json` or `messagepack`), written once. `TransportEncoding` is in SwiftStateTreeTransport and the keeper can't name it. So SwiftStateTree gets the two-case enum, and the transport layer passes it when it creates the land's recorder (`LandManager`, from `NIOLandServerConfiguration.transportEncoding`). A keeper with no transport (tests, the reevaluation runner) uses `json` (K1-Q6 (i); see "Where replay decodes"), so it replays its own records without the MessagePack module. The header describes client-originated payloads (actions and client events) only; a server input's bytes are always canonical MessagePack.
 
 **Format version 3.7.**
 - A 3.7 record's payloads are bytes in the header's encoding.
@@ -535,11 +579,13 @@ K1a does that, and it is what lets a queued item become `PlainData` without an `
 - `PendingActionItem.action: AnyCodable` is removed. Nothing outside the keeper reads it. A view that needs a tree decodes the bytes;
 - `PendingActionItem`'s public init takes the typed action (`some ActionPayload`) instead of `AnyCodable` and a metatype;
 - `actionType` stays, computed;
-- `AnyClientEvent.payload` stays, built from `decoded` or the source as today. The keeper's item no longer holds the `AnyClientEvent`.
+- `AnyClientEvent.payload` stays, built from `decoded` or the source as today. The keeper's item no longer holds the `AnyClientEvent`;
+- `handleActionEnvelope` keeps returning `AnyCodable` (decided by Main, 2026-11-25): it boxes the `any ResponsePayload` at its own boundary, so the response's move to the transport is no public change;
+- K1-Q6 (i): `RecordPayloadDecoders`, its `payloadDecoders:` parameters and `ReevaluationRecordPayloadError` (above).
 
 Each change is listed in K1a's PR. There's no deprecation step: there are no external users (as #593).
 
-**What P3 must leave for K1a.** P3 makes the payload protocols, server inputs and resolver outputs `PlainData`. It must not change:
+**What P3 must leave for K1a.** Checked at 32a220e9 (rev 5.3): met. The item shapes, the source protocol, the record's entry types, the metadata, the version (3.6) and the log's payload form are unchanged; `InboundPayloadDecoding` moved to `Sources/SwiftStateTree/Land/` with its round trip in one place (lines 13–15); every payload type has `_payloadWireName`; #616 was closed by decision (its rest goes with #606), so the source types stay `AnyCodablePayloadSource` and `MessagePackPayloadSource`. P3 makes the payload protocols, server inputs and resolver outputs `PlainData`. It must not change:
 - `PendingActionItem`'s stored shape, `PendingClientEventItem`'s, or `PayloadDecodingSource` (K1a replaces the source with bytes);
 - the record's entry types, `ReevaluationRecordMetadata`, `ReevaluationRecordVersion` or the log's payload form. P3's typed server input is recorded as today's tree (`AnyCodable` of the typed value), so P3 doesn't bump the format.
 
@@ -553,7 +599,7 @@ If P3 takes up #616 (a live input's payload checked once, by its frame's decode)
 
 A replayed client event that doesn't decode isn't thrown: its handler drops it (LandDefinition.swift:414–423). A `PayloadNesting.TooDeep` is also logged and counted (`noteDroppedClientEvent`, #362); any other error is dropped silently.
 
-K1a keeps both reports. An item whose bytes don't decode at build time is still queued, with no `decoded` and a plain failure record (rev 5.2):
+K1a keeps both reports. An item whose bytes don't decode at build time is still queued, with no `decoded` and a plain failure record (rev 5.2). P3b already shipped the type (#817, package): K1a reuses it, with a third case, `.recordTooDeep` (rebuilds `CanonicalMessagePackError.nestingTooDeep`), that 3.7 action and client-event bytes can't reach, since they aren't decoded through the canonical decoder:
 
 ```swift
 @PlainData enum RecordedPayloadDecodeFailure {
@@ -572,19 +618,21 @@ K1a keeps both reports. An item whose bytes don't decode at build time is still 
   The client-event path matches `TooDeep` only, which `.tooDeep` keeps.
 - So outcomes, `rejected`, the log line's text, the drop counter and the comparison are unchanged.
 
-`replayPayloadDecodeFailureIsReportedAsBefore` pins today's report on main first, with three recorded inputs:
+`replayPayloadDecodeFailureIsReportedAsBefore` pins today's report; it is on main since #778 (`ReplayPayloadDecodeFailureTests.swift`), with three recorded inputs:
 - an action whose payload has a field of the wrong type: refused, not in `rejected`, and the log line's error text;
 - a client event of the same kind: dropped, not counted;
 - a client event nested past the limit: dropped and counted once.
 
-K1a keeps it green with 3.7 records whose bytes fail the same way. The test also asserts that the action's thrown error's `description` equals `String(describing:)` of the original `DecodingError`.
+K1a keeps it green with 3.7 records whose bytes fail the same way, and #803's `replayServerInputDecodeFailureIsReportedAsBefore` too. The test also asserts that the action's thrown error's `description` equals `String(describing:)` of the original `DecodingError`.
 
 **Tests (K1a):**
-- **Per encoding** (JSON, opcode JSON, MessagePack), an action and a client event: the recorded bytes decode, with the live decoder, to a value equal to the live `decoded`.
+- **C1, the #806 guard** (rev 5.4; `RecordKeyNormalizationTests`, committed first, passing on main): per encoding, an action whose field key is NFD (its `CodingKey` NFC) is recorded, keeps the client's key bytes, and replays as live; the same for a client event, and an NFC control. It stays green through K1a. Its mutant (the replayed action built from `RecordPayloadSource`) fails the NFD case.
+- **Per encoding** (JSON, opcode JSON, MessagePack), an action and a client event: the recorded bytes decode, with the live decoder, to a value equal to the live `decoded`. The actions cover each way the intake builds the item (#825): one without resolvers, one whose closure built a value (a job), and one whose closure built none (inline).
+- **Server inputs (K1-Q4 (a)):** on a `json` header, a server input's bytes equal `CanonicalMessagePack.encode` of its record form, not any JSON; a normalizing `Codable` replays the value live applied; #817's `serverInputRecordFormUnchanged` stays green, adapted to bytes.
 - **`canonicalJSONIsStableAcrossProcesses`:** the same 16-key object, recorded in two child processes (Swift Testing exit tests, each writing its bytes to standard output) with default hashing, gives equal bytes. A one-process check under `SWIFT_DETERMINISTIC_HASHING` can't show it. With 16 keys, two seeds that happen to give the same unsorted order are negligible (1 in 16!).
 - **`jsonSourcedItemUnderMessagePackHeaderRecordsTheTypedValue`:** on a land whose header is `messagepack`, an action that arrives through `AnyCodablePayloadSource` is recorded as its typed value's canonical MessagePack. The test checks equality with `CanonicalMessagePack` of the typed value, and inequality with that payload's canonical JSON bytes.
 - **An integral float:** a JSON `1` into a `Double` field replays equal without `integralFloats`.
-- **A hand-built item and a server input:** recorded in the header's encoding.
+- **A hand-built item:** recorded in the header's encoding.
 - **A non-recording land:** its items hold no bytes. A `Mirror` test fails if `bytes` is set when `recordsInputs` is false.
 - **The header:** written once, and read back.
 - **3.6 records:** per K1-Q1 (a): read, listed, and refused for replay with today's `minimumReplayable` error.
@@ -601,7 +649,7 @@ The E2E record/replay runs in three encodings and the game's reevaluation E2E en
 
 **Harness.** The wire frames don't change. Every golden's record changes: the header's new field, the version, and each recorded payload's form.
 
-**Rule `recordPayloadAsTree` (rev 5.2).** The harness compares record bytes only when a golden was recorded with the running toolchain (`checkBytes`, DifferentialHarnessTests.swift:91). Elsewhere it compares the record's decoded view (`DiffRunner.decodedView`, DiffRunner.swift:656). Canonical JSON bytes are stable within a toolchain and platform only. If the view showed a 3.7 payload as its base64 string, a run off the pinned image would report a payload difference that is only a spelling (a number's form, an escape). So the view renders each recorded payload as its tree: the bytes decoded with the header's `payloadEncoding` (JSON parsed, MessagePack unpacked), in the form a 3.6 golden's tree has. The byte comparison on the pinned image still sees the bytes.
+**Rule `recordPayloadAsTree` (rev 5.2).** The harness compares record bytes only when a golden was recorded with the running toolchain (`checkBytes`, DifferentialHarnessTests.swift:91). Elsewhere it compares the record's decoded view (`DiffRunner.decodedView`, DiffRunner.swift:656). Canonical JSON bytes are stable within a toolchain and platform only. If the view showed a 3.7 payload as its base64 string, a run off the pinned image would report a payload difference that is only a spelling (a number's form, an escape). So the view renders each recorded payload as its tree: the bytes decoded with the header's `payloadEncoding` (JSON parsed, MessagePack unpacked), in the form a 3.6 golden's tree has. A server input's bytes are unpacked as MessagePack whatever the header says (K1-Q4 (a)). The byte comparison on the pinned image still sees the bytes.
 
 `classify-golden-changes.py` compares decoded views, so with that rule a 3.6 → 3.7 golden shows no payload leaf change. Its `recordPayload` class then covers only `metadata.payloadEncoding` appearing and `metadata.version` 3.6 → 3.7, and a changed payload leaf stays `other`. K1a adds the rule and the class in a tool-only commit first. Then:
 - the goldens are re-recorded by the recorder script in the pinned image;
@@ -643,7 +691,7 @@ Each slice is its own PR to `main`, after Review's GO on this plan.
 - one mutant per new rule.
 
 **The differential-harness pass** (adapter differential harness, rev 10; 84 cells, all in-turn since L2c):
-- byte comparison in the pinned 6.2.4 image;
+- byte comparison in the pinned 6.4.3 image (#775);
 - `scripts/differential-gate.sh` with `ran + replaced == listed`, `ran > 0`, `compared == run`, `threw == 0`;
 - each difference listed in `ExpectedDifferences.swift` (exact, one cell, one use) with its cause, classified by `scripts/classify-golden-changes.py`.
 
@@ -655,8 +703,8 @@ A cell this plan needs that doesn't exist yet is added first, in a tool-only com
 
 | Slice | Content | Needs | Harness: allowed differences | Host A/B |
 |---|---|---|---|---|
-| **K1a** | The record keeps raw bytes (§3.11): queued actions and client events hold bytes plus the decoded value; the header's `payloadEncoding`; format 3.7; `actionType` computed; the public changes in §3.11. The action response's encode moves from the land definition to the transport's reply, and whether a response is recorded or compared at replay is decided here (Appendix A, F2: `ResponsePayload: PlainData` and `InputOutcome` are P3's). A tool-only commit first adds the `recordPayload` class to `classify-golden-changes.py` | PlainData P3 and P4 merged (K1-Q1 to K1-Q3 decided 2026-11-24) | the record part of every cell, all classified `recordPayload`; frames none | **small**, recording on: the default production cell and `rows-mp` |
-| **K1b** | The storage split and its census (§3.1), with no world: `KeeperModel<State>` is `@PlainData` and holds `State`, the queues and entry facts; `KeeperBehavior<State>` holds the definition and `LandConfig`. Turn bodies become synchronous functions over model and behavior. Every multi-await flow's segments become named synchronous functions. No core; behavior unchanged. Replay calls the same bodies | K1a | none | **small**: the default production cell and `rows-mp` |
+| **K1a** | The record keeps raw bytes (§3.11): queued actions and client events hold bytes plus the decoded value; the header's `payloadEncoding`; format 3.7; `actionType` computed; the public changes in §3.11. The action response's encode moves to the transport's reply: after #819 the keeper holds `InputOutcome` and converts at its exits through `InputOutcome.boundaryValue` (`awaitActionResult`, `ActionSubmission.completed`, and the public `handleActionEnvelope` that forwards them); K1a removes that conversion and carries `any ResponsePayload` to the transport, which encodes it and sends it with #820's `send(_:kind:)` (WebSocketTransport.swift:930). The public `handleActionEnvelope` keeps returning `AnyCodable` by boxing at its own boundary, and responses stay unrecorded and uncompared at replay, as today (both decided by Main, 2026-11-25: no public change). Appendix A, F2: `ResponsePayload: PlainData` and `InputOutcome` are P3's. A tool-only commit first adds the `recordPayload` class to `classify-golden-changes.py` | PlainData P3 merged, #819 included, and #825 merged; not P4 (K1-Q5 (a), decided 2026-11-25; K1-Q1 to K1-Q3 decided 2026-11-24) | the record part of every cell, all classified `recordPayload`; frames none | **small**, recording on: the default production cell and `rows-mp` |
+| **K1b** | The storage split and its census (§3.1), with no world: `KeeperModel<State>` is `@PlainData` and holds `State`, the queues and entry facts; `KeeperBehavior<State>` holds the definition and `LandConfig`. Turn bodies become synchronous functions over model and behavior. Every multi-await flow's segments become named synchronous functions. No core; behavior unchanged. Replay calls the same bodies | K1a and PlainData P4 (K1-Q5 (a)) | none | **small**: the default production cell and `rows-mp` |
 | **K2** | The cut-over. The layout and identity (§3.10). Every live entry becomes a core entry with its contract (§3.3). The entry barriers, server input's freeze exemption, and no intake holds (§3.3.1). Each K1 segment becomes a step; each await between segments becomes a `turn.run` whose result is an input, with today's checks in the handler. Also: fresh keys, the result slot and the sealed cancellation token (§3.2); record drafts and waits (§3.4); the scoped emitter, the binding token and the per-player services table (§3.1); the admission's package path and the callback audit (§3.7); drivers (§3.9); the lint rule. Follow-ups and the failure box work as today | `Behavior` (#768, merged), G2 #759; G3 #760 checked before the A/B is read | none | **full**, plus three cells: tick actions without resolvers, tick actions with resolvers, tickless client events |
 | **K3** | Sync follow-ups on the core (§3.5): the writer gate returns `nil`, and `waitForQuiescence` replaces the hand-rolled waits. The hand-rolled slots and the requested-sync-work waiters are deleted. The #695 acceptance tests are rewritten (§6.1) | K2 | only the arm-order change (§3.5), if a cell shows it | **small**: a host cell with join churn and kept-event follow-up churn |
 | **K4** | The failure mail (§3.6): capacity 1, the first applied failure terminal, checkpoints, staging before the port, the record-shape change. `LandFailureMailbox`, `submitLandFailure` and `.failureSubmit` are deleted | K2 | failure rows' record order, if a cell has a post before queued inputs | **small**: the default cell and `rows-mp`. This slice sets the mailbox budget left open by the post-lane plan |
@@ -666,7 +714,7 @@ A cell this plan needs that doesn't exist yet is added first, in a tool-only com
 | **K9** | Deletions: the keeper's `GenerationTable`/`EpochCounter`/`SingleFlight` uses; the replaced `HoldPoints` (§6.3); the dead `.live` arms (`flushOutputs` LK:674–691, `runSyncRequests` LK:718, recorder branches at LK:3871, 4523, 4540 and 1404–1413), each first proven unreachable. CLAUDE.md's reentrancy section is rewritten: the keeper exceptions left are #612 and #387 | K1–K7 | none | **Mac output check** |
 
 **Ordering.**
-- PlainData P3 and P4, then K1a, then K1b. K1b's census can be drafted (read-only) while K1a is in review.
+- **K1-Q5 (a), decided 2026-11-25.** PlainData P3 (with #819) and #825, then K1a, while P4 runs in parallel; K1b after K1a and P4. K1a and P4 both touch tests and goldens, so whichever merges second rebases them. K1b's census can be drafted (read-only) while K1a is in review.
 - K1 doesn't wait on G2.
 - K3, K4 and K5 are independent of one another.
 - K6 needs K5, and so does K7.
@@ -760,7 +808,7 @@ For the maintainer, once rev 3 is GO.
 
 ## 9. Questions
 
-For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depended on K1-Q1 to K1-Q3, decided (a) each on 2026-11-24; K2 depends on Q1.
+For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depended on K1-Q1 to K1-Q3, decided (a) each on 2026-11-24, K1-Q4 and K1-Q5 decided (a) and K1-Q6 decided (i) on 2026-11-25; K1b's K1-Q7 is decided (d) by Main (2026-11-25); K2 depends on Q1.
 
 **Q1. Where does a re-evaluation (replay) keeper keep its state until #612?** (§3.10)
 
@@ -801,6 +849,48 @@ Rev 4 recommended (a). The decision went further than (b): `PlainData` on `State
 | **(a) Recommended** | client events get the same pair and the same record form, in K1a |
 | (b) | actions only. The client event item then needs another plain form for K1b, such as a `MessagePackValue`-like value tree, and the record keeps two payload forms |
 
+**K1-Q4. A server input's record bytes** (§3.11, "Server inputs"). **Decided (a)** (maintainer, 2026-11-25).
+
+| Option | What it is | Cost |
+|---|---|---|
+| **(a) Decided** | the canonical MessagePack bytes live decodes (`CanonicalMessagePack.encode` of the record form), written as `bin` whatever the header says | none new: the bytes are what live decodes today. The header describes client payloads only |
+| (b) | the typed value encoded in the header's encoding (rev 5.2's text); live unchanged | live and replay decode different bytes with different decoders: P3b's rule holds only by audit of every server input type |
+
+**K1-Q5. Does K1a wait for P4?** (§5). **Decided (a)** (maintainer, 2026-11-25). K1a changes queued payloads, the record and the response exit, not `State`; P4 makes `State` `PlainData`, which K1b's `@PlainData KeeperModel` needs.
+
+| Option | What it is | Cost |
+|---|---|---|
+| **(a) Decided** | K1a needs P3 (with #819) and #825 only, and runs while P4 is in progress; K1b needs K1a and P4 | K1a and P4 both touch tests and goldens, so whichever merges second rebases them |
+| (b) | K1a after P3 and P4, as rev 5.2 | K1a waits for P4 |
+
+**K1-Q6. Where does replay decode a MessagePack payload?** (§3.11, "Where replay decodes"). **Decided (i)** (maintainer, 2026-11-25). `SwiftStateTree` can't reach the live MessagePack decoder.
+
+| Option | What it is | Cost |
+|---|---|---|
+| **(i) Decided** | `RecordPayloadDecoders` (`.jsonOnly` in `SwiftStateTree`, `.standard` in `SwiftStateTreeMessagePack`), taken by `LandKeeper`'s init and `ReevaluationEngine.run` (default `.jsonOnly`) and `ConcreteReevaluationRunner`'s inits (default `.standard`); a `messagepack` record without a MessagePack decoder is refused with `ReevaluationRecordPayloadError.noDecoder`; a transport-less keeper writes `json` | public additions, all defaulted; the monitor target depends on `SwiftStateTreeMessagePack`; the examples' replay mains pass `.standard` |
+| (ii) | the canonical decoder in `SwiftStateTree` matches keys with `String ==` and copies `clientPayload`'s rules | two MessagePack decoders that must agree: equality by audit |
+| (iii) | move `MessagePackValue` and its decoder into `SwiftStateTree` | a module move across Transport and NIO, larger than K1a |
+
+**K1-Q7. A recorded resolver output in a queued item** (K1b; Appendix A, F5). **Decided (d) by Main, 2026-11-25**: an internal choice, with no format change and no public change, so it isn't a maintainer question.
+- `PendingActionItem.heldResolverOutputs` and `PendingLifecycleItem.heldResolverOutputs` hold `HeldResolverOutput.recorded(RecordedResolverOutput)` in replay: an `AnyCodable` tree, decoded when the handler reads it (`LandContext.resolverOutput(_:named:)`).
+- The replay build has the output's derived name and its tree, but not its type: `ResolverDeclaration` keeps names only, and `typeIdentifier` is an unqualified `String(describing:)`.
+- CanJoin, OnJoin and OnLeave run public `AnyResolverExecutor`s, which declare no output type until #769 R3.
+- #769 R2 (with K5) re-keys the outputs by position, records them as K1a's bytes, and decodes them eagerly before the handler.
+
+**(d), decided.** The replay build holds the tree's canonical MessagePack bytes (`[UInt8]`). The read decodes them with `CanonicalMessagePack.decode(_:from:integralFloats:)`, which is what `RecordPayloadSource.decode` does today on every read (encode the tree, decode the bytes).
+- It covers every kind (actions, initialize, join, leave).
+- A build-time encode failure (nesting past the canonical limit) is held as `RecordedPayloadDecodeFailure.recordTooDeep` (#817). The read reports it as today: the handler reads `nil`, and a warning names the output.
+- R2 later swaps the derived-name key for the position, and the encoded tree for the record's own bytes.
+- **The one behavior difference, pinned by a test K1b adds.** `RecordPayloadSource.decode` first tries `payload.base as? T`, and (d) has no tree to try it on. A recorded tree holds dictionaries and scalars, so only an output type that is itself the tree's base type, a scalar such as `Int` or `String`, takes that shortcut. At rev 5.3 no conformer in Sources, Tests or Examples is one: all are structs, with no scalar extension. K1b's test `recordedScalarResolverOutputReadsAsBefore` pins it:
+  - in the test target, a retroactive scalar conformer (`extension Int: ResolverOutput`), one recorded output of it, replayed;
+  - the handler reads the recorded value;
+  - it is written first and is green on main, then stays green after (d). If the bytes' decode of a scalar ever differs from the shortcut's, this test is where it shows.
+
+Not chosen:
+- **(a) decode each output into its type at the replay build.** The type isn't there: it would need a per-name decoder table on `ResolverDeclaration`, for actions and OnInitialize only. Join and leave can't have it before R3, because public `AnyResolverExecutor` conformers declare no output type. It would also build R2's type table two slices early, keyed by name, for R2 to re-key.
+- **(b) the 3.7 record keeps each output's bytes.** It changes K1a's format for a form R2 rewrites (positions), and it would gate K1a on this question.
+- **(c) `.recorded` stays a tree, as a known exception until #612.** `KeeperModel` then isn't `@PlainData`, which K1b's compile-time half of the census needs, so replay would need its own item type.
+
 **Q4. When is #698 fixed?** (A teardown can notify a transport other than the one it closed. Production attaches once, so it doesn't happen there today; `setTransport` is public.)
 
 | Option | What it is | K1 | K2 |
@@ -827,7 +917,7 @@ Decided:
 
 ## Appendix A. K1b's census (draft)
 
-**Status:** draft 2. Review read draft 1 (8e61043f): sound, no must-fix, four shoulds and a nit, folded in here (A.6 S1–S4, and `serverInputMaxInFlight` in A.2). It is checked again on K1b's base.
+**Status:** draft 2. Review read draft 1 (8e61043f): sound, no must-fix, four shoulds and a nit, folded in here (A.6 S1–S4, and `serverInputMaxInFlight` in A.2). It is checked again on K1b's base. Draft 2 predates #825 (rev 5.3): K1b places what #825 adds. In Behavior: `LandDefinition.servicesType`, `acceptsServices`, and an action handler's `resolvers` declaration (closures). The `wrongServices` check in `performInitialization` reads Behavior and the services value, not Model. Draft 3 (rev 5.3, at main 32a220e9 with #825 and #819) adds F5 (K1-Q7, decided (d) by Main), F6 (turn-shaped entries §2 doesn't name: each becomes a turn body) and F8 (the loops' phase offsets move Outside; `runSync`'s fold writes stay S3's exception). It also adds each field's writes outside turns. K1b folds it into this appendix on its base, after an LSP re-check.
 
 It covers every stored property of `LandKeeper`, from `LK` at main d25ca82d: 123 declarations in the actor body (LK:113–6024), computed properties excluded. Each gets one home.
 

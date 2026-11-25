@@ -96,7 +96,7 @@ private func makeReplayDecodeLand(emitting event: ReplayDomainEvent) -> LandDefi
     Land("replay-decode", using: ReplayEventDecodeState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout ReplayEventDecodeState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(event, to: .all)
             }
@@ -112,7 +112,7 @@ private func makeUndecodableEventLand() -> LandDefinition<ReplayEventDecodeState
     Land("replay-decode", using: ReplayEventDecodeState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout ReplayEventDecodeState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
         }
@@ -132,7 +132,7 @@ private func makeNaNLand() -> LandDefinition<ReplayNaNState> {
     Land("replay-decode", using: ReplayNaNState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout ReplayNaNState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ratio = .nan
             }
         }
@@ -144,7 +144,7 @@ private func makeUnsignedLand(emitting event: ReplayUnsignedEvent) -> LandDefini
     Land("replay-decode", using: ReplayEventDecodeState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout ReplayEventDecodeState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(event, to: .all)
             }

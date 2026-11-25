@@ -21,7 +21,7 @@ private func makeGenericReplayRegisterLand() -> LandDefinition<GenericReplayRegi
     Land("generic-replay-register-test", using: GenericReplayRegisterState.self) {
         AccessControl { AllowPublic(true) }
         Lifetime {
-            Tick(every: .milliseconds(50)) { (_: inout GenericReplayRegisterState, _: LandContext) in }
+            Tick(every: .milliseconds(50)) { _, _ in }
         }
     }
 }

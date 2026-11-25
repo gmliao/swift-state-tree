@@ -217,6 +217,11 @@ struct OnceSecondaryCase: Sendable, CustomTestStringConvertible {
     var testDescription: String { field }
 }
 
+/// A lifecycle entry's resolvers, as the DSL stores them (#769): one idle executor.
+func onceIdleDeclaration() -> ResolverDeclaration<OnceNodeState> {
+    ResolverDeclaration(names: ["OnceIdle"], servicesType: NoServices.self, site: "test") { _, _ in [OnceIdleExecutor()] }
+}
+
 let onceSecondaryCases: [OnceSecondaryCase] = [
     OnceSecondaryCase(
         field: "onInitializeResolverFailure", setting: "OnInitialize",
@@ -225,15 +230,15 @@ let onceSecondaryCases: [OnceSecondaryCase] = [
         entry: onInitializeA
     ),
     OnceSecondaryCase(
-        field: "onInitializeResolverExecutors", setting: "OnInitialize",
-        write: { $0.onInitializeResolverExecutors = [OnceIdleExecutor()] },
-        kept: { $0.lifetimeHandlers.onInitializeResolverExecutors.count == 1 },
+        field: "onInitializeResolvers", setting: "OnInitialize",
+        write: { $0.onInitializeResolvers = onceIdleDeclaration() },
+        kept: { $0.lifetimeHandlers.onInitializeResolvers?.names == ["OnceIdle"] },
         entry: onInitializeA
     ),
     OnceSecondaryCase(
-        field: "onFinalizeResolverExecutors", setting: "OnFinalize",
-        write: { $0.onFinalizeResolverExecutors = [OnceIdleExecutor()] },
-        kept: { $0.lifetimeHandlers.onFinalizeResolverExecutors.count == 1 },
+        field: "onFinalizeResolvers", setting: "OnFinalize",
+        write: { $0.onFinalizeResolvers = onceIdleDeclaration() },
+        kept: { $0.lifetimeHandlers.onFinalizeResolvers?.names == ["OnceIdle"] },
         entry: onFinalizeA
     ),
     OnceSecondaryCase(
@@ -332,8 +337,8 @@ struct SingleValuedNodeTests {
             "syncInterval", "syncHandler",
             "destroyWhenEmptyAfter", "onDestroyWhenEmpty", "onDestroyWhenEmptyResolverExecutors",
             "persistInterval",
-            "onInitialize", "onInitializeResolverExecutors", "onInitializeResolverFailure",
-            "onFinalize", "onFinalizeResolverExecutors",
+            "onInitialize", "onInitializeResolvers", "onInitializeResolverFailure",
+            "onFinalize", "onFinalizeResolvers",
             "afterFinalize",
             // Bookkeeping, not a setting.
             "settingSites", "repeatedSettings",

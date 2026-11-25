@@ -42,11 +42,11 @@ func testPlayerLeaveTriggersSync() async throws {
         using: LeaveSyncTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout LeaveSyncTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Guest"
             }
             
-            OnLeave { (state: inout LeaveSyncTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }
@@ -126,11 +126,11 @@ func testMultiplePlayersLeave() async throws {
         using: LeaveSyncTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout LeaveSyncTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Guest"
             }
             
-            OnLeave { (state: inout LeaveSyncTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }

@@ -137,17 +137,17 @@ private func makeFixture(_ encoding: HeldEncoding, tick: Bool = true) async -> F
         definition = Land("held-events", using: HeldEventsTestState.self) {
             ServerEvents { Register(HeldEventsTestEvent.self) }
             Rules {
-                OnJoin { (state: inout HeldEventsTestState, ctx: LandContext) in heldEventsOnJoin(&state, ctx) }
+                OnJoin { state, ctx in heldEventsOnJoin(&state, ctx) }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout HeldEventsTestState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
     } else {
         definition = Land("held-events", using: HeldEventsTestState.self) {
             ServerEvents { Register(HeldEventsTestEvent.self) }
             Rules {
-                OnJoin { (state: inout HeldEventsTestState, ctx: LandContext) in heldEventsOnJoin(&state, ctx) }
+                OnJoin { state, ctx in heldEventsOnJoin(&state, ctx) }
             }
         }
     }

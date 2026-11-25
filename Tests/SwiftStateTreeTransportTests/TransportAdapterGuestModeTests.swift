@@ -36,7 +36,7 @@ func testGuestSessionCreation() async throws {
         using: GuestModeTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,
@@ -103,7 +103,7 @@ func testCustomGuestSession() async throws {
         using: GuestModeTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,
@@ -180,7 +180,7 @@ func testJWTPayloadOverridesGuestSession() async throws {
         using: GuestModeTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,
@@ -251,7 +251,7 @@ func testJoinMessageOverridesAll() async throws {
         using: GuestModeTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,
@@ -316,7 +316,7 @@ func testMultipleGuestSessions() async throws {
         using: GuestModeTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,

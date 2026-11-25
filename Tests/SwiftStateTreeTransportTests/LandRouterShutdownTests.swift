@@ -73,13 +73,13 @@ private struct RouterShutdownHarness {
     static func make() async throws -> RouterShutdownHarness {
         let definition = Land("router-shutdown", using: RouterShutdownState.self) {
             Rules {
-                CanJoin { (_: RouterShutdownState, session: PlayerSession, _: LandContext) in
+                CanJoin { _, session, _ in
                     .allow(playerID: PlayerID(session.playerID))
                 }
-                OnJoin { (state: inout RouterShutdownState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players.append(ctx.playerID.rawValue)
                 }
-                OnLeave { (state: inout RouterShutdownState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.players.removeAll { $0 == ctx.playerID.rawValue }
                     state.leaves.append(ctx.playerID.rawValue)
                 }

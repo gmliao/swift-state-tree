@@ -105,7 +105,7 @@ HandleAction(BuyAction.self,
 | `apply` | 同步，在同一個 turn 內、緊接在 `validate` 之後 | 寫入狀態、發出 event、回傳 response | 拋出錯誤 |
 
 - 沒有東西要傳時，`validate` 回傳 `Void`，`apply` 接受 `(inout State, Action, LandContext)`。
-- `HandleEvent(_:validate:apply:)` 與 `HandleServerInput(_:validate:apply:)` 有相同的兩種形式；它們的 `apply` 回傳 `Void`。`HandleAction` 的兩種形式都可加 `resolvers:`，`validate` 從自己的 context 讀取其輸出。
+- `HandleEvent(_:validate:apply:)` 與 `HandleServerInput(_:validate:apply:)` 有相同的兩種形式；它們的 `apply` 回傳 `Void`。`HandleAction` 的兩種形式都可加 `resolvers:`；加了之後，兩段都在 action 之後收到其輸出：`validate: { state, action, outputs, ctx in … }`、`apply: { state, action, outputs, plan, ctx in … }`。
 - `validate` 借用狀態：不會複製。它在同一個 turn 內緊接在 `apply` 之前執行，因此它檢查過的條件在 `apply` 寫入時仍然成立。
 - `validate` 拋出錯誤時只有該 input 失敗，什麼都不寫入、什麼都不發出。Action 的呼叫者收到錯誤（`ACTION_HANDLER_ERROR`；在 tick land 上呼叫者在收件時已收到 ACK），event 的錯誤以 error payload 送給 client（限於 tickless land，event 會在那裡等待自己的 input turn；在 tick land 上 event 於下一個 tick 套用，因此在那裡拒絕只記錄在 log），server input 的錯誤記錄在 log（[Runtime：Input 與 Turn](runtime.zh-TW.md#input-與-turn)）。
 - Action body 與 `apply` 回傳 action 宣告的 `Response`（#561）。回傳其他型別無法編譯。
@@ -114,7 +114,7 @@ HandleAction(BuyAction.self,
 
 `validate` 收到的是 `ValidateContext`，不是 `LandContext`：
 
-- **可用：** `landID`、`playerID`、`clientID`、`sessionID`、`deviceID`、`isGuest`、`metadata`、`tickId`、`playerSlot`、`logger`、依名稱取得的 resolver 輸出（`ctx.productInfo`），以及只限 `ReadOnlyLandService` 型別的 `services`。
+- **可用：** `landID`、`playerID`、`clientID`、`sessionID`、`deviceID`、`isGuest`、`metadata`、`tickId`、`playerSlot`、`logger`，以及只限 `ReadOnlyLandService` 型別的 `services`。
 - **不可用：** `emitEvent`、`requestSyncNow()` / `requestSyncBroadcastOnly()`、server input、亂數、排程。
 
 `ReadOnlyLandService` 是 marker protocol，也是編譯器無法檢查的約定：該 service 只讀取，且相同輸入給出相同答案，因為 replay 會再執行一次 `validate`。不具決定性的資料（時鐘、遠端呼叫、亂數來源）應放在 resolver，其輸出會被錄製。以 existential 型別註冊的 service（`register(x, as: (any P).self)`）無法透過 marker 取得；請以其具體型別註冊。
@@ -258,7 +258,7 @@ struct GameLand {
 let definition = GameLand.definition
 ```
 
-限制：`@Land` 建立的是沒有 services 的 land。有 services 的 land 用 `Land(_:using:services:)` 建立。
+`@Land(GameState.self)` 建立沒有 services 的 land。`@Land(GameState.self, services: AppServices.self)` 建立有 services 的 land：它的 `definition` 是 `TypedLand<GameState, AppServices>`，`body` 回傳 `LandRules<GameState, AppServices>`，並以 `register(landType:land:services:…)` 註冊（[Resolver：服務](resolver.zh-TW.md#服務)）。
 
 ## LandContext
 
@@ -273,8 +273,16 @@ LandContext 是 request-scoped，請避免保存引用。
 
 ## Resolver
 
-`HandleAction`、`OnJoin`、`OnInitialize` 等可宣告 resolver。
-Resolver 先並行執行，成功後再同步進入 handler。
+`HandleAction`、`CanJoin`、`OnJoin`、`OnLeave`、`OnInitialize` 與 `OnFinalize` 可宣告 resolver。Resolver 在 handler 之前並行執行，handler 以參數收到其輸出：
+
+```swift
+HandleAction(AddToCartAction.self, resolvers: { _, action, _ in ProductInfo(productID: action.productID) }) {
+    state, action, product, ctx in
+    ...
+}
+```
+
+`resolvers:` closure 在接納 input 的那個 turn 中，依 State 與 input 建出 resolver 值。見 [Resolver](resolver.zh-TW.md)。
 
 ## Lifetime
 
@@ -319,17 +327,17 @@ Land 可能需要某些資料才能開始：例如由 resolver 載入的房間�
 ```swift
 Lifetime {
     OnInitialize(
-        resolvers: RoomConfigResolver.self,
+        resolvers: { _, ctx in RoomConfig(roomID: ctx.landID) },
         onResolverFailure: .continue,
-        validate: { _, ctx in
-            guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
-            return config
+        validate: { _, roomConfig, _ in
+            guard let roomConfig else { throw RoomSetupError.noConfig }
+            return roomConfig
         },
-        apply: { state, config, _ in
+        apply: { state, _, config, _ in
             state.maxPlayers = config.maxPlayers
         }
     )
 }
 ```
 
-使用 `.continue` 時，resolver 拋出錯誤會讓 `ctx.roomConfig` 為空，`validate` 便會拒絕。拒絕會讓初始化失敗，和 resolver 使用 `.failLand` 時相同：land 被拆除且不執行 destroy handler，正在等待的 join 收到可重試的 `JOIN_DENIED`。重試的 join 會建立新的 land。
+使用 `.continue` 時，resolver 拋出錯誤會讓 `roomConfig` 為 `nil`，`validate` 便會拒絕。拒絕會讓初始化失敗，和 resolver 使用 `.failLand` 時相同：land 被拆除且不執行 destroy handler，正在等待的 join 收到可重試的 `JOIN_DENIED`。重試的 join 會建立新的 land。

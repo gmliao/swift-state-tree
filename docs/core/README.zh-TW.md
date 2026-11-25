@@ -59,7 +59,7 @@ Resolver 機制允許在 action、join、leave 或生命週期 handler 執行前
 
 - **並行執行**：多個 resolver 並行執行，提升效能
 - **錯誤處理**：任何 resolver 失敗會中止整個處理流程
-- **型別安全**：透過 `@dynamicMemberLookup` 提供型別安全的存取
+- **具型別的輸出**：handler 以具型別的參數收到每個 resolver 的輸出
 - **資料載入**：從資料庫、Redis、API 等外部來源載入資料
 
 ### 使用方式
@@ -68,9 +68,10 @@ Resolver 機制允許在 action、join、leave 或生命週期 handler 執行前
 
 ```swift
 Rules {
-    HandleAction(UpdateCartAction.self, resolvers: ProductInfoResolver.self) { state, action, ctx in
-        // Resolver 已經執行完成，可以直接使用
-        let productInfo = ctx.productInfo  // 型別：ProductInfo?
+    HandleAction(UpdateCartAction.self, resolvers: { _, action, _ in
+        ProductInfo(productID: action.productID)
+    }) { state, action, productInfo, ctx in
+        // Resolver 已經執行完成；productInfo 是它的輸出（ProductInfoOutput?）
         // ...
     }
 }

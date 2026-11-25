@@ -1085,11 +1085,11 @@ enum BenchmarkRunner {
     // Create a benchmark Land with our local state
     let landDef = Land("encoding-benchmark", using: BenchmarkState.self) {
         Rules {
-            OnJoin { (state: inout BenchmarkState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = BenchmarkPlayerState()
             }
 
-            HandleAction(BenchmarkMutateAction.self) { (state: inout BenchmarkState, action: BenchmarkMutateAction, _: LandContext) in
+            HandleAction(BenchmarkMutateAction.self) { state, action, _ in
                 // Apply mutations directly
                 state.score += 1
                 state.monsterCount += 1

@@ -184,7 +184,7 @@ func testTransportAdapterInitialSyncJsonObjectIncludesBroadcastAndPerPlayer() as
         using: InitialSyncEncodingTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout InitialSyncEncodingTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.ticks = 5
                 state.playerScores[ctx.playerID] = 42
             }
@@ -236,7 +236,7 @@ func testTransportAdapterInitialSyncOpcodeIncludesBroadcastAndPerPlayer() async 
         using: InitialSyncEncodingTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout InitialSyncEncodingTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.ticks = 5
                 state.playerScores[ctx.playerID] = 42
             }
@@ -286,7 +286,7 @@ func testTransportAdapterUsesPlayerSlotInOpcodeEncoding() async throws {
         using: InitialSyncEncodingTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout InitialSyncEncodingTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.ticks = 10
                 state.playerScores[ctx.playerID] = 100
             }
@@ -384,7 +384,7 @@ func testTransportAdapterFirstSyncIncludesNestedPositionV() async throws {
         using: NestedInitialSyncState.self
     ) {
         Rules {
-            OnJoin { (state: inout NestedInitialSyncState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.base.health = 95
                 state.base.position = NestedPositionState(v: NestedVec2State(x: 65000, y: 37000))
                 state.monsters[1] = NestedMonsterState(
@@ -451,12 +451,12 @@ func testTransportAdapterDiffAfterFirstSyncKeepsNestedPositionV() async throws {
             Register(NestedMoveBaseEvent.self)
         }
         Rules {
-            OnJoin { (state: inout NestedInitialSyncState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.base.health = 100
                 state.base.position = NestedPositionState(v: NestedVec2State(x: 64000, y: 36000))
                 state.playerScores[ctx.playerID] = 1
             }
-            HandleEvent(NestedMoveBaseEvent.self) { (state: inout NestedInitialSyncState, event: NestedMoveBaseEvent, _) in
+            HandleEvent(NestedMoveBaseEvent.self) { state, event, _ in
                 state.base.position = NestedPositionState(v: NestedVec2State(x: event.x, y: event.y))
             }
         }
@@ -562,7 +562,7 @@ func testTransportAdapterSendsDiffAfterIncrementActionJsonObject() async throws 
         using: ActionSyncCounterState.self
     ) {
         Rules {
-            HandleAction(ActionSyncIncrementAction.self) { (state: inout ActionSyncCounterState, _: ActionSyncIncrementAction, _: LandContext) in
+            HandleAction(ActionSyncIncrementAction.self) { state, _, _ in
                 state.count += 1
                 return ActionSyncIncrementResponse(newCount: state.count)
             }
@@ -631,7 +631,7 @@ func testTransportAdapterSendsDiffAfterIncrementActionOpcodeJsonArray() async th
         using: ActionSyncCounterState.self
     ) {
         Rules {
-            HandleAction(ActionSyncIncrementAction.self) { (state: inout ActionSyncCounterState, _: ActionSyncIncrementAction, _: LandContext) in
+            HandleAction(ActionSyncIncrementAction.self) { state, _, _ in
                 state.count += 1
                 return ActionSyncIncrementResponse(newCount: state.count)
             }

@@ -59,16 +59,16 @@ struct ReplayPayloadDecodeFailureTests {
         Land("replay-decode", using: ReplayDecodeState.self) {
             ClientEvents { Register(ReplayDecodeEvent.self) }
             Rules {
-                HandleAction(ReplayDecodeAction.self) { (state: inout ReplayDecodeState, action: ReplayDecodeAction, _: LandContext) in
+                HandleAction(ReplayDecodeAction.self) { state, action, _ in
                     state.hits.append("action:\(action.tag)")
                     return ReplayDecodeResponse(count: state.hits.count)
                 }
-                HandleEvent(ReplayDecodeEvent.self) { (state: inout ReplayDecodeState, event: ReplayDecodeEvent, _: LandContext) in
+                HandleEvent(ReplayDecodeEvent.self) { state, event, _ in
                     state.hits.append("event:\(event.tag)")
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout ReplayDecodeState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
     }

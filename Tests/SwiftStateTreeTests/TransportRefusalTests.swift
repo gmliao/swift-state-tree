@@ -113,7 +113,7 @@ struct TransportRefusalTests {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
             let land = Land("refusal-marker", using: RoutingPinState.self) {
                 Lifetime {
-                    OnInitialize { (_: inout RoutingPinState, _: LandContext) in
+                    OnInitialize { _, _ in
                         FileHandle.standardError.write(Data("ON-INITIALIZE-RAN\n".utf8))
                     }
                 }

@@ -54,7 +54,7 @@ private func makeLeaveReplayLand(tick: Bool) -> LandDefinition<TurnBoundaryState
         ServerEvents { Register(SyncStreamTestEvent.self) }
         Rules { rule; leave }
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout TurnBoundaryState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(SyncStreamTestEvent(message: "tick-\(state.ticks)"), to: .all)
                 ctx.requestSyncNow()

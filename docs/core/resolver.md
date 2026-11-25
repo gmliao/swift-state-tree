@@ -2,182 +2,245 @@
 
 # Resolver Usage Guide
 
-> Resolver mechanism allows parallel data loading before an action, join, leave or lifecycle handler runs, keeping handlers synchronous and focused on business logic.
+> A resolver loads data from outside the land (a database, a cache, a remote API) before a handler runs, so the handler itself stays synchronous.
 
 ## Overview
 
-Resolver is SwiftStateTree's data loading mechanism, used to parallel load external data (databases, Redis, APIs, etc.) before a handler runs. Resolvers belong to actions (`HandleAction`), `CanJoin`, `OnJoin`, `OnLeave` and the lifecycle handlers `OnInitialize` and `OnFinalize`. `DestroyWhenEmpty(after:)` takes no resolvers; its handler's executors (`onDestroyWhenEmptyResolverExecutors`) can be set only on `LandDefinition` directly. Client events are fire-and-forget and take no resolvers: `HandleEvent` has no `resolvers:` parameter. This enables:
+A resolver is a request for outside data, written as a small value. The land builds the value when it admits an input, runs it off the land's actor, and hands its result, the resolver's **output**, to the handler as a parameter.
 
-- **Keep handlers synchronous**: Handlers don't need to handle async operations
-- **Parallel loading**: Multiple resolvers execute in parallel, improving performance
-- **Error handling**: Any resolver failure aborts the entire processing flow
-- **Type safety**: Provides type-safe access through `@dynamicMemberLookup`
+Resolvers belong to actions (`HandleAction`), `CanJoin`, `OnJoin`, `OnLeave` and the lifecycle handlers `OnInitialize` and `OnFinalize`. Client events are fire-and-forget and take no resolvers: `HandleEvent` has no `resolvers:` parameter. `DestroyWhenEmpty(after:)` takes none either; its handler's executors (`onDestroyWhenEmptyResolverExecutors`) can be set only on `LandDefinition` directly.
+
+- **Handlers stay synchronous.** A handler doesn't await; its data has arrived before it runs.
+- **Parallel loading.** An entry's resolvers run in parallel.
+- **One failure stops the handler.** Any resolver that throws skips the handler (see [Error Handling](#error-handling)).
+- **Typed outputs.** The handler receives each output as a typed parameter, in the order the resolvers are declared.
+
+Two forms exist today:
+
+| Entries | Form |
+|---|---|
+| `HandleAction`, `OnInitialize`, `OnFinalize` | A `Resolver` value, built by the entry's `resolvers:` closure |
+| `CanJoin`, `OnJoin`, `OnLeave` | A `ContextResolver` type, named by metatype (`resolvers: UserProfileResolver.self`) |
+
+In both forms the handler gets the outputs as parameters. The join entries move to values later; until then, their resolvers read the join's context ([Join Resolvers](#join-resolvers)).
 
 ## Core Concepts
 
-### Resolver Definition
+### A Resolver Is a Value
 
-Resolver must implement `ContextResolver` protocol:
+A resolver is a `@PlainData` struct that conforms to `Resolver`. Its stored fields are its parameters. `resolve` reads only those fields and the land's services, and returns the output.
 
 ```swift
-struct ProductInfoResolver: ContextResolver {
-    typealias Output = ProductInfo
-    
-    static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-        // Get parameters from Action payload
-        let action = ctx.actionPayload as? UpdateCartAction
-        guard let productID = action?.productID else {
-            throw ResolverError.missingParameter("productID")
-        }
-        
-        // Load data (can be database, API, etc.)
-        let data = try await ctx.services.database.fetchProduct(by: productID)
-        
-        return ProductInfo(
-            id: data.id,
-            name: data.name,
-            price: data.price,
-            stock: data.stock
-        )
+protocol HasProductDatabase: Sendable {
+    var productDatabase: ProductDatabase { get }
+}
+
+@PlainData
+struct ProductInfo<D: HasProductDatabase>: Resolver {
+    typealias Dependencies = D
+    let productID: String
+
+    func resolve(_ deps: D) async throws -> ProductInfoOutput {
+        let data = try await deps.productDatabase.fetchProduct(by: productID)
+        return ProductInfoOutput(id: data.id, name: data.name, price: data.price, stock: data.stock)
     }
 }
 ```
 
-### ResolverContext
+- **`Dependencies`** is what `resolve` may use. It is the land's services type, the one given to `Land(_:using:services:)`, or `NoServices` for a land without services. A resolver generic over a capability protocol (`D: HasProductDatabase`) works in every land whose services conform to it. In a land whose services lack the capability, the declaration doesn't compile.
+- **`@PlainData`** checks the fields at compile time: no class, closure, `Date`, `UUID`, `URL` or `Any` ([plain data](../turns/README.md#what-counts-as-plain-data)). A resolver can't carry a reference to the land's state.
+- **No state access.** `resolve` runs off the land's actor. It can't read the State; whatever it needs from the State, the land copies into a field when it builds the value.
 
-`ResolverContext` provides information needed by resolver:
+### Services
 
-- `actionPayload`: Current Action's payload (if Action handler)
-- `eventPayload`: `nil` in every context the runtime builds. Client events take no resolvers, so the runtime never sets it; only a `ResolverContext` built by hand can carry one
-- `currentState`: Current State (read-only)
-- `landContext`: Complete LandContext (includes playerID, services, etc.)
-- `services`: External service abstraction (database, logging, etc.)
+A land with services declares their type, and the server is given a value of it when the land type is registered:
+
+```swift
+struct ShopServices: HasProductDatabase {
+    let productDatabase: ProductDatabase
+}
+
+let shop = Land("shop", using: ShopState.self, services: ShopServices.self) {
+    Rules { ... }
+}
+
+try await host.register(
+    landType: "shop",
+    land: shop,
+    services: { _, _ in ShopServices(productDatabase: database) },
+    initialState: ShopState(),
+    webSocketPath: "/game/shop",
+    configuration: NIOLandServerConfiguration()
+)
+```
+
+`Land(_:using:services:)` returns a `TypedLand<State, Services>`. Its `definition` is the plain `LandDefinition`. A land with services must be registered through the typed overload, which takes the services factory. Registering its bare `definition` is refused: `LandRegistrationError` names the services type and says none were given. A `LandKeeper` built in a test takes the value directly: `LandKeeper(land: shop, resolverServices: ShopServices(...), initialState: ShopState())`.
 
 ### ResolverOutput
 
-Resolver output must implement `ResolverOutput` protocol and carry `@PlainData`. `@PlainData` checks every field at compile time: a field can't be `Date`, `UUID`, `URL`, `Decimal`, `AnyCodable`, `Any`, a class or a closure ([plain data](../turns/README.md#what-counts-as-plain-data)).
+A resolver's output conforms to `ResolverOutput` and carries `@PlainData`, with the same field rules as the resolver.
 
 ```swift
 @PlainData
-struct ProductInfo: ResolverOutput, Codable, Sendable {
+struct ProductInfoOutput: ResolverOutput {
     let id: String
     let name: String
-    let price: Double
+    let price: Int
     let stock: Int
 }
 ```
 
+The output is recorded, so a replay hands the handler the same output without calling `resolve` again.
+
 ## Usage
 
-### Using in Action Handler
+### Using in an Action Handler
 
-Declare resolver in Land DSL:
+The entry's `resolvers:` closure builds the value from the State, the action and a read-only context. The handler gets the output after the action:
 
 ```swift
 Rules {
-    HandleAction(UpdateCartAction.self, resolvers: ProductInfoResolver.self) { state, action, ctx in
-        // Resolver has already executed, can use directly
-        let productInfo: ProductInfo? = ctx.productInfo
-        
-        guard let product = productInfo else {
-            // Theoretically won't happen, as resolver failure aborts handler
-            return UpdateCartResponse(success: false)
+    HandleAction(AddToCartAction.self, resolvers: { _, action, _ in
+        ProductInfo(productID: action.productID)
+    }) { state, action, product, ctx in
+        guard let product, product.stock > 0 else {
+            return AddToCartResponse(success: false, message: "Out of stock")
         }
-        
-        // Use resolver result
-        if product.stock > 0 {
-            state.cart.items.append(CartItem(
-                productID: product.id,
-                name: product.name,
-                price: product.price
-            ))
-            return UpdateCartResponse(success: true)
-        } else {
-            return UpdateCartResponse(success: false, message: "Out of stock")
-        }
+        state.cart.items.append(CartItem(productID: product.id, name: product.name, price: product.price))
+        return AddToCartResponse(success: true)
     }
 }
 ```
+
+The output parameter is optional. It is `nil` when the closure built no value (see below); otherwise the handler runs only after the resolver succeeded.
+
+### When the Closure Runs
+
+The closure runs once, in the turn that admits the input: before the resolvers start, with the State as it is at that moment. A change to the State while the resolvers run doesn't reach the value. The closure reads; it can't write the State (it gets it as a constant), and its context has no random source.
+
+An action's closure runs before the [action caps](#actions-with-resolvers) are checked, so it also runs for an action the caps then refuse. Replay doesn't run it: replay reads the outputs the record holds. So the closure must not change anything. The compiler stops it from writing the State, but not from calling code that has effects, or from changing a State that holds a reference. Such an effect would happen for a refused action too, and replay would neither undo it nor repeat it.
+
+The closure may return `nil`. Then nothing is fetched, and the handler gets `nil` for that output. An action whose closure returns `nil` for every resolver has nothing to wait for: it is handled like an action without resolvers, and the action caps don't count it. Use `nil` to skip a load the State already answers:
+
+```swift
+HandleAction(AddToCartAction.self, resolvers: { state, action, _ in
+    state.productCache[action.productID] == nil ? ProductInfo(productID: action.productID) : nil
+}) { state, action, fetched, _ in
+    guard let product = fetched ?? state.productCache[action.productID] else {
+        return AddToCartResponse(success: false)
+    }
+    ...
+}
+```
+
+An action whose closure built no value is applied in order with the inputs that don't wait. So it can be applied before an earlier action of the same type that is still waiting for its resolvers.
 
 ### Multiple Resolvers
 
-Can use multiple resolvers simultaneously, they execute in parallel:
+The closure returns a tuple. The resolvers run in parallel, and the handler gets a tuple of optional outputs in the same order:
 
 ```swift
+HandleAction(PurchaseAction.self, resolvers: { _, action, ctx in
+    (ProductInfo(productID: action.productID), UserBalance(playerID: ctx.playerID))
+}) { state, action, resolved, _ in
+    guard let product = resolved.0, let balance = resolved.1 else {
+        return PurchaseResponse(success: false)
+    }
+    ...
+}
+```
+
+An action takes one or two resolvers; `OnInitialize`, `OnFinalize` and the join entries take one to three. Two resolvers in one entry whose outputs have the same name are refused at registration, because the record names each output ([Output Names](#output-names)). That covers two of the same base type (`ProductInfo` twice), and also `Price` and `PriceResolver`, whose outputs are both named `price`.
+
+### Two-Phase Handlers
+
+With `validate` and `apply` ([Two-Phase Handlers](land-dsl.md#two-phase-handlers)), both stages get the outputs, after the action and before the plan:
+
+```swift
+HandleAction(AdminAction.self, resolvers: { _, _, ctx in UserPermission(playerID: ctx.playerID) },
+    validate: { _, _, permission, _ in
+        guard let permission, permission.isAdmin else { throw AdminError.adminRequired }
+    },
+    apply: { state, action, _, ctx in
+        AdminResponse()
+    })
+```
+
+### Lifecycle Handlers
+
+`OnInitialize`'s closure gets the initial State and a read-only context (`ctx.landID`). `OnFinalize`'s gets the final State and a read-only context. Each body gets its output after the State, then a `LandContext`:
+
+```swift
+Lifetime {
+    OnInitialize(resolvers: { _, ctx in RoomConfig(roomID: ctx.landID) }) { state, config, _ in
+        state.maxPlayers = config?.maxPlayers ?? 4
+    }
+    OnFinalize(resolvers: { state, ctx in SaveResults(landID: ctx.landID, scores: state.scores) }) { _, _, _ in }
+}
+```
+
+Limit: in `OnInitialize`, `ctx.metadata` is empty. The land's creation metadata doesn't reach it.
+
+### Join Resolvers
+
+`CanJoin`, `OnJoin` and `OnLeave` still name `ContextResolver` types. A `ContextResolver` reads the join's context: `ctx.playerID`, `ctx.landID`, `ctx.currentState` and `ctx.services`.
+
+```swift
+struct UserProfileResolver: ContextResolver {
+    typealias Output = UserProfile
+
+    static func resolve(ctx: ResolverContext) async throws -> UserProfile {
+        try await profileStore.load(ctx.playerID)
+    }
+}
+
 Rules {
-    HandleAction(
-        PurchaseAction.self,
-        resolvers: (ProductInfoResolver.self, UserBalanceResolver.self)
-    ) { state, action, ctx in
-        // Both resolvers have executed in parallel
-        let productInfo: ProductInfo? = ctx.productInfo
-        let userBalance: UserBalance? = ctx.userBalance
-        
-        guard let product = productInfo, let balance = userBalance else {
-            return PurchaseResponse(success: false)
-        }
-        
-        // Check balance
-        if balance.amount >= product.price {
-            balance.amount -= product.price
-            state.purchases.append(Purchase(
-                productID: product.id,
-                price: product.price,
-                timestamp: Date()
-            ))
-            return PurchaseResponse(success: true)
-        } else {
-            return PurchaseResponse(success: false, message: "Insufficient balance")
-        }
+    OnJoin(resolvers: UserProfileResolver.self) { state, profile, ctx in
+        state.players[ctx.playerID] = PlayerState(name: profile?.name ?? "Guest")
     }
 }
 ```
+
+The handler gets the output as a parameter, as for a value: after the State for `OnJoin` and `OnLeave`, after the session for `CanJoin` (`{ state, session, profile, ctx in … }`).
 
 ## Execution Flow
 
 ### Parallel Execution
 
-All declared resolvers execute in parallel:
+All of an entry's resolvers run in parallel:
 
 ```mermaid
 sequenceDiagram
-    participant Handler as Action Handler
+    participant Land as Land (turn)
     participant Executor as ResolverExecutor
-    participant R1 as ProductInfoResolver
-    participant R2 as UserBalanceResolver
+    participant R1 as ProductInfo
+    participant R2 as UserBalance
     participant DB as Database
-    
-    Handler->>Executor: Execute resolvers
-    Executor->>R1: resolve(ctx) (parallel)
-    Executor->>R2: resolve(ctx) (parallel)
+
+    Land->>Land: resolvers: closure builds the values
+    Land->>Executor: run the values
+    Executor->>R1: resolve(deps) (parallel)
+    Executor->>R2: resolve(deps) (parallel)
     R1->>DB: fetchProduct(...)
     R2->>DB: fetchBalance(...)
-    DB-->>R1: ProductInfo
-    DB-->>R2: UserBalance
-    R1-->>Executor: ProductInfo
-    R2-->>Executor: UserBalance
-    Executor->>Executor: Populate LandContext
-    Executor-->>Handler: Updated ctx
-    Handler->>Handler: Execute business logic
+    DB-->>R1: product
+    DB-->>R2: balance
+    R1-->>Executor: ProductInfoOutput
+    R2-->>Executor: UserBalanceOutput
+    Executor-->>Land: outputs (recorded)
+    Land->>Land: handler(state, action, outputs, ctx)
 ```
 
 ### Execution Order
 
-1. **Create ResolverContext**: Runtime creates context for each resolver
-2. **Parallel Execution**: All resolvers execute `resolve(ctx:)` in parallel
-3. **Collect Results**: Wait for all resolvers to complete
-4. **Populate LandContext**: Put results into corresponding fields of `LandContext`
-5. **Execute Handler**: Handler can synchronously access resolver results
+1. **Build.** In the turn that admits the input, the `resolvers:` closure builds the values. A `nil` value is skipped.
+2. **Run.** The values' `resolve(_:)` run in parallel, off the land's actor, with the land's services.
+3. **Collect.** The land waits for every resolver, then records the outputs.
+4. **Handle.** In a later turn, the handler runs with the outputs as parameters.
 
-### Property Name Conversion
+### Output Names
 
-Resolver type names are automatically converted to property names:
-
-- `ProductInfoResolver` → `ctx.productInfo`
-- `UserBalanceResolver` → `ctx.userBalance`
-- `ShopConfigResolver` → `ctx.shopConfig`
-
-Conversion rule: Remove `Resolver` suffix, convert first letter to lowercase.
+The record names each output after its resolver's base type, without generic arguments: `ProductInfo<ShopServices>` is recorded as `productInfo`, and `UserProfileResolver` as `userProfile` (a `Resolver` suffix is dropped, and the first letter lowercased). Errors name the base type: `ResolverExecutionError.resolverFailed(name: "ProductInfo", …)`.
 
 ## Error Handling
 
@@ -250,30 +313,20 @@ Three caps bound the actions in their resolvers. Over any of them, the action is
 | `RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND` | 32 | One land's abandoned actions still in their resolvers (#364). Only actions count: a land's abandoned CanJoin, OnJoin, OnLeave and OnInitialize groups are reported, not capped, so an outage behind the join resolvers doesn't stop the actions of players already in. Other lands' actions still run. Message: `action rejected: abandoned-resolver limit reached (… in this land)` |
 | `RESOLVER_ABANDONED_ACTIONS_MAX` | 256 | The process's abandoned actions still in their resolvers. Joins, leaves and OnInitialize don't count. Message: `action rejected: abandoned-resolver limit reached (…)` |
 
-0 removes a cap; a negative or non-integer value gives the default. Resolver-free actions and client events are never capped. `ResolverDeadlineMetrics` reports the caps: `abandonedActions` (a gauge), `inFlightLimitRejections`, `landAbandonedLimitRejections` and `abandonedLimitRejections`.
+0 removes a cap; a negative or non-integer value gives the default. Resolver-free actions, actions whose closure built no value, and client events are never capped. `ResolverDeadlineMetrics` reports the caps: `abandonedActions` (a gauge), `inFlightLimitRejections`, `landAbandonedLimitRejections` and `abandonedLimitRejections`.
 
 ### Error Handling Example
 
 ```swift
-struct ProductInfoResolver: ContextResolver {
-    typealias Output = ProductInfo
-    
-    static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-        let action = ctx.actionPayload as? UpdateCartAction
-        guard let productID = action?.productID else {
-            throw ResolverError.missingParameter("productID")
-        }
-        
-        // Check cache
-        let state = ctx.currentState as? GameState
-        if let cached = state?.productCache[productID] {
-            return cached
-        }
-        
-        // Load from database
+@PlainData
+struct ProductInfo<D: HasProductDatabase>: Resolver {
+    typealias Dependencies = D
+    let productID: String
+
+    func resolve(_ deps: D) async throws -> ProductInfoOutput {
         do {
-            let data = try await ctx.services.database.fetchProduct(by: productID)
-            return ProductInfo(from: data)
+            let data = try await deps.productDatabase.fetchProduct(by: productID)
+            return ProductInfoOutput(from: data)
         } catch DatabaseError.notFound {
             throw ResolverError.dataLoadFailed("Product not found: \(productID)")
         } catch {
@@ -285,40 +338,24 @@ struct ProductInfoResolver: ContextResolver {
 
 ## Best Practices
 
-### 1. Use Cache
+### 1. Check the State in the Closure
 
-Check cache first in resolver to avoid unnecessary database queries:
+The closure sees the State; `resolve` doesn't. Answer from the State there, and build no value when it already has the data:
 
 ```swift
-static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-    let productID = extractProductID(from: ctx)
-    
-    // Check cache first
-    let state = ctx.currentState as? GameState
-    if let cached = state?.productCache[productID] {
-        return cached
-    }
-    
-    // Cache miss, load from database
-    let data = try await ctx.services.database.fetchProduct(by: productID)
-    let product = ProductInfo(from: data)
-    
-    // Update cache (in handler)
-    // state.productCache[productID] = product
-    
-    return product
+HandleAction(AddToCartAction.self, resolvers: { state, action, _ in
+    state.productCache[action.productID] == nil ? ProductInfo(productID: action.productID) : nil
+}) { state, action, fetched, _ in
+    if let fetched { state.productCache[action.productID] = fetched }
+    ...
 }
 ```
 
+The handler writes the cache. Neither the closure nor `resolve` can.
+
 ### 2. Provide Clear Error Messages
 
-Use descriptive error messages for easier debugging:
-
 ```swift
-guard let productID = action?.productID else {
-    throw ResolverError.missingParameter("productID is required for UpdateCartAction")
-}
-
 guard product.stock > 0 else {
     throw ResolverError.dataLoadFailed("Product \(productID) is out of stock")
 }
@@ -326,96 +363,45 @@ guard product.stock > 0 else {
 
 ### 3. Use Parallelism Appropriately
 
-Separate independent data loading operations into different resolvers to leverage parallel execution:
+Split independent loads into separate resolvers, so they run in parallel:
 
 ```swift
-// ✅ Good design: Two independent resolvers can execute in parallel
-HandleAction(
-    PurchaseAction.self,
-    resolvers: (ProductInfoResolver.self, UserBalanceResolver.self)
-) { state, action, ctx in
-    // Both resolvers execute in parallel, total time = max(ProductInfo, UserBalance)
-}
+// ✅ Two resolvers in parallel: total time = max(product, balance)
+HandleAction(PurchaseAction.self, resolvers: { _, action, ctx in
+    (ProductInfo(productID: action.productID), UserBalance(playerID: ctx.playerID))
+}) { state, action, resolved, ctx in ... }
 
-// ❌ Bad design: Sequential execution in one resolver
-struct PurchaseDataResolver: ContextResolver {
-    static func resolve(ctx: ResolverContext) async throws -> PurchaseData {
-        let product = try await fetchProduct(...)  // Wait
-        let balance = try await fetchBalance(...)  // Wait
-        // Total time = Product + Balance
-        return PurchaseData(product: product, balance: balance)
+// ❌ One resolver that loads both in sequence: total time = product + balance
+@PlainData
+struct PurchaseData<D: HasProductDatabase & HasWallet>: Resolver {
+    typealias Dependencies = D
+    let productID: String
+    let playerID: PlayerID
+    func resolve(_ deps: D) async throws -> PurchaseDataOutput {
+        let product = try await deps.productDatabase.fetchProduct(by: productID)
+        let balance = try await deps.wallet.balance(of: playerID)
+        return PurchaseDataOutput(product: product, balance: balance)
     }
 }
 ```
 
-### 4. Don't Modify State in Resolver
+### 4. Declare Only the Capabilities You Use
 
-Resolvers should only read data, not modify state:
-
-```swift
-// ✅ Correct: Only read data
-static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-    let data = try await ctx.services.database.fetchProduct(by: productID)
-    return ProductInfo(from: data)
-}
-
-// ❌ Wrong: Modify state in resolver
-static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-    var state = ctx.currentState as? GameState
-    state?.productCache[productID] = product  // Shouldn't modify here
-    return product
-}
-```
-
-State modifications should be done in handlers.
-
-### 5. Use Services Abstraction
-
-Access external services through `ctx.services` to maintain testability:
-
-```swift
-static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-    // Use services abstraction, don't directly depend on concrete implementation
-    let data = try await ctx.services.database.fetchProduct(by: productID)
-    return ProductInfo(from: data)
-}
-```
+Make a resolver generic over the protocols it needs (`D: HasProductDatabase`), not over the land's whole services type. It then works in every land whose services have that capability, and a test can give it a stub with only that capability.
 
 ## Common Use Cases
 
-### Use Case 1: Load Product Information
+### Use Case 1: Verify User Permissions
+
+Handler bodies can't throw. To refuse an action on a resolver's output, read it in `validate` and throw there ([Two-Phase Handlers](land-dsl.md#two-phase-handlers)).
 
 ```swift
-struct ProductInfoResolver: ContextResolver {
-    typealias Output = ProductInfo
-    
-    static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
-        let action = ctx.actionPayload as? UpdateCartAction
-        guard let productID = action?.productID else {
-            throw ResolverError.missingParameter("productID")
-        }
-        
-        // Load from database
-        let data = try await ctx.services.database.fetchProduct(by: productID)
-        return ProductInfo(from: data)
-    }
-}
-```
-
-### Use Case 2: Verify User Permissions
-
-Handler bodies can't throw; to refuse an action on a resolver's output, read it in `validate` and throw there ([Two-Phase Handlers](land-dsl.md#two-phase-handlers)).
-
-```swift
-struct UserPermissionResolver: ContextResolver {
-    typealias Output = UserPermission
-    
-    static func resolve(ctx: ResolverContext) async throws -> UserPermission {
-        // Load user permissions from database
-        let permission = try await ctx.services.database.fetchPermission(
-            for: ctx.landContext.playerID
-        )
-        return UserPermission(from: permission)
+@PlainData
+struct UserPermission<D: HasPermissionStore>: Resolver {
+    typealias Dependencies = D
+    let playerID: PlayerID
+    func resolve(_ deps: D) async throws -> UserPermissionOutput {
+        try await deps.permissionStore.permission(for: playerID)
     }
 }
 
@@ -423,41 +409,30 @@ enum AdminError: Error {
     case adminRequired
 }
 
-// Use in handler: validate reads the resolver output and refuses; apply does the work
-HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self,
-    validate: { state, action, ctx in
-        guard let permission: UserPermission = ctx.userPermission, permission.isAdmin else {
+HandleAction(AdminAction.self, resolvers: { _, _, ctx in UserPermission(playerID: ctx.playerID) },
+    validate: { _, _, permission, _ in
+        guard let permission, permission.isAdmin else {
             throw AdminError.adminRequired  // nothing is written
         }
     },
-    apply: { state, action, ctx in
-        // Execute admin operations
-        return AdminResponse()
+    apply: { state, action, _, ctx in
+        AdminResponse()
     })
 ```
 
-### Use Case 3: Load Multiple Related Data
+### Use Case 2: Load Several Related Records
 
 ```swift
-// Define multiple resolvers
-struct UserProfileResolver: ContextResolver { ... }
-struct UserInventoryResolver: ContextResolver { ... }
-
-// Use in handler
-HandleAction(
-    UpgradeItemAction.self,
-    resolvers: (UserProfileResolver.self, UserInventoryResolver.self)
-) { state, action, ctx in
-    let profile = ctx.userProfile
-    let inventory = ctx.userInventory
-    
-    // Use all resolver results
-    // ...
+HandleAction(UpgradeItemAction.self, resolvers: { _, action, ctx in
+    (UserProfile(playerID: ctx.playerID), UserInventory(playerID: ctx.playerID))
+}) { state, action, resolved, ctx in
+    guard let profile = resolved.0, let inventory = resolved.1 else { return UpgradeItemResponse(success: false) }
+    ...
 }
 ```
 
 ## Related Documentation
 
-- [Runtime Operation](runtime.md) - Understand how LandKeeper executes resolvers
-- [Core Concepts](README.md) - Understand StateNode and Land DSL
-- [Land DSL](land-dsl.md) - Understand how to use resolvers in Land DSL
+- [Runtime Operation](runtime.md) - How LandKeeper executes resolvers
+- [Core Concepts](README.md) - StateNode and Land DSL
+- [Land DSL](land-dsl.md) - Declaring resolvers in the Land DSL
