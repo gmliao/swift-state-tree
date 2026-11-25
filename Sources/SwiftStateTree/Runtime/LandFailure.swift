@@ -22,6 +22,10 @@ public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConv
         /// A handler threw after mutable access to synced state (#87). Not produced today: no
         /// handler throws after it writes (#586, #593).
         case handlerWrite
+        /// Code outside the keeper called back into it synchronously while a turn body ran
+        /// (#700): a transport's callback during a port call. The keeper refuses the call and
+        /// ends the land, so the callback's write is never half-applied.
+        case keeperReentry
     }
 
     public let kind: Kind

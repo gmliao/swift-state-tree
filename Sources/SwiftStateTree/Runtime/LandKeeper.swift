@@ -900,6 +900,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// it recorded anything (a tickless sync-only turn then ends its turn record, #327).
     private var recorderSubmissionCount = 0
 
+    /// The turn side (#700 K1b-5a): borrowed `inout` by one body call at a time (`withTurn`).
+    /// Nothing else touches it while a body runs.
+    private var turnSide: KeeperTurnSide
+    /// Turn bodies running now (0 or 1; `withTurn` doesn't nest). The adapter-facing entries
+    /// read it to refuse a synchronous re-entry during a body (`noteReentry`). Kept outside
+    /// the turn side, which the body has borrowed.
+    private var bodyDepth = 0
+    /// Re-entries refused so far (`noteReentry`). A call out of the keeper compares it before
+    /// and after (`callOut`).
+    private var reentryViolations = 0
+    /// The failure the first refused re-entry reported.
+    private var reentryFailure: LandFailure?
+    /// Set while the sentinel closes the output gate, so a gate whose close calls back into the
+    /// keeper can't recurse into it.
+    private var closingGateForReentry = false
+
     /// A land without a tick handler: every turn records under one tick id, so the keeper
     /// closes each turn's record itself (`ReevaluationRecorder.endTurn()`, #327).
     private var isTickless: Bool { definition.lifetimeHandlers.tickHandler == nil }
@@ -1206,6 +1222,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             scope: "LandKeeper"
         )
         self.logger = resolvedLogger
+        self.turnSide = KeeperTurnSide(submissions: recorderSubmissions)
 
         // Initialize recorder if in live mode AND recording is enabled
         // This prevents unnecessary recorder creation in load tests or when recording is not needed
@@ -1870,7 +1887,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             settle: InTurnSettle(generation: fence.generation),
             recording: inTurnSyncRecording()
         )
-        submitSyncStream(output.syncStream)
+        recordSyncStream(output.syncStream)
         let outcome: SettleTurnOutcome
         switch output.settle ?? .refused(.notCurrent) {
         case let .committed(membershipEpoch, clearDirtyFlags):
@@ -4954,8 +4971,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             includeSync: includeSync,
             recording: inTurnSyncRecording()
         )
-        submitSyncStream(output.syncStream)
-        applyInTurnSyncResult(output.result, transport: transport, joinSyncOnly: joinSyncOnly, keepsEvents: output.keepsEvents)
+        recordSyncStream(output.syncStream)
+        applyInTurnSyncResult(
+            output.result,
+            transport: transport,
+            joinSyncOnly: joinSyncOnly,
+            keepsEvents: output.keepsEvents,
+            joinsAwaitingSync: { transportHasJoinsAwaitingSync }
+        )
     }
 
     /// Applies what an in-turn sync phase did, in the same turn.
@@ -4968,11 +4991,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// `joinSyncOnly`: the phase ran only for ready joins, outside a periodic land's cadence; if
     /// back-pressure defers it, such phases stop until a sync commits (`periodicJoinSyncAllowed`).
+    ///
+    /// `joinsAwaitingSync` asks the transport whether joins are left over a commit's budget; nil
+    /// means the ask was refused as a re-entry and the land has ended (`callOut`), so no
+    /// follow-up turn is requested.
     private func applyInTurnSyncResult(
         _ result: InTurnSyncResult,
         transport: any LandKeeperTransport,
         joinSyncOnly: Bool = false,
-        keepsEvents: Bool = false
+        keepsEvents: Bool = false,
+        joinsAwaitingSync: () -> Bool?
     ) {
         switch result {
         case let .committed(clearDirtyFlags):
@@ -4983,8 +5011,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             joinSyncWaitsForCommit = false
             inTurnProbeForTesting?("sync-committed")
             // Joins left over a commit's budget: the next sync-only turn completes them.
-            if !hasPeriodicSync && transportHasJoinsAwaitingSync {
-                scheduleJoinSyncTurn(after: .zero, transport: transport)
+            if !hasPeriodicSync {
+                guard let awaiting = joinsAwaitingSync() else { return }
+                if awaiting { scheduleJoinSyncTurn(after: .zero, transport: transport) }
             }
             // Events still queued after the commit (kept by it, or queued after it): on a land
             // without periodic sync nothing else would deliver them, so one sync-only turn does,
@@ -5264,6 +5293,152 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return InTurnSyncRecording(turnKind: inTurnSyncTurnKind, position: syncReadPosition())
     }
 
+    // MARK: - Turn bodies: the side, the staged outputs, calls out (#700 K1b-5a)
+
+    /// Runs one turn body. The body gets the turn side and a fresh `TurnOutputs`, both `inout`.
+    /// Before this returns, and before any suspension in the caller: the depth drops, the
+    /// staged outputs flush (once, in staging order), and the backstop applies a refused
+    /// re-entry the body didn't apply. A throwing body flushes the same way.
+    ///
+    /// The result is fixed before the `defer`s run, so it can't carry anything the flush makes
+    /// (a submission's task): `withTurnSubmitting` returns that.
+    @discardableResult
+    private func withTurn<R>(_ body: (inout KeeperTurnSide, inout TurnOutputs) throws -> R) rethrows -> R {
+        assert(bodyDepth == 0, "turn bodies don't nest")
+        var outputs = TurnOutputs()
+        let violationsBefore = reentryViolations
+        defer {
+            turnSide.flush(&outputs)
+            applyLateReentry(since: violationsBefore)
+        }
+        bodyDepth += 1
+        defer { bodyDepth -= 1 }
+        return try body(&turnSide, &outputs)
+    }
+
+    /// `withTurn` for a body whose flush makes the submission its caller awaits: the body runs
+    /// in an inner scope (the depth drops when it ends), then an explicit flush returns the
+    /// last submission's task with the body's result. A throw flushes in the `defer` instead.
+    private func withTurnSubmitting<R>(
+        _ body: (inout KeeperTurnSide, inout TurnOutputs) throws -> R
+    ) rethrows -> (result: R, submission: Task<Void, Never>?) {
+        assert(bodyDepth == 0, "turn bodies don't nest")
+        var outputs = TurnOutputs()
+        let violationsBefore = reentryViolations
+        var flushed = false
+        defer {
+            if !flushed { turnSide.flush(&outputs) }
+            applyLateReentry(since: violationsBefore)
+        }
+        let result: R
+        do {
+            bodyDepth += 1
+            defer { bodyDepth -= 1 }
+            result = try body(&turnSide, &outputs)
+        }
+        let submission = turnSide.flush(&outputs)
+        flushed = true
+        return (result, submission)
+    }
+
+    /// A call out of the keeper during a turn body (a port call, a transport's property read).
+    /// The body's staged outputs flush first, so the callee sees today's order. If the callee
+    /// re-entered the keeper and was refused (`noteReentry`), the land ends here, before the
+    /// body reads the call's answer: `reentry` is the failure to report, and the body must not
+    /// use `value`.
+    private func callOut<R>(
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ call: () -> R
+    ) -> (value: R, reentry: LandFailure?) {
+        side.flush(&outputs)
+        let before = reentryViolations
+        let value = call()
+        guard reentryViolations != before else { return (value, nil) }
+        return (value, applyReentryFailure())
+    }
+
+    /// Refuses a synchronous re-entry during a turn body, from an adapter-facing entry. The
+    /// entry changes nothing; this:
+    /// 1. notes the failure in the set-once mailbox (the first cause noted wins);
+    /// 2. closes the output gate (the attached transport, or else the bound requester), as the
+    ///    adapter's own failure path does, so nothing of the interrupted turn goes out;
+    /// 3. counts and logs it.
+    /// The body's `callOut` sees the count grow and ends the land before it reads the call's
+    /// answer; `withTurn`'s backstop does it for any other path.
+    private func noteReentry(through entry: String) {
+        reentryViolations += 1
+        let reported = LandFailure(
+            kind: .keeperReentry,
+            detail: "\(entry) was called while a turn body ran",
+            position: LandFailurePosition(stage: .syncPhase)
+        )
+        if reentryFailure == nil { reentryFailure = reported }
+        notePendingFailure(reported)
+        let gate = transport ?? boundSyncRequester
+        if let gate, !closingGateForReentry {
+            closingGateForReentry = true
+            defer { closingGateForReentry = false }
+            gate.closeOutputs(for: reported)
+        }
+        logger.error("A transport re-entered the keeper during a turn; ending the land", metadata: [
+            "landID": .string(actualLandID ?? "-"),
+            "entry": .string(entry),
+            "gateClosed": .stringConvertible(gate != nil),
+        ])
+    }
+
+    /// Ends the land on a refused re-entry: the mailbox's first failure (the sentinel's, unless
+    /// a transport noted one before it). Returns the failure to report: the land's, or the
+    /// sentinel's on a land that was already draining (`failLand` keeps the first cause, so
+    /// `failure` stays nil there; the gate is closed all the same).
+    private func applyReentryFailure() -> LandFailure {
+        let reported = reentryFailure ?? LandFailure(
+            kind: .keeperReentry,
+            detail: "a call was refused while a turn body ran",
+            position: LandFailurePosition(stage: .syncPhase)
+        )
+        if failure == nil {
+            failLand(pendingTransportFailure.failure ?? reported)
+        }
+        return failure ?? reported
+    }
+
+    /// The backstop: a re-entry refused during a body that didn't apply it (a call not made
+    /// through `callOut`). The body's result was already fixed, so this is logged as late.
+    private func applyLateReentry(since violationsBefore: Int) {
+        guard reentryViolations != violationsBefore, failure == nil, !isDraining else { return }
+        let applied = applyReentryFailure()
+        logger.error("A refused re-entry was applied after its turn body returned", metadata: [
+            "landID": .string(actualLandID ?? "-"),
+            "failure": .string(applied.description),
+        ])
+    }
+
+    /// Tests: re-entries refused so far.
+    package var reentryViolationsForTesting: Int { reentryViolations }
+
+    /// Tests: turn bodies running now (0 outside a body).
+    package var bodyDepthForTesting: Int { bodyDepth }
+
+    /// Tests: the recorder submission tracker (its count and trace).
+    package var recorderSubmissionsForTesting: ReevaluationSubmissionTracker { recorderSubmissions }
+
+    /// Tests: a turn body that stages `count` effects, each calling `effect`, and then throws
+    /// `error` if given. `observe` runs inside the body, after the staging.
+    package func runTestBodyForTesting(
+        staging count: Int,
+        effect: @escaping () -> Void,
+        observe: (_ bodyDepth: Int) -> Void = { _ in },
+        throwing error: (any Error)? = nil
+    ) throws {
+        try withTurn { _, outputs in
+            for _ in 0..<count { outputs.stage(effect) }
+            observe(bodyDepth)
+            if let error { throw error }
+        }
+    }
+
     /// Numbers and submits sync-stream drafts in order: an in-turn phase's (returned from
     /// `runSyncPhaseInTurn`, in the same turn), and those the adapter makes outside a phase in
     /// turn: a legacy cycle's or an initial sync's commit, a disconnect's or a superseded
@@ -5274,7 +5449,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// is numbered or recorded, outputs, seeds and clears alike (the clears of the sessions the
     /// failure's teardown closes included). Replay stops at the failure's tick, so nothing after
     /// it is verified. The failing turn's drafts submitted before `failLand` are kept.
+    ///
+    /// The adapter's entry. A call made while a turn body runs (a callback during one of the
+    /// keeper's port calls) is refused and ends the land (`noteReentry`); the bodies record
+    /// through `recordSyncStream`.
     package func submitSyncStream(_ drafts: [SyncStreamDraft], outsideTurn: Bool = false) {
+        guard bodyDepth == 0 else {
+            noteReentry(through: "submitSyncStream")
+            return
+        }
+        withTurn { _, _ in
+            recordSyncStream(drafts, outsideTurn: outsideTurn)
+        }
+    }
+
+    /// `submitSyncStream`'s work, for the keeper's own turns.
+    private func recordSyncStream(_ drafts: [SyncStreamDraft], outsideTurn: Bool = false) {
         guard reevaluationRecorder != nil, failure == nil else { return }
         for draft in drafts {
             switch draft.entry {
@@ -5333,7 +5523,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func enqueueRecorderSubmission(_ record: ReevaluationTickRecord, endsTurn: Bool = false) -> Task<Void, Never>? {
         guard let recorder = reevaluationRecorder else { return nil }
         recorderSubmissionCount += 1
-        return recorderSubmissions.submit { await recorder.recordTick(record, endsTurn: endsTurn) }
+        return recorderSubmissions.submit(label: Self.submissionLabel(of: record)) {
+            await recorder.recordTick(record, endsTurn: endsTurn)
+        }
     }
 
     /// Ends a tickless land's turn record after every earlier submission, if the turn enqueued
@@ -5342,7 +5534,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func enqueueTicklessTurnEnd(since mark: Int) {
         guard isTickless, recorderSubmissionCount != mark, let recorder = reevaluationRecorder else { return }
         recorderSubmissionCount += 1
-        recorderSubmissions.submit { await recorder.endTurn() }
+        recorderSubmissions.submit(label: "endTurn") { await recorder.endTurn() }
     }
 
     /// Tests only: waits until every recorder submission so far is recorded.
@@ -5372,10 +5564,34 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// recorded. No-op without a recorder. On a tickless land the record ends the turn's
     /// record (#327). It is enqueued before the first `await`, in the caller's synchronous
     /// segment, so it is the turn's last enqueue; the hold (tests) comes after it.
+    ///
+    /// The submission is staged in its own turn body and flushed before the hold, and this
+    /// awaits that exact task, never the tracker's tail after the hold, which could be a later
+    /// turn's. Without a recorder there is no task, and the hold is still entered.
     private func submitTurnRecord(_ record: ReevaluationTickRecord) async {
-        let submission = enqueueRecorderSubmission(record, endsTurn: isTickless)
+        let (_, submission) = withTurnSubmitting { _, outputs in
+            stageRecorderSubmission(record, endsTurn: isTickless, outputs: &outputs)
+        }
         await holds.at(.turnRecord)
         await submission?.value
+    }
+
+    /// `enqueueRecorderSubmission` for a turn body: the count moves now, the submission is
+    /// staged into `outputs`.
+    private func stageRecorderSubmission(_ record: ReevaluationTickRecord, endsTurn: Bool, outputs: inout TurnOutputs) {
+        guard let recorder = reevaluationRecorder else { return }
+        recorderSubmissionCount += 1
+        outputs.stageSubmission(Self.submissionLabel(of: record)) {
+            await recorder.recordTick(record, endsTurn: endsTurn)
+        }
+    }
+
+    /// The submission trace's name for `record` (tests).
+    private static func submissionLabel(of record: ReevaluationTickRecord) -> String {
+        if record.landFailure != nil { return "terminal" }
+        if !record.syncOutputs.isEmpty { return "sync-output" }
+        if !record.syncMarkers.isEmpty { return "sync-marker" }
+        return "turn-record"
     }
 
     /// How a turn goes on after its apply segment (#704; #716 adds its depth check).
@@ -5420,18 +5636,41 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             enqueueTicklessTurnEnd(since: markBeforeNote)
             return .landFailed(failure)
         }
-        inTurnProbeForTesting?("turn-begin")
-        inTurnSyncTurnKind = .syncOnly
-        defer { inTurnSyncTurnKind = .tick }
-        let mark = recorderSubmissionCount
-        let output = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true, recording: inTurnSyncRecording())
-        submitSyncStream(output.syncStream)
-        applyInTurnSyncResult(output.result, transport: transport, joinSyncOnly: joinSyncOnly, keepsEvents: output.keepsEvents)
-        // A tickless land's sync-only turn is its own turn record (#327); a tick land's sync
-        // outputs stay with the current tick's.
-        enqueueTicklessTurnEnd(since: mark)
-        inTurnProbeForTesting?("turn-end")
-        return output.result
+        return withTurn { side, outputs in
+            inTurnProbeForTesting?("turn-begin")
+            inTurnSyncTurnKind = .syncOnly
+            defer { inTurnSyncTurnKind = .tick }
+            let mark = recorderSubmissionCount
+            let phase = callOut(&side, &outputs) {
+                transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true, recording: inTurnSyncRecording())
+            }
+            // A refused re-entry during the phase ended the land in the call (`callOut`): the
+            // port's answer isn't read, and the turn goes on as after a failed phase. Its
+            // drafts go to the sync stream, whose gate drops them once the land has failed.
+            var reentry = phase.reentry
+            let result = reentry.map { InTurnSyncResult.landFailed($0) } ?? phase.value.result
+            recordSyncStream(phase.value.syncStream)
+            applyInTurnSyncResult(
+                result,
+                transport: transport,
+                joinSyncOnly: joinSyncOnly,
+                keepsEvents: phase.value.keepsEvents,
+                joinsAwaitingSync: {
+                    let asked = callOut(&side, &outputs) { transportHasJoinsAwaitingSync }
+                    if let refused = asked.reentry {
+                        reentry = reentry ?? refused
+                        return nil
+                    }
+                    return asked.value
+                }
+            )
+            // The common tail, on every path. A tickless land's sync-only turn is its own turn
+            // record (#327); a tick land's sync outputs stay with the current tick's.
+            enqueueTicklessTurnEnd(since: mark)
+            inTurnProbeForTesting?("turn-end")
+            if let reentry { return .landFailed(failure ?? reentry) }
+            return result
+        }
     }
 
     /// A sync-only turn, if this keeper still runs in-turn sync (scheduled turns).
@@ -5608,6 +5847,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         ticket: SyncTurnTicket? = nil
     ) -> InTurnSyncResult {
         requestedSyncTurnsForTesting[reason, default: 0] += 1
+        // A request made while a turn body runs (a callback during a port call) would nest a
+        // second body: refused, and the land ends (`noteReentry`).
+        guard bodyDepth == 0 else {
+            noteReentry(through: "syncTurnNow")
+            return .skipped
+        }
         guard acceptsSyncTurn(through: port, binding: ticket) else { return .skipped }
         if let pending = pendingSyncTurnAfterTurn,
            ObjectIdentifier(pending.port as AnyObject) == ObjectIdentifier(port as AnyObject) {

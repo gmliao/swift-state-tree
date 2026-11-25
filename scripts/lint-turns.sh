@@ -56,6 +56,7 @@ Sources/SwiftStateTreeTransport/TransportAdapter.swift 3 the adapter submits syn
 # Test files that carry allow markers, with their counts.
 ALLOW_MARKERS='
 Tests/SwiftStateTurnsTests/Support/DemoActor.swift 6 the runtime stops (reentry, a replaced core, a class machine and its checks)
+Tests/SwiftStateTreeTests/KeeperTurnSkeletonTests.swift 1 the keeper refuses a synchronous re-entry from a transport during a turn body (#700)
 '
 
 RULES='plain-data|let-core|machine-file|isolated'
@@ -478,6 +479,13 @@ EOF
     extra=$(( ${markers##* } - 4 ))
     for _ in $(seq "$extra"); do echo 'let a = 0 // lint-allow: turns-isolated: fills the listed marker count'; done
   } > "$dir/${markers%% *}"
+  # Every other listed file carries its listed count of plain markers.
+  local mpath mcount _mreason
+  while read -r mpath mcount _mreason; do
+    [ -n "$mpath" ] && [ "$mpath" != "${markers%% *}" ] || continue
+    mkdir -p "$dir/$(dirname "$mpath")"
+    for _ in $(seq "$mcount"); do echo 'let a = 0 // lint-allow: turns-isolated: fills the listed marker count'; done > "$dir/$mpath"
+  done <<<"$ALLOW_MARKERS"
   cat > "$dir/Sources/SwiftStateTurns/Core.swift" <<'EOF'
 extension Int: PlainData {}
 public final class WithdrawToken: @unchecked Sendable {}
