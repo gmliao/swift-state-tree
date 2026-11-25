@@ -1,6 +1,6 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 5.8, plan only; every K1 question is decided: K1-Q4, K1-Q5 and K1-Q8 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). K1a is in implementation (#835); rev 5.5 writes down the decisions made during it, and rev 5.6 checks K1b's text against K1a's code. Its three K1b questions are decided (rev 5.7): K1b-Q1 (a) (maintainer, 2026-11-25), K1b-Q2 (a) and K1b-Q3 (Main, 2026-11-25). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
+**Status:** rev 5.8, plan only; every K1 question is decided: K1-Q4, K1-Q5 and K1-Q8 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). K1a is in implementation (#835); rev 5.5 writes down the decisions made during it, and rev 5.6 checks K1b's text against K1a's code. Its three K1b questions are decided (rev 5.7): K1b-Q1 (a) (maintainer, 2026-11-25), K1b-Q2 (a) and K1b-Q3 (Main, 2026-11-25). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). Q1 is decided: (c), the facade over two owners (maintainer, 2026-11-25); `ReplayLandOwner` is temporary and #612 deletes it, while the facade stays. K2 is gated on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
 
 Code pointers are at main 8e622a20:
 - `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
@@ -160,7 +160,7 @@ Code pointers are at main 8e622a20:
 - The CLAUDE.md reentrancy section, updated in the slice that ends each exception.
 
 **Out of scope.**
-- **Replay** (#612, parked by the maintainer; #550 is folded into it). Re-evaluation keepers keep today's non-turn path, sharing the turn bodies (§3.10). #745 and #756 bind #612, not #700 (§3.10).
+- **Replay** (#612, parked by the maintainer; #550 is folded into it). Re-evaluation keepers keep today's non-turn path, sharing the turn bodies (§3.10). #612 also deletes `ReplayLandOwner`, which is temporary; the `LandKeeper` facade stays (Q1 (c), maintainer, 2026-11-25). #745 and #756 bind #612, not #700 (§3.10).
 - **The tick and sync loops as core timers**: #762 (Q3).
 - **The shared RNG** (#765): #700 leaves it where it is.
 - **Not keeper code:** the reevaluation monitor land's tick (#387 PR 2).
@@ -534,10 +534,9 @@ package final class ReplayLandOwner<State: StateNodeProtocol> {  // isolated to 
 - **The invariant: replay never steps a core.** It is pinned by ownership: `ReplayLandOwner` has no core, and the replay path never reaches `LiveLandTurns`. Since `ReplayLandOwner` is package-only, the pin lives inside the package: a `@testable` test reflects a constructed `ReplayLandOwner` with `Mirror` and fails if any stored property's type is a `TurnCore` or a `TurnActor`. It is a runtime check, not a compile-time one: it catches a stored core, not a core reached through a reference.
 - **A replay keeper's transport.** It can have one (`.transportAndSink`: `flushOutputs` sends to it, LK:692–710), and the invariant doesn't depend on it not having one. That transport is never a sync binding: `routesThroughTurn` and `syncsInTurn` are false for re-evaluation keepers (LK:735, LK:742).
 - **`notePendingFailure` on a replay keeper** (Code-1 (6)) is a no-op, as today (LK:576 returns for non-live keepers): the replay owner has no mailbox.
-- **Q1 (maintainer).**
-  - (a) A core that lends itself mutably while never stepped.
-  - (b) Replay ticks as core inputs: #612's redesign.
-  - **(c), recommended:** the layout above.
+- **Q1: (c), maintainer, 2026-11-25.** The layout above.
+  - The options were: (a) a core that lends itself mutably while never stepped; (b) replay ticks as core inputs, #612's redesign; (c) the facade over two owners.
+  - **`ReplayLandOwner` is temporary.** #612 deletes it when replay moves onto the core; the `LandKeeper` facade stays.
 - **#745 and #756** concern the core's own record and replay. #700 uses neither:
   - live keepers record through the keeper's recorder, and `onMailTaken` is never set;
   - replay owns no core.
@@ -867,9 +866,9 @@ For the maintainer, once rev 3 is GO.
 
 ## 9. Questions
 
-For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depended on K1-Q1 to K1-Q3, decided (a) each on 2026-11-24, K1-Q4, K1-Q5 and K1-Q8 decided (a) and K1-Q6 decided (i) on 2026-11-25; K1b's K1-Q7 is decided (d) by Main (2026-11-25); K2 depends on Q1.
+For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depended on K1-Q1 to K1-Q3, decided (a) each on 2026-11-24, K1-Q4, K1-Q5 and K1-Q8 decided (a) and K1-Q6 decided (i) on 2026-11-25; K1b's K1-Q7 is decided (d) by Main (2026-11-25); Q1, which K2 depended on, is decided (c) (maintainer, 2026-11-25).
 
-**Q1. Where does a re-evaluation (replay) keeper keep its state until #612?** (§3.10)
+**Q1. Where does a re-evaluation (replay) keeper keep its state until #612?** (§3.10) **Decided (c), the facade (maintainer, 2026-11-25).** `ReplayLandOwner` is temporary: #612 deletes it, and the facade stays.
 
 | Option | What it is | K1 | K2 |
 |---|---|---|---|

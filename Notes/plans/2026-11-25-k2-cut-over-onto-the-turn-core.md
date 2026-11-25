@@ -38,7 +38,7 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
 - `LandKeeper<State>` stays the public actor and becomes a facade over `KeeperOwner`:
   - `.live(LiveLandTurns)`, which holds the `TurnCore<KeeperModel<State>>`;
   - `.replay(ReplayLandOwner)`, which holds a `KeeperModel` and no core.
-- **This needs the parent plan's Q1, still open.** (c), the facade, is recommended there. K2 can't start before the maintainer decides Q1; the other options change K2's shape (Q1 (b) pulls #612's redesign in).
+- **The parent plan's Q1 is decided: (c), the facade** (maintainer, 2026-11-25). `ReplayLandOwner` is temporary: #612 deletes it, and the facade stays.
 - **The machine is the model** (survey §1): `extension KeeperModel: TurnMachine`, with `Behavior = KeeperBehavior<State>`. `TurnActor` requires `M: TurnMachine & PlainData`, which K1b-4's `@PlainData` gives.
 - **The executor:** the facade adopts `LiveLandTurns`' executor, and the adapter adopts the facade's (TA:105), so all three share one serial executor. The facade forwards with `live.assumeIsolated { … }`.
 - **Identity:** `runsSyncPhaseInTurn(of:)` keeps receiving the facade. `LiveLandTurns` holds it `nonisolated(unsafe) weak`, set once at the end of `LandKeeper.init`, with a set-once flag that the first step asserts.
@@ -169,6 +169,5 @@ The risk of K2-1: a machine that isn't wired in can drift from the keeper's bodi
 
 | # | Question | For | Blocks |
 |---|---|---|---|
-| Q1 (parent) | The layout: (c) the facade, recommended | the maintainer | K2 |
 | K2-Q1 | `ctx.services` in steps (§5): (a) recommended for K2 | the maintainer | K2-2's docs |
 | K2-Q2 | Three PRs instead of one (§6) | Review | K2-1 |
