@@ -49,7 +49,7 @@ class GateTests(unittest.TestCase):
     def check(self, index, expected):
         return subprocess.run(
             [sys.executable, SUMMARIZE, index, "--check-expected", expected],
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8")
 
     def test_unlisted_failed_case_fails_the_gate(self):
         result = self.check(self.index({"1.1.5": ("FAILED", "OK")}), self.expected(""))
