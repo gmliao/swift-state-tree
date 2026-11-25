@@ -1,4 +1,5 @@
 ---
+title: "An exit body's local can be moved into a call's `Any` temporary and released there"
 module: SwiftStateTree
 date: 2026-11-21
 problem_type: gotcha

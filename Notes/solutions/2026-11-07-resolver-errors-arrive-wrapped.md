@@ -1,4 +1,5 @@
 ---
+title: "Resolver errors arrive wrapped: unwrap before you classify them"
 module: SwiftStateTree
 date: 2026-11-07
 problem_type: gotcha

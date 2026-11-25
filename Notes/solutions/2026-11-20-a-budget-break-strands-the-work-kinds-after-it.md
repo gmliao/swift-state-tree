@@ -1,4 +1,5 @@
 ---
+title: "A budget break strands the work kinds after it"
 module: SwiftStateTurns
 date: 2026-11-20
 problem_type: bug_class

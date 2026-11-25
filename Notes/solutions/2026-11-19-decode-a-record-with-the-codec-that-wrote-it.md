@@ -1,4 +1,5 @@
 ---
+title: "Decode a record with the codec that wrote it"
 module: SwiftStateTreeReevaluationMonitor
 date: 2026-11-19
 problem_type: bug_class
@@ -22,6 +23,7 @@ tags:
   - date
   - json
   - resolver-output
+  - verifier
 related:
   - "#521"
   - "#538"

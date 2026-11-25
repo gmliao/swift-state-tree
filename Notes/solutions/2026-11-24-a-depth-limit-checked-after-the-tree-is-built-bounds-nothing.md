@@ -1,4 +1,5 @@
 ---
+title: "A depth limit checked after the tree is built bounds nothing"
 module: SwiftStateTree
 date: 2026-11-24
 problem_type: bug_class

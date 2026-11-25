@@ -1,4 +1,5 @@
 ---
+title: "Two macros that decide \"stored\" separately drift"
 module: SwiftStateTreeMacros
 date: 2026-11-25
 problem_type: bug_class
@@ -24,13 +25,15 @@ related:
 
 `@Payload`'s field list skipped every property with an accessor block. The PlainData witness, written for the same type, uses `PlainDataWalk.isComputed`, which counts a property with only `willSet`/`didSet` as stored. An observed property was checked as a field but never written, so it was dropped from the metadata and the wire.
 
+The same split hid a second drift, found by a must-not-compile snippet: the walk skips `static` properties, but `@StateNodeBuilder`'s and `@Payload`'s field lists didn't. A `@TaskLocal static var` on a state type was asked for a `@Sync`/`@Internal` marker, and a `static` property on a payload was written as `self.x`, which doesn't compile.
+
 ## Root cause
 
 "Is this property stored?" was answered twice, by two hand-written tests. `accessorBlock != nil` is the short spelling, and it is wrong for observers.
 
 ## Fix
 
-`PayloadMacro.collectStoredProperties` and `storedProperty(naming:)` call `PlainDataWalk.isComputed`.
+`PlainDataWalk.isStoredInstance(_:)` (not `static`, no computed binding) is the one predicate. The three field collectors, the `#if` marker check, the walk and the member-attribute check all call it; `storedProperty(naming:)` calls `PlainDataWalk.isComputed`.
 
 ## Prevention
 

@@ -1,4 +1,5 @@
 ---
+title: "`FileHandle.write(_: Data)` terminates the process on a write error"
 module: diagnostics and recording sinks
 date: 2026-11-07
 problem_type: gotcha

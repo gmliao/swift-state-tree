@@ -293,6 +293,7 @@ HandleAction(AddToCartAction.self, resolvers: { _, action, _ in ProductInfo(prod
 - `OnInitialize` / `OnFinalize` / `AfterFinalize`。與 input handler 相同，它們寫入後都不會再拋出錯誤（#593）：
   - `OnFinalize` 與 `DestroyWhenEmpty(after:_:)` 的 handler 接受不會拋出錯誤的 body。Land 正在結束，沒有人會處理拒絕：body 若呼叫會拋出錯誤的程式碼，要自己處理錯誤。
   - `OnInitialize` 接受不會拋出錯誤的 body，或像 input 一樣分成 `validate` 與 `apply` 兩段（[兩段式 Handler](#兩段式-handler)）。`validate` 拋出錯誤時，land 的初始化失敗，和 resolver 失敗時相同，什麼都不寫入（見下方範例）。
+  - 重新評估（replay）keeper 不會執行任何銷毀 handler：記錄中沒有 finalize 事件，replay 無法對其進行核對。
 - `OnInitialize(resolvers:onResolverFailure:)`：resolver 丟錯時預設會讓 land 初始化失敗（`.failLand`）；`.continue` 則在沒有 resolver 輸出的情況下執行 OnInitialize。見 [Resolver 期限](resolver.zh-TW.md#期限)
 
 ```swift

@@ -3,8 +3,9 @@
 Runs the [Autobahn|Testsuite](https://github.com/crossbario/autobahn-testsuite) fuzzing client,
 the usual WebSocket conformance suite, against a server built on `NIOWebSocketServer` (#798).
 
-This is test tooling. It changes nothing under `Sources/` or `Tests/`, and it is not a gate: the
-server fails many cases today (see [Baseline](#baseline)), and the run reports them.
+This is test tooling. It changes nothing under `Sources/` or `Tests/`. The run is a gate on
+unlisted failures: it fails when a FAILED case isn't listed in `expected-failures.txt` (see
+[Baseline](#baseline)).
 
 ## Pieces
 
@@ -13,8 +14,9 @@ server fails many cases today (see [Baseline](#baseline)), and the run reports t
 | `Tools/AutobahnEcho/` | A SwiftPM executable: an echo server on `NIOWebSocketServer` and `WebSocketTransport`. It sends every message it receives back to its sender. |
 | `fuzzingclient.json` | The suite's configuration: one server (`ws://127.0.0.1:9001`), every case except sections 9, 12 and 13. |
 | `run.sh` | Builds and starts the harness, runs the suite's Docker image against it, stops the harness, prints a summary. |
-| `summarize.py` | Reads `reports/servers/index.json`: a count per result, a table per section, the FAILED case ids. |
-| `expected-failures.txt` | The cases that fail today, with a one-word cause each. |
+| `summarize.py` | Reads `reports/servers/index.json`: a count per result, a table per section, the FAILED case ids. With `--check-expected <file>` it is the gate. |
+| `test_summarize.py` | The gate's self-test (fixture indexes); the workflow runs it before the suite. |
+| `expected-failures.txt` | The FAILED cases the gate lets through, with a one-word cause each. |
 | `../../.github/workflows/autobahn.yml` | Runs all of it in CI. |
 
 ## Running it
@@ -36,9 +38,19 @@ the harness on the host's loopback. A full run takes a few minutes. Reports land
 | `AUTOBAHN_ECHO_BIN` | A built `AutobahnEcho` executable. Skips the build (CI builds it in another job). |
 | `AUTOBAHN_IMAGE` | The suite's Docker image (default: the pinned digest). |
 
-Exit codes: `0` when the suite ran to the end (whatever it found), `3` for a missing executable,
-`4` when the harness didn't start listening, `5` when the suite didn't run to the end, `6` when it
-wrote no `index.json`. A failed case is not an error of the script.
+Exit codes: `0` when the suite ran to the end and every FAILED case is listed in
+`expected-failures.txt`, `3` for a missing executable, `4` when the harness didn't start
+listening, `5` when the suite didn't run to the end, `6` when it wrote no `index.json`, `7` when
+the harness exited before the suite finished, `8` and `9` when the index is partial or has the
+wrong agent (`summarize.py` validates it), `10` when a FAILED case isn't listed. NON-STRICT and
+INFORMATIONAL cases never fail the run. A listed case that passes is a warning, not a failure, so
+a fix doesn't need the list edited in the same run; drop the line in the same change.
+
+The gate's own test:
+
+```bash
+python3 -m unittest discover -s scripts/autobahn -p 'test_*.py'
+```
 
 To list the failed cases of a run, or to write `expected-failures.txt` again after a fix:
 
@@ -76,8 +88,9 @@ dependent on the machine), 12 and 13 (permessage-deflate).
 
 ## Baseline
 
-`expected-failures.txt` lists the cases that failed on the baseline run: none since #822, whose
-Autobahn workflow run had 0 FAILED, 11 NON-STRICT, 3 INFORMATIONAL and 233 OK of 247. Before it,
+`expected-failures.txt` lists the FAILED cases the gate lets through: none from the baseline run
+since #822, whose Autobahn workflow run had 0 FAILED, 11 NON-STRICT, 3 INFORMATIONAL and 233 OK of
+247, plus `6.4.4`, listed as `timing` because its result depends on timing (below). Before #822,
 #813's run had 11 FAILED: 5.9–5.18, a bad fragment sequence the server didn't fail (#822 fails it
 with 1002), and 6.4.4.
 
@@ -87,7 +100,8 @@ The NON-STRICT cases, for reference:
 |-------|--------------------|
 | 3.2, 3.3, 4.1.3, 4.1.4, 4.2.3, 4.2.4, 5.15 | The connection is failed with 1002 as expected, but a message sent before the bad frame in the same chop isn't echoed first: the failure closes the connection before the message's echo goes out. |
 | 6.4.1–6.4.3 | Invalid UTF-8 across fragments: the check runs on the complete message, so the connection fails at the message's end, not at the first bad fragment. |
-| 6.4.4 | One invalid frame sent in three chops. NIO's frame decoder hands over a frame only once all of it has arrived, so the check can't fail fast inside one frame. On #813's run the suite timed out and closed first (FAILED); on #822's it saw the 1007 close (NON-STRICT). It depends on timing, so it may show as FAILED again. |
+| 6.4.4 | One invalid frame sent in three chops. NIO's frame decoder hands over a frame only once all of it has arrived, so the check can't fail fast inside one frame. On #813's run the suite timed out and closed first (FAILED); on #822's it saw the 1007 close (NON-STRICT). It depends on timing, so it may show as FAILED again; that is why it is listed. When it is
+NON-STRICT the run warns that a listed case isn't FAILED. |
 
-A case that fails and isn't listed is a regression, a listed case that passes is a fix: update the
-file with the second command above in the same change.
+A case that fails and isn't listed is a regression: the run fails. A listed case that passes is a
+fix: update the file with the second command above in the same change.

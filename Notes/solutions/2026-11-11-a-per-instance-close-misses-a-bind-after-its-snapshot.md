@@ -1,4 +1,5 @@
 ---
+title: "A per-instance close misses a bind after its snapshot"
 module: SwiftStateTreeTransport
 date: 2026-11-11
 problem_type: bug_class

@@ -1,4 +1,5 @@
 ---
+title: "A destroyed land kept alive by its own links"
 module: SwiftStateTreeTransport
 date: 2026-11-09
 problem_type: bug_class

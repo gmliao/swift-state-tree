@@ -7,7 +7,7 @@ import type { LandState, Actions, ClientEvents, ServerEventSubscriptions } from 
 import { LAND_TYPE } from './bindings'
 import { SCHEMA } from '../schema.js'
 import type { VisibleEntity, Viewer } from '../defs'
-import type { MoveViewerEvent, ParkEntitiesAction, PlaceEntityAction, SetMotionAction, SetMotionWideAction } from '../defs'
+import type { MoveViewerEvent, ParkEntitiesAction, PlaceEntityAction, SetMotionAction, SetMotionResolvedAction, SetMotionWideAction } from '../defs'
 
 // Re-export MapSubscriptions interface from SDK core
 export type { MapSubscriptions } from '@swiftstatetree/sdk/core'
@@ -38,6 +38,8 @@ export class VisibilityTestStateTree {
   readonly placeEntity: (payload: PlaceEntityAction) => Promise<any>
   /** Type-safe method for setMotion action */
   readonly setMotion: (payload: SetMotionAction) => Promise<any>
+  /** Type-safe method for setMotionResolved action */
+  readonly setMotionResolved: (payload: SetMotionResolvedAction) => Promise<any>
   /** Type-safe method for setMotionWide action */
   readonly setMotionWide: (payload: SetMotionWideAction) => Promise<any>
 
@@ -75,6 +77,9 @@ export class VisibilityTestStateTree {
     this.setMotion = (payload: SetMotionAction) => {
       return this.view.sendAction("SetMotion", payload) as Promise<any>
     }
+    this.setMotionResolved = (payload: SetMotionResolvedAction) => {
+      return this.view.sendAction("SetMotionResolved", payload) as Promise<any>
+    }
     this.setMotionWide = (payload: SetMotionWideAction) => {
       return this.view.sendAction("SetMotionWide", payload) as Promise<any>
     }
@@ -83,6 +88,7 @@ export class VisibilityTestStateTree {
       parkEntities: this.parkEntities,
       placeEntity: this.placeEntity,
       setMotion: this.setMotion,
+      setMotionResolved: this.setMotionResolved,
       setMotionWide: this.setMotionWide,
     } as Actions
 

@@ -1,4 +1,5 @@
 ---
+title: "A Foundation class cast bridges a Swift collection eagerly on Linux"
 module: SwiftStateTree
 date: 2026-11-21
 problem_type: gotcha

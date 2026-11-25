@@ -1,4 +1,5 @@
 ---
+title: "A cancellation test passes on the deadline instead"
 module: SwiftStateTree
 date: 2026-11-08
 problem_type: testing_practice

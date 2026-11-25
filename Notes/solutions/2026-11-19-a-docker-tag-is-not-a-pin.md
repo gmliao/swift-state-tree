@@ -1,4 +1,5 @@
 ---
+title: "A Docker tag isn't a pin: the same tag pulled two images a day apart"
 module: CI
 date: 2026-11-19
 problem_type: measurement_pitfall

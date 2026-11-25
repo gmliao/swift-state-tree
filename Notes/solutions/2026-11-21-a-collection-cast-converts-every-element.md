@@ -1,4 +1,5 @@
 ---
+title: "A collection cast converts every element"
 module: SwiftStateTree
 date: 2026-11-21
 problem_type: gotcha

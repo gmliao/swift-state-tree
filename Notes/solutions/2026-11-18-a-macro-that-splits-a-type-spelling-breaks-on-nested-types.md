@@ -1,4 +1,5 @@
 ---
+title: "A macro that splits a type's spelling breaks on nested types"
 module: SwiftStateTreeMacros
 date: 2026-11-18
 problem_type: bug_class

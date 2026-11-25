@@ -1,4 +1,5 @@
 ---
+title: "Check, await, act: the function resumes on stale state"
 module: SwiftStateTree, SwiftStateTreeTransport
 date: 2026-11-05
 problem_type: bug_class

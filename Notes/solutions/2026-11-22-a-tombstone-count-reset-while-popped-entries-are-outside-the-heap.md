@@ -1,4 +1,5 @@
 ---
+title: "A tombstone count reset while popped entries are outside the heap"
 module: SwiftStateTurns
 date: 2026-11-22
 problem_type: logic_error

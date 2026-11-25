@@ -1,4 +1,5 @@
 ---
+title: "A retry loop catches failures, not hangs"
 module: CI
 date: 2026-11-19
 problem_type: gotcha

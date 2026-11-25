@@ -1,4 +1,5 @@
 ---
+title: "An ID a client can build is not an authorization"
 module: SwiftStateTreeNIO
 date: 2026-11-09
 problem_type: bug_class

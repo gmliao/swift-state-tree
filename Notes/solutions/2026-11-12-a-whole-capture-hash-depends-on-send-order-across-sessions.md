@@ -1,4 +1,5 @@
 ---
+title: "A hash of a whole capture depends on the send order across sessions"
 module: Examples/GameDemo EncodingBenchmark
 date: 2026-11-12
 problem_type: measurement_pitfall

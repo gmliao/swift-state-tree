@@ -1,4 +1,5 @@
 ---
+title: "A macro that names a property from `identifier.text` keeps its backticks"
 module: SwiftStateTreeMacros
 date: 2026-11-18
 problem_type: bug_class

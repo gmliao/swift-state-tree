@@ -1,4 +1,5 @@
 ---
+title: "A stacked branch carries a stale plan"
 module: Notes
 date: 2026-11-13
 problem_type: gotcha

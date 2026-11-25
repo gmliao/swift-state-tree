@@ -1,4 +1,5 @@
 ---
+title: "A child inherits the worker thread's blocked signals"
 module: SwiftStateTree
 date: 2026-11-09
 problem_type: gotcha

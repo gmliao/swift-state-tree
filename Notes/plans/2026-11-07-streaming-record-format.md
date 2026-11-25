@@ -54,6 +54,7 @@ The file is an append-only log of the records the recorder already receives, in 
 - **integers** in the shortest encoding: non-negative values in the unsigned forms (positive fixint, uint8–uint64), negative values in the signed forms (negative fixint, int8–int64);
 - **floats** always float64 (`0xcb`), `Float` widened, so the bytes don't depend on the Swift type of a field; NaN written as the one quiet NaN `0x7ff8000000000000`; `-0.0` and infinities kept as they are (MessagePack represents them, so a NaN in a payload no longer makes the save throw);
 - **strings** in the shortest str form, **arrays** in the shortest array form, `nil` as `0xc0`;
+- **`Data`** (from record 3.7, #700 K1a) as `bin`, in the shortest of bin8, bin16 and bin32; the decoder also reads an array of integers into `Data`, as records before 3.7 hold it;
 - **dates** as the ISO-8601 string at whole-second precision with a `Z` suffix, as 2.x records hold `createdAt`, formatted by the encoder itself from the integer seconds since 1970 (truncated toward negative infinity, so fractional seconds are dropped, not rounded), not by `ISO8601DateFormatter`, whose output has differed between Apple's Foundation and swift-corelibs-foundation;
 - **hashes and the seed** as today's 16-hex-digit strings (`SyncHashCoding`), so their values read the same in both versions.
 

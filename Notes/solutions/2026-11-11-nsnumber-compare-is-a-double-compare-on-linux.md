@@ -1,4 +1,5 @@
 ---
+title: "NSNumber.compare is a double compare on Linux"
 module: SwiftStateTreeTransport
 date: 2026-11-11
 problem_type: platform_difference

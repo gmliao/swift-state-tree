@@ -1,4 +1,5 @@
 ---
+title: "A checker's trigger must cover every path it reads, not its own directory"
 module: scripts
 date: 2026-11-19
 problem_type: gotcha
