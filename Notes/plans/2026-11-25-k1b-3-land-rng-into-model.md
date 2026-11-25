@@ -1,6 +1,6 @@
 # K1b-3: the land RNG moves into the keeper's state (#700, #765)
 
-**Status:** rev 1, plan only. Read at #835's head 5baa1887 (K1a), without the LSP. The implementation re-checks every site with the LSP on its base: #835's branch after Code-2's shoulds push, then main once #835 merges. K1b-Q2 is decided (a) (Main, 2026-11-25; `2026-11-22-keeper-on-turncore.md` §9). K1b-3 needs K1a only (K1b-Q3).
+**Status:** rev 1.1, plan only. Rev 1.1 corrects the keeper's line numbers, which rev 1 took from main's `LandKeeper.swift` instead of 5baa1887's; the sites and their shape are the same. Read at #835's head 5baa1887 (K1a), without the LSP. The implementation re-checks every site with the LSP on its base: #835's branch after Code-2's shoulds push, then main once #835 merges. K1b-Q2 is decided (a) (Main, 2026-11-25; `2026-11-22-keeper-on-turncore.md` §9). K1b-3 needs K1a only (K1b-Q3).
 
 ## 1. Goal
 
@@ -17,7 +17,7 @@ Afterwards no code outside a step can move the land's RNG. That closes #765's cl
 - `DeterministicRngService` (`Core/DeterministicRngService.swift:9`) is a public final class: an `NSLock` around a `DeterministicRng` struct (`Core/DeterministicRng.swift:8`, one `UInt64` of state), plus `seed`.
 - `LandKeeper.init` registers one in `services` when the caller didn't (LK:1176–1182). Its seed is `DeterministicSeed.fromLandID(landID)`.
 - Replay sets the seed by registering its own service: `ReevaluationEngine` at :287–299, `ReevaluationRunnerImpl` at :233 and :310. The keeper reads the seed back for the record header: `getRngSeed()` (LK:612), called from `LandManager`:669.
-- `LandContext.random` (`Land/LandContext.swift:179`) looks the service up in `ctx.services`. `makeContext` (LK:3512) merges the land services, an override and the player's services, so every context carries the land RNG.
+- `LandContext.random` (`Land/LandContext.swift:179`) looks the service up in `ctx.services`. `makeContext` (LK:3569) merges the land services, an override and the player's services, so every context carries the land RNG.
 - `ResolverContext` copies `landContext.services` (`ResolverContext.swift:88`), so resolvers reach the same instance. That is #765: a resolver's draw moves the land's RNG live, and replay, which doesn't run resolvers, diverges.
 
 ## 3. Shape
@@ -48,7 +48,7 @@ Afterwards no code outside a step can move the land's RNG. That closes #765's cl
   - The keeper doesn't register a service any more. It removes a caller's from the land services with a new internal `LandServices.removing(_:)`. So no context's `services` and no resolver holds the land RNG.
   - Replay's way of passing the seed (register a seeded service) keeps working unchanged, because the keeper reads the seed before removing the service.
 - **`getRngSeed()`** returns `landRandomSeed`. Today it reads `services`, which no longer holds the service.
-- **The helper.** It replaces `withMutableStateSync` (LK:3561) at its nine callers. It takes the context, binds the step's service and writes the state back:
+- **The helper.** It replaces `withMutableStateSync` (LK:3618) at its nine callers. It takes the context, binds the step's service and writes the state back:
   ```swift
   private func withHandlerStep<R>(_ ctx: LandContext, _ body: (inout State, LandContext) throws -> R) rethrows -> R {
       if let open = stepRandom {            // nested: share the outer step's generator
@@ -72,17 +72,17 @@ The keeper calls handlers at 14 places (5baa1887):
 
 | Site (LK) | Handler | Replayed? | Generator |
 |---|---|---|---|
-| 1351 `replayInitializeBeforeTickZero` | OnInitialize | is replay | step (helper) |
-| 1496 `performInitialization` | OnInitialize | yes | step (helper) |
-| 3799 `applyPendingItem` | action | yes | step (helper) |
-| 3851, 3853 `applyPendingItem` | client event (decoded / undecoded) | yes | step (helper) |
-| 3897 `applyPendingItem` | server input | yes | step (helper) |
-| 3989, 4012, 4035 `applyLifecycleItem` | OnJoin, OnLeave and the other lifecycle handlers | yes | step (helper) |
-| 6220 `runDestroyHandler` | OnFinalize | yes, if replay runs destroy; the implementation checks | step (helper) |
-| 4920 `runTickTurn` | tick | yes | step: wrap the call in the helper |
-| 2053 `joinReportingAdmission` | CanJoin | **no**: admission isn't recorded; the join's lifecycle item is | **detached** (below) |
-| 5996 `runSync` | the read-only sync handler | **no**: it runs on the sync loop, outside the record | **detached** |
-| 6160 `drainAfterIdleCheck` | AfterFinalize (async) | no: the land is gone | **detached** |
+| 1385 `replayInitializeBeforeTickZero` | OnInitialize | is replay | step (helper) |
+| 1546 `performInitialization` | OnInitialize | yes | step (helper) |
+| 3861 `applyPendingItem` | action | yes | step (helper) |
+| 3917, 3919 `applyPendingItem` | client event (decoded / undecoded) | yes | step (helper) |
+| 3969 `applyPendingItem` | server input | yes | step (helper) |
+| 4061, 4084, 4107 `applyLifecycleItem` | OnJoin, OnLeave and the other lifecycle handlers | yes | step (helper) |
+| 6322 `runDestroyHandler` | OnFinalize | yes, if replay runs destroy; the implementation checks | step (helper) |
+| 5022 `runTickTurn` | tick | yes | step: wrap the call in the helper |
+| 2103 `joinReportingAdmission` | CanJoin | **no**: admission isn't recorded; the join's lifecycle item is | **detached** (below) |
+| 6098 `runSync` | the read-only sync handler | **no**: it runs on the sync loop, outside the record | **detached** |
+| 6262 `drainAfterIdleCheck` | AfterFinalize (async) | no: the land is gone | **detached** |
 
 - **Detached.** A handler that replay doesn't repeat gets a service built from a copy of `landRandom`, and nothing is written back: `ctx.stepRandom = DeterministicRngService(continuing: landRandom, seed: landRandomSeed)`.
   - Today, a draw in CanJoin or the sync handler moves the land RNG, and replay doesn't repeat it: #765's divergence through another door. Detached closes it.
