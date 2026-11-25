@@ -344,7 +344,15 @@ struct TransportAdapterOutboundWriterTests {
         #expect(!transport.frames(for: session).contains { contains($0, "wr-after-teardown") })
     }
 
-    @Test("teardown is bounded: onLandDestroyed returns within the deadline when the transport never returns")
+    // No wall-time bound (#458): a loaded runner stretches the deadline's sleep and every hop around
+    // it. What the test guards is that teardown doesn't wait for the transport: it returns while
+    // the transport still holds the send. If it waited, it would not return until the time limit
+    // cancels the test, which releases the transport; the held-send check then fails with a recorded
+    // issue.
+    @Test(
+        "teardown is bounded: onLandDestroyed returns while the transport still holds its send",
+        .timeLimit(.minutes(1))
+    )
     func teardownIsBoundedWhenTransportNeverReturns() async throws {
         let transport = BlockingTransport()
         let keeper = LandKeeper<WriterTestState>(definition: writerLand("writer-stuck"), initialState: WriterTestState())
@@ -369,11 +377,19 @@ struct TransportAdapterOutboundWriterTests {
 
         transport.block()  // not released before teardown returns
         await adapter.sendEvent(AnyServerEvent(WriterEvent(message: "wr-stuck")), to: .all)
-        let start = ContinuousClock.now
-        await adapter.onLandDestroyed()
-        let elapsed = ContinuousClock.now - start
+        // The writer's consumer is inside the transport's send: the frame was handed over and
+        // the send is held.
+        await transport.awaitHeldSend()
+        // If teardown waited for the transport, the time limit cancels this task: releasing the
+        // transport then lets teardown return, so the test ends and records its issues (the time
+        // limit's and the held-send check below) instead of hanging the job.
+        await withTaskCancellationHandler {
+            await adapter.onLandDestroyed()
+        } onCancel: {
+            transport.release()
+        }
+        #expect(transport.heldSendCount == 1, "teardown returned while the transport still held the send")
         #expect(destroyed.isSet, "the destroy callback runs although the transport never returned")
-        #expect(elapsed < TransportAdapter<WriterTestState>.outboundTeardownTimeout + .seconds(1), "teardown took \(elapsed)")
         transport.release()
     }
 

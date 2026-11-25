@@ -109,7 +109,7 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 ```
 
 ## Coding Style & Naming Conventions
-- Swift 6.4+, macOS 14+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
+- Swift 6.4+, macOS 15+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
 - **DTOs for API payloads**: Define `Codable` structs for HTTP request/response bodies instead of using `[String: Any]`. Align field names with the API contract (e.g. control-plane DTOs).
 - Indent with 4 spaces; keep line length reasonable (~120 chars).
 - Types: `UpperCamelCase`; methods/variables: `lowerCamelCase`; enums use verb-like cases for commands (`.join`, `.attack`).
@@ -276,8 +276,9 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
   - Name a plan `YYYY-MM-DD-<topic>.md` (an optional Chinese companion is `YYYY-MM-DD-<topic>.zh-TW.md`). Longer design specifications go in `Notes/plans/specs/`.
   - Add a row for a new plan to the status index `Notes/plans/README.md` (status `open`), and update that row when the work merges (`done`, `partial` with the open steps, or `superseded` by a named plan), citing the PR or commit.
   - The index merges with git's union driver (`.gitattributes`): a local `git merge origin/main` keeps both sides' rows instead of a conflict, and a row the other side changed comes out twice. Keep the current version of a duplicated row; `scripts/check-plan-index.sh` (in `scripts/pre-push-checks.sh`, and in CI's Plan index workflow on a push or pull request to `main` or `exp/**` that changes the index, the check or the workflow, index-only changes included) fails until each plan has one row. GitHub's own mergeability check doesn't use the driver, so a PR can still show a conflict there: merge `main` in locally.
+  - Every plan, and every new revision of one, has a `## Probes` section. When a design point depends on how Swift or the existing code behaves (defer and return order, reentrancy, generics, what compiles), write a small probe (a one-file `swiftc` program, or throwaway code outside the repository) and quote its output, instead of arguing the point in prose. If no probe is needed, say why in one line (for example, a pure data move proved by the existing tests). A review treats a missing section, or prose where a probe would settle the point, as a must-fix.
   - A plan is a record, not maintained documentation. Don't rewrite an old plan to match the code; mark it superseded and write a new one.
-- `Notes/solutions/`: Reusable lessons from solved problems (bug classes, traps, measurement pitfalls, testing practices), one per file with YAML frontmatter, indexed in `Notes/solutions/README.md`.
+- `Notes/solutions/`: Reusable lessons from solved problems (bug classes, traps, measurement pitfalls, testing practices), one per file with YAML frontmatter, indexed in `Notes/solutions/README.md`. The index is generated from each entry's `title:`, `date:` and `tags:`: after adding or changing an entry, run `scripts/solutions-index.py` (the pre-push check and CI run it with `--check`).
   - Before designing a fix, search it for the symptom or bug class (`grep -l -i '<keyword>' Notes/solutions/*.md`).
   - When a fix carries a reusable lesson (a cause that could recur elsewhere, a trap that took more than one attempt, a review finding that names a rule), add an entry and its index row in the same change.
 - `deep-research/`: Experiment data only, one folder per experiment with its own README. Plans for an experiment go in `Notes/plans/` like any other plan.

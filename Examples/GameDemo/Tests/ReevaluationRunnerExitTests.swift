@@ -3,7 +3,8 @@
 // `ReevaluationRunner --verify` refuses a record by its schema fingerprint before the first step
 // (#521 D15): exit 10 for a record without one, 13 for one of another schema. `--convert` and
 // `--time-open` refuse a record past `--max-replay-ticks` like a replay does (#728): exit 14, and
-// nothing is written. Runs the runner from the same build products as this test bundle, and kills
+// nothing is written. `--convert` refuses a JSON record it can't write as the current version
+// (before 3.7, or a version this build doesn't read) with exit 10, and keeps every frame field. Runs the runner from the same build products as this test bundle, and kills
 // it if it doesn't exit in time.
 
 import Foundation
@@ -69,6 +70,62 @@ struct ReevaluationRunnerExitTests {
                 #expect(FileManager.default.fileExists(atPath: output.path), "\(format): no output written")
             }
         }
+    }
+
+    @Test("--convert refuses a JSON record before 3.7, or of a version this build doesn't read, with exit 10 and writes nothing")
+    func convertRefusesAVersionItCantWrite() throws {
+        let runner = try Self.builtRunner()
+        let scratch = try Self.makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        // 3.6 holds its payloads as trees; the others aren't versions this build reads.
+        for version in ["3.6", "3.7.bad", "x.3.7", "3.8", "4.0", nil] as [String?] {
+            let label = version ?? "no version"
+            let input = try Self.writeRecord(schemaFingerprint: nil, in: scratch, version: version)
+            let outputDirectory = scratch.appendingPathComponent("out-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            guard let result = try Self.run(
+                runner, ["--convert", input.path, outputDirectory.appendingPathComponent("converted").path], label: label
+            ) else { continue }
+            #expect(result.reason == .exit, "\(label)")
+            #expect(result.status == 10, "\(label): \(result.text.suffix(400))")
+            #expect(result.text.contains("Conversion not possible"), "\(label): \(result.text.suffix(400))")
+            let leftovers = try FileManager.default.contentsOfDirectory(atPath: outputDirectory.path)
+            #expect(leftovers.isEmpty, "\(label): the refused convert left \(leftovers)")
+        }
+    }
+
+    @Test("--convert keeps every frame field: server inputs, refused inputs and the land failure come back through JSON → 3.x → JSON")
+    func convertKeepsEveryFrameField() throws {
+        let runner = try Self.builtRunner()
+        let scratch = try Self.makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let failure = LandFailure(
+            kind: .syncEncode, field: "score", detail: "probe", position: LandFailurePosition(tickId: 1, sequence: 7, stage: .input)
+        )
+        let frames = [
+            ReevaluationTickFrame(
+                tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [],
+                serverInputs: [ReevaluationRecordedServerInput(sequence: 3, typeIdentifier: "Probe", payload: Data([0x81, 0xa1, 0x6b, 0x01]), resolvedAtTick: 0)],
+                rejected: [4, 5]
+            ),
+            ReevaluationTickFrame(tickId: 1, actions: [], clientEvents: [], lifecycleEvents: [], landFailure: failure),
+        ]
+        let json = try Self.writeRecord(schemaFingerprint: nil, in: scratch, tickFrames: frames)
+        let threeX = scratch.appendingPathComponent("record.sstr")
+        let back = scratch.appendingPathComponent("back.json")
+        for (arguments, label) in [([json.path, threeX.path], "to 3.x"), ([threeX.path, back.path], "back to JSON")] {
+            let result = try #require(try Self.run(runner, ["--convert"] + arguments, label: label))
+            #expect(result.status == 0, "\(label): \(result.text.suffix(400))")
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let read = try decoder.decode(RecordFile.self, from: Data(contentsOf: back)).tickFrames
+        try #require(read.count == 2)
+        #expect(read[0].serverInputs.map(\.sequence) == [3])
+        #expect(read[0].serverInputs.map(\.typeIdentifier) == ["Probe"])
+        #expect(read[0].serverInputs.map(\.payload) == [Data([0x81, 0xa1, 0x6b, 0x01])])
+        #expect(read[0].rejected == [4, 5])
+        #expect(read[1].landFailure == failure)
     }
 
     @Test("--time-open refuses a record past --max-replay-ticks with exit 14 and prints no timing, JSON or 3.x")
@@ -204,7 +261,10 @@ struct ReevaluationRunnerExitTests {
 
     /// A JSON record of hero-defense at the current version, one frame unless `frames` says more
     /// (tick ids 0..<frames), in the temporary directory unless `directory` says another.
-    private static func writeRecord(schemaFingerprint: String?, frames: Int = 1, in directory: URL? = nil) throws -> URL {
+    private static func writeRecord(
+        schemaFingerprint: String?, frames: Int = 1, in directory: URL? = nil,
+        version: String? = ReevaluationRecordVersion.current, tickFrames: [ReevaluationTickFrame]? = nil
+    ) throws -> URL {
         let url = (directory ?? FileManager.default.temporaryDirectory)
             .appendingPathComponent("runner-exit-\(UUID().uuidString).json")
         let encoder = JSONEncoder()
@@ -216,10 +276,10 @@ struct ReevaluationRunnerExitTests {
                 createdAt: Date(timeIntervalSince1970: 1_700_000_000),
                 metadata: [:],
                 landDefinitionID: "hero-defense",
-                version: ReevaluationRecordVersion.current,
+                version: version,
                 schemaFingerprint: schemaFingerprint
             ),
-            tickFrames: (0 ..< Int64(frames)).map {
+            tickFrames: tickFrames ?? (0 ..< Int64(frames)).map {
                 ReevaluationTickFrame(tickId: $0, actions: [], clientEvents: [], lifecycleEvents: [])
             }
         )).write(to: url)

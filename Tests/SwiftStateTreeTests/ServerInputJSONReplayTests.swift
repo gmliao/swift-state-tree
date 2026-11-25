@@ -109,12 +109,13 @@ private func rewriteRatioAsInteger(atPath path: String) throws {
         var record = try CanonicalMessagePack.decode(
             ReevaluationLogRecord.self, from: Array(bytes[offset + 4..<offset + 4 + length]))
         if let inputs = record.serverInputs {
+            let integerRatio = Data(try CanonicalMessagePack.encode(AnyCodable(["ratio": AnyCodable(2), "n": AnyCodable(3)] as [String: AnyCodable])))
             record.serverInputs = inputs.map { input in
                 rewritten += 1
                 return ReevaluationRecordedServerInput(
                     sequence: input.sequence,
                     typeIdentifier: input.typeIdentifier,
-                    payload: AnyCodable(["ratio": AnyCodable(2), "n": AnyCodable(3)] as [String: AnyCodable]),
+                    payload: integerRatio,
                     resolvedAtTick: input.resolvedAtTick
                 )
             }
@@ -153,25 +154,36 @@ struct ServerInputJSONReplayTests {
         }
     }
 
-    @Test("Replay from a saved record stays strict: a server input whose ratio the record holds as an integer is refused")
-    func savedRecordIntegerIsRefused() async throws {
+    @Test("Replay stays strict in each record form: a server input whose ratio the record holds as an integer is refused, the JSON view included (#818's allowance is gone from 3.7)",
+          arguments: SIJSONReplayForm.allCases)
+    func savedRecordIntegerIsRefused(form: SIJSONReplayForm) async throws {
         try await withTempDirectory { directory in
             let (path, live) = try await recordInputs([SIJSONRatio(ratio: 2.5, n: 3)], form: .saved, in: directory)
             #expect(live.seen == ["2.5/3"])
             try rewriteRatioAsInteger(atPath: path)
             // Control: the rewritten record is still a saved record, not the JSON view.
             #expect(try ReevaluationRecordFile.openSource(filePath: path) is ReevaluationRecordLogSource)
-            let replayed = try await replayState(path: path)
-            #expect(replayed.seen == [], "the integer is refused where the type declares Double")
+            var replayPath = path
+            if form == .jsonView {
+                // The view carries the bytes as base64, so the integer stays an integer in it.
+                replayPath = directory.appendingPathComponent("rewritten.json").path
+                try ReevaluationRecordFile.jsonView(ofRecordData: Data(contentsOf: URL(fileURLWithPath: path)))
+                    .write(to: URL(fileURLWithPath: replayPath))
+                #expect(try ReevaluationRecordFile.openSource(filePath: replayPath).readsJSONRecord)
+            }
+            let replayed = try await replayState(path: replayPath)
+            #expect(replayed.seen == [], "\(form): the integer is refused where the type declares Double")
         }
     }
 
-    @Test("The decode allowance is the JSON view's only: a saved record's integer stays refused where a Double is declared")
+    @Test("The decode is strict: a recorded integer is refused where a Double is declared, and a recorded 2.0 is read")
     func savedRecordStaysStrict() throws {
+        // From 3.7 (#700 K1a) every record holds a server input's MessagePack bytes, a JSON view
+        // included (base64), so the view keeps the float/integer split and needs no allowance.
         let handler = try #require(makeSIJSONReplayLand().serverInputHandlers[String(describing: SIJSONRatio.self)])
-        let tree = AnyCodable(["ratio": AnyCodable(2), "n": AnyCodable(3)] as [String: AnyCodable])
-        #expect(throws: (any Error).self, "strict") { _ = try handler.decode(tree) }
-        let allowed = try handler.decode(tree, integralFloats: true)
-        #expect((allowed as? SIJSONRatio)?.ratio == 2.0)
+        let integer = Data(try CanonicalMessagePack.encode(AnyCodable(["ratio": AnyCodable(2), "n": AnyCodable(3)] as [String: AnyCodable])))
+        #expect(throws: (any Error).self, "strict") { _ = try handler.decode(integer) }
+        let float = Data(try CanonicalMessagePack.encode(SIJSONRatio(ratio: 2.0, n: 3)))
+        #expect((try handler.decode(float) as? SIJSONRatio)?.ratio == 2.0)
     }
 }

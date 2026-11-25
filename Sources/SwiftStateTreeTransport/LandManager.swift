@@ -662,10 +662,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         // Configure record metadata (deterministic re-evaluation). After the adapter exists: the
         // sync stream is recorded only when the keeper's transport runs the phase in turn.
         if let recorder = await keeper.getReevaluationRecorder() {
-            // Extract RNG seed from LandKeeper's services for deterministic re-evaluation
-            // RNG seed is critical when RNG is used in game logic (e.g., monster spawning, player positioning)
-            // Note: DeterministicRngService is automatically registered by LandKeeper if not provided,
-            // seeded from the landID the keeper got at construction
+            // The seed the land's generator started from, for deterministic re-evaluation: a
+            // caller-registered DeterministicRngService's seed, else derived from the landID the
+            // keeper got at construction (`LandKeeper.getRngSeed()`).
             let rngSeed = await keeper.getRngSeed()
             
             // Note: We do NOT record tickInterval/syncInterval because:
@@ -694,7 +693,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 extensions: nil,
                 hardwareInfo: hardwareInfo,
                 recordsSyncStream: true,
-                syncConfig: transportAdapter.syncConfigForRecord
+                syncConfig: transportAdapter.syncConfigForRecord,
+                payloadEncoding: transportAdapter.payloadEncodingForRecord
             )
             await recorder.setMetadata(recordingMetadata)
         }

@@ -1,4 +1,5 @@
 ---
+title: "`SO_REUSEADDR` lets two sockets share a port on Windows"
 module: SwiftStateTreeNIO
 date: 2026-11-21
 problem_type: gotcha

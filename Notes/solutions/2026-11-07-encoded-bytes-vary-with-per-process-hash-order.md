@@ -1,4 +1,5 @@
 ---
+title: "Encoded bytes vary run to run when a per-process hash order feeds slot assignment"
 module: SwiftStateTreeTransport (state-update encoders), EncodingBenchmark
 date: 2026-11-07
 problem_type: measurement_pitfall

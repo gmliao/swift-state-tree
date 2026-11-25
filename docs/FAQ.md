@@ -22,7 +22,7 @@ For detailed instructions, please refer to [README.md](../README.md#-quick-start
 
 A: 
 - Swift 6.4+
-- macOS 14.0+ (development environment)
+- macOS 15.0+ (development environment)
 - Platforms with a Swift 6.4+ toolchain (deployment environment)
 
 ### Q: How do I verify the project runs correctly?
@@ -211,7 +211,7 @@ A: Main error codes include:
 
 **Join errors**:
 - `JOIN_SESSION_NOT_CONNECTED`: Connection not established
-- `JOIN_ALREADY_JOINED`: Already joined
+- `JOIN_ALREADY_JOINED`: Already joined, also once the join's response was sent
 - `JOIN_IN_PROGRESS`: A join is already in progress on this connection; wait for its response
 - `JOIN_DENIED`: Join denied
 - `JOIN_ROOM_FULL`: Room is full

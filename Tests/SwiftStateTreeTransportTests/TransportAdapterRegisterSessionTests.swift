@@ -35,6 +35,8 @@ struct RegisterSessionBumpAction: ActionPayload {
 private actor RegisterSessionTransport: Transport {
     var delegate: TransportDelegate?
     private(set) var closed: [SessionID] = []
+    /// Each close with its code, reason and grace (`closeSession(_:)` alone drops them).
+    private(set) var closeCodes: [SessionID: SessionClose] = [:]
     let closeSignal = TestGate()
 
     init() { closeSignal.open() }
@@ -43,8 +45,9 @@ private actor RegisterSessionTransport: Transport {
     func start() async throws {}
     func stop() async throws {}
     func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) {}
-    func closeSession(_ sessionID: SessionID) async {
+    func closeSession(_ sessionID: SessionID, with close: SessionClose) async {
         closed.append(sessionID)
+        closeCodes[sessionID] = close
         await closeSignal.arrive()
     }
     nonisolated var supportsCloseSession: Bool { true }
@@ -160,6 +163,8 @@ struct TransportAdapterRegisterSessionTests {
         #expect(await f.adapter.supersededSessionCount == 1)
         #expect(await f.adapter.staleRegistrationRefusals == 0)
         #expect(await f.closes(1) == [s1])
+        #expect(await f.transport.closeCodes[s1] == SessionClose(code: 4017, reason: "logged in elsewhere", closeGrace: .milliseconds(500)),
+                "the superseded session's close is 4017")
         // The supersede is adapter-only: OnJoin and OnLeave are the keeper joins' own.
         let state = await f.keeper.currentState()
         #expect(state.joins == 2 && state.leaves == 1)
@@ -177,6 +182,9 @@ struct TransportAdapterRegisterSessionTests {
         #expect(await f.adapter.membershipSessionIDs(for: player) == [s1])
         #expect(await f.adapter.staleRegistrationRefusals == 1)
         #expect(await f.closes(1) == [s2])
+        // A refusal is not a supersede: it stays a plain 1000 with no reason (#861).
+        #expect(await f.transport.closeCodes[s2] == SessionClose(code: 1000))
+        #expect(await f.transport.closeCodes[s2]?.reason == "")
         let state = await f.keeper.currentState()
         #expect(state.joins == 1 && state.leaves == 0)
     }

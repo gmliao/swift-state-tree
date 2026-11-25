@@ -565,7 +565,7 @@ struct TicklessReplayPassTests {
         #expect(turnPasses == (endsTurn ? passes.map { [$0] } : [passes]))
         let source = try ReevaluationRecordFile.openSource(filePath: path)
         #expect(try await source.getPasses(for: 0) == passes)
-        #expect(try await source.getMetadata().version == "3.6")
+        #expect(try await source.getMetadata().version == "3.7")
     }
 
     /// A 3.0 record is still read (no passes), but replay refuses it: it has no schema
@@ -664,7 +664,7 @@ struct TicklessReplayPassTests {
                 } else {
                     actions[0] = ReevaluationRecordedAction(
                         kind: first.kind, sequence: first.sequence, typeIdentifier: first.typeIdentifier,
-                        payload: first.payload, playerID: first.playerID, clientID: first.clientID,
+                        payload: first.payload, payloadEncoding: first.payloadEncoding, playerID: first.playerID, clientID: first.clientID,
                         sessionID: first.sessionID, resolverOutputs: first.resolverOutputs, resolvedAtTick: 1
                     )
                 }

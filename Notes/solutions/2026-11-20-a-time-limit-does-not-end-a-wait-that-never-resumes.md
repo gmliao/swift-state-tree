@@ -1,4 +1,5 @@
 ---
+title: "A time limit does not end a wait that never resumes"
 module: SwiftStateTreeTransport tests
 date: 2026-11-20
 problem_type: testing_practice

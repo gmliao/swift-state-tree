@@ -1,4 +1,5 @@
 ---
+title: "Per-room bytes grow with identifier length when a strategy resends the IDs"
 module: EncodingBenchmark, deep-research/snapshot-baseline
 date: 2026-11-07
 problem_type: measurement_pitfall

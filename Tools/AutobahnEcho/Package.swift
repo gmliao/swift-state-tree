@@ -8,7 +8,7 @@ import PackageDescription
 let package = Package(
     name: "AutobahnEcho",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v15)
     ],
     products: [
         .executable(name: "AutobahnEcho", targets: ["AutobahnEcho"])

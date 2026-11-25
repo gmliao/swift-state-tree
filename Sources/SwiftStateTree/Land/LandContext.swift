@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import SwiftStateTurns
 
 /// Request-scoped context for Land handlers
 ///
@@ -157,16 +158,31 @@ public struct LandContext: Sendable {
     /// produced live, or read from a record in replay.
     private var resolverOutputs: [String: HeldResolverOutput] = [:]
     
-    /// Thread-safe deterministic random number generator.
+    /// The service for this handler invocation's draws, bound by the keeper at the call: a step
+    /// service written back to the land's generator when the step ends, or a detached copy for a
+    /// handler that replay doesn't repeat. `nil` in a context built without a keeper.
+    var stepRandom: DeterministicRngService? = nil
+
+    /// The land's deterministic random number generator.
     ///
-    /// This property provides convenient access to the deterministic RNG service.
-    /// The RNG service is automatically registered by `LandKeeper` during initialization,
-    /// ensuring deterministic behavior based on the land instance ID.
+    /// Draws continue one sequence across the land's steps, started from the land's seed, and
+    /// replay repeats them. The keeper binds the service at each handler call:
+    /// - A handler that replay repeats from the record (OnInitialize, OnJoin, OnLeave, an
+    ///   action, a client event, a server input, the tick) gets its own service, and its draws
+    ///   move the land's generator. The keeper copies the generator back when the handler returns.
+    /// - A handler that replay doesn't repeat draws from a copy that never moves the land's
+    ///   generator. CanJoin and the sync handler each get their own copy, so two such calls in a
+    ///   row can draw the same values. The drain's three handlers (OnDestroyWhenEmpty, OnFinalize,
+    ///   AfterFinalize) share one copy, so their draws continue one another.
     ///
-    /// **Thread Safety**: The returned RNG is thread-safe and can be used concurrently.
+    /// **In a handler whose draws move the land's generator, draw synchronously.** A `random`
+    /// kept past its handler draws from a copy that no longer moves the land. A draw from a
+    /// `Task` the handler starts may land before or after the step's write-back, so replay can't
+    /// repeat it. Resolvers don't get the
+    /// land's generator (#765): a resolver that needs randomness brings its own.
     ///
-    /// **Precondition**: A `DeterministicRngService` must be registered in `services`.
-    /// `LandKeeper` automatically ensures this during initialization.
+    /// A context built without a keeper (a unit test) falls back to a `DeterministicRngService`
+    /// registered in `services`.
     ///
     /// Example usage:
     /// ```swift
@@ -177,9 +193,9 @@ public struct LandContext: Sendable {
     /// }
     /// ```
     public var random: DeterministicRngService {
-        // LandKeeper ensures DeterministicRngService is always registered
+        if let stepRandom { return stepRandom }
         guard let rngService = services.get(DeterministicRngService.self) else {
-            fatalError("DeterministicRngService not found in services. This should not happen as LandKeeper automatically registers it.")
+            fatalError("LandContext.random: no generator. A keeper binds one for each handler call; a context built without a keeper needs a DeterministicRngService in services.")
         }
         return rngService
     }
@@ -273,9 +289,10 @@ public struct LandContext: Sendable {
     /// The output held under `member` (`ProductInfoResolver` -> `productInfo`), as `T`. The
     /// entries' typed parameters read through here (#769).
     ///
-    /// **Replay:** a recorded output is held as `RecordedResolverOutput`, and this read decodes
-    /// it into the requested type with the record's own codec (`RecordPayloadSource`, #707), as a
-    /// replayed server event is: a `Data` field reads back in the form the recorder wrote. An
+    /// **Replay:** a recorded output is held as `RecordedResolverOutput`, its canonical
+    /// MessagePack bytes, and this read decodes them into the requested type
+    /// (`CanonicalMessagePack.decode`, with the record's integral-float allowance), so a `Data`
+    /// field reads back in the form the recorder wrote, as a replayed server event's does. An
     /// output that doesn't decode into the requested type reads as `nil`, with a warning naming
     /// the output and the error: in replay a `nil` the live handler didn't see is a divergence,
     /// and a silent one is how #707 went unnoticed.
@@ -286,10 +303,11 @@ public struct LandContext: Sendable {
         case .live(let output):
             return output as? T
         case .recorded(let wrapped):
-            // A recorded output, in replay: decoded with the codec that wrote the record. A JSON
-            // round trip can't read a `Data` field back (#707).
+            // A recorded output, in replay: its canonical MessagePack bytes, decoded with the
+            // record's codec (#707, #700 K1b-1 K1-Q7 (d)). A JSON round trip can't read a `Data`
+            // field back.
             do {
-                return try RecordPayloadSource(wrapped.value, integralFloats: wrapped.integralFloats).decode(T.self)
+                return try CanonicalMessagePack.decode(T.self, from: try wrapped.bytes(), integralFloats: wrapped.integralFloats)
             } catch {
                 logger.warning("A recorded resolver output doesn't decode in replay; the handler reads nil", metadata: [
                     "output": .string(member),
@@ -306,40 +324,71 @@ public struct LandContext: Sendable {
 // MARK: - Replay Mode Helper
 
 /// A resolver output as an item or a context holds it: produced live, or read from a record.
-/// Not `PlainData`: a recorded output is an `AnyCodable` tree until the handler reads it.
+@PlainData
 package enum HeldResolverOutput: Sendable {
     case live(any ResolverOutput)
     case recorded(RecordedResolverOutput)
 }
 
-/// Replay only: a recorded output's tree, decoded when the handler reads it, with the record's
-/// own codec (#707). Not a `ResolverOutput`, so nothing can mistake it for an output.
+/// Replay only: a recorded output as canonical MessagePack bytes, decoded when the handler reads
+/// it, with the record's own codec (#707). Not a `ResolverOutput`, so nothing can mistake it for
+/// an output.
+///
+/// The replay build encodes the record's tree once (#700 K1b-1, K1-Q7 (d)): the item holds bytes,
+/// not an `AnyCodable`, so it is plain. #769 R2 later records the bytes themselves.
+@PlainData
 package struct RecordedResolverOutput: Sendable {
+    /// The tree's canonical MessagePack bytes, or why it couldn't be encoded.
+    @PlainData
+    package enum Payload: Sendable {
+        case bytes([UInt8])
+        case failed(RecordedPayloadDecodeFailure)
+    }
+
     /// Type identifier of the resolver output (e.g., "SlowDeterministicOutput")
     package let typeIdentifier: String
-    /// The output's tree, as the record holds it
-    package let value: AnyCodable
-    /// The JSON view's integer-to-float allowance (`RecordPayloadSource.integralFloats`): true when
-    /// the record was read from its JSON view, which doesn't keep the float/integer split.
+    package let payload: Payload
+    /// The JSON view's integer-to-float allowance (`CanonicalMessagePack.decode(_:from:integralFloats:)`):
+    /// true when the record was read from its JSON view, which doesn't keep the float/integer split.
     package let integralFloats: Bool
 
+    /// Encodes `value` once. A tree that can't be encoded is held as its failure: nesting past
+    /// the canonical limit as `.recordTooDeep` (#817), anything else as `.undecodable` with its text.
     package init(typeIdentifier: String, value: AnyCodable, integralFloats: Bool = false) {
         self.typeIdentifier = typeIdentifier
-        self.value = value
         self.integralFloats = integralFloats
+        do {
+            self.payload = .bytes(try CanonicalMessagePack.encode(value))
+        } catch {
+            self.payload = .failed(RecordedPayloadDecodeFailure(error))
+        }
+    }
+
+    /// The bytes, or the encode's failure as the read's error.
+    package func bytes() throws -> [UInt8] {
+        switch payload {
+        case .bytes(let bytes): return bytes
+        case .failed(let failure): throw failure.error
+        }
     }
 }
 
 extension Dictionary where Key == String, Value == HeldResolverOutput {
     /// The record's entries for these outputs: a live output's type and value, a recorded one's
-    /// type and tree as it was read. One projection for every record write site.
+    /// type and its bytes read back as a tree. One projection for every record write site.
+    ///
+    /// A replay keeper has no recorder, so nothing reads a recorded output's projection today.
+    /// It is kept for the contract: a recorded output whose bytes don't read back as a tree (one
+    /// that failed to encode, or, under strict integral floats, an unsigned value above
+    /// `Int.max`) is left out, with no entry.
     package var recordedEntries: [String: ReevaluationRecordedResolverOutput] {
-        mapValues { held in
+        compactMapValues { held in
             switch held {
             case .live(let output):
                 ReevaluationRecordedResolverOutput(typeIdentifier: String(describing: type(of: output)), value: AnyCodable(output))
             case .recorded(let recorded):
-                ReevaluationRecordedResolverOutput(typeIdentifier: recorded.typeIdentifier, value: recorded.value)
+                (try? CanonicalMessagePack.decode(AnyCodable.self, from: recorded.bytes(), integralFloats: recorded.integralFloats))
+                    .map { ReevaluationRecordedResolverOutput(typeIdentifier: recorded.typeIdentifier, value: $0) }
             }
         }
     }

@@ -361,9 +361,9 @@ struct LandReleaseTests {
 
             // Destroyed mid-job: the drain rejects the held job with landClosed.
             await manager.shutdownAllLands()
-            await #expect(throws: LandInputRejection.landClosed) { _ = try await keeper.awaitActionResult(sequence: sequence) }
+            await #expect(throws: LandInputRejection.landClosed) { _ = try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
             // Exactly once: the slot was read.
-            await #expect(throws: ActionResultUnavailable.self) { _ = try await keeper.awaitActionResult(sequence: sequence) }
+            await #expect(throws: ActionResultUnavailable.self) { _ = try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
 
             // The resolver returns after the destruction: nothing is applied, and no call went to
             // the released transport without being counted.

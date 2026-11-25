@@ -1,4 +1,5 @@
 ---
+title: "Synthesized `Decodable` ignores `var` defaults, so a `{}` sample fails"
 module: SwiftStateTree
 date: 2026-11-18
 problem_type: gotcha

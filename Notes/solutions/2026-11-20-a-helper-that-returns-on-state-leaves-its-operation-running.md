@@ -1,4 +1,5 @@
 ---
+title: "A helper that returns on state leaves its operation running"
 module: SwiftStateTreeNIO tests
 date: 2026-11-20
 problem_type: testing_practice

@@ -47,7 +47,7 @@ let keeper = LandKeeper(
 3. 用相同的輸入執行 handlers
 4. 每個 tick 後比對 state hash
 
-手動建立的 replay keeper 要帶入錄製的 land ID 與 RNG seed，如下例；沒有帶的話，兩者都會使用 land type。`ReevaluationEngine.run` 與 `ConcreteReevaluationRunner` 會自動處理。
+手動建立的 replay keeper 要帶入錄製的 land ID 與 RNG seed，如下例；沒有帶的話，兩者都會使用 land type。`ReevaluationEngine.run` 與 `ConcreteReevaluationRunner` 會自動處理。keeper 只讀取所註冊 service 的 seed：用它啟動 land 的產生器，並從它建立的 context 中移除這個 service，因此 handler 透過 `ctx.random` 抽取，resolver 則碰不到它。
 
 Input 在其 handler 執行前就被錄製，因此 `validate` 拋出錯誤的 input 也會依序出現在錄製中，並列為 rejected（[被拒絕的 input](#被拒絕的-input35)）。Replay 會再執行它的 `validate`，因此 `validate` 必須具決定性，並檢查拒絕的是相同的 input。
 

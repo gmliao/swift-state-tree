@@ -97,7 +97,7 @@ struct FullStateHashTests {
 
     @Test("The record version picks the hash definition")
     func definitionByVersion() {
-        #expect(ReevaluationRecordVersion.current == "3.6")
+        #expect(ReevaluationRecordVersion.current == "3.7")
         #expect(ReevaluationRecordVersion.hashDefinition(recorded: "3.0") == .fullState)
         #expect(ReevaluationRecordVersion.hashDefinition(recorded: "2.4") == .fullState)
         #expect(ReevaluationRecordVersion.hashDefinition(recorded: "2.9") == .fullState)
@@ -149,6 +149,7 @@ struct FullStateHashTests {
     }
 }
 
+@PlainData
 struct CollidingKey: Hashable, Sendable, CustomStringConvertible {
     let id: Int
     var description: String { "same" }
@@ -248,6 +249,7 @@ struct NodeHolder: Sendable {
     var node: FullHashMonster = FullHashMonster()
 }
 
+@PlainData
 enum NodeChoice: Sendable {
     case none
     case one(FullHashMonster)

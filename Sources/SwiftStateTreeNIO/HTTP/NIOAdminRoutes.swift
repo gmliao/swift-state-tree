@@ -18,6 +18,9 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
     case schemaFingerprintMismatch(recorded: String, current: String)
     /// The record has no schema fingerprint (#521 D15): re-record it.
     case schemaFingerprintMissing(recordedVersion: String?)
+    /// The record is a 3.6 record, whose payloads are trees replay no longer decodes (#700 K1a):
+    /// re-record it.
+    case recordPayloadsNotReplayable(recordedVersion: String)
     /// The land type gives no fingerprint to compare with (#521 D15): its server reports none,
     /// or its definition has a type the fingerprint can't list (`reason`).
     case schemaFingerprintUnavailable(landType: String, reason: String)
@@ -26,6 +29,7 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
         switch error {
         case let .mismatch(recorded, current): self = .schemaFingerprintMismatch(recorded: recorded, current: current)
         case let .missing(recordedVersion): self = .schemaFingerprintMissing(recordedVersion: recordedVersion)
+        case let .payloadsNotReplayable(recordedVersion): self = .recordPayloadsNotReplayable(recordedVersion: recordedVersion)
         }
     }
 
@@ -43,6 +47,8 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return "RECORD_SCHEMA_FINGERPRINT_MISMATCH"
         case .schemaFingerprintMissing:
             return "RECORD_SCHEMA_FINGERPRINT_MISSING"
+        case .recordPayloadsNotReplayable:
+            return "RECORD_PAYLOADS_NOT_REPLAYABLE"
         case .schemaFingerprintUnavailable:
             return "RECORD_SCHEMA_FINGERPRINT_UNAVAILABLE"
         }
@@ -64,6 +70,8 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current).description
         case let .schemaFingerprintMissing(recordedVersion):
             return ReevaluationRecordFingerprintError.missing(recordedVersion: recordedVersion).description
+        case let .recordPayloadsNotReplayable(recordedVersion):
+            return ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: recordedVersion).description
         case let .schemaFingerprintUnavailable(landType, reason):
             return "Land type \(landType) has no record schema fingerprint to check the record against: \(reason)."
         }
@@ -97,6 +105,11 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
                 "currentSchemaFingerprint": AnyCodable(current),
             ]
         case let .schemaFingerprintMissing(recordedVersion):
+            return [
+                "recordedRecordVersion": AnyCodable(recordedVersion),
+                "minimumReplayableVersion": AnyCodable(ReevaluationRecordVersion.minimumReplayable),
+            ]
+        case let .recordPayloadsNotReplayable(recordedVersion):
             return [
                 "recordedRecordVersion": AnyCodable(recordedVersion),
                 "minimumReplayableVersion": AnyCodable(ReevaluationRecordVersion.minimumReplayable),
@@ -737,8 +750,9 @@ extension NIOAdminRoutes {
         return .accepted(resolvedRecordPath)
     }
 
-    /// Refuses a record without a schema fingerprint, one whose fingerprint differs from the land
-    /// type's, and any record when the land type has no fingerprint to compare with (#521 D15).
+    /// Refuses a record whose version this build can't read, a record without a schema
+    /// fingerprint, one whose fingerprint differs from the land type's, and any record when the
+    /// land type has no fingerprint to compare with (#521 D15).
     /// The replay land's runner checks again before its first step, against the bytes it reads.
     private func validateSchemaFingerprint(metadata: ReevaluationRecordMetadata, landType: String) async throws {
         let recorded: String
@@ -746,6 +760,9 @@ extension NIOAdminRoutes {
             recorded = try ReevaluationSchemaFingerprint.recordedFingerprint(of: metadata)
         } catch let error as ReevaluationRecordFingerprintError {
             throw ReplayStartCompatibilityError(error)
+        } catch let ReevaluationRecordVersionError.incompatible(recordedVersion, required) {
+            // A missing, malformed or future version, refused whether or not the request named one.
+            throw ReplayStartCompatibilityError.recordVersionMismatch(expectedVersion: required, recordedVersion: recordedVersion)
         }
         let current: String?
         do {

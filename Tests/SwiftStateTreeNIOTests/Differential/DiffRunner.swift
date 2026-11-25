@@ -675,7 +675,47 @@ final class DiffRun: @unchecked Sendable {
             metadata: contents.metadata, frames: contents.frames,
             completeness: completeness, holdsNonNFCText: contents.holdsNonNFCText
         ))
-        return try DiffValue.fromJSON(data)
+        return try payloadsAsTrees(DiffValue.fromJSON(data))
+    }
+
+    /// Rule `recordPayloadAsTree` (#700 K1a, plan §3.11): each action's and client event's 3.7
+    /// payload in the view is its tree (the bytes decoded with their encoding), in the form a 3.6
+    /// record's tree has, and the entry's `payloadEncoding` is left out. Canonical JSON bytes are
+    /// the same within one toolchain only, so off the pinned image the view must not hold a
+    /// payload's spelling; the byte comparison on the pinned image still sees the bytes.
+    ///
+    /// Leaving `payloadEncoding` out is on purpose: the view compares what a payload holds, so a
+    /// JSON and a MessagePack payload holding the same value compare equal in decoded-only mode.
+    /// The header's `payloadEncoding` is still compared, and the bytes are, on the pinned image.
+    static func payloadsAsTrees(_ view: DiffValue) throws -> DiffValue {
+        guard case .object(var root) = view, case .array(let frames)? = root["frames"] else { return view }
+        root["frames"] = .array(try frames.map { frame in
+            guard case .object(var fields) = frame else { return frame }
+            for key in ["actions", "clientEvents", "serverInputs"] {
+                guard case .array(let entries)? = fields[key] else { continue }
+                // A server input's bytes are canonical MessagePack whatever the header says (K1-Q4 (a)).
+                fields[key] = .array(try entries.map { try payloadAsTree($0, isServerInput: key == "serverInputs") })
+            }
+            return .object(fields)
+        })
+        return .object(root)
+    }
+
+    private static func payloadAsTree(_ entry: DiffValue, isServerInput: Bool) throws -> DiffValue {
+        guard case .object(var fields) = entry, case .string(let base64)? = fields["payload"] else { return entry }
+        // A 3.7 payload is base64 in the view; anything else is a record this rule can't show.
+        guard let bytes = Data(base64Encoded: base64) else {
+            throw DiffRunFailure("a recorded payload in the record view isn't base64: \(base64.prefix(40))")
+        }
+        var encoding: RecordPayloadEncoding?
+        if case .string(let name)? = fields["payloadEncoding"] { encoding = RecordPayloadEncoding(rawValue: name) }
+        // A server input reads with the record codec, as live and replay do, at its own depth.
+        let tree = isServerInput
+            ? try RecordedPayloadTree.serverInputTree(bytes)
+            : try RecordedPayloadTree.tree(bytes, encoding: encoding)
+        fields["payload"] = try DiffValue.fromJSON(JSONEncoder().encode(tree))
+        fields["payloadEncoding"] = nil
+        return .object(fields)
     }
 
     /// Opens every gate, stops the land if it still runs, closes the connections and awaits

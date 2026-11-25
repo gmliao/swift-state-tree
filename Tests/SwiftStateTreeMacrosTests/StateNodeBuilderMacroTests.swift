@@ -26,6 +26,7 @@ final class StateNodeBuilderMacroTests {
             }
             """,
             expandedSource: """
+
             struct TestStateNode: StateNodeProtocol {
                 @Sync(.broadcast)
                 var players: [String: String] = [:]
@@ -222,6 +223,19 @@ final class StateNodeBuilderMacroTests {
                 private static func _syncCheck_players(_: _SyncFallbackField) {
                 }
 
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value._players)
+                        SwiftStateTurns.PlainDataCheck.field(value.players)
+                        SwiftStateTurns.PlainDataCheck.field(value._hiddenData)
+                        SwiftStateTurns.PlainDataCheck.field(value.hiddenData)
+                        SwiftStateTurns.PlainDataCheck.field(value._cache)
+                        SwiftStateTurns.PlainDataCheck.field(value.cache)
+                    }
+                }
+
                 private static let _syncPolicy_players: SyncPolicy<[String: String]> = .broadcast
 
                 private static let _syncPolicy_hiddenData: SyncPolicy<Int> = .serverOnly
@@ -248,6 +262,7 @@ final class StateNodeBuilderMacroTests {
             }
             """,
             expandedSource: """
+
             struct CustomPolicyNode: StateNodeProtocol {
                 @Sync(.custom { playerID, value in value })
                 var secret: String = ""
@@ -390,6 +405,15 @@ final class StateNodeBuilderMacroTests {
 
                 @available(*, deprecated, message: "'secret' (String) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
                 private static func _syncCheck_secret(_: _SyncFallbackField) {
+                }
+
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value._secret)
+                        SwiftStateTurns.PlainDataCheck.field(value.secret)
+                    }
                 }
 
                 private static let _syncPolicy_secret: SyncPolicy<String> = .custom { playerID, value in

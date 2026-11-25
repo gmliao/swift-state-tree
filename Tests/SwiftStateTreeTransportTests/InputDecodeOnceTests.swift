@@ -412,7 +412,8 @@ struct InputDecodeOnceTests {
         let recorded = await recorder.getAllFrames().flatMap(\.clientEvents)
         // Only the two that decoded, each once; the refused one took no sequence.
         #expect(recorded.count == 2)
-        #expect(recorded.map { ($0.payload.base as? [String: Any])?["tag"] as? String } == ["before", "after"])
+        let tags = try recorded.map { (try RecordedPayloadTree.tree(of: $0).base as? [String: Any])?["tag"] as? String }
+        #expect(tags == ["before", "after"])
         #expect(Set(recorded.map(\.sequence)).count == 2)
     }
 

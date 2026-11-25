@@ -13,7 +13,11 @@ import Foundation
 /// - floats are always float64, `Float` widened; NaN is the one quiet NaN `0x7ff8000000000000`;
 /// - a `Date` is its ISO-8601 string at whole seconds with `Z` (`1970-01-01T00:00:00Z`),
 ///   truncated toward negative infinity, formatted here rather than by `ISO8601DateFormatter`;
-/// - an omitted optional (`encodeIfPresent` with `nil`) leaves the key out; `encodeNil` is `0xc0`.
+/// - an omitted optional (`encodeIfPresent` with `nil`) leaves the key out; `encodeNil` is `0xc0`;
+/// - a `CanonicalBinary` is `bin` in its shortest form (`bin8`, `bin16`, `bin32`), from record
+///   format 3.7. A plain `Data` keeps its own `Codable`'s form, an array of integers, so values that
+///   hold one (resolver outputs, server inputs' record forms) are written as before 3.7 and still
+///   read into an `AnyCodable` tree.
 ///
 /// What it can't detect: a custom `encode(to:)` that writes a `Set` or a dictionary itself, element
 /// by element (`encode(contentsOf:)`), in iteration order. Only values that reach the encoder as
@@ -57,7 +61,7 @@ public enum CanonicalMessagePack {
             return elements.contains(where: holdsNonNFCText)
         case .map(let entries):
             return entries.contains { !SnapshotValue.isNFC($0.key.string) || holdsNonNFCText($0.value) }
-        case .null, .bool, .int, .uint, .double:
+        case .null, .bool, .int, .uint, .double, .binary:
             return false
         }
     }
@@ -215,6 +219,25 @@ struct CanonicalKey: Hashable {
     }
 }
 
+/// Bytes that canonical MessagePack writes as `bin` (#700 K1a: a recorded payload's bytes).
+/// Other encoders see a single `Data` value: base64 in JSON.
+package struct CanonicalBinary: Codable, Sendable, Equatable {
+    package let bytes: Data
+
+    package init(_ bytes: Data) {
+        self.bytes = bytes
+    }
+
+    package init(from decoder: Decoder) throws {
+        bytes = try decoder.singleValueContainer().decode(Data.self)
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(bytes)
+    }
+}
+
 /// One decoded or to-be-encoded value.
 enum CanonicalNode: Equatable {
     case null
@@ -223,6 +246,8 @@ enum CanonicalNode: Equatable {
     case uint(UInt64)
     case double(Double)
     case string(String)
+    /// MessagePack `bin`: a `Data`.
+    case binary([UInt8])
     case array([CanonicalNode])
     case map([CanonicalKey: CanonicalNode])
 
@@ -234,6 +259,7 @@ enum CanonicalNode: Equatable {
         case let (.uint(a), .uint(b)): return a == b
         case let (.double(a), .double(b)): return a.bitPattern == b.bitPattern
         case let (.string(a), .string(b)): return a.utf8.elementsEqual(b.utf8)
+        case let (.binary(a), .binary(b)): return a == b
         case let (.array(a), .array(b)): return a == b
         case let (.map(a), .map(b)): return a == b
         default: return false
@@ -247,6 +273,7 @@ enum CanonicalNode: Equatable {
         case .int, .uint: return "integer"
         case .double: return "float64"
         case .string: return "string"
+        case .binary: return "bin"
         case .array: return "array"
         case .map: return "map"
         }
@@ -451,6 +478,10 @@ private struct CanonicalNodeEncoder: Encoder {
         }
         if let date = value as? Date {
             slot.setValue(.string(try CanonicalDate.format(date)))
+            return
+        }
+        if let binary = value as? CanonicalBinary {
+            slot.setValue(.binary(Array(binary.bytes)))
             return
         }
         if let double = value as? Double {
@@ -760,6 +791,18 @@ private struct CanonicalWriter {
             let utf8 = Array(value.utf8)
             try writeHeader(count: utf8.count, fix: 0xa0, fixMax: 31, u8: 0xd9, u16: 0xda, u32: 0xdb)
             put(contentsOf: utf8)
+        case .binary(let value):
+            // `bin` has no fix form: the count's shortest width.
+            guard value.count <= Int(UInt32.max) else { throw CanonicalMessagePackError.lengthTooLarge(value.count) }
+            let n = UInt64(value.count)
+            if value.count <= 0xff {
+                put(0xc4); appendBigEndian(n, width: 1)
+            } else if value.count <= 0xffff {
+                put(0xc5); appendBigEndian(n, width: 2)
+            } else {
+                put(0xc6); appendBigEndian(n, width: 4)
+            }
+            put(contentsOf: value)
         case .array(let elements):
             try enter()
             defer { depth -= 1 }
@@ -868,6 +911,9 @@ private struct CanonicalReader {
         case 0xc0: return .null
         case 0xc2: return .bool(false)
         case 0xc3: return .bool(true)
+        case 0xc4: return .binary(try readBytes(count: Int(try readBigEndian(1))))
+        case 0xc5: return .binary(try readBytes(count: Int(try readBigEndian(2))))
+        case 0xc6: return .binary(try readBytes(count: Int(try readBigEndian(4))))
         case 0xcb: return .double(Double(bitPattern: try readBigEndian(8)))
         case 0xcc: return .uint(try readBigEndian(1))
         case 0xcd: return .uint(try readBigEndian(2))
@@ -887,6 +933,12 @@ private struct CanonicalReader {
         case 0xe0...0xff: return .int(Int64(Int8(bitPattern: type)))
         default: throw CanonicalMessagePackError.unsupportedFormat(type)
         }
+    }
+
+    private mutating func readBytes(count: Int) throws -> [UInt8] {
+        guard bytes.count - offset >= count else { throw CanonicalMessagePackError.truncated }
+        defer { offset += count }
+        return Array(bytes[offset..<(offset + count)])
     }
 
     private mutating func readByte() throws -> UInt8 {
@@ -976,6 +1028,12 @@ private struct CanonicalNodeDecoder: Decoder {
             }
             return try CanonicalDate.parse(text, path: pathString(codingPath)) as! T
         }
+        if type == CanonicalBinary.self {
+            guard case .binary(let value) = node else {
+                throw CanonicalMessagePackError.typeMismatch(expected: "bin", path: pathString(codingPath))
+            }
+            return CanonicalBinary(Data(value)) as! T
+        }
         if type == Double.self { return try unboxDouble(node, codingPath: codingPath, integralFloats: integralFloats) as! T }
         if type == Float.self { return try unboxFloat(node, codingPath: codingPath, integralFloats: integralFloats) as! T }
         if type == AnyCodable.self, anyCodableDirect {
@@ -1044,7 +1102,7 @@ private struct CanonicalNodeDecoder: Decoder {
             return value
         case .string(let value):
             return value
-        case .array, .map:
+        case .binary, .array, .map:
             return nil
         }
     }
@@ -1110,7 +1168,12 @@ private struct CanonicalKeyedDecoder<Key: CodingKey>: KeyedDecodingContainerProt
     let codingPath: [CodingKey]
     let integralFloats: Bool
 
-    var allKeys: [Key] { entries.keys.compactMap { Key(stringValue: $0.string) } }
+    /// In the encoder's order, by the keys' UTF-8 bytes, so a decoder that walks the keys sees
+    /// the same order on every run (the dictionary's own order follows the per-process seed).
+    var allKeys: [Key] {
+        entries.keys.sorted { $0.string.utf8.lexicographicallyPrecedes($1.string.utf8) }
+            .compactMap { Key(stringValue: $0.string) }
+    }
 
     func contains(_ key: Key) -> Bool { entries[CanonicalKey(key.stringValue)] != nil }
 

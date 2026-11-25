@@ -21,6 +21,7 @@ final class SnapshotConvertibleMacroTests {
             }
             """,
             expandedSource: """
+
             struct PlayerState: Codable {
                 var name: String
                 var hpCurrent: Int
@@ -65,6 +66,18 @@ final class SnapshotConvertibleMacroTests {
                 }
             }
 
+            extension PlayerState {
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the @PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value.name)
+                        SwiftStateTurns.PlainDataCheck.field(value.hpCurrent)
+                        SwiftStateTurns.PlainDataCheck.field(value.hpMax)
+                    }
+                }
+            }
+
             extension PlayerState: SnapshotValueDecodable {
                 public init(fromSnapshotValue value: SnapshotValue) throws {
                     guard case .object(let _dict) = value else {
@@ -96,6 +109,7 @@ final class SnapshotConvertibleMacroTests {
             }
             """,
             expandedSource: """
+
             struct EmptyState: Codable {
             }
 
@@ -125,6 +139,13 @@ final class SnapshotConvertibleMacroTests {
                 }
             }
 
+            extension EmptyState {
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+
+                }
+            }
+
             extension EmptyState: SnapshotValueDecodable {
                 public init(fromSnapshotValue value: SnapshotValue) throws {
                     guard case .object(let _dict) = value else {
@@ -150,6 +171,7 @@ final class SnapshotConvertibleMacroTests {
             }
             """,
             expandedSource: """
+
             struct GameState: Codable {
                 var players: [String: PlayerState]
                 var round: Int
@@ -190,6 +212,17 @@ final class SnapshotConvertibleMacroTests {
                 }
             }
 
+            extension GameState {
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the @PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value.players)
+                        SwiftStateTurns.PlainDataCheck.field(value.round)
+                    }
+                }
+            }
+
             extension GameState: SnapshotValueDecodable {
                 public init(fromSnapshotValue value: SnapshotValue) throws {
                     guard case .object(let _dict) = value else {
@@ -219,6 +252,7 @@ final class SnapshotConvertibleMacroTests {
             }
             """,
             expandedSource: """
+
             struct Frozen {
                 let count: Int!
             }
@@ -255,6 +289,16 @@ final class SnapshotConvertibleMacroTests {
                 }
             }
 
+            extension Frozen {
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the @PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value.count)
+                    }
+                }
+            }
+
             extension Frozen: SnapshotFieldListProvider {
                 public static var snapshotFieldMetadata: [FieldMetadata] {
                     [
@@ -278,6 +322,7 @@ final class SnapshotConvertibleMacroTests {
             }
             """,
             expandedSource: """
+
             struct OptionalState: Codable {
                 var name: String?
                 var score: Int
@@ -318,6 +363,17 @@ final class SnapshotConvertibleMacroTests {
                 }
             }
 
+            extension OptionalState {
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the @PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value.name)
+                        SwiftStateTurns.PlainDataCheck.field(value.score)
+                    }
+                }
+            }
+
             extension OptionalState: SnapshotValueDecodable {
                 public init(fromSnapshotValue value: SnapshotValue) throws {
                     guard case .object(let _dict) = value else {
@@ -349,6 +405,7 @@ final class SnapshotConvertibleMacroTests {
             }
             """,
             expandedSource: """
+
             struct PlayerState: Codable {
                 var name: String
                 var hpCurrent: Int
@@ -390,6 +447,18 @@ final class SnapshotConvertibleMacroTests {
                     ("hpCurrent", (Int).self),
                     ("hpMax", (Int).self)
                 ]
+                }
+            }
+
+            extension PlayerState {
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the @PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value.name)
+                        SwiftStateTurns.PlainDataCheck.field(value.hpCurrent)
+                        SwiftStateTurns.PlainDataCheck.field(value.hpMax)
+                    }
                 }
             }
 

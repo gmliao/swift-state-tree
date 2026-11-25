@@ -148,7 +148,7 @@ struct NFCKeyTests {
 
     @Test("A record older than 3.3 holding text that is not NFC has a not-comparable state hash")
     func recordIncomparability() throws {
-        #expect(ReevaluationRecordVersion.current == "3.6")
+        #expect(ReevaluationRecordVersion.current == "3.7")
         #expect(ReevaluationRecordVersion.hashIncomparability(recorded: "3.2", holdsNonNFCText: false) == nil)
         #expect(ReevaluationRecordVersion.hashIncomparability(recorded: "3.3", holdsNonNFCText: true) == nil)
         #expect(ReevaluationRecordVersion.hashIncomparability(recorded: nil, holdsNonNFCText: true) == nil)

@@ -1,4 +1,5 @@
 ---
+title: "A second staging in one plan undoes an edit to the first"
 module: SwiftStateTreeTransport
 date: 2026-11-11
 problem_type: bug_class

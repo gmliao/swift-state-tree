@@ -631,14 +631,15 @@ struct SchemaFingerprintTests {
 
     @Test("A land refused for its synced state isn't fingerprinted: the sync row is kept and schemaFingerprint is nil")
     func fingerprintSkippedWhenSyncFails() throws {
-        // A class in a synced field (`.valueSemantics`). The fingerprint walk would throw the same
-        // LandRegistrationError, so the error alone can't show the `sync == nil` clause held; the
-        // definition's fingerprint cache can: it is still empty when the walk didn't run.
-        let land = Land("fp-sync-problem", using: ValueCheckClassFieldRoot.self) { Rules {} }
+        // A key type the sync can't convert (`.unsupportedKey`, a row every build runs). The
+        // fingerprint walk would throw the same LandRegistrationError, so the error alone can't
+        // show the `sync == nil` clause held; the definition's fingerprint cache can: it is still
+        // empty when the walk didn't run.
+        let land = Land("fp-sync-problem", using: RegistrationKeysRoot.self) { Rules {} }
         let error = try #require(throws: LandRegistrationError.self) {
             try land.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
         }
-        #expect(error.sync?.problems.contains(where: { if case .valueSemantics = $0 { true } else { false } }) == true)
+        #expect(error.sync?.problems.contains(where: { if case .unsupportedKey = $0 { true } else { false } }) == true)
         #expect(error.schemaFingerprint == nil)
         #expect(try land.schemaFingerprintCache.value { "not computed" }.get() == "not computed")
     }
@@ -697,8 +698,22 @@ struct SchemaFingerprintTests {
         let path = try await recordFixtureLand(fpBase(), initialState: FPv1.FPState())
         defer { try? FileManager.default.removeItem(atPath: path) }
         let metadata = try await ReevaluationRecordFile.openSource(filePath: path).getMetadata()
-        #expect(metadata.version == "3.6")
+        #expect(metadata.version == "3.7")
         #expect(metadata.schemaFingerprint == (try fingerprint(fpBase())))
+    }
+
+    @Test(
+        "A record whose version is missing, malformed or newer than this build reads is refused even with a matching fingerprint",
+        arguments: [nil, "bogus", "3.7.1", "3.8", "4.0"] as [String?]
+    )
+    func unreadableVersionIsRefused(_ version: String?) throws {
+        let metadata = ReevaluationRecordMetadata(
+            landID: "\(fpLandID):local", landType: fpLandID, createdAt: Date(timeIntervalSince1970: 0), metadata: [:],
+            landDefinitionID: fpLandID, version: version, schemaFingerprint: try fingerprint(fpBase())
+        )
+        let refusal = ReevaluationRecordVersionError.incompatible(recorded: version, required: ReevaluationRecordVersion.current)
+        #expect(throws: refusal) { try ReevaluationSchemaFingerprint.recordedFingerprint(of: metadata) }
+        #expect(throws: refusal) { try ReevaluationSchemaFingerprint.checkRecord(metadata, against: fpBase()) }
     }
 
     @Test("A directly built keeper whose land has no fingerprint records none, and its record is refused at replay")
@@ -707,7 +722,7 @@ struct SchemaFingerprintTests {
         let path = try await recordFixtureLand(land, initialState: FPv1.FPState())
         defer { try? FileManager.default.removeItem(atPath: path) }
         #expect(try await ReevaluationRecordFile.openSource(filePath: path).getMetadata().schemaFingerprint == nil)
-        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "3.6")) {
+        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "3.7")) {
             _ = try await ReevaluationEngine.run(definition: fpBase(), initialState: FPv1.FPState(), recordFilePath: path)
         }
     }

@@ -22,7 +22,7 @@ swift build
 
 A: 
 - Swift 6.4+
-- macOS 14.0+（開發環境）
+- macOS 15.0+（開發環境）
 - 有 Swift 6.4+ toolchain 的平台（部署環境）
 
 ### Q: 如何確認專案可以正常運行？
@@ -211,7 +211,7 @@ A: 主要錯誤碼包括：
 
 **Join 錯誤**：
 - `JOIN_SESSION_NOT_CONNECTED`：連線未建立
-- `JOIN_ALREADY_JOINED`：已經加入
+- `JOIN_ALREADY_JOINED`：已經加入，join 的回應送出之後也是
 - `JOIN_IN_PROGRESS`：此連線已有進行中的加入，請等待其回應
 - `JOIN_DENIED`：加入被拒絕
 - `JOIN_ROOM_FULL`：房間已滿

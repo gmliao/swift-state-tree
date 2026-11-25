@@ -2,6 +2,8 @@ import Foundation
 import GameContent
 import Logging
 @_spi(Testing) import SwiftStateTree
+// The standard record payload decoders: a record from a MessagePack transport holds MessagePack payloads.
+import SwiftStateTreeMessagePack
 
 @main
 struct ReevaluationRunnerMain {
@@ -112,6 +114,14 @@ struct ReevaluationRunnerMain {
             } catch let error as ReevaluationRecordContentError where error.isReplayTooLong {
                 print("❌ \(error); raise the limit with --max-replay-ticks")
                 exit(14)
+            } catch let error as ReevaluationRecordVersionError {
+                // A version this build doesn't read, as --verify refuses it (exit 10).
+                print("❌ Conversion not possible: \(error)")
+                exit(10)
+            } catch let error as ReevaluationRecordFingerprintError {
+                // A JSON record before 3.7, whose payloads are trees.
+                print("❌ Conversion not possible: \(error)")
+                exit(10)
             }
             return
         }
@@ -262,7 +272,8 @@ struct ReevaluationRunnerMain {
                     exportJsonlPath: exportJsonlPath,
                     diffWithPath: diffWithPath,
                     logger: logger,
-                    maxReplayTicks: maxReplayTicks
+                    maxReplayTicks: maxReplayTicks,
+                    payloadDecoders: .standard
                 )
             }
         case VisibilityTestConfig.landType:
@@ -283,7 +294,8 @@ struct ReevaluationRunnerMain {
                         exportJsonlPath: exportJsonlPath,
                         diffWithPath: diffWithPath,
                         logger: logger,
-                        maxReplayTicks: maxReplayTicks
+                        maxReplayTicks: maxReplayTicks,
+                        payloadDecoders: .standard
                     )
                 }
                 break
@@ -297,7 +309,8 @@ struct ReevaluationRunnerMain {
                     exportJsonlPath: exportJsonlPath,
                     diffWithPath: diffWithPath,
                     logger: logger,
-                    maxReplayTicks: maxReplayTicks
+                    maxReplayTicks: maxReplayTicks,
+                    payloadDecoders: .standard
                 )
             }
         case ResolverTestConfig.landType:
@@ -310,7 +323,8 @@ struct ReevaluationRunnerMain {
                     exportJsonlPath: exportJsonlPath,
                     diffWithPath: diffWithPath,
                     logger: logger,
-                    maxReplayTicks: maxReplayTicks
+                    maxReplayTicks: maxReplayTicks,
+                    payloadDecoders: .standard
                 )
             }
         default:
@@ -338,7 +352,7 @@ struct ReevaluationRunnerMain {
             // comparable (exit 10, like a record this build doesn't read); one of another
             // schema is a schema mismatch (exit 13).
             switch error {
-            case .missing:
+            case .missing, .payloadsNotReplayable:
                 print("❌ Verification not possible: \(error)")
                 exit(10)
             case .mismatch:
@@ -587,10 +601,24 @@ struct ReevaluationRunnerMain {
             return
         }
         let source = try JSONReevaluationSource(data: data, maxReplayTicks: maxReplayTicks)
+        let metadata = try await source.getMetadata()
+        // The binary record is written as the current version, so the JSON one must hold what a
+        // current record holds: a version this build reads (a newer one may hold fields this
+        // build would drop), and payloads as bytes, from 3.7 on (an older one holds trees). Only
+        // the version is checked: converting doesn't need a fingerprint, replaying does.
+        guard ReevaluationRecordVersion.isCompatible(recorded: metadata.version, required: ReevaluationRecordVersion.current) else {
+            throw ReevaluationRecordVersionError.incompatible(recorded: metadata.version, required: ReevaluationRecordVersion.current)
+        }
+        guard let minor = ReevaluationRecordVersion.minor(of: metadata.version),
+              minor >= ReevaluationRecordVersion.payloadBytesMinor
+        else {
+            throw ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: metadata.version ?? "")
+        }
         let directory = URL(fileURLWithPath: output).deletingLastPathComponent()
         let recorder = ReevaluationRecorder(spoolDirectory: directory)
-        await recorder.setMetadata(try await source.getMetadata())
+        await recorder.setMetadata(metadata)
         for frame in await source.getAllFrames() {
+            // Every field the frame holds, so the binary record reads back as the JSON one.
             await recorder.recordTick(ReevaluationTickRecord(
                 tickId: frame.tickId,
                 actions: frame.actions,
@@ -603,7 +631,10 @@ struct ReevaluationRunnerMain {
                 syncOutputs: frame.syncOutputs,
                 syncMarkers: frame.syncMarkers,
                 initialize: frame.initialize,
-                passes: frame.passes
+                passes: frame.passes,
+                serverInputs: frame.serverInputs,
+                landFailure: frame.landFailure,
+                rejected: frame.rejected
             ))
         }
         try await recorder.save(to: output)
@@ -675,7 +706,9 @@ struct ReevaluationRunnerMain {
                                  unless --record or --convert)
           --convert <in> <out>   Write a JSON record as 3.x, or a 3.x record as its JSON view
                                  (the 2.6 shape, for reading; replay doesn't read it). Through
-                                 JSON a payload -0.0 can come back as the integer 0.
+                                 JSON a payload -0.0 can come back as the integer 0. A JSON
+                                 record before 3.7, or of a version this build doesn't read,
+                                 is refused (exit 10)
           --time-open <path>     Time opening the record (openSource) --repeat times (default
                                  200, after 20 warm-ups); prints one JSON line (release only)
           --record               Headless batch recording mode (writes a new record)

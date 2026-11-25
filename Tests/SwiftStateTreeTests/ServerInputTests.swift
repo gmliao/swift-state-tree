@@ -508,12 +508,21 @@ struct ServerInputTests {
             let bottom = SIRecursiveBottom.Count()
             let outcome = try await SIRecursiveBottom.$count.withValue(bottom) {
                 let keeper = try await makeKeeper(ticking: true)
+                // Bring the keeper to idle first (#872): it starts its own initialization in
+                // tasks that don't inherit this executor, and an actor runs whatever job is
+                // queued on the thread that is draining it, so a submit enqueued while one of
+                // those tasks still holds the keeper would encode on a pool thread. Wait for the
+                // initialization, then make one more round trip: once it returns here, no
+                // initialization work is left (`autoStartLoops: false` leaves no loop either).
+                await keeper.awaitInitialization()
+                _ = await keeper.currentState()
                 try #require(largeStackMarker() == executor.marker)
                 return await keeper.submitServerInput(SIRecursive(depth: 1000))
             }
             #expect(outcome == .refused(.unencodable))
             #expect(bottom.reached == 0)
-            // The deep encode ran on the keeper, and the keeper on the 8 MiB thread.
+            // The deep encode ran on the keeper, and the keeper on the 8 MiB thread: the keeper is
+            // driven by whatever thread holds it, which is why it was warmed up before the submit (#872).
             #expect(!bottom.encodedOn.isEmpty)
             #expect(bottom.encodedOn.allSatisfy { $0 == executor.marker }, "\(bottom.encodedOn)")
         }
@@ -723,7 +732,7 @@ struct ServerInputTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let source = try ReevaluationRecordFile.openSource(filePath: path)
-        #expect(try await source.getMetadata().version == "3.6")
+        #expect(try await source.getMetadata().version == "3.7")
         let result = try await ReevaluationEngine.run(
             definition: makeDefinition(ticking: true),
             initialState: ServerInputTestState(),
@@ -797,7 +806,7 @@ struct ServerInputTests {
         #expect(!json.contains("serverInputs"))
 
         let input = ReevaluationRecordedServerInput(
-            sequence: 9, typeIdentifier: "SIProgress", payload: AnyCodable(SIProgress(tag: "z")), resolvedAtTick: 2
+            sequence: 9, typeIdentifier: "SIProgress", payload: Data(try CanonicalMessagePack.encode(SIProgress(tag: "z"))), resolvedAtTick: 2
         )
         let withInput = ReevaluationTickFrame(tickId: 3, actions: [], clientEvents: [], lifecycleEvents: [], serverInputs: [input])
         let decoded = try JSONDecoder().decode(ReevaluationTickFrame.self, from: JSONEncoder().encode(withInput))

@@ -1,4 +1,5 @@
 ---
+title: "An XCTest assertion is silent inside a Swift Testing test"
 module: SwiftStateTreeMacros
 date: 2026-11-09
 problem_type: testing_practice

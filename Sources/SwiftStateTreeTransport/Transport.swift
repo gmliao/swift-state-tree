@@ -245,6 +245,10 @@ public struct SessionClose: Sendable, Equatable {
     /// 4016: the session's land failed (#535). The same short close grace as `landStopped`.
     package static let landFailed = SessionClose(code: Code.landFailed, reason: "land failed", closeGrace: .milliseconds(500))
 
+    /// 4017: the session was replaced by a newer join of the same player (#861; one session per
+    /// player, newest wins). The same short close grace as `landStopped`.
+    package static let superseded = SessionClose(code: Code.superseded, reason: "logged in elsewhere", closeGrace: .milliseconds(500))
+
     /// Application close codes (4000–4999). 4008 is `SendBacklogBound`'s, written by the NIO
     /// handler itself; the sync-lag codes (#332) are sent through `closeSession(_:with:)`.
     public enum Code {
@@ -271,6 +275,11 @@ public struct SessionClose: Sendable, Equatable {
         /// or a handler threw after writing synced state (#535), and the land was ended. A
         /// client doesn't retry it; a join for the same land ID gets a new instance.
         public static let landFailed: UInt16 = 4016
+        /// A newer join of the same player replaced this session (#861; one session per player,
+        /// newest wins). Only this connection closes: the player and the land live on in the
+        /// newer session. A client doesn't reconnect on it, or two clients of one player would
+        /// replace each other in a loop.
+        public static let superseded: UInt16 = 4017
     }
 
     private static func truncated(_ reason: String) -> String {

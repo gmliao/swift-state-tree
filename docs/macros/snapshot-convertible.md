@@ -37,6 +37,20 @@ struct Position: Codable, Sendable {
 }
 ```
 
+### The Type Is PlainData
+
+`@SnapshotConvertible` also makes the type [`PlainData`](../turns/README.md#what-counts-as-plain-data), with the same checks `@PlainData` writes, so the type can be stored in state. The checks follow `@PlainData`'s rules:
+- Every stored property needs a type annotation.
+- These fields don't compile: `Date`, `UUID`, `URL` and `Decimal`; a tuple, a closure or a class; a `weak` or `unowned` property; a metatype; a property wrapper; and a struct or enum that isn't `PlainData`.
+- A generic type is `PlainData` only where its parameters are, for example `where T: PlainData`.
+
+Beside another macro:
+- Beside `@PlainData` or `@Payload`, it writes no checks of its own.
+- Beside `@StateNodeBuilder`, it writes only the conformance, since the node's member is the witness.
+- Any other attached macro on the type is refused, because it could add members the checks don't see. Built-in attributes that add no members, such as `@available`, are fine. A member that could add declarations, such as a method, a computed property or a nested type, takes only built-in attributes that add none, such as `@inlinable`; a nested type may also carry this project's macros.
+
+A stored property inside `#if` is refused, because the conversion reads only the type's top-level members. This holds beside `@StateNodeBuilder` too: on a convertible node, an `@Internal` field inside `#if` is refused, although `@StateNodeBuilder` alone accepts it.
+
 ### Generated Code
 
 Macro automatically generates the following extension:
@@ -125,6 +139,8 @@ public extension SnapshotValue {
 1. **Basic types**: String, Int, Bool, etc. are already optimized
 2. **Simple types**: Simple structures with only one or two fields may not need it
 3. **Rarely converted types**: Types that are rarely converted
+
+A struct or enum stored in state still needs `@PlainData` when it isn't `@SnapshotConvertible`: a state field's value must be `PlainData` ([Sync](../core/sync.md#synced-state-is-made-of-value-types)).
 
 ## Usage Examples
 
@@ -315,7 +331,7 @@ Simple types may not need this macro:
 
 ```swift
 // ⚠️ Consider: Simple structure with only one field
-@SnapshotConvertible  // May not be needed
+@SnapshotConvertible  // May not be needed; in state, use @PlainData instead
 struct SimpleWrapper: Codable {
     var value: String
 }
@@ -347,7 +363,7 @@ A: Recommended when types meet the following conditions:
 
 ### Q: What happens if not marked?
 
-A: Unmarked types will use Mirror as fallback, worse performance but functionally complete.
+A: In state, an unmarked struct or enum doesn't compile: a state field's value must be `PlainData`. Mark it `@SnapshotConvertible`, or `@PlainData` if converting it through Mirror, the slower fallback, is fine.
 
 ### Q: Can SnapshotValueConvertible be manually implemented?
 
@@ -355,7 +371,7 @@ A: Yes, but recommend using macro auto-generation to avoid manual errors.
 
 ### Q: Do nested structures all need marking?
 
-A: Recommend marking all nested structures to ensure entire conversion path uses macro.
+A: In state, yes: each nested struct or enum must be `@SnapshotConvertible` or `@PlainData`. `@SnapshotConvertible` also keeps the whole conversion path off Mirror.
 
 ## Related Documentation
 

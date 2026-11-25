@@ -147,7 +147,8 @@ struct ReplayJSONAllowanceTests {
                     kind: "action",
                     sequence: 0,
                     typeIdentifier: String(describing: JSONAllowanceAction.self),
-                    payload: AnyCodable([:] as [String: AnyCodable]),
+                    payload: Data("{}".utf8),
+                    payloadEncoding: .json,
                     playerID: "p",
                     clientID: "c",
                     sessionID: "s",
@@ -191,7 +192,7 @@ struct ReplayJSONAllowanceTests {
                 ReevaluationRecordedServerInput(
                     sequence: 0,
                     typeIdentifier: String(describing: JSONAllowanceSIInput.self),
-                    payload: AnyCodable(["ratio": AnyCodable(2)] as [String: AnyCodable]),
+                    payload: Data(try CanonicalMessagePack.encode(AnyCodable(["ratio": AnyCodable(2)] as [String: AnyCodable]))),
                     resolvedAtTick: 0
                 )
             ]

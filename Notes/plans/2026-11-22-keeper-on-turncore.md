@@ -1,6 +1,6 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 5.6, plan only; every K1 question is decided: K1-Q4, K1-Q5 and K1-Q8 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). K1a is in implementation (#835); rev 5.5 writes down the decisions made during it, and rev 5.6 checks K1b's text against K1a's code, with three K1b questions open (K1b-Q1 to K1b-Q3, §9). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). K2 is gated on the maintainer's Q1 and on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
+**Status:** rev 5.8, plan only; every K1 question is decided: K1-Q4, K1-Q5 and K1-Q8 (a), K1-Q6 (i) (maintainer, 2026-11-25), K1-Q7 (d) (Main, 2026-11-25). K1a is in implementation (#835); rev 5.5 writes down the decisions made during it, and rev 5.6 checks K1b's text against K1a's code. Its three K1b questions are decided (rev 5.7): K1b-Q1 (a) (maintainer, 2026-11-25), K1b-Q2 (a) and K1b-Q3 (Main, 2026-11-25). Rev 5.2's drift note had Review's GO. Rev 4 had Review's GO. Rev 5 changed K1 and was NOT GO from Review (1 must-fix, 2 should, 1 nit); rev 5.1 answered them and has Review's GO (2fdcabf9), with two shoulds for K1a's implementation that rev 5.2 folds in (below). Q2 is decided: no world (§9). Q1 is decided: (c), the facade over two owners (maintainer, 2026-11-25); `ReplayLandOwner` is temporary and #612 deletes it, while the facade stays. K2 is gated on G2 (#759). No code until the maintainer okays implementation, and none goes in a slice whose core gap (§7) is still open. Two implementation notes from rev 4's GO are in §3.2 and §3.10.
 
 Code pointers are at main 8e622a20:
 - `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
@@ -12,6 +12,21 @@ Code pointers are at main 8e622a20:
 - `awaitActionResult` (LK:2611–2612);
 - `submitAction`'s `.completed` exits (LK:3071, :3217, :3222);
 - the adapter's `submitAction` and `awaitActionResult` calls (TA:5391, :5456) and `sendActionResponse` (TA:5583).
+
+**Rev 5.8** (census draft 3 folded in, Appendix A):
+- **F5 to F8 are in A.6, and the boundary list is A.8.** Draft 3 was read at main 32a220e9 (with #825 and #819), before K1a. A.7's K1b-5 row pointed to it, and so did the K2 prep survey, but it existed only as a working note.
+- Its per-field table isn't folded in, because K1b-4 re-runs the census on its base with the LSP.
+- Its line numbers are 32a220e9's. K1b-5 re-checks each segment at its base.
+
+**Rev 5.7** (the K1b questions decided, §9):
+- **K1b-Q1 = (a), the handler's index** (maintainer, 2026-11-25). The index is valid only within one process, and that is enforced, not only documented:
+  - the field can't be encoded, by its type: it isn't `Codable`, and is left out of any `Codable` path the model gets later;
+  - a test pins that a record holds only the type identifier string, never the index;
+  - its doc comment says "valid only in this process; never persisted, sent or compared across runs".
+
+  Replay re-resolves the index from the string with its own table, so reordering handlers between versions stays safe.
+- **K1b-Q2 = (a), a step-scoped RNG service** (Main, 2026-11-25). It has the reentrancy rule's shape, and it closes #765's class. The RNG PR gets the small A/B.
+- **K1b-Q3: yes** (Main, 2026-11-25). K1b-1 to K1b-3 start after K1a merges, and K1b-4 waits for P4-1 (#834).
 
 **Rev 5.6** (K1b's prep against K1a's code at #835's head a615ee85; read-only, no LSP, so K1b re-runs the census with the LSP on its base):
 - **Three of K1a's item shapes aren't plain, so K1b has to change them** (Appendix A.7, F9 to F11). `@PlainData` refuses each one:
@@ -145,7 +160,7 @@ Code pointers are at main 8e622a20:
 - The CLAUDE.md reentrancy section, updated in the slice that ends each exception.
 
 **Out of scope.**
-- **Replay** (#612, parked by the maintainer; #550 is folded into it). Re-evaluation keepers keep today's non-turn path, sharing the turn bodies (§3.10). #745 and #756 bind #612, not #700 (§3.10).
+- **Replay** (#612, parked by the maintainer; #550 is folded into it). Re-evaluation keepers keep today's non-turn path, sharing the turn bodies (§3.10). #612 also deletes `ReplayLandOwner`, which is temporary; the `LandKeeper` facade stays (Q1 (c), maintainer, 2026-11-25). #745 and #756 bind #612, not #700 (§3.10).
 - **The tick and sync loops as core timers**: #762 (Q3).
 - **The shared RNG** (#765): #700 leaves it where it is.
 - **Not keeper code:** the reevaluation monitor land's tick (#387 PR 2).
@@ -372,7 +387,7 @@ The line numbers below are from those reviews, at an older commit; K1 re-points 
 | Action resolvers | a `Task` per job; `completeAction` re-checks the job, the entry generation and the caller's cancellation | `turn.request(.resolveAction(snapshot, services, token), for: .entry(pid, eid))`, or `for: .land` when the sender has no entry. Started in the admission step. The completion `.actionResolved` checks the token, then delivers. A closed request runs `handleAbandoned`: `senderSuperseded` or `landClosed` (§3.2) | K2: `run` with today's checks in the handler; K5: `request` |
 | CanJoin / OnJoin resolvers | awaited inside `join` | requests under `.entry(pid, eid)`; a rejoin ends the old key and closes them, replacing the generation checks at LK:2016, LK:5853 | K2: `run`; K6: `request` |
 | OnLeave resolvers | awaited inside `leave` | a request under `.land`, carrying the leaving `EntryID`: the leave's step ends the entry's key | K2: `run`; K6: `request` |
-| The old session's kick on a duplicate login | `try await leave(...)` LK:1937 | in the join's step: the membership change, then the old entry's OnLeave as a request under `.land` (#588) | K6 |
+| The old session's kick on a duplicate login | `try await leave(...)` LK:2088 (the legacy join: LK:1884; at 73f44915) | in the join's step: the membership change, then the old entry's OnLeave as a request under `.land` (#588) | K6 |
 | OnInitialize resolvers | awaited in `performInitialization` LK:1297, then a direct write LK:1339 | a request under `.initialization` with the init deadline. `.initializeResolved` validates and applies (#593's two phases) in its step; abandonment fails the initialization | K5 |
 | Destroy handlers | awaited in order in the drain | one request at a time under `.land`: each `.destroyHandlerResolved` step launches the next. `queue(behind:)` orders inputs, not effects | K7 |
 | Waiting for the record | `await submitTurnRecord` LK:5019, then the waiters resume | the step outputs the draft (§3.1) and requests `.awaitRecordTaken(ticket)` under `.land`. `.recordTaken` is the completion of the ordered recorder call: the request's `perform` awaits the submission task that `enqueueRecorderSubmission` returned (LK:5019–5023), whose order was reserved in the step. The waiters' replies come from that completion step; its abandonment (only at `endAll`) replies `landClosed`. `reply(after:)` isn't used, because it publishes the staged reply on abandonment too | K2 |
@@ -519,10 +534,9 @@ package final class ReplayLandOwner<State: StateNodeProtocol> {  // isolated to 
 - **The invariant: replay never steps a core.** It is pinned by ownership: `ReplayLandOwner` has no core, and the replay path never reaches `LiveLandTurns`. Since `ReplayLandOwner` is package-only, the pin lives inside the package: a `@testable` test reflects a constructed `ReplayLandOwner` with `Mirror` and fails if any stored property's type is a `TurnCore` or a `TurnActor`. It is a runtime check, not a compile-time one: it catches a stored core, not a core reached through a reference.
 - **A replay keeper's transport.** It can have one (`.transportAndSink`: `flushOutputs` sends to it, LK:692–710), and the invariant doesn't depend on it not having one. That transport is never a sync binding: `routesThroughTurn` and `syncsInTurn` are false for re-evaluation keepers (LK:735, LK:742).
 - **`notePendingFailure` on a replay keeper** (Code-1 (6)) is a no-op, as today (LK:576 returns for non-live keepers): the replay owner has no mailbox.
-- **Q1 (maintainer).**
-  - (a) A core that lends itself mutably while never stepped.
-  - (b) Replay ticks as core inputs: #612's redesign.
-  - **(c), recommended:** the layout above.
+- **Q1: (c), maintainer, 2026-11-25.** The layout above.
+  - The options were: (a) a core that lends itself mutably while never stepped; (b) replay ticks as core inputs, #612's redesign; (c) the facade over two owners.
+  - **`ReplayLandOwner` is temporary.** #612 deletes it when replay moves onto the core; the `LandKeeper` facade stays.
 - **#745 and #756** concern the core's own record and replay. #700 uses neither:
   - live keepers record through the keeper's recorder, and `onMailTaken` is never set;
   - replay owns no core.
@@ -838,7 +852,7 @@ For the maintainer, once rev 3 is GO.
 | Slice | Change | Kind |
 |---|---|---|
 | K1a | `ReevaluationRecordedAction.payload` and `ReevaluationRecordedClientEvent.payload` become `Data`; `ReevaluationRecordMetadata.payloadEncoding` added; `PendingActionItem.action` removed and its public init takes the typed action; `actionType` computed (§3.11) | break |
-| K1b | `PendingActionItem.actionType` is removed, or becomes an optional computed from the decoded value (K1b-Q1, F9). `LandFailure` gains `PlainData`, which is an addition. `LandContext.random` keeps its type if K1b-Q2 goes (a) | break (one property) |
+| K1b | K1b-Q5 decided (d) (maintainer, 2026-11-25): `PendingActionItem` and `PendingClientEventItem`, with their inits, become `package` (K1b-1; `2026-11-25-k1b1-plain-forms.md` §3). Additions: `LandFailure` gains `PlainData` (K1b-1); `Epoch`, `EpochCounter` and `ReevaluationRecordedSyncOutput.TurnKind` gain `PlainData` (K1b-4). `LandContext.random` keeps its type (K1b-3) | break (two types demoted) |
 | K2 | **none public.** Rev 2's `runSyncPhaseInTurn` break is withdrawn: the port already returns its drafts and takes the recording flag (§3.7). The admission clear takes a package path, and `admitJoiningSession` keeps its signature. The scoped emitter is a runtime scope, and `LandContext` keeps its shape (§3.1). The public witness `runsSyncPhaseInTurn(of:)` still receives the `LandKeeper` facade (§3.10, MF-d); this row holds only with that | — |
 | K2 | `package`: `syncTurnNow`, `settleTurn` and `syncTurnTicket` become queries; new `LiveLandTurns`, `ReplayLandOwner`, `KeeperOwner`, `JobCancellation`; `admitJoiningSessionInStep` on `LandKeeperSettlePort` | package |
 | K6 | `CanJoin` takes `ValidateContext` and returns a plan that `OnJoin` receives (#588, agreed with the maintainer 2026-11-18). K6's PR lists every changed signature. The maintainer confirms there that no deprecation step is needed | break |
@@ -852,9 +866,9 @@ For the maintainer, once rev 3 is GO.
 
 ## 9. Questions
 
-For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depended on K1-Q1 to K1-Q3, decided (a) each on 2026-11-24, K1-Q4, K1-Q5 and K1-Q8 decided (a) and K1-Q6 decided (i) on 2026-11-25; K1b's K1-Q7 is decided (d) by Main (2026-11-25); K2 depends on Q1.
+For the maintainer. Main files each as a decision issue. K1b doesn't depend on Q1 or Q4; K1a depended on K1-Q1 to K1-Q3, decided (a) each on 2026-11-24, K1-Q4, K1-Q5 and K1-Q8 decided (a) and K1-Q6 decided (i) on 2026-11-25; K1b's K1-Q7 is decided (d) by Main (2026-11-25); Q1, which K2 depended on, is decided (c) (maintainer, 2026-11-25).
 
-**Q1. Where does a re-evaluation (replay) keeper keep its state until #612?** (§3.10)
+**Q1. Where does a re-evaluation (replay) keeper keep its state until #612?** (§3.10) **Decided (c), the facade (maintainer, 2026-11-25).** `ReplayLandOwner` is temporary: #612 deletes it, and the facade stays.
 
 | Option | What it is | K1 | K2 |
 |---|---|---|---|
@@ -943,7 +957,7 @@ Not chosen:
 | (b) | an encode seam for the header's encoding, handed over with the header | keeps the re-encode of `decoded` |
 | (c) | refuse an item in the other encoding, or with no source, at intake | a behavior change on public paths |
 
-**K1b-Q1. What replaces the stored `actionType` metatype** (Appendix A.7, F9; rev 5.6). The answer is public, so it goes to the maintainer through Main.
+**K1b-Q1. What replaces the stored `actionType` metatype** (Appendix A.7, F9; rev 5.6). The answer is public, so it goes to the maintainer through Main. **Decided (a)** (maintainer, 2026-11-25), on one condition: the index is valid only within one process, enforced by its type (not `Codable`, and left out of any `Codable` path), by a test that a record holds only the type identifier string, and by its doc comment ("valid only in this process; never persisted, sent or compared across runs"). Replay re-resolves it from the string.
 
 | Option | What it is | Cost |
 |---|---|---|
@@ -951,14 +965,14 @@ Not chosen:
 | (b) | the wire type identifier, looked up by string at apply | live's exact metatype match becomes replay's looser one |
 | (c) | a hand-written `PlainData` wrapper around the metatype | an unchecked escape from #772's checked requirement |
 
-**K1b-Q2. How the land RNG's state moves into the model** (§3.1, L-Q2 (a); rev 5.6). `LandContext.random` returns `DeterministicRngService`. That is a public final class with a lock around a `DeterministicRng` struct, which is plain.
+**K1b-Q2. How the land RNG's state moves into the model** (§3.1, L-Q2 (a); rev 5.6). **Decided (a)** (Main, 2026-11-25). `LandContext.random` returns `DeterministicRngService`. That is a public final class with a lock around a `DeterministicRng` struct, which is plain.
 
 | Option | What it is | Cost |
 |---|---|---|
 | **(a), recommended** | the step builds a step-scoped `DeterministicRngService` from the model's `DeterministicRng`, and writes the state back when the step ends. A service kept past its step draws from a copy that no longer moves the land, so #765's divergence can't happen | one object per step that makes a context, so K1b's RNG PR gets the small A/B. No public change |
 | (b) | one long-lived service, whose state is copied into the model at each step's end | no allocation, but the service still reaches resolvers off the actor, which is #765's case |
 
-**K1b-Q3. Does all of K1b wait for P4?** (§5, K1-Q5 (a); rev 5.6). Only the model split reads P4: `KeeperModel` is `@PlainData` and holds `State`, which needs #834. The plain forms, the failure ids and the RNG don't read P4. Recommended: K1b-1 to K1b-3 (A.7) start after K1a, and K1b-4 waits for P4-1. This is Main's call.
+**K1b-Q3. Does all of K1b wait for P4?** (§5, K1-Q5 (a); rev 5.6). Only the model split reads P4: `KeeperModel` is `@PlainData` and holds `State`, which needs #834. The plain forms, the failure ids and the RNG don't read P4. Recommended: K1b-1 to K1b-3 (A.7) start after K1a, and K1b-4 waits for P4-1. This is Main's call. **Decided: yes** (Main, 2026-11-25). K1b-1 to K1b-3 start after K1a merges.
 
 **Q4. When is #698 fixed?** (A teardown can notify a transport other than the one it closed. Production attaches once, so it doesn't happen there today; `setTransport` is public.)
 
@@ -986,7 +1000,7 @@ Decided:
 
 ## Appendix A. K1b's census (draft)
 
-**Status:** draft 2. Review read draft 1 (8e61043f): sound, no must-fix, four shoulds and a nit, folded in here (A.6 S1–S4, and `serverInputMaxInFlight` in A.2). It is checked again on K1b's base. Draft 2 predates #825 (rev 5.3): K1b places what #825 adds. In Behavior: `LandDefinition.servicesType`, `acceptsServices`, and an action handler's `resolvers` declaration (closures). The `wrongServices` check in `performInitialization` reads Behavior and the services value, not Model. Draft 3 (rev 5.3, at main 32a220e9 with #825 and #819) adds F5 (K1-Q7, decided (d) by Main), F6 (turn-shaped entries §2 doesn't name: each becomes a turn body) and F8 (the loops' phase offsets move Outside; `runSync`'s fold writes stay S3's exception). It also adds each field's writes outside turns. K1b folds it into this appendix on its base, after an LSP re-check.
+**Status:** draft 2. Review read draft 1 (8e61043f): sound, no must-fix, four shoulds and a nit, folded in here (A.6 S1–S4, and `serverInputMaxInFlight` in A.2). It is checked again on K1b's base. Draft 2 predates #825 (rev 5.3): K1b places what #825 adds. In Behavior: `LandDefinition.servicesType`, `acceptsServices`, and an action handler's `resolvers` declaration (closures). The `wrongServices` check in `performInitialization` reads Behavior and the services value, not Model. Draft 3 (rev 5.3, at main 32a220e9 with #825 and #819) adds F5 (K1-Q7, decided (d) by Main), F6 (turn-shaped entries §2 doesn't name: each becomes a turn body) and F8 (the loops' phase offsets move Outside; `runSync`'s fold writes stay S3's exception). It also adds each field's writes outside turns. Rev 5.8 folds its findings (F5 to F8, in A.6) and its boundary list (A.8) into this appendix. They were read at 32a220e9 without the LSP, and K1b re-checks them on its base with the LSP. Its per-field table isn't folded: K1b-4 re-runs the census.
 
 It covers every stored property of `LandKeeper`, from `LK` at main d25ca82d: 123 declarations in the actor body (LK:113–6024), computed properties excluded. Each gets one home.
 
@@ -1094,6 +1108,48 @@ It covers every stored property of `LandKeeper`, from `LK` at main d25ca82d: 123
   - **The sync loop (LK:5806–5820)** decides a fold outside any turn. It reads `nextTickDeadline` and the clock, and writes Model: `foldedSyncs`, `overdueFoldedSyncs`, `pendingFold`, `inTurnSyncDue`. K1b lists it as a **non-turn writer of Model, until K2**, when the decision becomes the `.syncDue` step (§3.9). The census test names it as a known exception, as it does the Instants.
 - **S4 (Review on draft 1): split tables keyed by one sequence.** Two parts of an action job aren't plain: `task`, `abandonment` and `callerCancelled`, and the slot's waiter continuation. They stay on the actor in a side table keyed by the same sequence as Model's job and slot entries. That is an ECS-style split: one id, a component table per storage. A debug assertion at each step boundary checks that both tables have equal key sets, and the census test checks it after a job's whole life: admitted, resolved, abandoned and cancelled. Mutant: the side table's removal is skipped on abandonment; the assertion catches it.
 
+**From census draft 3 (rev 5.8; read at main 32a220e9 without the LSP):**
+
+- **F5: recorded resolver outputs in queued items aren't plain → K1-Q7, decided (d) by Main 2026-11-25.**
+  - `PendingActionItem.heldResolverOutputs` and `PendingLifecycleItem.heldResolverOutputs` are `[String: HeldResolverOutput]` (LandContext.swift:310 at #825). `.recorded(RecordedResolverOutput)` holds an `AnyCodable` tree.
+  - `ReplayLandOwner` holds a `KeeperModel` (§3.10), so this field must be plain in replay too.
+  - The check found:
+    - decoding at build ((a)) is possible for actions and OnInitialize only, with a decoder table on `ResolverDeclaration`. Join and leave would have to wait for R3, because public `AnyResolverExecutor` conformers declare no output type;
+    - a fourth option, **(d), decided**: hold the tree's canonical MessagePack bytes, which today's read already encodes on every call (`RecordPayloadSource.decode`). The decode stays exactly today's, every kind is covered, and the format doesn't change. So K1-Q7 doesn't gate K1a.
+  - #769 R2 later keys these outputs by position and holds the record's own bytes.
+  - K1b adds `recordedScalarResolverOutputReadsAsBefore`, which pins the one difference: `RecordPayloadSource`'s `base as? T` shortcut, which only a scalar conformer takes. None exists at rev 5.3.
+- **F6 → K1b item: name every turn-shaped entry** (decided internally; no maintainer ask). Besides §2's four (`runTickTurn`, `runInputTurn`, `runSyncOnlyTurn`, `settleTurn`), the call graph finds synchronous apply chains that write Model:
+  - `applyShutdownTurnBetweenTicks`: its apply (`applyInputs` of the shutdown item, `nextTickId`, `lastCommittedTickId`) runs before its first `await`. Only the record submission follows;
+  - `syncTurnNow` (`acceptsSyncTurn`, `endRequestedSyncWork`);
+  - `runInputDrain`'s turn end (`readyPendingItemsInOrder`, `enqueueTicklessTurnEnd`);
+  - `performInitialization`'s output segment (`runTurnOutputs`, `takeSyncRequest`, `takeSyncStreamIndex`, `takeEmittedEvents`).
+
+  **Recommendation:** K1b makes each one a turn body, a synchronous function over `(inout KeeperModel, KeeperBehavior)` like the four, with the following awaits outside it. The census test lists them as entries. §2's list is amended in the plan when K1b lands. K1b re-checks it with `incomingCalls` on its base.
+- **F7: Model writes after an `await`, live, by flow.** This is the list of segments K1b names. Each A> write below runs in a later segment of an async keeper function (the replay path excluded):
+  - **join** (`join`, `joinReportingAdmission`, `executeOnJoinResolvers`): `players`, `entryGenerations`, `pendingItems`, `outputCollector`. This is the CLAUDE.md "join/leave resolvers" exception.
+  - **leave** (`leave`): `players`, `pendingItems`, `outputCollector`.
+  - **initialize** (`performInitialization`): `state`, `initializationFailure`, `outputCollector`. `ensureInitialized` sets `didInitialize`.
+  - **action jobs** (`completeAction`, `awaitActionResult`/`awaitActionOutcome`, `submit`): `actionJobs`, `ticklessJobTurns`, `actionSlots`, `ticklessJobWork`, `outputCollector`.
+  - **client event intake** (`handleClientEvent`, after `ensureInitialized`): `pendingItems`, `outputCollector`.
+  - **server input intake** (`submitServerInputErased`, after `ensureInitialized`): `pendingItems`, `serverInputsHeldWhileFrozen`, `serverInputsInFlight`, `serverInputCapRejections`, `outputCollector`.
+  - **force shutdown and drain** (`runForceShutdown`, `drainAfterIdleCheck`, `runDestroyHandler`, `notifyTransportDestroyedAndRelease`): `pendingItems`, `players`, `shutdownRequested`, `outputCollector`, `destroyHandlersStarted`, `state`, `destructionFinished`. These are the land-stop drain (#522) and destroy-handler exceptions.
+  - **tickless drain** (`runInputDrain`): `inputDrainScheduled`.
+  - **the live tick** (`runTick`, before and around `runTickTurn`): `inputDrainScheduled`, `nextTickId`, `ticksInFlight`.
+
+  Most intake A> writes sit after the first `await ensureInitialized()`: one segment, the enqueue. K1b turns each into a named synchronous function that takes the facts it read. K2 makes it a core input. Writes classed **O** are synchronous and not in a turn:
+  - `deliverResolvedAction`, `startActionJob`, `removeActionJob`, `releaseServerInputsHeldWhileFrozen`, `submitLandFailure`, `resumeInputTurnWaiters`, `scheduleInputDrain`, `ensureTickIdForTicklessLand`, `endTickInFlight`;
+  - the transport binding: `setTransport`, `noteTransportBound`, `rejectSenderIfSuperseded`.
+
+  They are already one segment each. K1b only moves them over the model.
+- **F8 → K1b item: the loops' configuration and fold decision** (decided internally; no maintainer ask).
+  - `configureTickLoop` and `configureSyncLoop` (A<) write `appliedTickPhaseOffset` and `appliedSyncPhaseOffset` once, when the loop starts. A grep found no reader inside a turn. **Recommendation: Outside**, with the loop driver's other time state (`tickLoopConfiguredAt`, `tickLoopClock`). The census moves them from Model, and the test lists them there.
+  - `runSync` (A<) writes `foldedSyncs`, `overdueFoldedSyncs` and `inTurnSyncDue`. This is draft 2's S3, unchanged: they stay Model, and the census test lists this as a **non-turn writer until K2** (`.syncDue` step, §3.9).
+  - Re-check both with `findReferences` on K1b's base. If a turn reads an offset, it stays Model and joins S3's exception.
+- **Replay path** (the #612 exception, kept by K1b's "Replay calls the same bodies"):
+  - `runTick`'s non-turn branch (after LK:4358), `processPendingActions`, `replayRecordedPasses`, `replayInitializeBeforeTickZero` and `restoreSequenceWatermark` write `state`, `pendingItems`, `outputCollector`, `lastCommittedTickId` and `pendingItemScans` between source awaits.
+  - K1b has them call the same turn bodies over `ReplayLandOwner.model`. The awaits on the source stay between bodies.
+- **Test hooks writing Model:** `withMutableStateSync` (`state`, O), `setServerInputMaxInFlightForTesting` (Behavior: deleted, per draft 2), and `failLandForTesting` → `failLand` (T+O).
+
 ### A.7 After K1a (rev 5.6)
 
 This section was checked at #835's head a615ee85, without the LSP, against census draft 3 (main 32a220e9 with #825 and #819). It is re-checked on K1b's base.
@@ -1127,6 +1183,26 @@ This section was checked at #835's head a615ee85, without the LSP, against censu
 | K1b-2 | F1 / S1: `FailureID` and the failure table; S4's side tables, with their key-set assertion | K1b-1 |
 | K1b-3 | the land RNG into the model (K1b-Q2) | K1a |
 | K1b-4 | `KeeperModel<State>` (`@PlainData`) and `KeeperBehavior<State>`, the census test, the must-not-compile pin. The replay fields are grouped in one struct on the actor, which K2 moves into `ReplayLandOwner` (§8 lists that type as K2's) | K1b-1 to K1b-3, and P4-1 (#834) |
-| K1b-5 | the turn bodies and the named segments (draft 3's F6 to F8 list); replay calls the same bodies | K1b-4 |
+| K1b-5 | the turn bodies and the named segments (A.6's F6 to F8, and A.8); replay calls the same bodies | K1b-4 |
 
 **K1b's census test** (§6.2) checks this table against the actor's stored properties with `Mirror`: each name must appear in exactly one home. A new field fails until it is placed. `KeeperModel`'s `@PlainData` gives the compile-time half. The test's known exceptions are F4's Instants and S3's sync-loop writer, each with the slice that ends it (K2).
+
+### A.8 Boundary: turn functions also called from outside a turn (draft 3, at 32a220e9)
+
+These are the edges K1b cuts. A turn function called from an async flow either becomes part of that flow's named segment, or the call moves into a turn.
+
+- `applyInputs` ← `applyShutdownTurnBetweenTicks`, `processPendingActions` (replay), `replayRecordedPasses` (replay)
+- `takeNextSequence` ← every intake (`handleClientEvent`, `submit`, `join`, `joinReportingAdmission`, `leave`, `submitServerInputErased`, `submitLandFailure`, `runForceShutdown`), `performInitialization`, `applyShutdownTurnBetweenTicks`, `replayInitializeBeforeTickZero`. The sequence is taken at intake, outside turns. In K1b it is a model function the intake segment calls.
+- `makeContext` ← `join`, `joinReportingAdmission`, `leave`, `performInitialization`, `startActionJob`, `runSync`, `runTick`, `runDestroyHandler`, `drainAfterIdleCheck`, `replayInitializeBeforeTickZero`. The context captures `outputCollector` (a class). That is draft 2's `outputCollector` split finding again.
+- `fillActionSlot` ← `completeAction`, `resumeInputTurnWaiters`
+- `dropPendingInputs` ← `drainAfterIdleCheck`, `runForceShutdown`, `tearDownAfterFailedInitialization`
+- `debugEndWork` ← `handleClientEvent`, `kickServerInputTurn`, `runTick`, `submit` (the freeze accounting the CLAUDE.md rule names)
+- `readyPendingItemsInOrder` ← `processPendingActions`, `replayRecordedPasses`, `runInputDrain`
+- `liveStateHash` ← `applyShutdownTurnBetweenTicks`, `makeInitializeRecord`, `runTick`
+- `rejectIfLandClosed` ← `handleClientEvent`, `submit`; `validateDelivery` ← `deliverResolvedAction`
+- `cancelActionJob` ← `cancelActionJobs`; `cancelAllActionJobs`, `releaseHeldInputsForDrain`, `resumeDrainStartedWaitersForTesting`, `set` ← `shutdownIfIdle`; `set` ← `awaitActionResult`
+- `takeEmittedEvents` ← `performInitialization`, `runTick`; `takeSyncRequest`, `takeSyncStreamIndex`, `runTurnOutputs` ← `performInitialization`
+- `beginPass`, `takePassOrdinal`, `executingTickIdForPendingItems` ← `processPendingActions` (and `replayRecordedPasses`)
+- `acceptsSyncTurn`, `endRequestedSyncWork` ← `syncTurnNow`; `bindSyncRequester` ← `syncTurnTicket`; `rebind` ← `noteTransportBound`
+- `enqueueRecorderSubmission` ← `submitTurnRecord`; `enqueueTicklessTurnEnd` ← `runInputDrain`; `makeTurnRecord` ← `applyShutdownTurnBetweenTicks`
+- `noteReplayedInitializeRefusal` ← `replayInitializeBeforeTickZero`; `syncReadPosition` ← `currentStateLocated`; `failLand` ← `failLandForTesting`

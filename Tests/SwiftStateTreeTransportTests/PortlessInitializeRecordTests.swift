@@ -62,7 +62,8 @@ enum PortlessInitializeScenario {
         try await f.saveRecord(to: path)
     }
 
-    /// The record's frames as canonical JSON, one string per frame.
+    /// The record's frames as canonical JSON, one string per frame, each payload as its tree: the
+    /// record before L2d-2 holds trees, and one made now holds bytes (#700 K1a).
     static func decodedFrames(atPath path: String) throws -> [String] {
         let copy = FileManager.default.temporaryDirectory
             .appendingPathComponent("portless-initialize-\(UUID().uuidString).sstr").path
@@ -74,7 +75,9 @@ enum PortlessInitializeScenario {
         let file = try decoder.decode(FramesOnly.self, from: Data(contentsOf: URL(fileURLWithPath: copy)))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return try file.tickFrames.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
+        return try file.tickFrames.map {
+            String(decoding: try RecordedPayloadTree.treeForm(frameJSON: encoder.encode($0)), as: UTF8.self)
+        }
     }
 
     private struct FramesOnly: Codable {
@@ -109,7 +112,7 @@ struct PortlessInitializeRecordTests {
     @Test("The record made before L2d-2 replays: every hash reproduced, sync outputs and initialize verified", arguments: [false, true])
     func baseRecordReplays(tick: Bool) async throws {
         let path = ReplayCompatibilityRecordTests.path(PortlessInitializeScenario.name(tick: tick))
-        let result = try await VerifierFixture.replay(recordAt: path, definition: PortlessInitializeScenario.definition(tick: tick))
+        let result = try await ReplayCompatibilityRecordTests.replayUpgraded(path, definition: PortlessInitializeScenario.definition(tick: tick))
         Self.expectRecordedHashesReproduced(result, tick: tick)
         #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
         #expect(result.initialize == .passed)

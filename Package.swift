@@ -32,8 +32,12 @@ let provisioningTargets: [Target] = [
 
 let package = Package(
     name: "SwiftStateTree",
+    // macOS 15 for `Synchronization.Mutex` (the land RNG service, #700 K1b-3). Only macOS is
+    // listed, so other Apple platforms keep SwiftPM's defaults; `Mutex` would need iOS, tvOS and
+    // Mac Catalyst 18, watchOS 11 and visionOS 2 if the package is ever built for them. Every
+    // manifest that depends on this package must name the same floor.
     platforms: [
-        .macOS(.v14),
+        .macOS(.v15),
     ],
     products: [
         // ⭐ Open source library for public use
@@ -150,6 +154,8 @@ let package = Package(
             name: "SwiftStateTreeReevaluationMonitor",
             dependencies: [
                 "SwiftStateTree",
+                // The runner replays a MessagePack land's record with the live decoder (#700 K1a).
+                "SwiftStateTreeMessagePack",
             ],
             path: "Sources/SwiftStateTreeReevaluationMonitor"
         ),
@@ -270,6 +276,7 @@ let package = Package(
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeTransport",
+                "SwiftStateTreeMessagePack",
             ],
             path: "Tests/SwiftStateTreeTestSupport"
         ),

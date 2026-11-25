@@ -1,4 +1,5 @@
 ---
+title: "A machine added to a gated bench binary moves its gated cells"
 module: SwiftStateTurns
 date: 2026-11-21
 problem_type: measurement_pitfall

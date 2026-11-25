@@ -1,10 +1,15 @@
 import Foundation
+import SwiftStateTurns
 
 /// Deterministic random number generator for use in game logic.
 ///
 /// This RNG uses a deterministic algorithm that produces the same sequence
 /// of random numbers when initialized with the same seed, ensuring consistent
 /// behavior across platforms and enabling deterministic replay.
+///
+/// It is plain data (one `UInt64` of state), so the keeper holds the land's generator as part of
+/// its state and copies it into each step's service (#700).
+@PlainData
 public struct DeterministicRng: Sendable {
     private var state: UInt64
 

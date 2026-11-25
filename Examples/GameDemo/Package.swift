@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "GameDemo",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v15),
     ],
     products: [
         .library(
@@ -68,6 +68,7 @@ let package = Package(
             dependencies: [
                 "GameContent",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
             ],
             path: "Sources/ReevaluationRunner"
         ),

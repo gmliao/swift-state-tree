@@ -1,4 +1,5 @@
 ---
+title: "A snapshot read behind a shared diff baseline"
 module: SwiftStateTreeTransport
 date: 2026-11-14
 problem_type: bug_class

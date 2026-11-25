@@ -57,15 +57,22 @@ HandleAction(SomeAction.self) { state, action, ctx in
 }
 ```
 
-`LandKeeper` runs every handler through `withMutableStateSync`, which mutates the actor's state in place:
+`LandKeeper` runs a handler that changes the state through `withHandlerStep`. It mutates the actor's state in place and binds `ctx.random` for that call. The handlers that replay repeats (OnInitialize, OnJoin, OnLeave, actions, client events, server inputs and the tick) get a service that continues the land's generator, and the keeper writes the generator back when the handler returns. OnDestroyWhenEmpty and OnFinalize also run through `withHandlerStep`, but with a copy of the generator that is never written back. AfterFinalize, which gets a snapshot of the state, draws from that same copy, so the drain's three handlers continue one sequence. CanJoin and the sync handler don't run through `withHandlerStep`: each gets its own copy, also never written back.
 
 ```swift
 // Internal implementation (simplified)
-func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows -> T {
+func withHandlerStep<T>(_ ctx: LandContext, _ operation: (inout State, LandContext) throws -> T) rethrows -> T {
+    // A service that continues the land's generator, for this call only
+    let random = DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
+    defer { landRandom = random.generator }   // the draws move the land's generator
+    var bound = ctx
+    bound.stepRandom = random
     // Actor serialization ensures thread safety
-    return try operation(&state)
+    return try operation(&state, bound)
 }
 ```
+
+The land's generator is keeper state. A handler that replay repeats from the record draws from it, and the keeper writes it back when the handler returns. CanJoin, the sync handler and the destroy-phase handlers aren't repeated from the record, so they draw from a copy that is never written back ([`ctx.random`](#landcontext-functions)).
 
 ### State Reading
 
@@ -103,7 +110,7 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
     let outputs = try await run(resolvers)
 
     // In a later turn: the handler gets the outputs as a typed parameter
-    return try withMutableStateSync { state in
+    return try withHandlerStep(ctx) { state, ctx in
         try handler.invoke(&state, action: action, outputs: outputs, ctx: ctx)
     }
 }
@@ -114,7 +121,8 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
 `LandContext` provides the following functions:
 
 - **Identification**: `playerID`, `clientID`, `sessionID`, `landID`
-- **Service access**: `services` - External service abstraction (database, logging, etc.)
+- **Service access**: `services` - External service abstraction (database, logging, etc.). The land's generator isn't in it.
+- **Deterministic randomness**: `random` - The land's generator. Draw synchronously inside the handler: a `random` kept past the handler, or used from a `Task`, doesn't move the land, or moves it where replay can't repeat it
 - **Deterministic events**: `emitEvent(_:to:)` - Enqueue an event to be flushed deterministically at end of tick
 - **Deterministic sync**: `requestSyncNow()` / `requestSyncBroadcastOnly()` - Request sync to be flushed deterministically at end of tick
 - **Resolver output**: The handler gets each resolver's output as a typed parameter, after the input ([Resolver](resolver.md))
@@ -168,7 +176,7 @@ func handleEvent<E: EventPayload>(_ event: E, ...) {
     let ctx = makeContext(...)
 
     // Execute handler (no return value)
-    withMutableStateSync { state in
+    withHandlerStep(ctx) { state, ctx in
         handler.invoke(&state, event: event, ctx: ctx)
     }
 }
@@ -207,7 +215,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // Execute Resolver (if any)
         // Execute handler
-        withMutableStateSync { state in
+        withHandlerStep(ctx) { state, ctx in
             onJoinHandler(&state, ctx)
         }
     }
@@ -224,7 +232,7 @@ When a player leaves, `OnLeave` handler is executed:
 public func leave(playerID: PlayerID, ...) async throws {
     // Execute OnLeave handler (if defined)
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
-        withMutableStateSync { state in
+        withHandlerStep(ctx) { state, ctx in
             onLeaveHandler(&state, ctx)
         }
     }
@@ -260,26 +268,20 @@ Each land delays the first iteration of its loops by a per-land phase offset, so
 
 ### Event Queue Mechanism (PendingItems)
 
-`LandKeeper` uses a unified `pendingItems` queue to manage all inputs:
+`LandKeeper` keeps every input in one queue. An input joins the queue when it is ready: when it arrives, or, for an action whose handler declared resolvers, when they finish. A turn applies the queue in the order of `resolvedAtTick`, then sequence number. The queue holds:
 
-- **Action**: Actions sent by clients
-- **ClientEvent**: Events sent by clients
-- **Lifecycle Event**: `OnJoin`, `OnLeave`, `OnInitialize`
+- **Actions** that clients send;
+- **client events** that clients send;
+- **lifecycle events**: a join, a leave, and the land's initialization;
+- **server inputs** that the server submits.
 
-```swift
-// Unified PendingItem type
-public enum PendingItem: Sendable {
-    case action(PendingActionItem)
-    case clientEvent(PendingClientEventItem)
-    case lifecycle(PendingLifecycleItem)
-}
-```
+Each queued input carries:
 
-Each PendingItem records:
+- its sequence number, which increases across all kinds of input in the land;
+- the tick it was resolved at (`resolvedAtTick`): when its resolvers finished, or when it arrived if it has none;
+- its resolver outputs, for an action or a lifecycle event whose handler declared resolvers.
 
-- `sequence`: Globally incrementing sequence number (shared across Action/Event/Lifecycle)
-- `resolvedAtTick`: Tick ID when Resolver completed
-- `resolverOutputs`: Resolver outputs (Action and Lifecycle have, ClientEvent is empty)
+The queue's types are internal to the package, except the lifecycle event's (`LandKeeper.PendingLifecycleItem`). A land interacts with the queue only through its handlers.
 
 ### Tick Execution Model
 
@@ -335,6 +337,7 @@ Deterministic methods provided by `LandContext`:
 | `emitEvent(_:to:)`           | Enqueue event, sent at end of tick              |
 | `requestSyncNow()`           | Request immediate sync, executed at end of tick |
 | `requestSyncBroadcastOnly()` | Request broadcast sync, executed at end of tick |
+| `random`                     | The land's generator, replayed with the record  |
 
 ### Tick Execution
 

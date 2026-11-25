@@ -100,6 +100,14 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
+    /// The encoding of the payload bytes a record of this adapter's land keeps, for the record
+    /// header (`ReevaluationRecordMetadata.payloadEncoding`, #700 K1a): `messagepack` when the
+    /// codec's frames are MessagePack, whose payloads decode through the MessagePack decoder, and
+    /// `json` otherwise (`json` and `opcodeJsonArray` frames carry JSON payloads).
+    public nonisolated var payloadEncodingForRecord: RecordPayloadEncoding {
+        codec.encoding == .messagepack ? .messagepack : .json
+    }
+
     /// The keeper's serial executor: the keeper can then call `runSyncPhaseInTurn` synchronously
     /// inside its own turn (`assumeIsolated`).
     public nonisolated var unownedExecutor: UnownedSerialExecutor {
@@ -334,6 +342,13 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let landID: String
     private let codec: any TransportCodec
     private let messageEncoder: any TransportMessageEncoder
+    /// `messageEncoder`'s reply encode from the keeper's outcome (#700 K1a), when it has one: an
+    /// action's response reaches the frame without being boxed into `AnyCodable`. Cast once here,
+    /// not per reply.
+    private let actionResponseEncoder: (any ActionResponseFrameEncoder)?
+    /// Replies sent through the boxed fallback, because `messageEncoder` has no outcome entry
+    /// (tests only: every built-in encoder has one, so this stays 0, and a lost cast shows).
+    package private(set) var boxedActionResponsesForTesting = 0
     private let stateUpdateEncoder: any StateUpdateEncoder
     /// Sync-lag tracking (#332): on with the encoding's `syncSequence`, which also makes the
     /// feature required at join.
@@ -563,6 +578,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// The join failed (its waiter got the reason); it never flips. The session stays
         /// excluded until its disconnect removes the record.
         var failed = false
+        /// The router attempt's mailbox, marked when the join flips (#867); nil for a join
+        /// admitted without a router attempt.
+        var attemptEnd: JoinAttemptEnd?
 
         var isReadyToFlip: Bool { consumed && transportRegistered && !failed }
         /// Ready, and asking for a sync turn of its own (`hasJoinsAwaitingSync`).
@@ -682,6 +700,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let joinDeadline: ContinuousClock.Instant?
         /// The router's join attempt, for the stale check by the resolved player (#234).
         let joinAttempt: UInt64?
+        /// The router attempt's mailbox, handed to the in-turn join for its flip (#867).
+        let attemptEnd: JoinAttemptEnd?
     }
 
     /// Admissions made by the keeper's in-turn callback (tests only).
@@ -1000,6 +1020,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 clientEventHashes: clientEventHashes
             )
             self.messageEncoder = madeMessageEncoder
+            self.actionResponseEncoder = madeMessageEncoder as? any ActionResponseFrameEncoder
             // Built here, at registration, and kept on the encoder: frames go out in the land's
             // canonical order (`CanonicalPatchOrder`).
             let madeStateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: encodingConfig.makeStateUpdateEncoder(
@@ -1035,6 +1056,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let madeMessageEncoder = JSONTransportMessageEncoder()
             let madeStateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: stateUpdateEncoder)
             self.messageEncoder = madeMessageEncoder
+            self.actionResponseEncoder = madeMessageEncoder as? any ActionResponseFrameEncoder
             self.stateUpdateEncoder = madeStateUpdateEncoder
             (self.useStateUpdateWithEvents, self.eventsMerge) = Self.mergeDecisions(madeStateUpdateEncoder, madeMessageEncoder)
             self.pathHashes = pathHashes
@@ -1499,10 +1521,12 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Closes `sessionID` from a detached task, only while its connection is the one with
     /// `generation`; with nil, whatever connection has the ID. A transport that doesn't
     /// implement the generation-aware close (the `Transport` default) closes by ID (#531).
-    func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?) {
+    /// `close` is what the connection is closed with: a plain 1000 unless the caller says
+    /// otherwise (a supersede passes `.superseded`, #861).
+    func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose = .normal) {
         let transport = self.transport
         guard tracksDetachedClosesForTesting else {
-            Task { await transport.closeSession(sessionID, with: .normal, generation: generation) }
+            Task { await transport.closeSession(sessionID, with: close, generation: generation) }
             return
         }
         let id = nextDetachedCloseID
@@ -1510,7 +1534,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // The Task ends on this actor, after this segment, so the handle is stored before then.
         // Weak: a close that never returns doesn't keep the adapter.
         detachedCloses[id] = Task { [weak self] in
-            await transport.closeSession(sessionID, with: .normal, generation: generation)
+            await transport.closeSession(sessionID, with: close, generation: generation)
             await self?.detachedCloseEnded(id)
         }
     }
@@ -1713,7 +1737,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?,
-        inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?, joinDeadline: ContinuousClock.Instant?)? = nil
+        inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?, joinDeadline: ContinuousClock.Instant?, attemptEnd: JoinAttemptEnd?)? = nil
     ) -> Int32 {
         applySessionPerPlayerPolicy(to: playerID, keeping: sessionID)
         _ = membershipCoordinator.registerPlayer(
@@ -1731,7 +1755,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 joinSequence: inTurn.joinSequence,
                 order: nextInTurnJoinOrder,
                 joinResponse: response,
-                consumed: inTurn.joinSequence == nil
+                consumed: inTurn.joinSequence == nil,
+                attemptEnd: inTurn.attemptEnd
             )
             startJoinWaiter(sessionID: sessionID, ticket: ticket, joinDeadline: inTurn.joinDeadline)
         }
@@ -1901,7 +1926,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - each old session leaves the membership (it stops being a recipient and its inbound
     ///   finds no player), is ended (its frames are dropped) and its connection is closed; its
     ///   later disconnect callback finds no membership, so it clears nothing and doesn't leave
-    ///   the keeper again;
+    ///   the keeper again; the close is 4017 `superseded` (#861), so the client can tell it from
+    ///   a plain close;
     /// - an old session still joining loses its mark;
     /// - the player's per-player sync state (cache, firstSync mark, initial-sync mark) is
     ///   cleared, and the clear recorded, so the new session's firstSync starts from empty like
@@ -1933,7 +1959,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "newSessionID": .string(sessionID.rawValue),
                 "supersededTotal": .stringConvertible(supersededSessionCount),
             ])
-            closeSessionDetached(old, generation: generation)
+            closeSessionDetached(old, generation: generation, with: .superseded)
         }
         syncEngine.clearCacheForDisconnectedPlayer(playerID)
         perPlayerTables?.clear(playerID)
@@ -1961,7 +1987,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             sessionID: sessionID,
             playerID: playerID,
             authInfo: expected.authInfo,
-            inTurn: expected.joinResponse.map { (joinSequence: joinSequence, joinResponse: $0, joinDeadline: expected.joinDeadline) }
+            inTurn: expected.joinResponse.map { (joinSequence: joinSequence, joinResponse: $0, joinDeadline: expected.joinDeadline, attemptEnd: expected.attemptEnd) }
         )
         inTurnAdmissionCountForTesting += 1
         return joiningSessions[sessionID]?.inTurn != nil ? .admittedCompletesInTurn : .admitted
@@ -2229,7 +2255,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Attempt to join (updates keeper.players). On the in-turn path the keeper admits the
         // session inside the join, in the segment of its state change (`admitJoiningSession`);
         // otherwise it is admitted below, right after the join returns, before any await.
-        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse, joinDeadline: joinDeadline, joinAttempt: joinAttempt)
+        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse, joinDeadline: joinDeadline, joinAttempt: joinAttempt, attemptEnd: attemptEnd)
         defer { expectedAdmissions.removeValue(forKey: sessionID) }
         let outcome: LandKeeper<State>.JoinOutcome
         do {
@@ -4219,6 +4245,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             #if DEBUG
             noteJoinCommitForTesting(flip.sessionID, flipped: true)
             #endif
+            // Before the JoinResponse is enqueued below: once the client holds it, the router
+            // must already answer a second join as joined (#867).
+            joining.inTurn?.attemptEnd?.markFlipped()
             joinWaiters[flip.sessionID]?.resolve(.success(()))
         }
         pendingEventManager.removeConsumed(
@@ -5387,7 +5416,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             // Submitted on the inbound chain; an action with resolvers on a tick land comes back
             // pending, and is answered from a tracked task, so the chain moves on.
-            let response: AnyCodable
+            let response: InputOutcome
             switch try await keeper.submitAction(
                 envelope,
                 playerID: playerID,
@@ -5451,7 +5480,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) {
         let keeper = self.keeper
         let task = Task { [weak self] in
-            let outcome: Result<AnyCodable, any Error>
+            let outcome: Result<InputOutcome, any Error>
             do {
                 outcome = .success(try await keeper.awaitActionResult(sequence: sequence))
             } catch {
@@ -5479,7 +5508,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func finishActionResponse(
         sequence: Int64,
         ticket: Ticket<SessionID>,
-        outcome: Result<AnyCodable, any Error>,
+        outcome: Result<InputOutcome, any Error>,
         requestID: String,
         envelope: ActionEnvelope,
         playerID: PlayerID,
@@ -5583,17 +5612,23 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func sendActionResponse(
         requestID: String,
         actionType: String,
-        response: AnyCodable,
+        response: InputOutcome,
         playerID: PlayerID,
         sessionID: SessionID,
         ticket: Ticket<SessionID>
     ) -> LandFailure? {
         do {
-            let actionResponse = TransportMessage.actionResponse(
-                requestID: requestID,
-                response: response
-            )
-            let responseData = try messageEncoder.encode(actionResponse)
+            // From the outcome, so the response isn't boxed on its way to the frame (#700 K1a);
+            // an encoder without that entry gets the boxed message, with the same bytes.
+            let responseData: Data
+            if let actionResponseEncoder {
+                responseData = try actionResponseEncoder.encodeActionResponse(requestID: requestID, outcome: response)
+            } else {
+                boxedActionResponsesForTesting += 1
+                responseData = try messageEncoder.encode(
+                    TransportMessage.actionResponse(requestID: requestID, response: response.boundaryValue)
+                )
+            }
 
             // Only compute logging metadata if info logging is enabled
             if logger.logLevel <= .info {

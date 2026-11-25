@@ -870,7 +870,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         // One join at a time: a join in progress answers a second one with its own code.
-        if case .joining = sessionHandshakePhase[sessionID] {
+        // A flipped attempt answers as joined (#867): the adapter flipped the join and sent the
+        // JoinResponse, but the router's phase hasn't learned of it (before its admission is
+        // recorded, or before its flip wait resumes). The session is bound since the attempt began.
+        if case .joining(let attempt) = sessionHandshakePhase[sessionID], !attempt.end.isFlipped {
             logger.warning("Join request while a join is in progress: \(sessionID.rawValue)")
             await sendJoinError(
                 requestID: requestID,
@@ -1114,7 +1117,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // Admitted in time: the flip waiter has what is left of the budget (#104), so the
             // router's timer stops here.
             let admitted = AdmittedJoin(landID: landID, requestID: requestID, adapter: adapter)
-            setPhase(.joining(JoinAttempt(number: attempt, admitted: admitted, requestID: requestID)), for: sessionID)
+            // The same mailbox the admission got: the adapter marks the flip on it (#867).
+            var admittedAttempt = JoinAttempt(number: attempt, admitted: admitted, requestID: requestID)
+            if let end = attemptEnd(sessionID) { admittedAttempt.end = end }
+            setPhase(.joining(admittedAttempt), for: sessionID)
             let playerID = joinResult.playerID
             // Counted before the task exists, so a test that waits for no pending flip can't
             // run between the spawn and the task's start (#555).
@@ -1376,6 +1382,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         do {
             try await pending.adapter.awaitJoined(sessionID: sessionID)
             await holds.at(.flipWaitResumed)
+            // The phase lags the flip: the join check reads the attempt's mailbox for that (#867).
             guard isCurrent(sessionID, attempt: attempt) else { return }
             setPhase(.joined, for: sessionID)
             logger.info("Join successful: session=\(sessionID.rawValue), landID=\(pending.landID.rawValue), playerID=\(playerID.rawValue)")

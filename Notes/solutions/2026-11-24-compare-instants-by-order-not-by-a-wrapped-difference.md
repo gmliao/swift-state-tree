@@ -1,4 +1,5 @@
 ---
+title: "Compare instants by their order, never by the sign of a wrapped difference"
 module: SwiftStateTurns
 date: 2026-11-24
 problem_type: bug_class

@@ -1,6 +1,6 @@
 // The field walk `@PlainData` uses, shared with SwiftStateTree's macros: the members of a struct
 // or enum in, the statements of its `check(_ value: inout Self)` out, or a diagnostic for what a
-// syntactic macro can't check. `@Payload` calls it, and `@StateNodeBuilder` is to.
+// syntactic macro can't check. `@Payload` and `@StateNodeBuilder` call it.
 
 @preconcurrency import SwiftDiagnostics
 import SwiftSyntax
@@ -12,9 +12,23 @@ public enum PlainDataWalk {
     /// `#if` block is checked under the same conditions: every clause is read, so a member that
     /// only one configuration compiles is still checked there, and a type that only exists in
     /// that configuration is named only under its condition.
+    ///
+    /// - Parameter readThrough: property wrappers whose wrapped value is checked, spelled bare or
+    ///   qualified by a module that exports them (`isProjectAttribute`: `Sync` matches `@Sync`
+    ///   and `@SwiftStateTree.Sync`, not `@Other.Sync`). The name is only a spelling, so a
+    ///   read-through field is checked twice: `value._name`, the wrapper's storage, which compiles
+    ///   only when the wrapper is `PlainData` (the library's `Sync` and `Internal` are, and a
+    ///   namesake that holds a class isn't), and `value.name`, the wrapped value, annotated or
+    ///   not. Any other wrapper is refused. Empty for `@PlainData` and `@Payload`, which refuse
+    ///   every wrapper.
+    ///
+    /// A freestanding macro expansion among the members is refused: the storage it expands to
+    /// isn't in the syntax this walk reads. `#warning` and `#error` are compiler directives and
+    /// pass.
     public static func checkLines(
         _ members: MemberBlockItemListSyntax,
         isEnum: Bool,
+        readThrough: Set<String> = [],
         failed: inout Bool,
         _ context: some MacroExpansionContext
     ) -> String {
@@ -26,12 +40,20 @@ public enum PlainDataWalk {
                     let keyword = clause.poundKeyword.text
                     block.append(clause.condition.map { "\(keyword) \($0.trimmedDescription)" } ?? keyword)
                     if case .decls(let nested) = clause.elements {
-                        let inner = checkLines(nested, isEnum: isEnum, failed: &failed, context)
+                        let inner = checkLines(nested, isEnum: isEnum, readThrough: readThrough, failed: &failed, context)
                         if !inner.isEmpty { block.append(inner) }
                     }
                 }
                 block.append("#endif")
                 lines.append(block.joined(separator: "\n"))
+                continue
+            }
+            if let expansion = member.decl.as(MacroExpansionDeclSyntax.self) {
+                // `#warning` and `#error` are compiler directives that parse as expansions; they
+                // add no member, and an `#error` in an inactive `#if` branch is honest code.
+                if compilerDirectives.contains(expansion.macroName.text) { continue }
+                context.diagnose(Diagnostic(node: expansion, message: PlainDataDiagnostic.macroExpansion))
+                failed = true
                 continue
             }
             if isEnum {
@@ -50,7 +72,7 @@ public enum PlainDataWalk {
                 continue
             }
             guard let variable = member.decl.as(VariableDeclSyntax.self) else { continue }
-            if variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) { continue }
+            if isStatic(variable) { continue }
             if let weak = variable.modifiers.first(where: {
                 $0.name.tokenKind == .keyword(.weak) || $0.name.tokenKind == .keyword(.unowned)
             }) {
@@ -61,11 +83,16 @@ public enum PlainDataWalk {
             // A computed property has no storage, whatever its attributes (`@inlinable`).
             if variable.bindings.allSatisfy(isComputed) { continue }
             // Any other attribute (a property wrapper, an attached macro) can change the storage.
-            if let wrapper = variable.attributes.first(where: { !isStorageNeutral($0) }) {
-                context.diagnose(Diagnostic(node: wrapper, message: PlainDataDiagnostic.wrapper))
+            // A wrapper in `readThrough` is read through: its wrapped value is checked.
+            if let wrapper = variable.attributes.first(where: { !isStorageNeutral($0) && !isReadThrough($0, readThrough) }) {
+                let message = readThrough.isEmpty
+                    ? PlainDataDiagnostic.wrapper
+                    : PlainDataDiagnostic.wrapperNotRead(readThrough.sorted())
+                context.diagnose(Diagnostic(node: wrapper, message: message))
                 failed = true
                 continue
             }
+            let isWrapped = variable.attributes.contains { isReadThrough($0, readThrough) }
             for binding in variable.bindings {
                 if isComputed(binding) { continue }
                 guard binding.pattern.is(IdentifierPatternSyntax.self) else {
@@ -73,7 +100,18 @@ public enum PlainDataWalk {
                     failed = true
                     continue
                 }
+                if isWrapped, let pattern = binding.pattern.as(IdentifierPatternSyntax.self) {
+                    // The wrapper's storage: the attribute's name doesn't say which wrapper it is.
+                    lines.append(check("value._\(storageName(pattern.identifier))"))
+                }
                 guard let annotation = binding.typeAnnotation?.type ?? typeOfNextBinding(binding, in: variable) else {
+                    // With no annotation the walk can't choose a check by type, so it reads the
+                    // value as it is: the storage line above covers the wrapper, and this line
+                    // covers what its `wrappedValue` returns.
+                    if isWrapped, let pattern = binding.pattern.as(IdentifierPatternSyntax.self) {
+                        lines.append(check("value.\(pattern.identifier.trimmed)"))
+                        continue
+                    }
                     context.diagnose(Diagnostic(node: binding.pattern, message: PlainDataDiagnostic.annotation(binding.pattern.trimmedDescription)))
                     failed = true
                     continue
@@ -93,6 +131,50 @@ public enum PlainDataWalk {
     private static func isStorageNeutral(_ element: AttributeListSyntax.Element) -> Bool {
         guard case .attribute(let attribute) = element else { return false }
         return storageNeutralAttributes.contains(attribute.attributeName.trimmedDescription)
+    }
+
+    /// The freestanding expansions that are compiler directives, not macros that add members.
+    private static let compilerDirectives: Set<String> = ["warning", "error"]
+
+    private static func isReadThrough(_ element: AttributeListSyntax.Element, _ names: Set<String>) -> Bool {
+        guard !names.isEmpty, case .attribute(let attribute) = element else { return false }
+        return names.contains { isProjectAttribute(attribute, named: $0) }
+    }
+
+    /// The modules that declare or re-export SwiftStateTree's attributes.
+    private static let stateTreeModules: Set<String> = ["SwiftStateTree", "SwiftStateTreeNIO"]
+
+    /// The modules a qualified spelling of this project's attribute `name` may name: the module
+    /// that declares it and the modules that re-export it.
+    public static func modules(declaring name: String) -> Set<String> {
+        name == "PlainData" ? stateTreeModules.union(["SwiftStateTurns"]) : stateTreeModules
+    }
+
+    /// Whether `attribute` spells this project's attribute `name`: bare, or qualified by a module
+    /// that declares or re-exports it (`@SwiftStateTree.Sync`, `@SwiftStateTurns.PlainData`).
+    /// `@Other.Sync` isn't. The syntax shows only spellings, so a bare namesake passes.
+    public static func isProjectAttribute(_ attribute: AttributeSyntax, named name: String) -> Bool {
+        if let identifier = attribute.attributeName.as(IdentifierTypeSyntax.self) {
+            return identifier.name.text == name
+        }
+        if let member = attribute.attributeName.as(MemberTypeSyntax.self),
+           let base = member.baseType.as(IdentifierTypeSyntax.self) {
+            return member.name.text == name && modules(declaring: name).contains(base.name.text)
+        }
+        return false
+    }
+
+    /// Whether `attributes` holds this project's attribute `name`, as `isProjectAttribute` spells it.
+    public static func hasAttribute(named name: String, in attributes: AttributeListSyntax) -> Bool {
+        attributes.contains {
+            guard case .attribute(let attribute) = $0 else { return false }
+            return isProjectAttribute(attribute, named: name)
+        }
+    }
+
+    /// A wrapped property's storage name, `_name`, without the backticks of an escaped name.
+    private static func storageName(_ identifier: TokenSyntax) -> String {
+        String(identifier.text.filter { $0 != "`" })
     }
 
     private static func check(_ value: String) -> String {
@@ -209,15 +291,31 @@ public enum PlainDataWalk {
         return nil
     }
 
-    private static func isComputed(_ binding: PatternBindingSyntax) -> Bool {
+    /// Whether a property is `static` (a struct or enum can't declare a `class` one).
+    public static func isStatic(_ variable: VariableDeclSyntax) -> Bool {
+        variable.modifiers.contains { $0.name.tokenKind == .keyword(.static) }
+    }
+
+    /// Whether a property is an instance field with storage: not `static`, and no binding
+    /// computed (observers keep it stored). Every macro that lists a type's fields asks this, so
+    /// the field list, the PlainData witness and the member check agree (#837).
+    public static func isStoredInstance(_ variable: VariableDeclSyntax) -> Bool {
+        !isStatic(variable) && !variable.bindings.contains(where: isComputed)
+    }
+
+    /// Whether a binding has no storage: a getter, or any accessor other than an observer
+    /// (`get`, `set`, `_read`, `_modify`, `unsafeAddress`, or one a newer Swift adds). Only
+    /// `willSet`/`didSet` keep it stored.
+    public static func isComputed(_ binding: PatternBindingSyntax) -> Bool {
         guard let accessors = binding.accessorBlock?.accessors else { return false }
         switch accessors {
         case .getter:
             return true
         case .accessors(let list):
-            // Observers (`willSet`/`didSet`) keep the property stored.
-            return list.contains {
-                [.keyword(.get), .keyword(.set), .keyword(._read), .keyword(._modify)].contains($0.accessorSpecifier.tokenKind)
+            // Stored only when every accessor is an observer (`willSet`/`didSet`). Any other
+            // accessor (`get`, `set`, `_read`, `_modify`, or a newer one) makes it computed.
+            return !list.allSatisfy {
+                [.keyword(.willSet), .keyword(.didSet)].contains($0.accessorSpecifier.tokenKind)
             }
         }
     }
@@ -304,6 +402,9 @@ public enum PlainDataDiagnostic: DiagnosticMessage {
     case pattern
     case reference
     case wrapper
+    /// A property wrapper other than the ones a macro reads through (`@StateNodeBuilder`: `Sync`,
+    /// `Internal`).
+    case wrapperNotRead([String])
     case closure
     case existential
     case tuple
@@ -311,6 +412,8 @@ public enum PlainDataDiagnostic: DiagnosticMessage {
     case existentialInGeneric
     case foundation(String, String)
     case sharedCaseName(String)
+    /// A freestanding macro expansion among a checked type's members.
+    case macroExpansion
 
     /// What to store instead of a Foundation value type, or nil for any other name.
     public static func foundationReplacement(_ name: String) -> String? {
@@ -330,6 +433,7 @@ public enum PlainDataDiagnostic: DiagnosticMessage {
         case .pattern: "@PlainData checks one stored property per binding; split the tuple pattern"
         case .reference: "a weak or unowned property holds a reference, which isn't plain data"
         case .wrapper: "@PlainData can't check a property wrapper's storage; store the value itself"
+        case .wrapperNotRead(let names): "the PlainData check reads only \(names.map { "@" + $0 }.joined(separator: " and ")) fields; another property wrapper's storage can't be checked"
         case .closure: "a function type isn't plain data: it can call through to anything"
         case .existential: "an opaque type isn't plain data, and neither is an existential nested in it: its value can be a class"
         case .metatype: "a metatype isn't plain data; store a name or an id that a lookup turns into the type"
@@ -337,6 +441,7 @@ public enum PlainDataDiagnostic: DiagnosticMessage {
         case .foundation(let type, let replacement): "\(type) isn't plain data; store \(replacement) (for your own type of that name, qualify it with its module)"
         case .tuple: "a tuple can't conform to PlainData; use PlainPair or a @PlainData struct"
         case .sharedCaseName(let name): "@PlainData can't check enum cases that share the base name '\(name)'; give each case its own name"
+        case .macroExpansion: "the PlainData check can't see the storage a macro expansion adds; declare the stored properties in the type"
         }
     }
 

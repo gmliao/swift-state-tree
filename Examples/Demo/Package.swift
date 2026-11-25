@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "Demo",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v15)
     ],
     products: [
         .executable(
@@ -55,7 +55,8 @@ let package = Package(
             name: "ReevaluationRunner",
             dependencies: [
                 "DemoContent",
-                .product(name: "SwiftStateTree", package: "SwiftStateTree")
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree")
             ],
             path: "Sources/ReevaluationRunner"
         ),

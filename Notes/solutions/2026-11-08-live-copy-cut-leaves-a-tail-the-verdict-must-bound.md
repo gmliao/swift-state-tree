@@ -1,4 +1,5 @@
 ---
+title: "A live copy can end between an event and its output: bound the tail by the read sequence, not the tick"
 module: SwiftStateTree
 date: 2026-11-08
 problem_type: bug_class

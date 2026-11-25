@@ -1,4 +1,5 @@
 ---
+title: "A stale example build crashes after a library struct changes its layout"
 module: Examples/GameDemo
 date: 2026-11-19
 problem_type: gotcha

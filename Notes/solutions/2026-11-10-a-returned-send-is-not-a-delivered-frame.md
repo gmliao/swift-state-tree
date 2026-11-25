@@ -1,4 +1,5 @@
 ---
+title: "A returned send is not a delivered frame"
 module: SwiftStateTreeTransport
 date: 2026-11-10
 problem_type: testing_practice
@@ -17,6 +18,7 @@ tags:
   - send-queue
   - linux
   - ordering
+  - frame-count-wait
 related:
   - "#372"
   - "2026-11-05-hold-points-not-timing-in-race-tests.md"

@@ -8,12 +8,14 @@ import SwiftStateTreeDeterministicMath
 // MARK: - Fixtures
 
 /// An `{x, y}` struct that is not declared atomic: diffed per leaf.
+@PlainData
 struct UndeclaredXY: Codable, Equatable, Sendable {
     var x: Int
     var y: Int
 }
 
 /// A user type whose name contains "Angle" but which is not atomic.
+@PlainData
 struct Triangle: Codable, Equatable, Sendable {
     var a: Int
     var b: Int
@@ -74,6 +76,7 @@ struct AtomicLayoutState: StateNodeProtocol {
 }
 
 /// Atomic with a hand-written leaf list that misses `y`.
+@PlainData
 struct MissingLeaf: Codable, Equatable, Sendable, SnapshotValueConvertible, AtomicSnapshotValue {
     var x: Int32 = 0
     var y: Int32 = 0
@@ -82,6 +85,7 @@ struct MissingLeaf: Codable, Equatable, Sendable, SnapshotValueConvertible, Atom
 }
 
 /// Atomic with a hand-written leaf list that misspells `y`.
+@PlainData
 struct MisspelledLeaf: Codable, Equatable, Sendable, SnapshotValueConvertible, AtomicSnapshotValue {
     var x: Int32 = 0
     var y: Int32 = 0

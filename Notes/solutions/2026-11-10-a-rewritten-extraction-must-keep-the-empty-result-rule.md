@@ -1,4 +1,5 @@
 ---
+title: "A rewritten extraction must keep the old path's empty-result rule"
 module: SwiftStateTreeTransport
 date: 2026-11-10
 problem_type: bug_class

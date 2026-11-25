@@ -77,6 +77,15 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
     /// it. Nil in records before 3.6, and in a record whose keeper had none.
     public let schemaFingerprint: String?
 
+    /// The encoding of the recorded actions' and client events' payload bytes, unless an entry
+    /// names its own (#700 K1a): the encoding of the decoder the land's transport uses live. Nil in
+    /// records before 3.7; a 3.7 record without it means `json`, which a keeper with no transport
+    /// writes. A server input's bytes are canonical MessagePack, whatever this says.
+    public let payloadEncoding: RecordPayloadEncoding?
+
+    /// The encoding of an entry that names none: `payloadEncoding`, or `json` when absent.
+    package var effectivePayloadEncoding: RecordPayloadEncoding { payloadEncoding ?? .json }
+
     public init(
         landID: String,
         landType: String,
@@ -93,7 +102,8 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         hardwareInfo: HardwareInfo? = nil,
         recordsSyncStream: Bool? = nil,
         syncConfig: ReevaluationSyncConfig? = nil,
-        schemaFingerprint: String? = nil
+        schemaFingerprint: String? = nil,
+        payloadEncoding: RecordPayloadEncoding? = nil
     ) {
         self.landID = landID
         self.landType = landType
@@ -111,6 +121,7 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         self.recordsSyncStream = recordsSyncStream
         self.syncConfig = syncConfig
         self.schemaFingerprint = schemaFingerprint
+        self.payloadEncoding = payloadEncoding
     }
 
     /// This metadata with `version` set to the version this build writes, and the recorder's
@@ -132,7 +143,8 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
             hardwareInfo: hardwareInfo,
             recordsSyncStream: recordsSyncStream,
             syncConfig: syncConfig,
-            schemaFingerprint: recorderFingerprint ?? schemaFingerprint
+            schemaFingerprint: recorderFingerprint ?? schemaFingerprint,
+            payloadEncoding: payloadEncoding
         )
     }
 
@@ -140,7 +152,7 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         case landID, landType, createdAt, metadata, landDefinitionID, initialStateHash, landConfig
         case rngSeedCoding = "rngSeed"
         case ruleVariantId, ruleParams, version, extensions, hardwareInfo, recordsSyncStream, syncConfig
-        case schemaFingerprint
+        case schemaFingerprint, payloadEncoding
     }
 }
 
@@ -232,7 +244,12 @@ public enum ReevaluationRecordVersion {
     /// #521 D15). Replay refuses a record before 3.6 (`minimumReplayable`), and one whose
     /// fingerprint is missing or differs from the current definition's; readers that don't replay
     /// still read from `minimumSupported` on.
-    public static let current = "3.\(fingerprintMinor)"
+    /// 3.7 records each action's and client event's payload as the bytes its live decoder read
+    /// (`ReevaluationRecordedAction.payload`, #700 K1a), with the encoding in the header
+    /// (`ReevaluationRecordMetadata.payloadEncoding`) or on an entry whose encoding differs.
+    /// Replay decodes those bytes with that encoding's live decoder, so it refuses a record before
+    /// 3.7 (`minimumReplayable`), whose payloads are trees; readers that don't replay still read it.
+    public static let current = "3.\(payloadBytesMinor)"
 
     /// The first 3.x minor whose records carry `rejected` (#586): from it a missing list means
     /// nothing was rejected, and replay compares it.
@@ -241,9 +258,14 @@ public enum ReevaluationRecordVersion {
     /// The first 3.x minor that records the schema fingerprint (#521 D15).
     public static let fingerprintMinor = 6
 
-    /// The oldest version replay accepts: records before it carry no schema fingerprint, so they
-    /// can't be shown to match the code (`ReevaluationRecordFingerprintError.missing`).
-    public static let minimumReplayable = "3.\(fingerprintMinor)"
+    /// The first 3.x minor that records payloads as bytes (#700 K1a).
+    public static let payloadBytesMinor = 7
+
+    /// The oldest version replay accepts: records before 3.6 carry no schema fingerprint, so they
+    /// can't be shown to match the code (`ReevaluationRecordFingerprintError.missing`), and a 3.6
+    /// record's payloads are trees, which replay no longer decodes
+    /// (`ReevaluationRecordFingerprintError.payloadsNotReplayable`).
+    public static let minimumReplayable = "3.\(payloadBytesMinor)"
 
     /// The first 2.x minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
     /// objects, which no longer decode (#154); they are not converted, but rejected as
@@ -742,7 +764,17 @@ public struct ReevaluationRecordedAction: Codable, Sendable {
     public let kind: String // "action"
     public let sequence: Int64
     public let typeIdentifier: String
-    public let payload: AnyCodable
+    /// The payload's bytes as the live decoder read them (#700 K1a, format 3.7), in
+    /// `payloadEncoding`: `bin` in the record, base64 in its JSON view. Empty in a record before
+    /// 3.7, whose payload is a tree (`legacyPayload`).
+    public let payload: Data
+    /// The encoding of `payload`. The record leaves it out when it equals the header's
+    /// (`ReevaluationRecordMetadata.payloadEncoding`, `json` when absent), and a reader fills it in
+    /// from the header in force when the entry is read. Nil in a record before 3.7.
+    public let payloadEncoding: RecordPayloadEncoding?
+    /// The payload tree of a record before 3.7: read and listed, never replayed
+    /// (`ReevaluationRecordVersion.minimumReplayable`).
+    package let legacyPayload: AnyCodable?
     public let playerID: String
     public let clientID: String
     public let sessionID: String
@@ -753,7 +785,28 @@ public struct ReevaluationRecordedAction: Codable, Sendable {
         kind: String,
         sequence: Int64,
         typeIdentifier: String,
-        payload: AnyCodable,
+        payload: Data,
+        payloadEncoding: RecordPayloadEncoding?,
+        playerID: String,
+        clientID: String,
+        sessionID: String,
+        resolverOutputs: [String: ReevaluationRecordedResolverOutput],
+        resolvedAtTick: Int64
+    ) {
+        self.init(
+            kind: kind, sequence: sequence, typeIdentifier: typeIdentifier, payload: payload,
+            payloadEncoding: payloadEncoding, legacyPayload: nil, playerID: playerID, clientID: clientID,
+            sessionID: sessionID, resolverOutputs: resolverOutputs, resolvedAtTick: resolvedAtTick
+        )
+    }
+
+    package init(
+        kind: String,
+        sequence: Int64,
+        typeIdentifier: String,
+        payload: Data,
+        payloadEncoding: RecordPayloadEncoding?,
+        legacyPayload: AnyCodable?,
         playerID: String,
         clientID: String,
         sessionID: String,
@@ -764,11 +817,84 @@ public struct ReevaluationRecordedAction: Codable, Sendable {
         self.sequence = sequence
         self.typeIdentifier = typeIdentifier
         self.payload = payload
+        self.payloadEncoding = payloadEncoding
+        self.legacyPayload = legacyPayload
         self.playerID = playerID
         self.clientID = clientID
         self.sessionID = sessionID
         self.resolverOutputs = resolverOutputs
         self.resolvedAtTick = resolvedAtTick
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, sequence, typeIdentifier, payload, payloadEncoding, playerID, clientID, sessionID
+        case resolverOutputs, resolvedAtTick
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let payload = try RecordedPayloadField.decode(from: c, forKey: .payload)
+        self.init(
+            kind: try c.decode(String.self, forKey: .kind),
+            sequence: try c.decode(Int64.self, forKey: .sequence),
+            typeIdentifier: try c.decode(String.self, forKey: .typeIdentifier),
+            payload: payload.bytes,
+            payloadEncoding: try c.decodeIfPresent(RecordPayloadEncoding.self, forKey: .payloadEncoding),
+            legacyPayload: payload.legacy,
+            playerID: try c.decode(String.self, forKey: .playerID),
+            clientID: try c.decode(String.self, forKey: .clientID),
+            sessionID: try c.decode(String.self, forKey: .sessionID),
+            resolverOutputs: try c.decode([String: ReevaluationRecordedResolverOutput].self, forKey: .resolverOutputs),
+            resolvedAtTick: try c.decode(Int64.self, forKey: .resolvedAtTick)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(sequence, forKey: .sequence)
+        try c.encode(typeIdentifier, forKey: .typeIdentifier)
+        try RecordedPayloadField.encode(bytes: payload, legacy: legacyPayload, into: &c, forKey: .payload)
+        try c.encodeIfPresent(payloadEncoding, forKey: .payloadEncoding)
+        try c.encode(playerID, forKey: .playerID)
+        try c.encode(clientID, forKey: .clientID)
+        try c.encode(sessionID, forKey: .sessionID)
+        try c.encode(resolverOutputs, forKey: .resolverOutputs)
+        try c.encode(resolvedAtTick, forKey: .resolvedAtTick)
+    }
+
+    /// This entry with `payloadEncoding` set to `encoding`.
+    package func with(payloadEncoding encoding: RecordPayloadEncoding?) -> Self {
+        Self(
+            kind: kind, sequence: sequence, typeIdentifier: typeIdentifier, payload: payload,
+            payloadEncoding: encoding, legacyPayload: legacyPayload, playerID: playerID, clientID: clientID,
+            sessionID: sessionID, resolverOutputs: resolverOutputs, resolvedAtTick: resolvedAtTick
+        )
+    }
+}
+
+/// A recorded action's or client event's `payload` field: `bin` (3.7) or a tree (before 3.7).
+enum RecordedPayloadField {
+    /// The bytes, or the tree of a record before 3.7. In canonical MessagePack the two can't be
+    /// confused: only a `bin` decodes as `CanonicalBinary`. In JSON a 3.7 payload is a base64
+    /// string and a tree before 3.7 is the payload's object, since every payload type is a struct.
+    static func decode<K: CodingKey>(
+        from container: KeyedDecodingContainer<K>, forKey key: K
+    ) throws -> (bytes: Data, legacy: AnyCodable?) {
+        if let binary = try? container.decode(CanonicalBinary.self, forKey: key) {
+            return (binary.bytes, nil)
+        }
+        return (Data(), try container.decode(AnyCodable.self, forKey: key))
+    }
+
+    static func encode<K: CodingKey>(
+        bytes: Data, legacy: AnyCodable?, into container: inout KeyedEncodingContainer<K>, forKey key: K
+    ) throws {
+        if let legacy {
+            try container.encode(legacy, forKey: key)
+        } else {
+            try container.encode(CanonicalBinary(bytes), forKey: key)
+        }
     }
 }
 
@@ -778,20 +904,72 @@ public struct ReevaluationRecordedServerInput: Codable, Sendable, Equatable {
     public let kind: String // "serverInput"
     public let sequence: Int64
     public let typeIdentifier: String
-    public let payload: AnyCodable
+    /// The payload's canonical MessagePack bytes, the bytes live decoded (#700 K1a, K1-Q4 (a)),
+    /// whatever the header's `payloadEncoding` says: `bin` in the record, base64 in its JSON view.
+    /// Empty in a record before 3.7, whose payload is a tree (`legacyPayload`).
+    public let payload: Data
+    /// The payload tree of a record before 3.7: read and listed, never replayed.
+    package let legacyPayload: AnyCodable?
     public let resolvedAtTick: Int64
 
-    public init(sequence: Int64, typeIdentifier: String, payload: AnyCodable, resolvedAtTick: Int64) {
+    public init(sequence: Int64, typeIdentifier: String, payload: Data, resolvedAtTick: Int64) {
+        self.init(sequence: sequence, typeIdentifier: typeIdentifier, payload: payload, legacyPayload: nil, resolvedAtTick: resolvedAtTick)
+    }
+
+    package init(sequence: Int64, typeIdentifier: String, payload: Data, legacyPayload: AnyCodable?, resolvedAtTick: Int64) {
         self.kind = "serverInput"
         self.sequence = sequence
         self.typeIdentifier = typeIdentifier
         self.payload = payload
+        self.legacyPayload = legacyPayload
         self.resolvedAtTick = resolvedAtTick
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case kind, sequence, typeIdentifier, payload, resolvedAtTick
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let payload = try RecordedPayloadField.decode(from: c, forKey: .payload)
+        self.kind = try c.decode(String.self, forKey: .kind)
+        self.sequence = try c.decode(Int64.self, forKey: .sequence)
+        self.typeIdentifier = try c.decode(String.self, forKey: .typeIdentifier)
+        self.payload = payload.bytes
+        self.legacyPayload = payload.legacy
+        self.resolvedAtTick = try c.decode(Int64.self, forKey: .resolvedAtTick)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(sequence, forKey: .sequence)
+        try c.encode(typeIdentifier, forKey: .typeIdentifier)
+        try RecordedPayloadField.encode(bytes: payload, legacy: legacyPayload, into: &c, forKey: .payload)
+        try c.encode(resolvedAtTick, forKey: .resolvedAtTick)
+    }
+
+    /// Equal when every recorded field is: the payload's bytes too, and a payload read as a tree
+    /// (a record before 3.7) never equals one held as bytes.
     public static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.sequence == rhs.sequence && lhs.typeIdentifier == rhs.typeIdentifier
-            && lhs.resolvedAtTick == rhs.resolvedAtTick
+        lhs.kind == rhs.kind && lhs.sequence == rhs.sequence && lhs.typeIdentifier == rhs.typeIdentifier
+            && lhs.payload == rhs.payload && lhs.resolvedAtTick == rhs.resolvedAtTick
+            && legacyPayloadsEqual(lhs.legacyPayload, rhs.legacyPayload)
+    }
+
+    /// Two trees compare by their canonical bytes; a tree and no tree differ. A tree that has no
+    /// canonical bytes (a `Set`, NaN, or one too deep) equals nothing, itself included: it errs
+    /// toward "different", so two trees that can't be compared never pass as the same.
+    private static func legacyPayloadsEqual(_ lhs: AnyCodable?, _ rhs: AnyCodable?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): return true
+        case let (l?, r?):
+            guard let left = try? CanonicalMessagePack.encode(l), let right = try? CanonicalMessagePack.encode(r) else {
+                return false
+            }
+            return left == right
+        default: return false
+        }
     }
 }
 
@@ -800,7 +978,12 @@ public struct ReevaluationRecordedClientEvent: Codable, Sendable {
     public let kind: String // "clientEvent"
     public let sequence: Int64
     public let typeIdentifier: String
-    public let payload: AnyCodable
+    /// As `ReevaluationRecordedAction.payload`.
+    public let payload: Data
+    /// As `ReevaluationRecordedAction.payloadEncoding`.
+    public let payloadEncoding: RecordPayloadEncoding?
+    /// As `ReevaluationRecordedAction.legacyPayload`.
+    package let legacyPayload: AnyCodable?
     public let playerID: String
     public let clientID: String
     public let sessionID: String
@@ -810,7 +993,27 @@ public struct ReevaluationRecordedClientEvent: Codable, Sendable {
         kind: String,
         sequence: Int64,
         typeIdentifier: String,
-        payload: AnyCodable,
+        payload: Data,
+        payloadEncoding: RecordPayloadEncoding?,
+        playerID: String,
+        clientID: String,
+        sessionID: String,
+        resolvedAtTick: Int64
+    ) {
+        self.init(
+            kind: kind, sequence: sequence, typeIdentifier: typeIdentifier, payload: payload,
+            payloadEncoding: payloadEncoding, legacyPayload: nil, playerID: playerID, clientID: clientID,
+            sessionID: sessionID, resolvedAtTick: resolvedAtTick
+        )
+    }
+
+    package init(
+        kind: String,
+        sequence: Int64,
+        typeIdentifier: String,
+        payload: Data,
+        payloadEncoding: RecordPayloadEncoding?,
+        legacyPayload: AnyCodable?,
         playerID: String,
         clientID: String,
         sessionID: String,
@@ -820,10 +1023,55 @@ public struct ReevaluationRecordedClientEvent: Codable, Sendable {
         self.sequence = sequence
         self.typeIdentifier = typeIdentifier
         self.payload = payload
+        self.payloadEncoding = payloadEncoding
+        self.legacyPayload = legacyPayload
         self.playerID = playerID
         self.clientID = clientID
         self.sessionID = sessionID
         self.resolvedAtTick = resolvedAtTick
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, sequence, typeIdentifier, payload, payloadEncoding, playerID, clientID, sessionID, resolvedAtTick
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let payload = try RecordedPayloadField.decode(from: c, forKey: .payload)
+        self.init(
+            kind: try c.decode(String.self, forKey: .kind),
+            sequence: try c.decode(Int64.self, forKey: .sequence),
+            typeIdentifier: try c.decode(String.self, forKey: .typeIdentifier),
+            payload: payload.bytes,
+            payloadEncoding: try c.decodeIfPresent(RecordPayloadEncoding.self, forKey: .payloadEncoding),
+            legacyPayload: payload.legacy,
+            playerID: try c.decode(String.self, forKey: .playerID),
+            clientID: try c.decode(String.self, forKey: .clientID),
+            sessionID: try c.decode(String.self, forKey: .sessionID),
+            resolvedAtTick: try c.decode(Int64.self, forKey: .resolvedAtTick)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(sequence, forKey: .sequence)
+        try c.encode(typeIdentifier, forKey: .typeIdentifier)
+        try RecordedPayloadField.encode(bytes: payload, legacy: legacyPayload, into: &c, forKey: .payload)
+        try c.encodeIfPresent(payloadEncoding, forKey: .payloadEncoding)
+        try c.encode(playerID, forKey: .playerID)
+        try c.encode(clientID, forKey: .clientID)
+        try c.encode(sessionID, forKey: .sessionID)
+        try c.encode(resolvedAtTick, forKey: .resolvedAtTick)
+    }
+
+    /// This entry with `payloadEncoding` set to `encoding`.
+    package func with(payloadEncoding encoding: RecordPayloadEncoding?) -> Self {
+        Self(
+            kind: kind, sequence: sequence, typeIdentifier: typeIdentifier, payload: payload,
+            payloadEncoding: encoding, legacyPayload: legacyPayload, playerID: playerID, clientID: clientID,
+            sessionID: sessionID, resolvedAtTick: resolvedAtTick
+        )
     }
 }
 
@@ -906,5 +1154,25 @@ public struct ReevaluationEventTargetRecord: Codable, Sendable {
 private enum OptionalTypeHelper {
     static func wrappedType(of type: Any.Type) -> Any.Type? {
         (type as? any OptionalTypeProbe.Type)?.wrappedType
+    }
+}
+
+extension ReevaluationTickRecord {
+    /// This record with each action's and client event's `payloadEncoding` left out where it equals
+    /// `header`, as the record writes it (#700 K1a).
+    package func payloadEncodings(strippedAgainst header: RecordPayloadEncoding) -> ReevaluationTickRecord {
+        var record = self
+        record.actions = actions.map { $0.payloadEncoding == header ? $0.with(payloadEncoding: nil) : $0 }
+        record.clientEvents = clientEvents.map { $0.payloadEncoding == header ? $0.with(payloadEncoding: nil) : $0 }
+        return record
+    }
+
+    /// This record with each 3.7 entry's missing `payloadEncoding` filled in from `header`, the
+    /// header in force where the record was read. A tree from before 3.7 keeps none.
+    package func payloadEncodings(resolvedAgainst header: RecordPayloadEncoding) -> ReevaluationTickRecord {
+        var record = self
+        record.actions = actions.map { $0.payloadEncoding == nil && $0.legacyPayload == nil ? $0.with(payloadEncoding: header) : $0 }
+        record.clientEvents = clientEvents.map { $0.payloadEncoding == nil && $0.legacyPayload == nil ? $0.with(payloadEncoding: header) : $0 }
+        return record
     }
 }

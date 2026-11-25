@@ -496,7 +496,10 @@ public actor ReevaluationRecorder {
         turnCount += 1
         maxTickId = max(maxTickId, record.tickId)
         syncStreamCount += record.syncOutputs.count + record.syncMarkers.count
-        appendRecord(.turn(record))
+        // Written after the header (`submit` holds turns until it is), so an entry leaves out the
+        // encoding the header in force already gives (#700 K1a).
+        let header = metadata?.effectivePayloadEncoding ?? .json
+        appendRecord(.turn(record.payloadEncodings(strippedAgainst: header)))
     }
 
     private func appendRecord(_ record: ReevaluationLogRecord) {

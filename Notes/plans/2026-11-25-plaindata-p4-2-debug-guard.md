@@ -1,6 +1,24 @@
-# PlainData P4-2: the registration walks become a debug-build guard
+# PlainData P4-2: the registration walks become a debug-build guard (rev 2: they stay on; tests folded)
 
-**Status:** rev 1.2, plan only (rev 1.2: §1's boundaries as of #834 round 4). Review ruled Q1 = (a) on 2026-11-25, provided the PR maps each removed group-A test to the kept test that covers its branch and shape. This is slice P4-2 of `2026-11-24-plaindata-p4-state.md` (rev 3, §3.6 and §7), under P4-Q4 (b), which the maintainer decided on 2026-11-24. It builds on P4-1 (#834). Code pointers were re-checked at #834's round-1 head 41e7c7ee; round 1 moved none of them.
+**Status:** rev 2, plan only. Rev 2 records the maintainer's decision of 2026-11-25, which replaces P4-Q4 (b) for this slice; §1–§7 below are rev 1.2, kept as the record of what was weighed.
+
+## Decision (rev 2, 2026-11-25)
+
+The registration's value walks stay on in every build, release included, with no switch. The maintainer's reasons:
+- they cost milliseconds, once per land type at startup. A release probe on the Mac measured 35.3 ms against 26.2 ms per uncached call for a state of 2×1000 nested nodes;
+- a bad state fails at registration, not at its first sync;
+- an opt-out can be added later if someone needs one.
+
+So P4-2 changes no source. What remains:
+- **Q1 = (a) fold.** Five tests go into three walk tests in `RegistrationValueWalkTests`. They run in every build, through `validateForRegistration`. The PR maps each removed test to its kept test.
+- **`ALLOW_MARKERS`.** `LandTypeRegistryTests` loses its marker, since its class test folds into the walk suite.
+- **Fingerprint fixture.** `fingerprintSkippedWhenSyncFails` uses a key-row fixture, so it doesn't depend on the class row.
+- **Conversion pin.** A test pins that the conversion throws for a class state and a `Decimal` state. That conversion is the backstop for what registration can't see.
+- **CI.** The release step's filter adds `RegistrationValueWalk|SyncRegistration`, so release is shown to refuse at registration.
+
+The docs keep #834's wording: registration refuses these in every build.
+
+The rev 1.2 text follows unchanged.
 
 ## 1. Goal
 

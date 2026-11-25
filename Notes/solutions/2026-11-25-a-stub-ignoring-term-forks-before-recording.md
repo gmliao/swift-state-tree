@@ -1,4 +1,5 @@
 ---
+title: "A stub ignoring TERM forks before it records and can be killed before the record"
 module: CI
 date: 2026-11-25
 problem_type: bug_class

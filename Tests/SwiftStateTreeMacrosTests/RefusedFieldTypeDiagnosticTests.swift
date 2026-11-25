@@ -53,11 +53,17 @@ struct RefusedFieldTypeDiagnosticTests {
         #expect(messages.first?.hasPrefix("synced property 'value' can't have '\(spelling)' in its type") == true, "\(messages)")
     }
 
-    @Test("Concrete types, a bare protocol name and a typealias pass: the gap is documented, the backstop covers it", arguments: [
-        "Int", "[String: Int]", "Box<Item>?", "Shape", "ShapeAlias", "[PlayerID: Hand]", "AnyThing", "(Int, String)",
+    @Test("Concrete types, a bare protocol name and a typealias pass the macro: the type checker refuses the last two (Sync requires PlainData)", arguments: [
+        "Int", "[String: Int]", "Box<Item>?", "Shape", "ShapeAlias", "[PlayerID: Hand]", "AnyThing",
     ])
     func allowed(field: String) {
         #expect(diagnostics(stateNode(field)).isEmpty)
+    }
+
+    @Test("A tuple field is refused by the PlainData walk: a tuple can't conform")
+    func tupleField() {
+        let messages = diagnostics(stateNode("(Int, String)"))
+        #expect(messages.first?.hasPrefix("a tuple can't conform to PlainData") == true, "\(messages)")
     }
 
     @Test("The macro doesn't refuse an @Internal field: Internal requires PlainData, which the type checker refuses (scripts/must-not-compile/internal-not-plain.swift)")
@@ -119,10 +125,12 @@ struct RefusedFieldTypeDiagnosticTests {
         ("(Int, Decimal)", "Decimal"),
     ]
 
-    @Test("A synced Decimal is refused at compile time, at any depth", arguments: decimalSpellings)
+    @Test("A synced Decimal is refused at compile time, at any depth, by the PlainData walk", arguments: decimalSpellings)
     func syncedDecimal(field: String, spelling: String) {
         let messages = diagnostics(stateNode(field))
-        #expect(messages.first?.hasPrefix("property 'value' can't have '\(spelling)' in its type: Decimal isn't plain data") == true, "\(messages)")
+        // A tuple is refused as a tuple before its elements are read.
+        let refusal = field.hasPrefix("(") ? "a tuple can't conform to PlainData" : "Decimal isn't plain data; store an integer in the smallest unit"
+        #expect(messages.contains { $0.hasPrefix(refusal) }, "\(messages)")
     }
 
     @Test("A @Payload Decimal field is refused at compile time, at any depth", arguments: decimalSpellings)
@@ -154,15 +162,17 @@ struct RefusedFieldTypeDiagnosticTests {
         #expect(messages.first?.hasPrefix("property 'amount' can't have 'Decimal' in its type") == true, "\(messages)")
     }
 
-    @Test("Not refused by the macro: a server-only or @Internal Decimal (the type checker refuses the @Internal one: Decimal isn't PlainData), and a Decimal of another module")
-    func decimalAllowed() {
-        #expect(diagnostics("""
+    @Test("One Decimal message for every state field: server-only and @Internal too; a Decimal of another module passes")
+    func decimalEveryField() {
+        let messages = diagnostics("""
             @StateNodeBuilder
             struct Node: StateNodeProtocol {
                 @Sync(.serverOnly) var hidden: Decimal = 0
                 @Internal var scratch: Decimal = 0
             }
-            """).isEmpty)
+            """)
+        #expect(messages.filter { $0.hasPrefix("Decimal isn't plain data") }.count == 2, "\(messages)")
+        #expect(!messages.contains { $0.contains("can't have 'Decimal'") }, "the classifier's message is @Payload's and @SnapshotConvertible's only: \(messages)")
         #expect(diagnostics(stateNode("Money.Decimal")).isEmpty)
     }
 
@@ -175,16 +185,5 @@ struct RefusedFieldTypeDiagnosticTests {
                 let byName: [String: AnyCodable]
             }
             """).isEmpty)
-    }
-
-    @Test("The serverOnly skip reads the policy, not the text: a policy closure that names serverOnly is still checked")
-    func serverOnlyFromThePolicy() {
-        let messages = diagnostics("""
-            @StateNodeBuilder
-            struct Node: StateNodeProtocol {
-                @Sync(.perPlayer({ value, serverOnly in value })) var value: Decimal = 0
-            }
-            """)
-        #expect(messages.contains { $0.hasPrefix("property 'value' can't have 'Decimal' in its type") }, "\(messages)")
     }
 }

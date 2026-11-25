@@ -1,4 +1,5 @@
 ---
+title: "An E2E leg named for a path it doesn't run"
 module: SwiftStateTreeTransport
 date: 2026-11-13
 problem_type: testing_practice
