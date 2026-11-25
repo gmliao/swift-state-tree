@@ -543,12 +543,11 @@ public actor NIOLandHost {
     /// flight or returns when running; on a host already shut down it logs and returns without
     /// serving.
     func start() async throws {
-        switch lifecycle.beginStart({ Task { try await self.performStart() } }) {
-        case .run(let task, let token), .join(let task, let token):
-            // A joiner finishes too, so `start()` returns after the phase is written.
-            let result = await task.result
-            lifecycle.finishStart(token, succeeded: (try? result.get()) != nil)
-            try result.get()
+        switch lifecycle.beginStart({ token in Task { try await self.runStart(token) } }) {
+        case .run(let task), .join(let task):
+            // The task writes the phase as its last step, so a runner and a joiner both return
+            // after it (if that start is still current: a stop that took over makes it a no-op).
+            try await task.value
         case .alreadyRunning:
             return
         case .stopped:
@@ -716,19 +715,34 @@ public actor NIOLandHost {
     /// shutdown that runs that code, so it returns only when that step's deadline passes: don't.
     /// It doesn't throw for a failed step (it stays `throws` for source compatibility).
     public func shutdown() async throws {
-        switch lifecycle.beginStop({ start in Task { await self.performShutdown(after: start) } }) {
-        case .run(let task, let token):
+        switch lifecycle.beginStop({ start, token in Task { await self.runShutdown(after: start, token) } }) {
+        case .run(let task):
             resumeStopWaiters()
             await task.value
-            lifecycle.finishStop(token)
-        case .join(let task, let token):
-            // A joiner finishes too: `run()` joins the stop another caller runs, and returns
-            // "once the shutdown finished" (#351) only when the phase says so.
+        case .join(let task):
+            // `run()` joins the stop another caller runs, and returns "once the shutdown
+            // finished" (#351): the task wrote `.stopped` before its result was available.
             await task.value
-            lifecycle.finishStop(token)
         case .nothingToStop:
             resumeStopWaiters()
         }
+    }
+
+    /// The start's task body: `performStart`, then the phase, as the task's last actor step.
+    private func runStart(_ token: Epoch) async throws {
+        do {
+            try await performStart()
+        } catch {
+            lifecycle.finishStart(token, succeeded: false)
+            throw error
+        }
+        lifecycle.finishStart(token, succeeded: true)
+    }
+
+    /// The stop's task body: `performShutdown`, then the phase, as the task's last actor step.
+    private func runShutdown(after start: Task<Void, Error>?, _ token: Epoch) async {
+        await performShutdown(after: start)
+        lifecycle.finishStop(token)
     }
 
     private func performShutdown(after start: Task<Void, Error>?) async {

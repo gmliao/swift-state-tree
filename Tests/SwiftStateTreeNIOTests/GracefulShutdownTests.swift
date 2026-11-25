@@ -1009,6 +1009,59 @@ struct GracefulShutdownTests {
         }
     }
 
+    @Test("a start returns with the phase .running, for the call that starts it and for one that joins it (#833)")
+    func startReturnsAfterTheRunningPhase() async throws {
+        let startGate = Gate()
+        let f = try await Fixture.make(
+            land: makeLand(events: Events()),
+            middlewares: [ProbeMiddleware(events: Events(), name: "m", startGate: startGate)],
+            start: false
+        )
+        let runner = Task { () -> Lifecycle.Phase in
+            try await f.host.start()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        #expect(await startGate.waitForArrivals(1), "the start is held in a middleware's onStart")
+        #expect(await f.host.lifecyclePhaseForTesting == .starting)
+        let joiner = Task { () -> Lifecycle.Phase in
+            try await f.host.start()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        startGate.open()
+        // The start's task writes the phase before either call's wait ends.
+        #expect(try await runner.value == .running, "the runner returned before the phase was written")
+        #expect(try await joiner.value == .running, "the joiner returned before the phase was written")
+        try await f.host.shutdown()
+    }
+
+    @Test("a shutdown returns with the phase .stopped, for the call that runs it, for one that joins it and for run() (#833)")
+    func shutdownReturnsAfterTheStoppedPhase() async throws {
+        let shutdownGate = Gate()
+        let f = try await Fixture.make(
+            land: makeLand(events: Events()),
+            middlewares: [ProbeMiddleware(events: Events(), name: "m", shutdownGate: shutdownGate)]
+        )
+        let run = Task { () -> Lifecycle.Phase in
+            try await f.host.run()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        let runner = Task { () -> Lifecycle.Phase in
+            try await f.host.shutdown()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        #expect(await shutdownGate.waitForArrivals(1), "the shutdown is held in a middleware's onShutdown")
+        #expect(await f.host.lifecyclePhaseForTesting == .stopping)
+        let joiner = Task { () -> Lifecycle.Phase in
+            try await f.host.shutdown()
+            return await f.host.lifecyclePhaseForTesting
+        }
+        shutdownGate.open()
+        // The stop's task writes the phase before any call's wait ends, whichever call ran it.
+        #expect(try await runner.value == .stopped, "the shutdown returned before the phase was written")
+        #expect(try await joiner.value == .stopped, "the joined shutdown returned before the phase was written")
+        #expect(try await run.value == .stopped, "run() returned before the phase was written")
+    }
+
     @Test("an upgrade whose auth finishes after the shutdown completes nothing on the shut-down loop")
     func lateAuthDropped() async throws {
         let authGate = Gate()
