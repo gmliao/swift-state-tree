@@ -22,9 +22,10 @@ struct SyncLagTestState: StateNodeProtocol {
 
 /// A value whose conversion throws once its token is in `trippedTokens`. Tripping it writes no
 /// state, so a test can make a field throw at the plan it chooses.
+@PlainData
 struct SyncLagFragile: Codable, Sendable, Equatable, SnapshotValueConvertible {
     struct Fault: Error {}
-    var token = 0
+    var token: Int = 0
     nonisolated(unsafe) private static var trippedTokens: Set<Int> = []
     private static let lock = NSLock()
     static func trip(_ token: Int) { lock.withLock { _ = trippedTokens.insert(token) } }

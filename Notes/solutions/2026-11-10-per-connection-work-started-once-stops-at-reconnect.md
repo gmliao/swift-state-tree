@@ -1,4 +1,5 @@
 ---
+title: "Per-connection work started once stops at the first reconnect"
 module: ws-loadtest
 date: 2026-11-10
 problem_type: measurement_pitfall

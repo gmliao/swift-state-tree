@@ -21,6 +21,7 @@ enum RowEntryFixtureEnvKeys {
 /// A value that isn't `Equatable`: its field takes the fallback diff. Its object has no `n` at
 /// 0, so the leaf `blob.n` can be removed: the one way a leaf inside a row is deleted (an
 /// optional going nil is a set of null).
+@PlainData
 struct RowEntryBlob: Sendable, SnapshotValueConvertible {
     var n: Int = 0
 

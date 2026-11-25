@@ -1,4 +1,5 @@
 ---
+title: "A test harness under errexit dies without naming the failing case"
 module: scripts
 date: 2026-11-19
 problem_type: gotcha

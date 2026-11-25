@@ -19,6 +19,7 @@ struct GuestModeTestState: StateNodeProtocol {
     var players: [PlayerID: GuestPlayerInfo] = [:]
 }
 
+@PlainData
 struct GuestPlayerInfo: Codable, Sendable {
     let playerID: String
     let isGuest: Bool

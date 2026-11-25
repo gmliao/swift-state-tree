@@ -1,4 +1,5 @@
 ---
+title: "A test that reads a DEBUG-only probe fails in a release test run"
 module: SwiftStateTreeTransport
 date: 2026-11-22
 problem_type: testing_practice

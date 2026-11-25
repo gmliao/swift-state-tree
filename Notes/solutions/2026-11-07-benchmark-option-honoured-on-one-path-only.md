@@ -1,4 +1,5 @@
 ---
+title: "A benchmark option honoured on one path only"
 module: Examples/GameDemo (EncodingBenchmark, ServerLoadTest, ws-loadtest)
 date: 2026-11-07
 problem_type: measurement_pitfall

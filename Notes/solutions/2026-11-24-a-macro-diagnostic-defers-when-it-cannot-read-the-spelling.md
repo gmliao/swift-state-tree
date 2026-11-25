@@ -1,4 +1,5 @@
 ---
+title: "A macro diagnostic defers when it can't read the spelling with certainty"
 module: SwiftStateTreeMacros
 date: 2026-11-24
 problem_type: design_rule

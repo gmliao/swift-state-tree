@@ -1,4 +1,5 @@
 ---
+title: "A test reads state that an unawaited start task sets"
 module: SwiftStateTree, tests
 date: 2026-11-11
 problem_type: testing_practice

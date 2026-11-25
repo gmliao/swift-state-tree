@@ -1,4 +1,5 @@
 ---
+title: "Inlined class state pays a dynamic exclusivity check on every use"
 module: SwiftStateTurns
 date: 2026-11-19
 problem_type: gotcha

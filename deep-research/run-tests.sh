@@ -5,6 +5,11 @@
 # too rather than skip: a change their code reaches must run them before it is pushed.
 # Usage: bash deep-research/run-tests.sh   (from anywhere in the checkout)
 set -uo pipefail
+# git exports GIT_DIR to a hook run from a linked worktree. Drop git's repository variables, so
+# neither these commands nor a test's own `git init` or `git commit` in a temporary directory
+# reach that repository (a deep-research test once set core.bare on the clone that way).
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root" || exit 1
 case "$(uname -s)" in

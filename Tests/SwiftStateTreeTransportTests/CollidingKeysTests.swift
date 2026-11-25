@@ -7,6 +7,7 @@ import Testing
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 /// A key whose string form is constant: any two distinct keys collide.
+@PlainData
 private struct CollidingCode: Hashable, Sendable, CustomStringConvertible {
     let id: Int
     var description: String { "same" }

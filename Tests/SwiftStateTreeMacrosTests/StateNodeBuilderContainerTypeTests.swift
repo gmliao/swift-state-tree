@@ -9,7 +9,9 @@
 // Before the fix four of these cases failed: `[[String: Int]]`, `[(a: Int, b: Int)]`,
 // `Dictionary<Pair<Int, Int>, Int>` and `[[String: Int]: Int]`. In the others the first separator
 // is the top-level one, or the type isn't a container (an optional, a qualified `Swift.` name),
-// so they guard that the syntax-tree classification matches the old one.
+// so they guard that the syntax-tree classification matches the old one. A tuple can't be
+// stored in state (it can't conform to PlainData), so the tuple cases use `PlainPair` instead and
+// a tuple field is checked to be refused.
 
 import SwiftSyntaxMacros
 import Testing
@@ -41,8 +43,8 @@ struct StateNodeBuilderContainerTypeTests {
             absentHelpers: ["func updateItems"]
         ),
         Case(
-            fieldType: "[(a: Int, b: Int)]",
-            helpers: ["public mutating func appendItems(_ element: (a: Int, b: Int))"],
+            fieldType: "[PlainPair<Int, Int>]",
+            helpers: ["public mutating func appendItems(_ element: PlainPair<Int, Int>)"],
             absentHelpers: ["func updateItems"]
         ),
         Case(
@@ -59,8 +61,8 @@ struct StateNodeBuilderContainerTypeTests {
             absentHelpers: ["func appendItems"]
         ),
         Case(
-            fieldType: "[Int: (a: Int, b: Int)]",
-            helpers: ["public mutating func updateItems(_ value: (a: Int, b: Int), forKey key: Int)"],
+            fieldType: "[Int: PlainPair<Int, Int>]",
+            helpers: ["public mutating func updateItems(_ value: PlainPair<Int, Int>, forKey key: Int)"],
             absentHelpers: ["func appendItems"]
         ),
         Case(
@@ -118,6 +120,22 @@ struct StateNodeBuilderContainerTypeTests {
         }
     }
 
+    @Test("A container field of tuples is refused: a tuple can't conform to PlainData", arguments: ["[(a: Int, b: Int)]", "[Int: (a: Int, b: Int)]"])
+    func tupleContainerFieldIsRefused(fieldType: String) {
+        let (_, context) = expandCollectingDiagnostics(
+            """
+            @StateNodeBuilder
+            struct Root: StateNodeProtocol {
+                @Sync(.broadcast) var items: \(fieldType) = .init()
+                init() {}
+            }
+            """,
+            macros: ["StateNodeBuilder": StateNodeBuilderMacro.self]
+        )
+        let messages = context.diagnostics.map(\.message)
+        #expect(messages.first?.hasPrefix("a tuple can't conform to PlainData") == true, "\(messages)")
+    }
+
     @Test("A typealias element keeps array helpers, as before #582")
     func typealiasElementKeepsArrayHelpers() {
         let (expanded, context) = expandCollectingDiagnostics(
@@ -145,6 +163,7 @@ struct StateNodeBuilderContainerTypeTests {
             }
             """,
             expandedSource: """
+
             struct Root: StateNodeProtocol {
                 @Sync(.broadcast) var maps: [[String: Int]] = []
                 init() {}
@@ -306,6 +325,15 @@ struct StateNodeBuilderContainerTypeTests {
 
                 @available(*, deprecated, message: "'maps' ([[String: Int]]) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
                 private static func _syncCheck_maps(_: _SyncFallbackField) {
+                }
+
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value._maps)
+                        SwiftStateTurns.PlainDataCheck.field(value.maps)
+                    }
                 }
 
                 private static let _syncPolicy_maps: SyncPolicy<[[String: Int]]> = .broadcast

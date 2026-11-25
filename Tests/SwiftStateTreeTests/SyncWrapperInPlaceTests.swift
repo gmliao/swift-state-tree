@@ -22,6 +22,7 @@ struct InPlaceProbe: Equatable, Sendable {
         lhs.box === rhs.box && lhs.count == rhs.count
     }
 }
+extension InPlaceProbe: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a shared box that tells a copy of a synced value from an in-place change
 
 @StateNodeBuilder
 struct InPlaceChildState: StateNodeProtocol {

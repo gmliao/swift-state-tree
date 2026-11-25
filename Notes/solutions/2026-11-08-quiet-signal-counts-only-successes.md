@@ -1,4 +1,5 @@
 ---
+title: "A quiet signal that counts only successes, and an offered rate above the service rate"
 module: deep-research
 date: 2026-11-08
 problem_type: measurement_pitfall

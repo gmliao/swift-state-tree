@@ -5,6 +5,7 @@
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
+import PlainDataMacroSupport
 
 /// Macro that automatically generates `SnapshotValueConvertible` and `SnapshotValueDecodable`
 /// protocol conformances.
@@ -79,6 +80,24 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             throw error
         }
 
+        // Another macro on the type could add members this walk doesn't see (#100).
+        // `@StateNodeBuilder` reports for both when it is beside this one.
+        if !PlainDataWalk.hasAttribute(named: "StateNodeBuilder", in: structDecl.attributes) {
+            StateTypeAttributes.diagnoseUnknown(
+                structDecl.attributes, allowed: StateTypeAttributes.besideSnapshotConvertible,
+                advertised: StateTypeAttributes.advertisedBesideSnapshotConvertible, in: context)
+        }
+
+        // The conversion reads only the type's top-level members, so a stored property inside
+        // `#if` would be checked but never converted or snapshotted: refused, as
+        // `@StateNodeBuilder` refuses a `@Sync` field there. Beside `@StateNodeBuilder` too, where
+        // an `@Internal` field inside `#if` would otherwise drop out of the conversion.
+        if let stored = firstStoredPropertyInIfConfig(structDecl.memberBlock.members) {
+            let error = SnapshotConvertibleError.storedInIfConfig(node: Syntax(stored), name: stored.bindings.first?.pattern.trimmedDescription ?? "?")
+            error.diagnose(context: context)
+            throw error
+        }
+
         // Collect all stored properties
         let properties = collectStoredProperties(from: structDecl)
 
@@ -131,6 +150,30 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         )
 
         var extensions: [ExtensionDeclSyntax] = [convertibleExtension, storedFieldsExtension]
+
+        // A state value type is PlainData: this macro writes the conformance and the
+        // checks, as `@Payload` does, unless `@PlainData` or `@Payload` beside it writes them.
+        // Beside `@StateNodeBuilder`, whose member is the witness, it writes only the
+        // conformance: the compiler leaves a conformance this macro's role declares to its
+        // expansion, even one `StateNodeProtocol` implies, so an expansion without it doesn't
+        // conform. Each name bare, or qualified by a module that exports it (`isProjectAttribute`).
+        let attributes = declaration.attributes
+        if PlainDataWalk.hasAttribute(named: "PlainData", in: attributes)
+            || PlainDataWalk.hasAttribute(named: "Payload", in: attributes) {
+            // The sibling writes the conformance and the checks.
+        } else if PlainDataWalk.hasAttribute(named: "StateNodeBuilder", in: attributes) {
+            if protocols.contains(where: { $0.trimmedDescription.hasSuffix("PlainData") }) {
+                extensions.append(try ExtensionDeclSyntax("extension \(type.trimmed): SwiftStateTurns.PlainData {}"))
+            }
+        } else {
+            extensions += PlainDataExtension.build(
+                of: node,
+                attachedTo: declaration,
+                providingExtensionsOf: type,
+                conformingTo: protocols.filter { $0.trimmedDescription.hasSuffix("PlainData") },
+                in: context
+            )
+        }
 
         // `@SnapshotConvertible(atomic: true)`: declare the value atomic, with its leaf paths in
         // declaration order (a nested atomic value contributes its own leaves, prefixed).
@@ -256,6 +299,25 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         return true
     }
 
+    /// The first stored instance property inside an `#if` clause, at any depth.
+    private static func firstStoredPropertyInIfConfig(_ members: MemberBlockItemListSyntax) -> VariableDeclSyntax? {
+        for member in members {
+            guard let ifConfig = member.decl.as(IfConfigDeclSyntax.self) else { continue }
+            for clause in ifConfig.clauses {
+                guard case .decls(let nested) = clause.elements else { continue }
+                for item in nested {
+                    if let variable = item.decl.as(VariableDeclSyntax.self),
+                       !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }),
+                       !variable.bindings.contains(where: PlainDataWalk.isComputed) {
+                        return variable
+                    }
+                }
+                if let deeper = firstStoredPropertyInIfConfig(nested) { return deeper }
+            }
+        }
+        return nil
+    }
+
     /// Collect all stored properties from a struct declaration
     private static func collectStoredProperties(from structDecl: StructDeclSyntax) -> [PropertyInfo] {
         var properties: [PropertyInfo] = []
@@ -265,10 +327,9 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                 continue
             }
 
-            // Skip computed properties
-            let hasComputedProperty = variableDecl.bindings.contains { binding in
-                return binding.accessorBlock != nil
-            }
+            // Skip computed properties. Observers keep a property stored, and converted, as the
+            // PlainData check counts it.
+            let hasComputedProperty = variableDecl.bindings.contains(where: PlainDataWalk.isComputed)
 
             if hasComputedProperty {
                 continue
@@ -448,9 +509,21 @@ private struct PropertyInfo {
 private enum SnapshotConvertibleError: Error, @unchecked Sendable {
     case onlyStructsSupported(node: Syntax)
     case invalidAtomicProperty(node: Syntax, name: String, typeName: String?)
+    case storedInIfConfig(node: Syntax, name: String)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
+        case .storedInIfConfig(let node, let name):
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: SnapshotConvertibleDiagnostic(
+                        message: "@SnapshotConvertible: stored property '\(name)' inside #if isn't converted; declare it outside #if",
+                        diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "snapshotConvertibleStoredInIfConfig"),
+                        severity: .error
+                    )
+                )
+            )
         case .invalidAtomicProperty(let node, let name, let typeName):
             context.diagnose(
                 Diagnostic(

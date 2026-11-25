@@ -1,4 +1,5 @@
 ---
+title: "A wire form keyed by schema patterns silently misses shapes the schema doesn't define"
 module: transport encoding, schema generation
 date: 2026-11-07
 problem_type: logic_error

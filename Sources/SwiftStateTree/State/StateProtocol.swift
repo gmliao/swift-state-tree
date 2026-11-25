@@ -1,17 +1,21 @@
 // Sources/SwiftStateTree/State/StateProtocol.swift
 
 /// Protocol that all State types must conform to.
-/// 
-/// This protocol ensures that all State types are both `Codable` (for serialization)
-/// and `Sendable` (for thread-safe usage across concurrency boundaries).
+///
+/// This protocol ensures that all State types are `Codable` (for serialization), `Sendable`
+/// (for thread-safe usage across concurrency boundaries) and `PlainData`: no class or closure
+/// at any depth, and an existential only as `any P` with `P` refining `PlainData`.
+/// `@SnapshotConvertible` or `@PlainData` writes the `PlainData` witness; a conformer without
+/// either doesn't compile.
 ///
 /// Example:
 /// ```swift
+/// @SnapshotConvertible
 /// struct PlayerState: StateProtocol {
 ///     var name: String
 ///     var hpCurrent: Int
 ///     var hpMax: Int
 /// }
 /// ```
-public protocol StateProtocol: Codable, Sendable {}
+public protocol StateProtocol: PlainData, Codable, Sendable {}
 

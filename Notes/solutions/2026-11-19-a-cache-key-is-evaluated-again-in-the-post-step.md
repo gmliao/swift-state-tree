@@ -1,4 +1,5 @@
 ---
+title: "A cache key is evaluated again in the post step, after the build filled the workspace"
 module: CI
 date: 2026-11-19
 problem_type: gotcha

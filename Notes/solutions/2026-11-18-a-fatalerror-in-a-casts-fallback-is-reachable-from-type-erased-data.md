@@ -1,4 +1,5 @@
 ---
+title: "A `fatalError` in a cast's fallback branch is reachable from type-erased data"
 module: SwiftStateTreeTransport
 date: 2026-11-18
 problem_type: bug_class

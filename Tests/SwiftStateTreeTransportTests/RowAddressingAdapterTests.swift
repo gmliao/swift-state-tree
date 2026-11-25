@@ -16,9 +16,10 @@ import Testing
 import SwiftStateTreeMessagePack
 
 /// A value whose conversion throws while `failing`: a seed of its map then fails for that field.
+@PlainData
 struct RowAddressingSeal: Sendable, Equatable, SnapshotValueConvertible {
     struct Failed: Error {}
-    var failing = false
+    var failing: Bool = false
 
     func toSnapshotValue() throws -> SnapshotValue {
         if failing { throw Failed() }

@@ -116,71 +116,102 @@ struct ReentrancyHelpersTests {
 
     // MARK: - Lifecycle
 
-    @Test("A second start while starting joins the in-flight start")
+    /// Begins a start the way an owner's `make` does and returns the token it was handed: the
+    /// test plays the task's last step by calling `finishStart` with it.
+    private func beginStart(_ lifecycle: inout Lifecycle, task: Task<Void, Error> = Task {}) -> Epoch? {
+        var minted: Epoch?
+        guard case .run = lifecycle.beginStart({ token in minted = token; return task }) else { return nil }
+        return minted
+    }
+
+    /// The same for a stop.
+    private func beginStop(_ lifecycle: inout Lifecycle, task: Task<Void, Never> = Task {}) -> Epoch? {
+        var minted: Epoch?
+        guard case .run = lifecycle.beginStop({ _, token in minted = token; return task }) else { return nil }
+        return minted
+    }
+
+    @Test("A second start while starting joins the in-flight start; make runs once, with the token the finish takes")
     func secondStartJoins() async throws {
         var lifecycle = Lifecycle()
         let gate = AsyncGateForHelpers()
-        guard case .run(let task, let token) = lifecycle.beginStart({ Task { await gate.wait() } }) else {
+        var minted: [Epoch] = []
+        guard case .run(let task) = lifecycle.beginStart({ token in
+            minted.append(token)
+            return Task { await gate.wait() }
+        }) else {
             Issue.record("first start should run"); return
         }
-        guard case .join(let joined) = lifecycle.beginStart({ Task {} }) else {
+        guard case .join(let joined) = lifecycle.beginStart({ token in
+            minted.append(token)
+            return Task {}
+        }) else {
             Issue.record("second start should join"); return
         }
+        #expect(minted.count == 1, "make runs only for the call that starts it")
         #expect(lifecycle.phase == .starting)
         await gate.open()
         try await task.value
         try await joined.value
+        let token = try #require(minted.first)
+        // The task's last step.
         lifecycle.finishStart(token, succeeded: true)
         #expect(lifecycle.phase == .running)
-        guard case .alreadyRunning = lifecycle.beginStart({ Task {} }) else {
+        guard case .alreadyRunning = lifecycle.beginStart({ _ in Task {} }) else {
             Issue.record("start while running should report alreadyRunning"); return
         }
     }
 
     @Test("A failed start returns to idle and can start again")
-    func failedStartReturnsToIdle() {
+    func failedStartReturnsToIdle() throws {
         var lifecycle = Lifecycle()
-        guard case .run(_, let token) = lifecycle.beginStart({ Task {} }) else {
-            Issue.record("start should run"); return
-        }
+        let token = try #require(beginStart(&lifecycle))
         lifecycle.finishStart(token, succeeded: false)
         #expect(lifecycle.phase == .idle)
-        guard case .run = lifecycle.beginStart({ Task {} }) else {
-            Issue.record("restart should run"); return
-        }
+        #expect(beginStart(&lifecycle) != nil, "restart should run")
     }
 
     @Test("A stop during a start gets the in-flight start and the late start outcome is ignored")
-    func stopDuringStart() async {
+    func stopDuringStart() async throws {
         var lifecycle = Lifecycle()
-        guard case .run(let startTask, let startToken) = lifecycle.beginStart({ Task {} }) else {
+        var startTask: Task<Void, Error>?
+        var startToken: Epoch?
+        guard case .run = lifecycle.beginStart({ token in
+            startToken = token
+            let task = Task<Void, Error> {}
+            startTask = task
+            return task
+        }) else {
             Issue.record("start should run"); return
         }
         var handedStart: Task<Void, Error>?
-        guard case .run(let stopTask, let stopToken) = lifecycle.beginStop({ inFlight in
+        var stopToken: Epoch?
+        guard case .run(let stopTask) = lifecycle.beginStop({ inFlight, token in
             handedStart = inFlight
+            stopToken = token
             return Task {}
         }) else {
             Issue.record("stop should run"); return
         }
         #expect(handedStart == startTask)
+        #expect(stopToken != startToken, "the stop mints its own token")
         #expect(lifecycle.phase == .stopping)
         // The start finishing after the stop took over does not move the phase.
-        lifecycle.finishStart(startToken, succeeded: true)
+        lifecycle.finishStart(try #require(startToken), succeeded: true)
         #expect(lifecycle.phase == .stopping)
-        guard case .join = lifecycle.beginStop({ _ in Task {} }) else {
+        guard case .join = lifecycle.beginStop({ _, _ in Task {} }) else {
             Issue.record("second stop should join"); return
         }
-        guard case .stopped = lifecycle.beginStart({ Task {} }) else {
+        guard case .stopped = lifecycle.beginStart({ _ in Task {} }) else {
             Issue.record("start while stopping should report stopped"); return
         }
         await stopTask.value
-        lifecycle.finishStop(stopToken)
+        lifecycle.finishStop(try #require(stopToken))
         #expect(lifecycle.phase == .stopped)
-        guard case .nothingToStop = lifecycle.beginStop({ _ in Task {} }) else {
+        guard case .nothingToStop = lifecycle.beginStop({ _, _ in Task {} }) else {
             Issue.record("stop after stopped should be a no-op"); return
         }
-        guard case .stopped = lifecycle.beginStart({ Task {} }) else {
+        guard case .stopped = lifecycle.beginStart({ _ in Task {} }) else {
             Issue.record("a stopped resource does not start again"); return
         }
     }
@@ -188,10 +219,85 @@ struct ReentrancyHelpersTests {
     @Test("Stopping a never-started resource makes it stopped")
     func stopBeforeStart() {
         var lifecycle = Lifecycle()
-        guard case .nothingToStop = lifecycle.beginStop({ _ in Task {} }) else {
+        guard case .nothingToStop = lifecycle.beginStop({ _, _ in Task {} }) else {
             Issue.record("stop before start should be a no-op"); return
         }
         #expect(lifecycle.phase == .stopped)
+    }
+
+    @Test("finishStop with a start's token is a no-op in .starting, .running and .idle: the phase guard is the only barrier")
+    func finishStopWithAStartTokenIsANoOp() throws {
+        var lifecycle = Lifecycle()
+        let startToken = try #require(beginStart(&lifecycle))
+        lifecycle.finishStop(startToken)
+        #expect(lifecycle.phase == .starting)
+        lifecycle.finishStart(startToken, succeeded: true)
+        lifecycle.finishStop(startToken)
+        #expect(lifecycle.phase == .running)
+
+        var failed = Lifecycle()
+        let failedToken = try #require(beginStart(&failed))
+        failed.finishStart(failedToken, succeeded: false)
+        failed.finishStop(failedToken)
+        #expect(failed.phase == .idle)
+    }
+
+    @Test("finishStop with a stale token during .stopping is a no-op: only the current stop's token ends it")
+    func staleFinishStopDuringStoppingIsANoOp() throws {
+        var lifecycle = Lifecycle()
+        let startToken = try #require(beginStart(&lifecycle))
+        lifecycle.finishStart(startToken, succeeded: true)
+        let stopToken = try #require(beginStop(&lifecycle))
+        #expect(lifecycle.phase == .stopping)
+        // The token of the start the stop replaced: not the current one.
+        lifecycle.finishStop(startToken)
+        #expect(lifecycle.phase == .stopping, "a stale token doesn't end the stop")
+        lifecycle.finishStop(stopToken)
+        #expect(lifecycle.phase == .stopped)
+    }
+
+    @Test("The late finish of an earlier start leaves a retried start alone")
+    func lateFinishOfAnEarlierStartLeavesTheRetry() throws {
+        var lifecycle = Lifecycle()
+        let first = try #require(beginStart(&lifecycle))
+        lifecycle.finishStart(first, succeeded: false)
+        #expect(lifecycle.phase == .idle)
+        let second = try #require(beginStart(&lifecycle))
+        #expect(second != first)
+        // A late call of the first start, with either outcome: the retry is still starting.
+        lifecycle.finishStart(first, succeeded: false)
+        #expect(lifecycle.phase == .starting)
+        lifecycle.finishStart(first, succeeded: true)
+        #expect(lifecycle.phase == .starting)
+        lifecycle.finishStart(second, succeeded: true)
+        #expect(lifecycle.phase == .running)
+    }
+
+    @Test("A second finish for the same start or stop is a no-op, whatever its outcome")
+    func doubleFinishIsANoOp() throws {
+        var started = Lifecycle()
+        let startToken = try #require(beginStart(&started))
+        started.finishStart(startToken, succeeded: true)
+        started.finishStart(startToken, succeeded: false)
+        #expect(started.phase == .running, "a repeated finish doesn't undo the recorded result")
+
+        var failed = Lifecycle()
+        let failedToken = try #require(beginStart(&failed))
+        failed.finishStart(failedToken, succeeded: false)
+        failed.finishStart(failedToken, succeeded: true)
+        #expect(failed.phase == .idle)
+
+        var stopped = Lifecycle()
+        let running = try #require(beginStart(&stopped))
+        stopped.finishStart(running, succeeded: true)
+        let stopToken = try #require(beginStop(&stopped))
+        stopped.finishStop(stopToken)
+        #expect(stopped.phase == .stopped)
+        stopped.finishStop(stopToken)
+        #expect(stopped.phase == .stopped)
+        guard case .stopped = stopped.beginStart({ _ in Task {} }) else {
+            Issue.record("a stopped resource does not start again"); return
+        }
     }
 
     // MARK: - HoldPoints

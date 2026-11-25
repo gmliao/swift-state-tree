@@ -1,4 +1,5 @@
 ---
+title: "A verdict never checked on one land kind"
 module: SwiftStateTree
 date: 2026-11-14
 problem_type: testing_practice

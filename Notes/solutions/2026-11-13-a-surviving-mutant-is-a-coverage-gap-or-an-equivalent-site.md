@@ -1,4 +1,5 @@
 ---
+title: "A surviving mutant is a coverage gap or an equivalent site: find out which"
 module: SwiftStateTreeTransport
 date: 2026-11-13
 problem_type: testing_practice

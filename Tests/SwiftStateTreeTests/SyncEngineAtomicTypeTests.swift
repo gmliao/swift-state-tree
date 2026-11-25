@@ -21,6 +21,7 @@ struct AtomicTypeStateNode: StateNodeProtocol {
     var structMap: [String: SimpleStruct] = [:]
 }
 
+@PlainData
 struct SimpleStruct: Codable, Equatable, Sendable {
     var x: Int
     var y: Int

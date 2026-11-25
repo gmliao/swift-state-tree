@@ -1,4 +1,5 @@
 ---
+title: "Wire-fed integer conversions must be exact and throwing"
 module: SwiftStateTreeMessagePack
 date: 2026-11-09
 problem_type: bug_class

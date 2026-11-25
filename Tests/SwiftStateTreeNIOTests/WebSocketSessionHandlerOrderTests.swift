@@ -85,7 +85,7 @@ private func makeSession(
 }
 
 private func sendText(_ text: String, on channel: EmbeddedChannel) throws {
-    let frame = WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: text))
+    let frame = WebSocketFrame.client(fin: true, opcode: .text, data: ByteBuffer(string: text))
     try channel.writeInbound(frame)
     // The handler flushes its batch from a task on the event loop.
     channel.embeddedEventLoop.run()
@@ -154,8 +154,8 @@ struct WebSocketSessionHandlerOrderTests {
         try #require(await delegate.log.waitFor("connect:s1"))
         // No loop run between the two frames: the message's batch flush is still scheduled
         // when the close frame arrives.
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: "last-action")))
-        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .text, data: ByteBuffer(string: "last-action")))
+        try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .connectionClose, data: ByteBuffer()))
         channel.embeddedEventLoop.run()
 
         let disconnected = await delegate.log.waitFor("disconnect:s1")
@@ -174,8 +174,8 @@ struct WebSocketSessionHandlerOrderTests {
         let handler = try channel.pipeline.syncOperations.handler(type: WebSocketSessionHandler.self)
         try #require(await delegate.log.waitFor("connect:s1"))
         // Both frames in one read: the pipeline delivers them back to back.
-        channel.pipeline.fireChannelRead(NIOAny(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer())))
-        channel.pipeline.fireChannelRead(NIOAny(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: "late"))))
+        channel.pipeline.fireChannelRead(NIOAny(WebSocketFrame.client(fin: true, opcode: .connectionClose, data: ByteBuffer())))
+        channel.pipeline.fireChannelRead(NIOAny(WebSocketFrame.client(fin: true, opcode: .text, data: ByteBuffer(string: "late"))))
         channel.embeddedEventLoop.run()
 
         let disconnected = await delegate.log.waitFor("disconnect:s1")

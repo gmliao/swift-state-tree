@@ -1,4 +1,5 @@
 ---
+title: "A protocol extension's async default wins over the concrete type's sync method"
 module: SwiftStateTreeTransport
 date: 2026-11-06
 problem_type: gotcha

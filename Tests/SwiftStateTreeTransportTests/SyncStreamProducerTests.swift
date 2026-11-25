@@ -286,8 +286,9 @@ struct SyncStreamProducerTests {
 // MARK: - Drops, legacy cycles and stream order
 
 /// A value whose snapshot conversion throws while `broken` is set (an extraction drop).
+@PlainData
 struct SyncStreamFragile: Codable, Sendable, Equatable, SnapshotValueConvertible {
-    var broken = false
+    var broken: Bool = false
     func toSnapshotValue() throws -> SnapshotValue {
         if broken { throw SyncStreamFault() }
         return .int(0)
