@@ -66,11 +66,14 @@ public protocol ReevaluationSource: Sendable {
     /// state hashes may then differ from this build's (`ReevaluationRecordVersion.hashIncomparability`).
     func getHoldsNonNFCText() async throws -> Bool
 
-    /// True only when this source parsed its frames from JSON bytes — the two JSON-reading
-    /// initializers (`init(data:)` and `init(filePath:)`). JSON's number representation loses the
-    /// float/integer distinction, so a runner reading such a source decodes with the integral-float
-    /// allowance. Sources that hold canonical frames built in memory (`init(metadata:frames:)`) or
-    /// that read a 3.x binary record never set this, and their runners decode strictly.
+    /// Whether the record's payloads were written as JSON, so a whole-valued number can be an
+    /// integer where the payload's type declares a `Double` or `Float` (JSON's number
+    /// representation loses the float/integer split). A runner reading such a source decodes with
+    /// the integral-float allowance; any other source decodes strictly. The flag describes where
+    /// the returned payloads came from, not the source's type: `JSONReevaluationSource`'s
+    /// `init(data:)` and `init(filePath:)` set it, `init(metadata:frames:)` (canonical frames
+    /// built in memory) and a 3.x binary record don't. A source that forwards another source's
+    /// reads must forward this too, or its payloads decode strictly.
     nonisolated var readsJSONRecord: Bool { get }
 }
 
@@ -122,7 +125,6 @@ extension ReevaluationSource {
 
     /// Default for conformers that hold canonical frames built in memory: no JSON was parsed.
     public nonisolated var readsJSONRecord: Bool { false }
-
 
     /// Whether the record carries a sync stream (see `ReevaluationSyncStreamPresence`).
     public func getSyncStreamPresence() async throws -> ReevaluationSyncStreamPresence {

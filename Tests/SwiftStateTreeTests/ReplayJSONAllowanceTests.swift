@@ -36,4 +36,18 @@ struct ReplayJSONAllowanceTests {
         let source = JSONReevaluationSource(metadata: Self.metadata(), frames: [])
         #expect(ReevaluationReplayFrame.integralFloats(for: source) == false)
     }
+
+    @Test("FaultingReevaluationSource forwards readsJSONRecord: a wrapped JSON read reports true")
+    func faultingSourceForwardsTrue() throws {
+        let wrapped = FaultingReevaluationSource(base: try JSONReevaluationSource(data: Self.minimalRecord), faults: ReplayRunnerFaults())
+        #expect(wrapped.readsJSONRecord == true)
+        #expect(ReevaluationReplayFrame.integralFloats(for: wrapped) == true)
+    }
+
+    @Test("FaultingReevaluationSource forwards readsJSONRecord: a wrapped in-memory source reports false")
+    func faultingSourceForwardsFalse() {
+        let wrapped = FaultingReevaluationSource(base: JSONReevaluationSource(metadata: Self.metadata(), frames: []), faults: ReplayRunnerFaults())
+        #expect(wrapped.readsJSONRecord == false)
+        #expect(ReevaluationReplayFrame.integralFloats(for: wrapped) == false)
+    }
 }
