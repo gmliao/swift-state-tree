@@ -57,7 +57,7 @@ HandleAction(SomeAction.self) { state, action, ctx in
 }
 ```
 
-`LandKeeper` 透過 `withHandlerStep` 執行 replay 會重跑的 handler（OnInitialize、OnJoin、OnLeave、action、client event、server input 與 tick），直接修改 actor 的狀態，並為這次呼叫綁定 `ctx.random`。其他 handler 不經過它而直接拿到 `ctx.random`：CanJoin 與 sync handler 各自拿到 land 產生器的一份副本，drain 的三個 handler（OnDestroyWhenEmpty、OnFinalize 與 AfterFinalize）共用一份副本。這些副本都不會寫回。
+`LandKeeper` 透過 `withHandlerStep` 執行會修改狀態的 handler，直接修改 actor 的狀態，並為這次呼叫綁定 `ctx.random`。replay 會重跑的 handler（OnInitialize、OnJoin、OnLeave、action、client event、server input 與 tick）拿到延續 land 產生器的 service，handler 回傳後 keeper 會把產生器寫回。OnDestroyWhenEmpty 與 OnFinalize 也經過 `withHandlerStep`，但拿到的是產生器的一份副本，不會寫回。AfterFinalize 拿到狀態的快照，並從同一份副本抽取，所以 drain 的三個 handler 延續同一個序列。CanJoin 與 sync handler 不經過 `withHandlerStep`：各自拿到自己的一份副本，同樣不會寫回。
 
 ```swift
 // 內部實作（簡化版）

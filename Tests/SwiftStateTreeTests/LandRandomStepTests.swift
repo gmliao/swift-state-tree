@@ -363,7 +363,7 @@ struct LandRandomStepTests {
         #expect(live == expectedDraws(seed: seed, count: 2), "the ticks continue the land's sequence unmoved")
     }
 
-    @Test("CanJoin with a resolver takes its copy after the resolver; the recorded run replays")
+    @Test("CanJoin with a resolver takes its copy after the resolver; the recorded run replays", .resolverDeadlinesOff)
     func canJoinWithResolverIsDetachedAndReplays() async throws {
         let log = DrawLog()
         let gate = TestGate()
