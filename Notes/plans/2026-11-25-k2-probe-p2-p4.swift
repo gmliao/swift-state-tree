@@ -10,8 +10,8 @@
 //     and the run-time exclusivity check traps, in -Onone and in -O.
 //
 // Build and run (Linux, Swift 6.4.3):
-//   swiftc -swift-version 6 -Onone p2run-p4.swift -o p-debug
-//   swiftc -swift-version 6 -O     p2run-p4.swift -o p-release
+//   swiftc -swift-version 6 -Onone 2026-11-25-k2-probe-p2-p4.swift -o p-debug
+//   swiftc -swift-version 6 -O     2026-11-25-k2-probe-p2-p4.swift -o p-release
 //   ./p-debug control; echo "exit=$?"     # expect: "P2 forward: 3", "step done: state=1", exit=0
 //   ./p-release control; echo "exit=$?"   # same
 //   ./p-debug trap; echo "exit=$?"        # expect a trap, stderr containing
