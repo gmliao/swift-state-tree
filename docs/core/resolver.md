@@ -118,7 +118,7 @@ The output parameter is optional. It is `nil` when the closure built no value (s
 
 The closure runs once, in the turn that admits the input: before the resolvers start, with the State as it is at that moment. A change to the State while the resolvers run doesn't reach the value. The closure reads; it can't write the State (it gets it as a constant), and its context has no random source.
 
-An action's closure runs before the [action caps](#actions-with-resolvers) are checked, so it also runs for an action the caps then refuse. This is safe because it reads and changes nothing.
+An action's closure runs before the [action caps](#actions-with-resolvers) are checked, so it also runs for an action the caps then refuse. Replay doesn't run it: replay reads the outputs the record holds. So the closure must not change anything. The compiler stops it from writing the State, but not from calling code that has effects, or from changing a State that holds a reference. Such an effect would happen for a refused action too, and replay would neither undo it nor repeat it.
 
 The closure may return `nil`. Then nothing is fetched, and the handler gets `nil` for that output. An action whose closure returns `nil` for every resolver has nothing to wait for: it is handled like an action without resolvers, and the action caps don't count it. Use `nil` to skip a load the State already answers:
 
@@ -132,6 +132,8 @@ HandleAction(AddToCartAction.self, resolvers: { state, action, _ in
     ...
 }
 ```
+
+An action whose closure built no value is applied in order with the inputs that don't wait. So it can be applied before an earlier action of the same type that is still waiting for its resolvers.
 
 ### Multiple Resolvers
 

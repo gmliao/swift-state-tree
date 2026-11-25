@@ -118,7 +118,7 @@ Rules {
 
 closure 只執行一次，在接收該 input 的 turn 中：在 resolver 啟動之前，使用當下的 State。resolver 執行期間 State 的變動不會影響這個值。closure 只讀；它不能寫入 State（拿到的是常數），它的 context 也沒有隨機來源。
 
-Action 的 closure 在檢查 [action 上限](#帶-resolver-的-action)之前執行，所以上限之後拒絕的 action，它的 closure 也已執行過。這是安全的，因為它只讀、不改變任何東西。
+Action 的 closure 在檢查 [action 上限](#帶-resolver-的-action)之前執行，所以上限之後拒絕的 action，它的 closure 也已執行過。Replay 不執行 closure：replay 讀取 record 保存的輸出。因此 closure 不可改變任何東西。編譯器會阻止它寫入 State，但不會阻止它呼叫有副作用的程式碼，也不會阻止它改變持有參考的 State。這樣的副作用對被拒絕的 action 也會發生，而 replay 既不會撤銷它，也不會重現它。
 
 closure 可以回傳 `nil`。這時不會載入任何東西，handler 在該輸出得到 `nil`。若 action 的 closure 對每個 resolver 都回傳 `nil`，就沒有東西要等：它的處理方式與不帶 resolver 的 action 相同，action 上限也不計入它。State 已能回答時，用 `nil` 來略過一次載入：
 
@@ -132,6 +132,8 @@ HandleAction(AddToCartAction.self, resolvers: { state, action, _ in
     ...
 }
 ```
+
+closure 沒有建立任何值的 action，與不需等待的輸入依序套用。因此它可能比同類型、較早送出、仍在等待 resolver 的 action 先套用。
 
 ### 多個 Resolver
 
