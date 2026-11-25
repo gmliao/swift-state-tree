@@ -89,10 +89,9 @@ public struct PayloadMacro: MemberMacro {
                 continue
             }
             
-            // Skip computed properties
-            let hasComputedProperty = variableDecl.bindings.contains { binding in
-                return binding.accessorBlock != nil
-            }
+            // Skip computed properties. An observed one (`willSet`/`didSet` only) has storage:
+            // it is a field, as the PlainData witness already treats it (#837).
+            let hasComputedProperty = variableDecl.bindings.contains(where: PlainDataWalk.isComputed)
             
             if hasComputedProperty {
                 continue
@@ -438,7 +437,7 @@ extension PayloadMacro: ExtensionMacro {
         for member in structDecl.memberBlock.members {
             guard let variable = member.decl.as(VariableDeclSyntax.self),
                   !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) else { continue }
-            for binding in variable.bindings where binding.accessorBlock == nil {
+            for binding in variable.bindings where !PlainDataWalk.isComputed(binding) {
                 guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self),
                       let type = binding.typeAnnotation?.type else { continue }
                 let references = TypeReferences(viewMode: .sourceAccurate)

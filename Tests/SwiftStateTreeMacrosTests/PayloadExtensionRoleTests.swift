@@ -253,4 +253,21 @@ struct PayloadExtensionRoleTests {
         let (_, messages) = expand("@Payload\nstruct Hit: ServerEventPayload {\nlet n: Int\ninit() { n = 0 }\n\(allowed)\n}", conforming: false)
         #expect(!messages.contains { $0.contains("a macro attached to a member") }, "\(messages)")
     }
+
+    @Test("An observed property is a field: in the metadata and the positional writer, as in the witness (#837)")
+    func observedPropertyIsAField() {
+        let (text, _) = expand("""
+            @Payload
+            struct Hit: ServerEventPayload {
+                var hp: Int = 0 {
+                    didSet {}
+                }
+                var shown: Int { hp }
+            }
+            """, conforming: false)
+        #expect(text.contains("name: \"hp\""), "\(text)")
+        #expect(text.contains("try writer.field(self.hp)"), "\(text)")
+        #expect(text.contains("PlainDataCheck.field(value.hp)"), "\(text)")
+        #expect(!text.contains("name: \"shown\"") && !text.contains("self.shown"), "\(text)")
+    }
 }
