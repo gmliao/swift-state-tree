@@ -174,29 +174,29 @@ private func makeLand(
 ) -> LandDefinition<ShutdownState> {
     Land(landType, using: ShutdownState.self) {
         Rules {
-            CanJoin { (_: ShutdownState, session: PlayerSession, _: LandContext) in
+            CanJoin { _, session, _ in
                 .allow(playerID: PlayerID(session.playerID))
             }
-            OnJoin { (state: inout ShutdownState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players.append(ctx.playerID.rawValue)
             }
-            OnLeave { (state: inout ShutdownState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeAll { $0 == ctx.playerID.rawValue }
                 events.append("leave:\(ctx.playerID.rawValue)")
             }
         }
         Lifetime {
             // The builder has no `if`: without `destroyWhenEmpty` the delay is past any test.
-            DestroyWhenEmpty(after: destroyWhenEmpty ? .milliseconds(1) : .seconds(3600)) { (_: inout ShutdownState, _: LandContext) in
+            DestroyWhenEmpty(after: destroyWhenEmpty ? .milliseconds(1) : .seconds(3600)) { _, _ in
                 events.append("destroyWhenEmpty")
             }
-            OnFinalize { (state: inout ShutdownState, _: LandContext) in
+            OnFinalize { state, _ in
                 events.append("finalize")
                 // The players still in at the destroy: an instance whose sessions' leaves ran
                 // on it has none (#390). Recorded apart, so the handler order above stays as is.
                 finalizePlayers?.append(state.players.sorted().joined(separator: ","))
             }
-            AfterFinalize { (_: ShutdownState, _: LandContext) async in
+            AfterFinalize { _, _ async in
                 events.append("afterFinalize")
                 await afterFinalize?()
             }

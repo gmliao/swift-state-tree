@@ -97,8 +97,8 @@ struct WireNameCollisionTests {
     func schemaNameMeetsTypeName() throws {
         let definition = Land("wire-ping", using: WireNameState.self) {
             Rules {
-                HandleAction(WNPing.self) { (state: inout WireNameState, _: WNPing, _: LandContext) in WireNameAck(total: state.total) }
-                HandleAction(WNPingAction.self) { (state: inout WireNameState, _: WNPingAction, _: LandContext) in WireNameAck(total: -1) }
+                HandleAction(WNPing.self) { state, _, _ in WireNameAck(total: state.total) }
+                HandleAction(WNPingAction.self) { state, _, _ in WireNameAck(total: -1) }
             }
         }
         #expect(definition.actionHandlers.count == 1, "the first is kept")
@@ -116,8 +116,8 @@ struct WireNameCollisionTests {
     func schemaNamesDifferInCase() throws {
         let definition = Land("wire-case", using: WireNameState.self) {
             Rules {
-                HandleAction(WNCasePingAction.self) { (state: inout WireNameState, _: WNCasePingAction, _: LandContext) in WireNameAck(total: state.total) }
-                HandleAction(WNCASEPINGAction.self) { (state: inout WireNameState, _: WNCASEPINGAction, _: LandContext) in WireNameAck(total: -1) }
+                HandleAction(WNCasePingAction.self) { state, _, _ in WireNameAck(total: state.total) }
+                HandleAction(WNCASEPINGAction.self) { state, _, _ in WireNameAck(total: -1) }
             }
         }
         let duplicate = try #require(try registrationError(definition).duplicateHandlers.first)
@@ -131,8 +131,8 @@ struct WireNameCollisionTests {
     func caseInsensitiveReportsTheSharedName() throws {
         let definition = Land("wire-case-name", using: WireNameState.self) {
             Rules {
-                HandleAction(WNPINGACTIONAction.self) { (state: inout WireNameState, _: WNPINGACTIONAction, _: LandContext) in WireNameAck(total: state.total) }
-                HandleAction(WNPingAction.self) { (state: inout WireNameState, _: WNPingAction, _: LandContext) in WireNameAck(total: -1) }
+                HandleAction(WNPINGACTIONAction.self) { state, _, _ in WireNameAck(total: state.total) }
+                HandleAction(WNPingAction.self) { state, _, _ in WireNameAck(total: -1) }
             }
         }
         let duplicate = try #require(try registrationError(definition).duplicateHandlers.first)
@@ -143,8 +143,8 @@ struct WireNameCollisionTests {
     func nestedTypesShareTheirName() throws {
         let definition = Land("wire-move", using: WireNameState.self) {
             Rules {
-                HandleAction(WNLeft.Move.self) { (state: inout WireNameState, _: WNLeft.Move, _: LandContext) in WireNameAck(total: state.total) }
-                HandleAction(WNRight.Move.self) { (state: inout WireNameState, _: WNRight.Move, _: LandContext) in WireNameAck(total: -1) }
+                HandleAction(WNLeft.Move.self) { state, _, _ in WireNameAck(total: state.total) }
+                HandleAction(WNRight.Move.self) { state, _, _ in WireNameAck(total: -1) }
             }
         }
         let duplicate = try #require(try registrationError(definition).duplicateHandlers.first)
@@ -159,8 +159,8 @@ struct WireNameCollisionTests {
     func serverInputsShareTheirName() throws {
         let definition = Land("wire-nudge", using: WireNameState.self) {
             Rules {
-                HandleServerInput(WNLeft.Nudge.self) { (state: inout WireNameState, _: WNLeft.Nudge, _: LandContext) in state.total += 1 }
-                HandleServerInput(WNRight.Nudge.self) { (state: inout WireNameState, _: WNRight.Nudge, _: LandContext) in state.total -= 1 }
+                HandleServerInput(WNLeft.Nudge.self) { state, _, _ in state.total += 1 }
+                HandleServerInput(WNRight.Nudge.self) { state, _, _ in state.total -= 1 }
             }
         }
         let duplicate = try #require(try registrationError(definition).duplicateHandlers.first)
@@ -182,8 +182,8 @@ struct WireNameCollisionTests {
                 Register(WNShoutEvent.self)
             }
             Rules {
-                HandleEvent(WNHit.self) { (state: inout WireNameState, _: WNHit, _: LandContext) in state.total += 1 }
-                HandleEvent(WNHitEvent.self) { (state: inout WireNameState, _: WNHitEvent, _: LandContext) in state.total -= 1 }
+                HandleEvent(WNHit.self) { state, _, _ in state.total += 1 }
+                HandleEvent(WNHitEvent.self) { state, _, _ in state.total -= 1 }
             }
         }
         let duplicates = try registrationError(definition).duplicateHandlers
@@ -204,10 +204,10 @@ struct WireNameCollisionTests {
                 Register(WNHit.self)
             }
             Rules {
-                HandleAction(WNPing.self) { (state: inout WireNameState, _: WNPing, _: LandContext) in WireNameAck(total: state.total) }
-                HandleAction(WNLeft.Move.self) { (state: inout WireNameState, _: WNLeft.Move, _: LandContext) in WireNameAck(total: state.total) }
-                HandleEvent(WNHit.self) { (state: inout WireNameState, _: WNHit, _: LandContext) in state.total += 1 }
-                HandleServerInput(WNLeft.Nudge.self) { (state: inout WireNameState, _: WNLeft.Nudge, _: LandContext) in state.total += 1 }
+                HandleAction(WNPing.self) { state, _, _ in WireNameAck(total: state.total) }
+                HandleAction(WNLeft.Move.self) { state, _, _ in WireNameAck(total: state.total) }
+                HandleEvent(WNHit.self) { state, _, _ in state.total += 1 }
+                HandleServerInput(WNLeft.Nudge.self) { state, _, _ in state.total += 1 }
             }
         }
         #expect(definition.duplicateHandlers.isEmpty, "\(definition.duplicateHandlers)")
@@ -218,8 +218,8 @@ struct WireNameCollisionTests {
     func keeperBackstop() async throws {
         let definition = Land("wire-keeper", using: WireNameState.self) {
             Rules {
-                HandleAction(WNPing.self) { (state: inout WireNameState, _: WNPing, _: LandContext) in WireNameAck(total: state.total) }
-                HandleAction(WNPingAction.self) { (state: inout WireNameState, _: WNPingAction, _: LandContext) in WireNameAck(total: -1) }
+                HandleAction(WNPing.self) { state, _, _ in WireNameAck(total: state.total) }
+                HandleAction(WNPingAction.self) { state, _, _ in WireNameAck(total: -1) }
             }
         }
         let keeper = LandKeeper<WireNameState>(definition: definition, initialState: WireNameState(), autoStartLoops: false)

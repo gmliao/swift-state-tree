@@ -73,7 +73,7 @@ private func makeBehindCommitLand(periodic: Bool) -> LandDefinition<BehindCommit
     }
     return Land("behind-commit", using: BehindCommitState.self) {
         Lifetime {
-            StateSync(every: .seconds(3600)) { (_: BehindCommitState, _: LandContext) in }
+            StateSync(every: .seconds(3600)) { _, _ in }
         }
         Rules { HandleAction(BehindCommitSetTotal.self, setTotal) }
     }

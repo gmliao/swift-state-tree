@@ -67,7 +67,7 @@ private func makeDirtyFlagsKeeper() -> LandKeeper<DirtyFlagsTestState> {
         using: DirtyFlagsTestState.self
     ) {
         Rules {
-            HandleAction(IncrementCounterAction.self) { (state: inout DirtyFlagsTestState, action: IncrementCounterAction, ctx: LandContext) in
+            HandleAction(IncrementCounterAction.self) { state, action, ctx in
                 state.round += action.amount
                 state.players[ctx.playerID] = "Player \(action.amount)"
                 state.score += action.amount * 10
@@ -181,7 +181,7 @@ private func makeNestedDirtyFlagsKeeper() -> LandKeeper<ParentDirtyFlagsTestStat
         using: ParentDirtyFlagsTestState.self
     ) {
         Rules {
-            HandleAction(IncrementCounterAction.self) { (state: inout ParentDirtyFlagsTestState, action: IncrementCounterAction, ctx: LandContext) in
+            HandleAction(IncrementCounterAction.self) { state, action, ctx in
                 state.parentValue += action.amount
                 state.nested.nestedValue += action.amount * 10
                 return IncrementCounterResponse(success: true, newValue: state.parentValue)

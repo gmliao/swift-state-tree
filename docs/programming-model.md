@@ -264,20 +264,23 @@ The handler can't throw. An action that can be refused splits into a `validate` 
 
 ### A.3 Swift Implementation of Resolver
 
-Resolver is implemented in Swift as a type implementing `ContextResolver` protocol:
+A resolver is implemented in Swift as a `@PlainData` value that conforms to the `Resolver` protocol. Its fields are its parameters:
 
+* The entry's `resolvers:` closure builds the value from the State and the input, when the input is admitted
 * Resolver output must implement `ResolverOutput` protocol, and its type carries `@PlainData`
-* Access resolver results in handler through `LandContext`'s `@dynamicMemberLookup` feature
+* The handler gets the outputs as typed parameters, after the input
 * Resolver executes in parallel before handler execution
 
 **Usage Example**:
 
 ```swift
 Rules {
-    HandleAction(UpdateCartAction.self, resolvers: (ProductInfoResolver.self, UserBalanceResolver.self)) { state, action, ctx in
-        // Resolver has already executed in parallel, results can be used directly
-        let productInfo = ctx.productInfo  // ProductInfo?
-        let userBalance = ctx.userBalance  // UserBalance?
+    HandleAction(UpdateCartAction.self, resolvers: { _, action, ctx in
+        (ProductInfo(productID: action.productID), UserBalance(playerID: ctx.playerID))
+    }) { state, action, resolved, ctx in
+        // The resolvers have already run in parallel
+        let productInfo = resolved.0  // ProductInfoOutput?
+        let userBalance = resolved.1  // UserBalanceOutput?
         // ...
     }
 }

@@ -302,12 +302,12 @@ struct SchemaTypeNameCollisionTests {
     func serverInputsShareANameInTheFingerprint() {
         let named = Land("schema-name-input-item", using: SchemaNameFirstLandState.self) {
             Rules {
-                HandleServerInput(SchemaNameD.Item.self) { (_: inout SchemaNameFirstLandState, _: SchemaNameD.Item, _: LandContext) in }
+                HandleServerInput(SchemaNameD.Item.self) { _, _, _ in }
             }
         }
         let holder = Land("schema-name-input-holder", using: SchemaNameFirstLandState.self) {
             Rules {
-                HandleServerInput(SchemaNameC.Holder.self) { (_: inout SchemaNameFirstLandState, _: SchemaNameC.Holder, _: LandContext) in }
+                HandleServerInput(SchemaNameC.Holder.self) { _, _, _ in }
             }
         }
         #expect(collisions { _ = try ReevaluationSchemaFingerprint.compute(for: named) } == [SchemaTypeNameCollision(

@@ -97,7 +97,7 @@ func testSchemaExtractorBasic() throws {
         using: TestSchemaExtractorBasicFixtures.SimpleState.self
     ) {
         Rules {
-            HandleAction(TestSchemaExtractorBasicFixtures.SimpleAction.self) { (state: inout TestSchemaExtractorBasicFixtures.SimpleState, action: TestSchemaExtractorBasicFixtures.SimpleAction, ctx: LandContext) in
+            HandleAction(TestSchemaExtractorBasicFixtures.SimpleAction.self) { state, action, ctx in
                 return TestSchemaExtractorBasicFixtures.SimpleActionResponse(value: "response")
             }
         }
@@ -194,7 +194,7 @@ func testSchemaExtractorActions() throws {
         using: TestSchemaExtractorActionsFixtures.TestState.self
     ) {
         Rules {
-            HandleAction(TestAction.self) { (state: inout TestSchemaExtractorActionsFixtures.TestState, action: TestAction, ctx: LandContext) in
+            HandleAction(TestAction.self) { state, action, ctx in
                 return TestActionResponse(success: true, message: "ok")
             }
         }
@@ -718,7 +718,7 @@ func testSchemaExtractorDemoLikeLandDefinition() throws {
             Register(DemoPongEvent.self)
         }
         Rules {
-            HandleAction(DemoJoinAction.self) { (state: inout DemoGameState, action: DemoJoinAction, ctx: LandContext) in
+            HandleAction(DemoJoinAction.self) { state, action, ctx in
                 return DemoJoinResult(playerID: ctx.playerID.rawValue, message: "Joined")
             }
         }

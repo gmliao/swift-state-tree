@@ -99,11 +99,11 @@ func makeVerifierLand() -> LandDefinition<VerifierState> {
     Land("sync-output-verifier-test", using: VerifierState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
         Lifetime {
-            OnInitialize { (state: inout VerifierState, ctx: LandContext) in
+            OnInitialize { state, ctx in
                 state.board["init"] = 1
                 ctx.emitEvent(SyncStreamTestEvent(message: "init"), to: .all)
             }
-            Tick(every: .seconds(3600)) { (state: inout VerifierState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 state.board["t\(state.ticks)"] = state.ticks
                 if state.missesDirty {
@@ -123,7 +123,7 @@ func makeVerifierLand() -> LandDefinition<VerifierState> {
             }
         }
         Rules {
-            HandleAction(VerifierSetAction.self) { (state: inout VerifierState, action: VerifierSetAction, ctx: LandContext) in
+            HandleAction(VerifierSetAction.self) { state, action, ctx in
                 switch action.field {
                 case "break": state.fragile.broken = true
                 case "fix": state.fragile.broken = false
@@ -178,7 +178,7 @@ func makeGatedVerifierLand() -> LandDefinition<VerifierState> {
     Land("sync-output-verifier-test", using: VerifierState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout VerifierState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 state.board["t\(state.ticks)"] = state.ticks
                 if state.ticks == 2 {
@@ -1599,7 +1599,7 @@ func makeTicklessVerifierLand() -> LandDefinition<VerifierState> {
     Land("sync-output-verifier-tickless-test", using: VerifierState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
         Rules {
-            HandleAction(VerifierSetAction.self) { (state: inout VerifierState, action: VerifierSetAction, ctx: LandContext) in
+            HandleAction(VerifierSetAction.self) { state, action, ctx in
                 switch action.field {
                 case "break": state.fragile.broken = true
                 default:

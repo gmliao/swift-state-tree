@@ -26,7 +26,7 @@ func testClientEventQueuedUntilTick() async throws {
         }
 
         Rules {
-            HandleEvent(ClickCookieEvent.self) { (state: inout ClientEventQueueTestState, event: ClickCookieEvent, _: LandContext) in
+            HandleEvent(ClickCookieEvent.self) { state, event, _ in
                 state.totalCookies += event.amount
             }
         }
@@ -34,7 +34,7 @@ func testClientEventQueuedUntilTick() async throws {
         Lifetime {
             // Hourly and stepped by hand: no real tick can run between the event and the
             // "still queued" check (the 200 ms loop could on a loaded runner).
-            Tick(every: .seconds(3600)) { (state: inout ClientEventQueueTestState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
         }
@@ -74,7 +74,7 @@ func testTicklessLandRecordsWithValidTickId() async throws {
         }
 
         Rules {
-            HandleEvent(ClickCookieEvent.self) { (state: inout ClientEventQueueTestState, event: ClickCookieEvent, _: LandContext) in
+            HandleEvent(ClickCookieEvent.self) { state, event, _ in
                 state.totalCookies += event.amount
             }
         }

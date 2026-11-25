@@ -40,11 +40,15 @@ struct LandFailureResolverOutput: ResolverOutput {
 
 /// A resolver that returns at once: the action is a tickless action job (#535: its own turn's
 /// failure must not cancel it).
-struct LandFailureResolver: ContextResolver {
+@PlainData
+struct LandFailureResolver: Resolver {
+    typealias Dependencies = NoServices
+    let amount: Int
+
     typealias Output = LandFailureResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> LandFailureResolverOutput {
-        LandFailureResolverOutput(value: (ctx.actionPayload as? LandFailureResolvedAction)?.amount ?? 0)
+    func resolve(_ deps: NoServices) async throws -> LandFailureResolverOutput {
+        LandFailureResolverOutput(value: amount)
     }
 }
 
@@ -59,21 +63,21 @@ private final class SeenCauses: @unchecked Sendable {
 private func makeFailureDefinition(_ finalized: SeenCauses) -> LandDefinition<LandFailureTestState> {
     Land("land-failure-test", using: LandFailureTestState.self) {
         Rules {
-            OnJoin { (state: inout LandFailureTestState, _: LandContext) in
+            OnJoin { state, _ in
                 state.log.append("join")
             }
-            OnLeave { (state: inout LandFailureTestState, _: LandContext) in
+            OnLeave { state, _ in
                 state.log.append("leave")
             }
             HandleAction(LandFailureAddAction.self) {
-                (state: inout LandFailureTestState, action: LandFailureAddAction, ctx: LandContext) in
+                state, action, ctx in
                 state.total += action.amount
                 state.log.append("action")
                 ctx.requestSyncNow()
                 return LandFailureAck(ok: true)
             }
-            HandleAction(LandFailureResolvedAction.self, resolvers: LandFailureResolver.self) {
-                (state: inout LandFailureTestState, action: LandFailureResolvedAction, ctx: LandContext) in
+            HandleAction(LandFailureResolvedAction.self, resolvers: { _, action, _ in LandFailureResolver(amount: action.amount) }) {
+                state, action, _, ctx in
                 state.total += action.amount
                 state.log.append("resolved")
                 ctx.requestSyncNow()
@@ -81,7 +85,7 @@ private func makeFailureDefinition(_ finalized: SeenCauses) -> LandDefinition<La
             }
         }
         Lifetime {
-            OnFinalize { (state: inout LandFailureTestState, _: LandContext) in
+            OnFinalize { state, _ in
                 finalized.append("finalize:\(state.log.joined(separator: ","))")
             }
         }
@@ -334,7 +338,7 @@ private func makeTickFailureDefinition() -> LandDefinition<LandFailureTestState>
     Land("land-failure-tick-test", using: LandFailureTestState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout LandFailureTestState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.log.append("tick")
             }
         }

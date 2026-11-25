@@ -88,7 +88,7 @@ private func makeSyncPhaseLand(periodicSync: Bool = true) -> LandDefinition<Sync
         return Land("sync-phase-test", using: SyncPhaseTestState.self) {
             ServerEvents { Register(SyncPhaseEvent.self) }
             Lifetime {
-                StateSync(every: .seconds(3600)) { (_: SyncPhaseTestState, _: LandContext) in }
+                StateSync(every: .seconds(3600)) { _, _ in }
             }
             syncPhaseRules()
         }
@@ -101,11 +101,11 @@ private func makeSyncPhaseLand(periodicSync: Bool = true) -> LandDefinition<Sync
 
 private func syncPhaseRules() -> LandRules<SyncPhaseTestState, NoServices> {
         Rules {
-            OnJoin { (state: inout SyncPhaseTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.scores[ctx.playerID] = 0
                 state.bonuses[ctx.playerID] = 0
             }
-            HandleAction(SyncPhaseSetAction.self) { (state: inout SyncPhaseTestState, action: SyncPhaseSetAction, ctx: LandContext) in
+            HandleAction(SyncPhaseSetAction.self) { state, action, ctx in
                 let parts = action.field.split(separator: ":", maxSplits: 1).map(String.init)
                 let key = parts.count > 1 ? parts[1] : ""
                 switch parts[0] {

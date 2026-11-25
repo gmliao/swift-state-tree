@@ -78,7 +78,7 @@ struct TransportAdapterInitialSnapshotTests {
             using: InitialSnapshotTestState.self
         ) {
             Rules {
-                OnJoin { (state: inout InitialSnapshotTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players[ctx.playerID] = "Joined"
                     state.ticks = 10
                 }
@@ -130,7 +130,7 @@ struct TransportAdapterInitialSnapshotTests {
         let landFactory: @Sendable (String, LandID) -> LandDefinition<InitialSnapshotTestState> = { landType, landID in
             return Land("snapshot-test", using: InitialSnapshotTestState.self) {
                 Rules {
-                    OnJoin { (state: inout InitialSnapshotTestState, ctx: LandContext) in
+                    OnJoin { state, ctx in
                         state.players[ctx.playerID] = "Joined"
                         state.ticks = 5
                     }

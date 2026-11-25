@@ -28,7 +28,7 @@ func testJoinWithCustomPlayerID() async throws {
         using: EdgeCasesTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout EdgeCasesTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -87,7 +87,7 @@ func testJoinWithDeviceID() async throws {
         using: EdgeCasesTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout EdgeCasesTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -143,7 +143,7 @@ func testJoinWithMetadata() async throws {
         using: EdgeCasesTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout EdgeCasesTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -203,7 +203,7 @@ func testJoinRequestWithoutConnection() async throws {
         using: EdgeCasesTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout EdgeCasesTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -255,7 +255,7 @@ func testJoinWithEmptyMetadata() async throws {
         using: EdgeCasesTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout EdgeCasesTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
                 state.metadata[ctx.playerID] = ctx.metadata
             }

@@ -76,10 +76,12 @@ struct WatermarkResolverOutput: ResolverOutput {
 }
 
 /// Resolver that always throws: the action has already taken a sequence number and is never recorded.
-struct WatermarkThrowingResolver: ContextResolver {
+@PlainData
+struct WatermarkThrowingResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = WatermarkResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> WatermarkResolverOutput {
+    func resolve(_ deps: NoServices) async throws -> WatermarkResolverOutput {
         throw WatermarkResolverFailure()
     }
 }
@@ -177,10 +179,12 @@ final class WatermarkGate: @unchecked Sendable {
 }
 
 /// Resolver that completes only when the test releases `WatermarkGate.resolver`.
-struct WatermarkGatedResolver: ContextResolver {
+@PlainData
+struct WatermarkGatedResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = WatermarkResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> WatermarkResolverOutput {
+    func resolve(_ deps: NoServices) async throws -> WatermarkResolverOutput {
         await WatermarkGate.resolver.enterAndWait()
         return WatermarkResolverOutput(value: 7)
     }
@@ -201,27 +205,27 @@ private func makeWatermarkTestDefinition(
         }
 
         Rules {
-            OnJoin { (_: inout WatermarkTestState, ctx: LandContext) in
+            OnJoin { _, ctx in
                 ctx.emitEvent(WatermarkJoinEvent(player: ctx.playerID.rawValue), to: .all)
             }
 
             HandleAction(WatermarkEmitAction.self) {
-                (state: inout WatermarkTestState, action: WatermarkEmitAction, ctx: LandContext) in
+                state, action, ctx in
                 state.total += action.amount
                 state.actionTicks.append(Int(ctx.tickId ?? -1))
                 ctx.emitEvent(WatermarkActionEvent(amount: action.amount), to: .all)
                 return WatermarkAck(ok: true)
             }
 
-            HandleAction(WatermarkThrowingAction.self, resolvers: WatermarkThrowingResolver.self) {
-                (state: inout WatermarkTestState, action: WatermarkThrowingAction, ctx: LandContext) in
+            HandleAction(WatermarkThrowingAction.self, resolvers: { _, _, _ in WatermarkThrowingResolver() }) {
+                state, action, _, ctx in
                 state.total += action.amount
                 ctx.emitEvent(WatermarkActionEvent(amount: action.amount), to: .all)
                 return WatermarkAck(ok: true)
             }
 
-            HandleAction(WatermarkGatedAction.self, resolvers: WatermarkGatedResolver.self) {
-                (state: inout WatermarkTestState, action: WatermarkGatedAction, ctx: LandContext) in
+            HandleAction(WatermarkGatedAction.self, resolvers: { _, _, _ in WatermarkGatedResolver() }) {
+                state, action, _, ctx in
                 state.total += action.amount
                 state.actionTicks.append(Int(ctx.tickId ?? -1))
                 ctx.emitEvent(WatermarkActionEvent(amount: action.amount), to: .all)
@@ -230,12 +234,12 @@ private func makeWatermarkTestDefinition(
         }
 
         Lifetime {
-            OnInitialize { (_: inout WatermarkTestState, ctx: LandContext) in
+            OnInitialize { _, ctx in
                 if emitOnInitialize {
                     ctx.emitEvent(WatermarkInitEvent(value: 1), to: .all)
                 }
             }
-            Tick(every: .seconds(3600)) { (state: inout WatermarkTestState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 if emitFromTickHandler {
                     ctx.emitEvent(WatermarkTickEvent(tick: state.ticks), to: .all)
@@ -253,7 +257,7 @@ private func makeTicklessWatermarkDefinition() -> LandDefinition<WatermarkTestSt
         }
         Rules {
             HandleAction(WatermarkEmitAction.self) {
-                (state: inout WatermarkTestState, action: WatermarkEmitAction, ctx: LandContext) in
+                state, action, ctx in
                 state.total += action.amount
                 ctx.emitEvent(WatermarkActionEvent(amount: action.amount), to: .all)
                 return WatermarkAck(ok: true)

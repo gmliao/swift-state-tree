@@ -66,7 +66,7 @@ private func makeTickDefinition() -> LandDefinition<DebugFreezeKeeperState> {
         }
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout DebugFreezeKeeperState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(DebugFreezeTickEvent(tick: state.ticks), to: .all)
             }
@@ -82,22 +82,22 @@ private func makeTicklessDefinition() -> LandDefinition<DebugFreezeKeeperState> 
         }
         Rules {
             HandleAction(DebugFreezeSetValueAction.self) {
-                (state: inout DebugFreezeKeeperState, action: DebugFreezeSetValueAction, _: LandContext) in
+                state, action, _ in
                 state.value = action.value
                 return DebugFreezeAck(ok: true)
             }
-            HandleAction(DebugFreezeGatedAction.self, resolvers: DebugFreezeGatedResolver.self) {
-                (state: inout DebugFreezeKeeperState, action: DebugFreezeGatedAction, _: LandContext) in
+            HandleAction(DebugFreezeGatedAction.self, resolvers: { _, _, _ in DebugFreezeGatedResolver() }) {
+                state, action, _, _ in
                 state.value = action.value
                 return DebugFreezeAck(ok: true)
             }
-            HandleAction(DebugFreezeStuckAction.self, resolvers: DebugFreezeStuckResolver.self) {
-                (state: inout DebugFreezeKeeperState, action: DebugFreezeStuckAction, _: LandContext) in
+            HandleAction(DebugFreezeStuckAction.self, resolvers: { _, _, _ in DebugFreezeStuckResolver() }) {
+                state, action, _, _ in
                 state.value = action.value
                 return DebugFreezeAck(ok: true)
             }
             HandleEvent(DebugFreezeBumpEvent.self) {
-                (state: inout DebugFreezeKeeperState, event: DebugFreezeBumpEvent, _: LandContext) in
+                state, event, _ in
                 state.events += event.amount
             }
         }
@@ -131,23 +131,27 @@ actor DebugFreezeGate {
 }
 
 /// Resolver that waits on a shared gate; only `tickless resolver in flight` uses it.
-struct DebugFreezeGatedResolver: ContextResolver {
+@PlainData
+struct DebugFreezeGatedResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = DebugFreezeGatedResolverOutput
     static let gate = DebugFreezeGate(open: false)
 
-    static func resolve(ctx: ResolverContext) async throws -> DebugFreezeGatedResolverOutput {
-        await gate.pass()
+    func resolve(_ deps: NoServices) async throws -> DebugFreezeGatedResolverOutput {
+        await Self.gate.pass()
         return DebugFreezeGatedResolverOutput(ok: true)
     }
 }
 
 /// Resolver that stays stuck until the test opens its gate; only `drainDeadline` uses it.
-struct DebugFreezeStuckResolver: ContextResolver {
+@PlainData
+struct DebugFreezeStuckResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = DebugFreezeGatedResolverOutput
     static let gate = DebugFreezeGate(open: false)
 
-    static func resolve(ctx: ResolverContext) async throws -> DebugFreezeGatedResolverOutput {
-        await gate.pass()
+    func resolve(_ deps: NoServices) async throws -> DebugFreezeGatedResolverOutput {
+        await Self.gate.pass()
         return DebugFreezeGatedResolverOutput(ok: true)
     }
 }

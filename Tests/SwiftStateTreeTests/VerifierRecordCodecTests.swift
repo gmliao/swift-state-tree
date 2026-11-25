@@ -50,10 +50,10 @@ private func makeVerifierCodecLand(emitting events: [any ServerEventPayload]) ->
     Land("verifier-codec", using: VerifierCodecState.self) {
         Rules {}
         Lifetime {
-            OnInitialize { (_: inout VerifierCodecState, ctx: LandContext) in
+            OnInitialize { _, ctx in
                 for event in events { ctx.emitEvent(event, to: .all) }
             }
-            Tick(every: .seconds(3600)) { (state: inout VerifierCodecState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 for event in events { ctx.emitEvent(event, to: .all) }
             }

@@ -18,11 +18,22 @@ public struct LandRegistrationContext: Sendable {
     /// The host's server event opcode table, when it passes one: each registered server event
     /// must have an entry (#521 EV3). Nil skips the row; the encoders then send event names.
     public var eventHashes: [String: Int]?
+    /// Whether the entry point brings the land's services value (#769 §3.4): `true` for
+    /// `register(landType:land:services:…)` with a `TypedLand`, `false` for an entry point that
+    /// runs the land live without one. A land that declares services is refused when it is
+    /// `false`. Nil skips the row: the schema and a replay never call `resolve`.
+    public var servicesProvided: Bool?
 
-    public init(payloadsCompressed: Bool? = nil, recordsForReplay: Bool? = nil, eventHashes: [String: Int]? = nil) {
+    public init(
+        payloadsCompressed: Bool? = nil,
+        recordsForReplay: Bool? = nil,
+        eventHashes: [String: Int]? = nil,
+        servicesProvided: Bool? = nil
+    ) {
         self.payloadsCompressed = payloadsCompressed
         self.recordsForReplay = recordsForReplay
         self.eventHashes = eventHashes
+        self.servicesProvided = servicesProvided
     }
 
     /// The rows that hold whatever the encoding.
@@ -93,6 +104,22 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// actions, responses and server inputs, whatever the encoding. Empty when there are none.
     /// A synced state field is `sync`'s `.decimalField`.
     public let decimalFields: [String]
+    /// The land declares a services type (`Land(_:using:services:)`), and the entry point that
+    /// would run it live brings no services value (#769 §3.4): the land's services type, by name.
+    /// Register it with `register(landType:land:services:…)`, or build its keeper with
+    /// `LandKeeper(land:resolverServices:…)`. Nil when there is no such problem.
+    public let missingServices: String?
+    /// The services value a live keeper was given isn't of the land's services type (#769):
+    /// "declared, given", by name. A land that declares no services takes `NoServices`. Only an
+    /// erased services factory can get here (`LandManager(resolverServicesFactory:)`); the typed
+    /// entry points don't compile with a value of the wrong type. Nil when there is no such
+    /// problem.
+    public let wrongServices: String?
+    /// Resolver declarations the land can't run (#769), one line each: resolvers that depend on
+    /// services other than the land's (a node built by hand under another services type), or two
+    /// resolvers of one declaration that store their outputs under one name (`Price` and
+    /// `PriceResolver` both store `price`). Empty when there are none.
+    public let resolverDeclarations: [String]
 
     init(
         landType: String,
@@ -106,7 +133,10 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         wireNameMismatches: [String] = [],
         serverEventsWithoutHash: [String] = [],
         typeNameCollisions: [SchemaTypeNameCollision] = [],
-        decimalFields: [String] = []
+        decimalFields: [String] = [],
+        missingServices: String? = nil,
+        wrongServices: String? = nil,
+        resolverDeclarations: [String] = []
     ) {
         self.landType = landType
         self.payload = payload
@@ -120,6 +150,9 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         self.serverEventsWithoutHash = serverEventsWithoutHash
         self.typeNameCollisions = typeNameCollisions
         self.decimalFields = decimalFields
+        self.missingServices = missingServices
+        self.wrongServices = wrongServices
+        self.resolverDeclarations = resolverDeclarations
     }
 
     public var description: String {
@@ -146,9 +179,16 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
             : "its definition holds nodes the land's builder doesn't recognize (a node built for another State, "
                 + "or a node type the builder has no case for), whose handlers would be dropped: "
                 + unrecognizedNodes.joined(separator: ", ")
+        let services = missingServices.map {
+            "it declares services \($0), and none were given; register it with register(landType:land:services:…), "
+                + "or build its keeper with LandKeeper(land:resolverServices:…)"
+        }
+        let wrong = wrongServices.map { "its services value is the wrong type (\($0))" }
+        let resolvers = resolverDeclarations.isEmpty ? nil
+            : "these resolver declarations can't run: " + resolverDeclarations.joined(separator: ", ")
         return "land type '\(landType)' can't be registered: "
             + ([payload?.description, sync?.description, decimals].compactMap { $0 } + duplicateHandlers.map(\.description)
-                + [unrecognized, unmatchedEvents, mismatched, unhashed, schemaFingerprint?.description, collided, undecodable].compactMap { $0 })
+                + [unrecognized, resolvers, services, wrong, unmatchedEvents, mismatched, unhashed, schemaFingerprint?.description, collided, undecodable].compactMap { $0 })
             .joined(separator: "; ")
     }
 }
@@ -175,8 +215,11 @@ extension LandDefinition {
         let decimals = payloadDecimalFields()
         var fingerprint: SchemaFingerprintError?
         var typeNameCollisions: [SchemaTypeNameCollision] = []
+        // #769 §3.4: a land that declares services runs live only with its services value.
+        let missingServices = context.servicesProvided == false ? servicesType.map { String(reflecting: $0) } : nil
         if context.recordsForReplay == true, payload == nil, sync == nil, duplicateHandlers.isEmpty,
-           clientEventMismatches.isEmpty, unrecognizedNodes.isEmpty, mismatched.isEmpty, unhashed.isEmpty, decimals.isEmpty {
+           clientEventMismatches.isEmpty, unrecognizedNodes.isEmpty, mismatched.isEmpty, unhashed.isEmpty, decimals.isEmpty,
+           resolverDeclarationProblems.isEmpty, missingServices == nil {
             do {
                 _ = try ReevaluationSchemaFingerprint.cached(for: self)
             } catch let error as SchemaFingerprintError {
@@ -191,14 +234,16 @@ extension LandDefinition {
         let undecodable = context.recordsForReplay == true ? serverEventsWithoutDecoder() : []
         if payload != nil || sync != nil || !duplicateHandlers.isEmpty || !clientEventMismatches.isEmpty
             || !unrecognizedNodes.isEmpty || fingerprint != nil || !undecodable.isEmpty
-            || !mismatched.isEmpty || !unhashed.isEmpty || !typeNameCollisions.isEmpty || !decimals.isEmpty {
+            || !mismatched.isEmpty || !unhashed.isEmpty || !typeNameCollisions.isEmpty || !decimals.isEmpty
+            || !resolverDeclarationProblems.isEmpty || missingServices != nil {
             throw LandRegistrationError(
                 landType: id, payload: payload, sync: sync,
                 duplicateHandlers: duplicateHandlers, clientEventMismatches: clientEventMismatches,
                 unrecognizedNodes: unrecognizedNodes, schemaFingerprint: fingerprint,
                 serverEventsWithoutDecoder: undecodable,
                 wireNameMismatches: mismatched, serverEventsWithoutHash: unhashed,
-                typeNameCollisions: typeNameCollisions, decimalFields: decimals
+                typeNameCollisions: typeNameCollisions, decimalFields: decimals,
+                missingServices: missingServices, resolverDeclarations: resolverDeclarationProblems
             )
         }
     }

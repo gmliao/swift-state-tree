@@ -99,11 +99,15 @@ private enum ReplayOrderGates {
 }
 
 /// Live: waits at its gate. Replay never runs resolvers: it reads the recorded output.
-struct ReplayOrderHeldResolver: ContextResolver {
+@PlainData
+struct ReplayOrderHeldResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = ReplayOrderOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> ReplayOrderOutput {
-        let key = (ctx.actionPayload as? ReplayOrderHeldAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> ReplayOrderOutput {
+        let key = key
         await ReplayOrderGates.gate(key).arrive()
         return ReplayOrderOutput(value: key)
     }
@@ -112,19 +116,19 @@ struct ReplayOrderHeldResolver: ContextResolver {
 private func makeReplayOrderLand() -> LandDefinition<ReplayOrderJobState> {
     Land("action-job-replay-order", using: ReplayOrderJobState.self) {
         Rules {
-            HandleAction(ReplayOrderHeldAction.self, resolvers: ReplayOrderHeldResolver.self) {
-                (state: inout ReplayOrderJobState, action: ReplayOrderHeldAction, _: LandContext) in
+            HandleAction(ReplayOrderHeldAction.self, resolvers: { _, action, _ in ReplayOrderHeldResolver(key: action.key) }) {
+                state, action, _, _ in
                 state.applied.append(action.key)
                 return ReplayOrderAck(ok: true)
             }
             HandleAction(ReplayOrderPlainAction.self) {
-                (state: inout ReplayOrderJobState, action: ReplayOrderPlainAction, _: LandContext) in
+                state, action, _ in
                 state.applied.append(action.value)
                 return ReplayOrderAck(ok: true)
             }
         }
         Lifetime {
-            Tick(every: .seconds(3600)) { (_: inout ReplayOrderJobState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
 }

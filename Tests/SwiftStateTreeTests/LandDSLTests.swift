@@ -72,12 +72,12 @@ func testLandBuilderCollectsNodes() {
         Rules {
             // Registered for the schema only; a registered client event needs a handler (#771).
             HandleEvent(DemoChatEvent.self) { _, _, _ in }
-            HandleAction(JoinAction.self) { (state: inout DemoLandState, action: JoinAction, ctx: LandContext) in
+            HandleAction(JoinAction.self) { state, action, ctx in
                 state.players[ctx.playerID] = action.name
                 return JoinResult(ok: true)
             }
 
-            HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
+            HandleEvent(DemoReadyEvent.self) { state, event, ctx in
                     state.readyPlayers.insert(ctx.playerID)
             }
         }
@@ -113,20 +113,20 @@ func testLandKeeperLifecycle() async throws {
         }
         
         Rules {
-            OnJoin { (state: inout DemoLandState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Guest"
             }
 
-            OnLeave { (state: inout DemoLandState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
 
-            HandleAction(JoinAction.self) { (state: inout DemoLandState, action: JoinAction, ctx: LandContext) in
+            HandleAction(JoinAction.self) { state, action, ctx in
                 state.players[ctx.playerID] = action.name
                 return JoinResult(ok: true)
             }
 
-            HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
+            HandleEvent(DemoReadyEvent.self) { state, event, ctx in
                     state.readyPlayers.insert(ctx.playerID)
             }
         }
@@ -186,7 +186,7 @@ func testLandKeeperAllowedEvents() async throws {
         Rules {
             // Registered for the schema only; a registered client event needs a handler (#771).
             HandleEvent(DemoChatEvent.self) { _, _, _ in }
-            HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
+            HandleEvent(DemoReadyEvent.self) { state, event, ctx in
                 // Synchronous handler: mutate state directly
                 state.spawnedTaskCount += 1
             }
@@ -246,10 +246,10 @@ func testLandKeeperTickHandler() async throws {
         Rules { }
 
         Lifetime {
-            Tick(every: .milliseconds(10)) { (state: inout DemoLandState, _) in
+            Tick(every: .milliseconds(10)) { state, _ in
                 state.ticks += 1
             }
-            StateSync(every: .milliseconds(10)) { (_: DemoLandState, _: LandContext) in
+            StateSync(every: .milliseconds(10)) { _, _ in
                 // Read-only sync callback
             }
         }
@@ -275,7 +275,7 @@ func testCanJoinAllows() async throws {
         using: DemoLandState.self
     ) {
         Rules {
-            CanJoin { (state: DemoLandState, session: PlayerSession, _: LandContext) in
+            CanJoin { state, session, _ in
                 // Allow if room not full
                 guard state.players.count < 2 else {
                     throw JoinError.roomIsFull
@@ -283,7 +283,7 @@ func testCanJoinAllows() async throws {
                 return .allow(playerID: PlayerID(session.playerID))
             }
             
-            OnJoin { (state: inout DemoLandState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Player"
             }
         }
@@ -320,7 +320,7 @@ func testCanJoinDenies() async throws {
         using: DemoLandState.self
     ) {
         Rules {
-            CanJoin { (state: DemoLandState, session: PlayerSession, _: LandContext) in
+            CanJoin { state, session, _ in
                 // Room full
                 guard state.players.count < 1 else {
                     throw JoinError.roomIsFull
@@ -328,7 +328,7 @@ func testCanJoinDenies() async throws {
                 return .allow(playerID: PlayerID(session.playerID))
             }
             
-            OnJoin { (state: inout DemoLandState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Player"
             }
         }
@@ -400,7 +400,7 @@ func testCtxEmitEventQueuesAndFlushes() async throws {
     ) {
         ServerEvents { Register(DemoMessageEvent.self) }
         Lifetime {
-            Tick(every: .milliseconds(10)) { (state: inout DemoLandState, ctx: LandContext) in
+            Tick(every: .milliseconds(10)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(DemoMessageEvent(message: "tick-\(state.ticks)"), to: .all)
             }
@@ -429,11 +429,11 @@ func testOnTickSynchronous() async throws {
         using: DemoLandState.self
     ) {
         Lifetime {
-            Tick(every: .milliseconds(5)) { (state: inout DemoLandState, _: LandContext) in
+            Tick(every: .milliseconds(5)) { state, _ in
                 // This is synchronous - no await allowed
                 state.ticks += 1
             }
-            StateSync(every: .milliseconds(5)) { (_: DemoLandState, _: LandContext) in
+            StateSync(every: .milliseconds(5)) { _, _ in
                 // Read-only sync callback
             }
         }
@@ -652,7 +652,7 @@ func testOnInitialize() async throws {
         using: DemoLandState.self
     ) {
         Lifetime {
-            OnInitialize { (state: inout DemoLandState, ctx: LandContext) in
+            OnInitialize { state, ctx in
                 state.ticks = 42  // Set initial value
                 state.spawnedTaskCount += 1
             }
@@ -681,10 +681,12 @@ fileprivate enum TestOnInitializeWithResolverFixtures {
         let gameMode: String
     }
 
-    struct ConfigResolver: ContextResolver {
+    @PlainData
+    struct ConfigResolver: Resolver {
+        typealias Dependencies = NoServices
         typealias Output = ConfigInfo
 
-        static func resolve(ctx: ResolverContext) async throws -> ConfigInfo {
+        func resolve(_ deps: NoServices) async throws -> ConfigInfo {
             try await Task.sleep(nanoseconds: 10_000_000) // 10ms
             return ConfigInfo(maxPlayers: 8, gameMode: "battle-royale")
         }
@@ -698,9 +700,9 @@ func testOnInitializeWithResolver() async throws {
         using: DemoLandState.self
     ) {
         Lifetime {
-            OnInitialize(resolvers: TestOnInitializeWithResolverFixtures.ConfigResolver.self) { (state: inout DemoLandState, ctx: LandContext) in
-                // Access resolver output (ConfigResolver -> config)
-                if let config: TestOnInitializeWithResolverFixtures.ConfigInfo = ctx.config {
+            OnInitialize(resolvers: { _, _ in TestOnInitializeWithResolverFixtures.ConfigResolver() }) { state, config, _ in
+                // The resolver's output, after the State
+                if let config {
                     state.ticks = config.maxPlayers
                 }
             }
@@ -875,7 +877,7 @@ func testDestroyWhenEmptyCancelsOnJoin() async throws {
             config.destroyWhenEmptyAfter = .seconds(3600)
         }
         Rules {
-            OnJoin { (state: inout DemoLandState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = ctx.playerID.rawValue
             }
         }
@@ -976,7 +978,7 @@ func testDestroyWhenEmptyDoesNotDestroyWithPlayers() async throws {
             config.destroyWhenEmptyAfter = .milliseconds(50)
         }
         Rules {
-            OnJoin { (state: inout DemoLandState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = ctx.playerID.rawValue
             }
         }
@@ -1035,9 +1037,9 @@ func testCanJoinWithResolver() async throws {
         using: DemoLandState.self
     ) {
         Rules {
-            CanJoin(resolvers: TestCanJoinWithResolverFixtures.UserLevelResolver.self) { (state: DemoLandState, session: PlayerSession, ctx: LandContext) in
-                // Check resolver output (UserLevelResolver -> userLevel)
-                guard let userLevel: TestCanJoinWithResolverFixtures.UserLevelInfo = ctx.userLevel else {
+            CanJoin(resolvers: TestCanJoinWithResolverFixtures.UserLevelResolver.self) { state, session, userLevel, ctx in
+                // The resolver's output, after the session
+                guard let userLevel else {
                     throw JoinError.custom("Failed to load user level")
                 }
                 
@@ -1049,7 +1051,7 @@ func testCanJoinWithResolver() async throws {
                 return .allow(playerID: PlayerID(session.playerID))
             }
             
-            OnJoin { (state: inout DemoLandState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Player"
             }
         }
@@ -1102,7 +1104,9 @@ private struct InitOrderOutput: ResolverOutput {
 /// Holds OnInitialize until the test releases the current gate. Resolvers are static, so the gate
 /// lives here; each run of the test installs a fresh one (`freshGate()`), so a repeated run in
 /// one process doesn't find it already entered and released.
-private struct InitOrderGatedResolver: ContextResolver {
+@PlainData
+private struct InitOrderGatedResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = InitOrderOutput
     private static let lock = NSLock()
     nonisolated(unsafe) private static var current = WatermarkGate()
@@ -1114,8 +1118,8 @@ private struct InitOrderGatedResolver: ContextResolver {
         }
     }
 
-    static func resolve(ctx: ResolverContext) async throws -> InitOrderOutput {
-        let gate = lock.withLock { current }
+    func resolve(_ deps: NoServices) async throws -> InitOrderOutput {
+        let gate = Self.lock.withLock { Self.current }
         await gate.enterAndWait()
         return InitOrderOutput(value: 1)
     }
@@ -1128,14 +1132,14 @@ func testOnInitializeBeforeTick() async throws {
         using: DemoLandState.self
     ) {
         Lifetime {
-            OnInitialize(resolvers: InitOrderGatedResolver.self) { (state: inout DemoLandState, ctx: LandContext) in
+            OnInitialize(resolvers: { _, _ in InitOrderGatedResolver() }) { state, _, ctx in
                 // -1 marks a clean init; a tick that ran before it would have left ticks != 0.
                 state.ticks = state.ticks == 0 ? -1 : -1000
             }
 
             // Hourly: the loop starts (after OnInitialize) but never fires in the test, which
             // steps the first tick itself (#264: no waiting on the clock).
-            Tick(every: .seconds(3600)) { (state: inout DemoLandState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 // Tick should only increment if OnInitialize already set ticks to -1
                 // If ticks is still 0, it means tick started before OnInitialize
                 if state.ticks == -1 {
@@ -1144,7 +1148,7 @@ func testOnInitializeBeforeTick() async throws {
                     state.ticks += 1
                 }
             }
-            StateSync(every: .milliseconds(100)) { (_: DemoLandState, _: LandContext) in
+            StateSync(every: .milliseconds(100)) { _, _ in
                 // Read-only sync callback
             }
         }

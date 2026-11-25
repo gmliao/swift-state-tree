@@ -119,4 +119,33 @@ final class LandMacroTests {
             macros: landMacros
         )
     }
+
+    @Test("With services:, definition is the typed land and body is under the land's services (#769)")
+    func servicesParameter() {
+        expectMacroExpansion(
+            """
+            @Land(CartState.self, id: "cart", services: AppServices.self)
+            struct CartLand {
+                static var body: LandRules<CartState, AppServices> {
+                    AccessControl { }
+                }
+            }
+            """,
+            expandedSource: """
+            struct CartLand {
+                @LandDSL<CartState, AppServices>
+                static var body: LandRules<CartState, AppServices> {
+                    AccessControl { }
+                }
+
+                public static var definition: TypedLand<CartState, AppServices> {
+                    Land("cart", using: CartState.self, services: AppServices.self) {
+                        Self.body
+                    }
+                }
+            }
+            """,
+            macros: landMacros
+        )
+    }
 }

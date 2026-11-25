@@ -161,11 +161,11 @@ func testActionModifiesState() async throws {
         using: ActionEventSyncTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ActionEventSyncTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
             
-            HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
+            HandleAction(IncrementAction.self) { state, action, ctx in
                 state.count += action.amount
                 // Note: syncNow() is NOT called automatically after handler completes
                 // Sync happens via tick mechanism (if configured) or manual sync calls
@@ -231,17 +231,17 @@ func testEventModifiesState() async throws {
         }
         
         Rules {
-            OnJoin { (state: inout ActionEventSyncTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
             
-            HandleEvent(IncrementEvent.self) { (state: inout ActionEventSyncTestState, event: IncrementEvent, ctx: LandContext) in
+            HandleEvent(IncrementEvent.self) { state, event, ctx in
                 state.count += event.amount
                 // Note: syncNow() is NOT called automatically after handler completes
                 // Sync happens via tick mechanism (if configured) or manual sync calls
             }
             
-            HandleEvent(SetMessageEvent.self) { (state: inout ActionEventSyncTestState, event: SetMessageEvent, ctx: LandContext) in
+            HandleEvent(SetMessageEvent.self) { state, event, ctx in
                 state.message = event.message
                 // Note: syncNow() is NOT called automatically after handler completes
                 // Sync happens via tick mechanism (if configured) or manual sync calls
@@ -311,18 +311,18 @@ func testMultipleActionsAndEventsModifyState() async throws {
         }
         
         Rules {
-            OnJoin { (state: inout ActionEventSyncTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
             
-            HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
+            HandleAction(IncrementAction.self) { state, action, ctx in
                 state.count += action.amount
                 // Note: syncNow() is NOT called automatically after handler completes
                 // Sync happens via tick mechanism (if configured) or manual sync calls
                 return IncrementResponse(success: true, newCount: state.count)
             }
             
-            HandleEvent(IncrementEvent.self) { (state: inout ActionEventSyncTestState, event: IncrementEvent, ctx: LandContext) in
+            HandleEvent(IncrementEvent.self) { state, event, ctx in
                 state.count += event.amount
                 // Note: syncNow() is NOT called automatically after handler completes
                 // Sync happens via tick mechanism (if configured) or manual sync calls
@@ -382,21 +382,21 @@ func testActionWithTickTriggersSync() async throws {
         using: ActionEventSyncTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ActionEventSyncTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
             
-            HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
+            HandleAction(IncrementAction.self) { state, action, ctx in
                 state.count += action.amount
                 return IncrementResponse(success: true, newCount: state.count)
             }
         }
         
         Lifetime {
-            Tick(every: .milliseconds(20)) { (state: inout ActionEventSyncTestState, _) in
+            Tick(every: .milliseconds(20)) { state, _ in
                 // Tick handler for game logic
             }
-            StateSync(every: .milliseconds(20)) { (_: ActionEventSyncTestState, _: LandContext) in
+            StateSync(every: .milliseconds(20)) { _, _ in
                 // Read-only sync callback
             }
         }
@@ -454,20 +454,20 @@ func testEventWithTickTriggersSync() async throws {
         }
         
         Rules {
-            OnJoin { (state: inout ActionEventSyncTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
             
-            HandleEvent(IncrementEvent.self) { (state: inout ActionEventSyncTestState, event: IncrementEvent, ctx: LandContext) in
+            HandleEvent(IncrementEvent.self) { state, event, ctx in
                 state.count += event.amount
             }
         }
         
         Lifetime {
-            Tick(every: .milliseconds(20)) { (state: inout ActionEventSyncTestState, _) in
+            Tick(every: .milliseconds(20)) { state, _ in
                 // Tick handler for game logic
             }
-            StateSync(every: .milliseconds(20)) { (_: ActionEventSyncTestState, _: LandContext) in
+            StateSync(every: .milliseconds(20)) { _, _ in
                 // Read-only sync callback
             }
         }
@@ -521,11 +521,11 @@ func testManualSyncNowRequest() async throws {
         using: ActionEventSyncTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ActionEventSyncTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
             
-            HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
+            HandleAction(IncrementAction.self) { state, action, ctx in
                 state.count += action.amount
                 
                 // Request sync deterministically (flushed at end of tick)
@@ -593,7 +593,7 @@ func testHandleActionEnvelopeDecodesPayloadTypes() async throws {
         using: ActionEventSyncTestState.self
     ) {
         Rules {
-            HandleAction(TestHandleActionEnvelopeDecodesPayloadTypesFixtures.TestActionWithTypes.self) { (state: inout ActionEventSyncTestState, action: TestHandleActionEnvelopeDecodesPayloadTypesFixtures.TestActionWithTypes, ctx: LandContext) in
+            HandleAction(TestHandleActionEnvelopeDecodesPayloadTypesFixtures.TestActionWithTypes.self) { state, action, ctx in
                 state.count = action.intValue
                 state.message = action.stringValue
                 return TestHandleActionEnvelopeDecodesPayloadTypesFixtures.TestActionResponse(success: action.boolValue)
@@ -666,7 +666,7 @@ func testHandleActionEnvelopeTypeMismatch() async throws {
         using: ActionEventSyncTestState.self
     ) {
         Rules {
-            HandleAction(TestHandleActionEnvelopeTypeMismatchFixtures.IntAction.self) { (state: inout ActionEventSyncTestState, action: TestHandleActionEnvelopeTypeMismatchFixtures.IntAction, ctx: LandContext) in
+            HandleAction(TestHandleActionEnvelopeTypeMismatchFixtures.IntAction.self) { state, action, ctx in
                 return TestHandleActionEnvelopeTypeMismatchFixtures.TestActionResponse(success: true)
             }
         }

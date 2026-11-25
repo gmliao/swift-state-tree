@@ -77,7 +77,7 @@ private func patternIndexAdapterLand(_ script: PatternIndexAdapterScript) -> Lan
     Land("pattern-index-adapter", using: PatternIndexAdapterState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout PatternIndexAdapterState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 script.apply(&state)
             }
         }

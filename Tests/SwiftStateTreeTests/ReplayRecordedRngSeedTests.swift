@@ -26,7 +26,7 @@ private func makeRngSeedReplayLand() -> LandDefinition<RngSeedReplayState> {
     Land("rng-seed-replay", using: RngSeedReplayState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout RngSeedReplayState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 state.drawn = ctx.random.nextInt(in: 0...1_000_000)
             }

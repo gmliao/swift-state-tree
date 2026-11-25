@@ -42,7 +42,7 @@ func makeOrdinalLand() -> LandDefinition<OrdinalState> {
     Land("tickless-pass-ordinal-test", using: OrdinalState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
         Rules {
-            HandleAction(OrdinalEmitAction.self) { (state: inout OrdinalState, action: OrdinalEmitAction, ctx: LandContext) in
+            HandleAction(OrdinalEmitAction.self) { state, action, ctx in
                 state.total += action.amount
                 state.marks[ctx.playerID] = state.total
                 ctx.emitEvent(SyncStreamTestEvent(message: "all-\(action.amount)"), to: .all)
@@ -50,11 +50,11 @@ func makeOrdinalLand() -> LandDefinition<OrdinalState> {
                 ctx.requestSyncNow()
                 return SyncStreamSetResponse(ok: true)
             }
-            HandleServerInput(OrdinalServerEmit.self) { (state: inout OrdinalState, input: OrdinalServerEmit, ctx: LandContext) in
+            HandleServerInput(OrdinalServerEmit.self) { state, input, ctx in
                 state.total += input.amount
                 ctx.emitEvent(SyncStreamTestEvent(message: "server-\(input.amount)"), to: .all)
             }
-            HandleAction(OrdinalAddAction.self) { (state: inout OrdinalState, action: OrdinalAddAction, ctx: LandContext) in
+            HandleAction(OrdinalAddAction.self) { state, action, ctx in
                 state.total += action.amount
                 state.marks[ctx.playerID] = state.total
                 ctx.requestSyncNow()

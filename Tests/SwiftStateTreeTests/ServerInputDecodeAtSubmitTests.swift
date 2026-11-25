@@ -65,25 +65,25 @@ struct SIMaybe: ServerInputPayload {
 private func makeDecodeDefinition() -> LandDefinition<ServerInputTestState> {
     Land("server-input-decode", using: ServerInputTestState.self) {
         Rules {
-            HandleServerInput(SIProgress.self) { (state: inout ServerInputTestState, input: SIProgress, _: LandContext) in
+            HandleServerInput(SIProgress.self) { state, input, _ in
                 state.log.append("progress:\(input.tag)")
             }
-            HandleServerInput(SIOneWay.self) { (state: inout ServerInputTestState, input: SIOneWay, _: LandContext) in
+            HandleServerInput(SIOneWay.self) { state, input, _ in
                 state.log.append("one-way:\(input.tag)")
             }
-            HandleServerInput(SICounted.self) { (state: inout ServerInputTestState, input: SICounted, _: LandContext) in
+            HandleServerInput(SICounted.self) { state, input, _ in
                 state.log.append("counted:\(input.tag)")
             }
-            HandleServerInput(SIDated.self) { (state: inout ServerInputTestState, input: SIDated, _: LandContext) in
+            HandleServerInput(SIDated.self) { state, input, _ in
                 state.log.append("dated:\(input.label.text)")
             }
-            HandleServerInput(SIMaybe.self) { (state: inout ServerInputTestState, input: SIMaybe, _: LandContext) in
+            HandleServerInput(SIMaybe.self) { state, input, _ in
                 state.log.append("maybe:\(String(describing: input.value))")
             }
         }
         Lifetime {
             // Hourly and stepped by hand: no real tick runs during a test.
-            Tick(every: .seconds(3600)) { (_: inout ServerInputTestState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
 }

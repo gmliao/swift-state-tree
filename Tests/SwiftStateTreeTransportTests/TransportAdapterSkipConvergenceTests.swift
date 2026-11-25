@@ -38,11 +38,11 @@ struct SkipConvergenceStepResponse: ResponsePayload {
 private func skipConvergenceLand(_ id: String) -> LandDefinition<SkipConvergenceState> {
     Land(id, using: SkipConvergenceState.self) {
         Rules {
-            OnJoin { (state: inout SkipConvergenceState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.scores[ctx.playerID] = 0
                 state.hands[ctx.playerID] = []
             }
-            HandleAction(SkipConvergenceStepAction.self) { (state: inout SkipConvergenceState, action: SkipConvergenceStepAction, ctx: LandContext) in
+            HandleAction(SkipConvergenceStepAction.self) { state, action, ctx in
                 state.round = action.round
                 state.scores[ctx.playerID, default: 0] += action.round
                 var hand = state.hands[ctx.playerID] ?? []

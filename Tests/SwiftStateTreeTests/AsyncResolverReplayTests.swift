@@ -37,18 +37,20 @@ struct AsyncResolverTestResponse: ResponsePayload {
 // MARK: - Test Resolver with Async Delay
 
 /// Test resolver that simulates async I/O with configurable delay
-struct TestAsyncResolver: ContextResolver {
+@PlainData
+struct TestAsyncResolver: Resolver {
+    typealias Dependencies = NoServices
+    let playerID: PlayerID
+
     typealias Output = TestResolverOutput
     
-    static func resolve(
-        ctx: ResolverContext
-    ) async throws -> TestResolverOutput {
+    func resolve(_ deps: NoServices) async throws -> TestResolverOutput {
         // Simulate async I/O operation (e.g., database query)
         // Use a short delay to test async behavior without slowing tests too much
         try await Task.sleep(for: .milliseconds(10))
         
         // Generate deterministic value based on PlayerID (Swift Hashable is not deterministic)
-        let stable = DeterministicHash.stableInt32(ctx.playerID.rawValue)
+        let stable = DeterministicHash.stableInt32(playerID.rawValue)
         let value = "resolved-\(stable % 1000)"
         
         return TestResolverOutput(value: value)
@@ -69,10 +71,10 @@ func testAsyncResolverRecording() async throws {
         using: AsyncResolverTestState.self
     ) {
         Rules {
-            HandleAction(AsyncResolverTestAction.self, resolvers: TestAsyncResolver.self) {
-                (state: inout AsyncResolverTestState, action: AsyncResolverTestAction, ctx: LandContext) in
+            HandleAction(AsyncResolverTestAction.self, resolvers: { _, _, ctx in TestAsyncResolver(playerID: ctx.playerID) }) {
+                state, action, testAsync, ctx in
                 // Access resolver output (explicit type cast for dynamic member lookup)
-                if let resolverOutput = ctx.testAsync as TestResolverOutput? {
+                if let resolverOutput = testAsync as TestResolverOutput? {
                     state.resolverValue = resolverOutput.value
                     state.value = action.input
                     return AsyncResolverTestResponse(success: true, value: resolverOutput.value)
@@ -82,7 +84,7 @@ func testAsyncResolverRecording() async throws {
         }
         Lifetime {
             // Use manual tick stepping in this test (autoStartLoops: false).
-            Tick(every: .seconds(3600)) { (_: inout AsyncResolverTestState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
     

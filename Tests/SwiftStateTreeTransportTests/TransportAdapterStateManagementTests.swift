@@ -28,7 +28,7 @@ func testConnectedSessionsComputedProperty() async throws {
         using: StateManagementTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout StateManagementTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -77,7 +77,7 @@ func testJoinedSessionsComputedProperty() async throws {
         using: StateManagementTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout StateManagementTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -147,7 +147,7 @@ func testSessionToPlayerSyncWithKeeperPlayers() async throws {
         using: StateManagementTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout StateManagementTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -203,7 +203,7 @@ func testStateQueryMethods() async throws {
         using: StateManagementTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout StateManagementTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -274,7 +274,7 @@ func testStateQueryMethodsAcrossReconnectLifecycle() async throws {
         using: StateManagementTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout StateManagementTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }

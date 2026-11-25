@@ -110,7 +110,7 @@ private func rowAddressingLand(_ script: RowAddressingScript) -> LandDefinition<
     Land("row-addressing", using: RowAddressingState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout RowAddressingState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 script.apply(&state)
                 ctx.requestSyncNow()
             }

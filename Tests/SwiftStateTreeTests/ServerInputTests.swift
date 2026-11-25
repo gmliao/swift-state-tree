@@ -179,30 +179,30 @@ private func makeDefinition(ticking: Bool, box: SISubmitterBox? = nil) -> LandDe
             ClientEvents { Register(SINoteEvent.self) }
             ServerEvents { Register(SILogged.self) }
             Rules {
-                OnJoin { (_: inout ServerInputTestState, ctx: LandContext) in box?.value = ctx.serverInputs }
-                HandleEvent(SINoteEvent.self) { (state: inout ServerInputTestState, event: SINoteEvent, ctx: LandContext) in
+                OnJoin { _, ctx in box?.value = ctx.serverInputs }
+                HandleEvent(SINoteEvent.self) { state, event, ctx in
                     appendEntry("client:\(event.tag)", to: &state, ctx: ctx)
                 }
-                HandleServerInput(SIProgress.self) { (state: inout ServerInputTestState, input: SIProgress, ctx: LandContext) in
+                HandleServerInput(SIProgress.self) { state, input, ctx in
                     appendEntry("server:\(input.tag):\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
                 }
-                HandleServerInput(SIFailing.self, validate: { (_: ServerInputTestState, _: SIFailing, _: ValidateContext) in
+                HandleServerInput(SIFailing.self, validate: { _, _, _ in
                     throw SIError()
-                }, apply: { (state: inout ServerInputTestState, input: SIFailing, ctx: LandContext) in
+                }, apply: { state, input, ctx in
                     appendEntry("failing:\(input.tag)", to: &state, ctx: ctx)
                 })
-                HandleServerInput(SIDated.self) { (state: inout ServerInputTestState, input: SIDated, ctx: LandContext) in
+                HandleServerInput(SIDated.self) { state, input, ctx in
                     appendEntry("dated:\(input.label.text):\(input.ratio):\(input.count)", to: &state, ctx: ctx)
                 }
-                HandleServerInput(SIUnencodable.self) { (_: inout ServerInputTestState, _: SIUnencodable, _: LandContext) in }
-                HandleServerInput(SIDeep.self) { (state: inout ServerInputTestState, input: SIDeep, ctx: LandContext) in
+                HandleServerInput(SIUnencodable.self) { _, _, _ in }
+                HandleServerInput(SIDeep.self) { state, input, ctx in
                     appendEntry("deep:\(input.depth)", to: &state, ctx: ctx)
                 }
-                HandleServerInput(SIRecursive.self) { (_: inout ServerInputTestState, _: SIRecursive, _: LandContext) in }
+                HandleServerInput(SIRecursive.self) { _, _, _ in }
             }
             Lifetime {
                 // Hourly and stepped by hand: no real tick runs during a test.
-                Tick(every: .seconds(3600)) { (_: inout ServerInputTestState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
     }
@@ -210,11 +210,11 @@ private func makeDefinition(ticking: Bool, box: SISubmitterBox? = nil) -> LandDe
         ClientEvents { Register(SINoteEvent.self) }
         ServerEvents { Register(SILogged.self) }
         Rules {
-            OnJoin { (_: inout ServerInputTestState, ctx: LandContext) in box?.value = ctx.serverInputs }
-            HandleEvent(SINoteEvent.self) { (state: inout ServerInputTestState, event: SINoteEvent, ctx: LandContext) in
+            OnJoin { _, ctx in box?.value = ctx.serverInputs }
+            HandleEvent(SINoteEvent.self) { state, event, ctx in
                 appendEntry("client:\(event.tag)", to: &state, ctx: ctx)
             }
-            HandleServerInput(SIProgress.self) { (state: inout ServerInputTestState, input: SIProgress, ctx: LandContext) in
+            HandleServerInput(SIProgress.self) { state, input, ctx in
                 appendEntry("server:\(input.tag):\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
             }
         }
@@ -228,12 +228,12 @@ private func makeTickDefinitionWithoutServerInputs() -> LandDefinition<ServerInp
         ClientEvents { Register(SINoteEvent.self) }
         ServerEvents { Register(SILogged.self) }
         Rules {
-            HandleEvent(SINoteEvent.self) { (state: inout ServerInputTestState, event: SINoteEvent, ctx: LandContext) in
+            HandleEvent(SINoteEvent.self) { state, event, ctx in
                 appendEntry("client:\(event.tag)", to: &state, ctx: ctx)
             }
         }
         Lifetime {
-            Tick(every: .seconds(3600)) { (_: inout ServerInputTestState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
 }
@@ -810,14 +810,14 @@ struct ServerInputTests {
         let with = Land("server-input-schema", using: ServerInputTestState.self) {
             ClientEvents { Register(SINoteEvent.self) }
             Rules {
-                HandleEvent(SINoteEvent.self) { (_: inout ServerInputTestState, _: SINoteEvent, _: LandContext) in }
-                HandleServerInput(SIProgress.self) { (_: inout ServerInputTestState, _: SIProgress, _: LandContext) in }
+                HandleEvent(SINoteEvent.self) { _, _, _ in }
+                HandleServerInput(SIProgress.self) { _, _, _ in }
             }
         }
         let without = Land("server-input-schema", using: ServerInputTestState.self) {
             ClientEvents { Register(SINoteEvent.self) }
             Rules {
-                HandleEvent(SINoteEvent.self) { (_: inout ServerInputTestState, _: SINoteEvent, _: LandContext) in }
+                HandleEvent(SINoteEvent.self) { _, _, _ in }
             }
         }
         #expect(with.serverInputHandlers.keys.sorted() == [String(describing: SIProgress.self)])

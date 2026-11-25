@@ -30,14 +30,14 @@ func testJoinFailureRollback() async throws {
         using: ErrorHandlingTestState.self
     ) {
         Rules {
-            CanJoin { (state: ErrorHandlingTestState, session: PlayerSession, ctx: LandContext) in
+            CanJoin { state, session, ctx in
                 if state.players.count >= state.maxPlayers {
                     return .deny(reason: "Room is full")
                 }
                 return .allow(playerID: PlayerID(session.playerID))
             }
 
-            OnJoin { (state: inout ErrorHandlingTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -129,7 +129,7 @@ func testDuplicateJoinRequest() async throws {
         using: ErrorHandlingTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ErrorHandlingTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -196,11 +196,11 @@ func testJoinAfterDisconnect() async throws {
         using: ErrorHandlingTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ErrorHandlingTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
 
-            OnLeave { (state: inout ErrorHandlingTestState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.players.removeValue(forKey: ctx.playerID)
             }
         }
@@ -281,7 +281,7 @@ func testJoinRequestWithMismatchedLandID() async throws {
         using: ErrorHandlingTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout ErrorHandlingTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }

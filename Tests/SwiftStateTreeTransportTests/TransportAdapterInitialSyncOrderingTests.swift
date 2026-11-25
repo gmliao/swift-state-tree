@@ -44,7 +44,7 @@ private func messageOrder(from messages: [Data]) -> [String] {
 func testJoinResponseBeforeFirstSyncWhenSyncNowRuns() async throws {
     let definition = Land("ordering-test", using: InitialSyncOrderingTestState.self) {
         Rules {
-            OnJoin { (state: inout InitialSyncOrderingTestState, _: LandContext) in
+            OnJoin { state, _ in
                 state.ticks += 1
             }
         }
@@ -96,7 +96,7 @@ func testJoinResponseBeforeFirstSyncWhenSyncNowRuns() async throws {
 func testUiLeaveHomeRejoinSendsFirstSync() async throws {
     let definition = Land("rejoin-test", using: InitialSyncOrderingTestState.self) {
         Rules {
-            OnJoin { (state: inout InitialSyncOrderingTestState, _: LandContext) in
+            OnJoin { state, _ in
                 state.ticks += 1
             }
         }
@@ -161,7 +161,7 @@ func testUiLeaveHomeRejoinSendsFirstSync() async throws {
 func testSyncNowSkipsInitialSyncingPlayers() async throws {
     let definition = Land("skip-test", using: InitialSyncOrderingTestState.self) {
         Rules {
-            OnJoin { (state: inout InitialSyncOrderingTestState, _: LandContext) in
+            OnJoin { state, _ in
                 state.ticks += 1
             }
         }
