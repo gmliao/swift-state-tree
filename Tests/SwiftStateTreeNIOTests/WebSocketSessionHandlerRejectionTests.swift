@@ -46,7 +46,7 @@ private func makeHandler(_ sessionID: SessionID, transport: WebSocketTransport) 
 }
 
 private func sendText(_ text: String, on channel: EmbeddedChannel) throws {
-    try channel.writeInbound(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: text)))
+    try channel.writeInbound(WebSocketFrame.client(fin: true, opcode: .text, data: ByteBuffer(string: text)))
     channel.embeddedEventLoop.run()
 }
 
