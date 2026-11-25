@@ -129,6 +129,18 @@ private func recordedJoin(player: String, sequence: Int64, tickId: Int64) -> Ree
     )
 }
 
+private func makeLiveKeeper(
+    definition: LandDefinition<ReevalDrainState>
+) -> LandKeeper<ReevalDrainState> {
+    LandKeeper<ReevalDrainState>(
+        definition: definition,
+        initialState: ReevalDrainState(),
+        mode: .live,
+        autoStartLoops: false,
+        landID: "reeval-drain:live"
+    )
+}
+
 private func makeReevalKeeper(
     definition: LandDefinition<ReevalDrainState>,
     transport: ReevalDrainTransport
@@ -205,5 +217,43 @@ struct ReevaluationDrainTests {
         await keeper.forceShutdown()
 
         #expect(transport.destroyedCount == 1, "onLandDestroyed must still fire once after the keeper drains")
+    }
+
+    @Test("Reevaluation keeper: empty-room destroy path runs no land code")
+    func emptyRoomDestroyRunsNoLandCode() async throws {
+        let box = ReevalDrainBox()
+        let definition = makeReevalDrainDefinition(box: box)
+        let transport = ReevalDrainTransport()
+        let keeper = await makeReevalKeeper(definition: definition, transport: transport)
+
+        await keeper.awaitInitialization()
+        try await keeper.join(playerID: PlayerID("v1"), clientID: ClientID("c-v1"), sessionID: SessionID("s-v1"))
+        try await keeper.leave(playerID: PlayerID("v1"), clientID: ClientID("c-v1"))
+        #expect(await keeper.destroyTimerForTesting() != nil, "empty room must arm the destroy timer")
+
+        await keeper.runEmptyRoomShutdownForTesting()
+
+        let log = await keeper.currentState().log
+        #expect(box.finalizeResolverCount == 0, "OnFinalize resolver must not run via empty-room path in a reevaluation keeper")
+        #expect(!box.afterFinalizeRan, "AfterFinalize must not run via empty-room path in a reevaluation keeper")
+        #expect(!log.contains("finalize"), "OnFinalize handler must not append 'finalize' via empty-room path in a reevaluation keeper")
+        #expect(!log.contains("destroyWhenEmpty"), "DestroyWhenEmpty must not append via empty-room path in a reevaluation keeper")
+        #expect(transport.destroyedCount == 1, "onLandDestroyed must still fire once after empty-room shutdown")
+    }
+
+    @Test("Live keeper: forced shutdown runs all destroy handlers")
+    func liveDrainStillRunsLandCode() async throws {
+        let box = ReevalDrainBox()
+        let definition = makeReevalDrainDefinition(box: box)
+        let keeper = makeLiveKeeper(definition: definition)
+
+        await keeper.awaitInitialization()
+        await keeper.forceShutdown()
+
+        let log = await keeper.currentState().log
+        #expect(box.finalizeResolverCount == 1, "OnFinalize resolver must run on a live keeper forced shutdown")
+        #expect(box.afterFinalizeRan, "AfterFinalize must run on a live keeper forced shutdown")
+        #expect(log.contains("finalize"), "OnFinalize handler must append 'finalize' on a live keeper forced shutdown")
+        #expect(log.contains("destroyWhenEmpty"), "DestroyWhenEmpty handler also runs on a live keeper forced shutdown")
     }
 }

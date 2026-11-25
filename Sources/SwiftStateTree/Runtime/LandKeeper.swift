@@ -6086,6 +6086,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The destruction proper: stop the loops, run the destroy handlers, notify the transport.
+    /// A reevaluation keeper skips all destroy handlers and goes straight to transport notification
+    /// (#826): the record holds no finalize event, so there is nothing to verify them against, and
+    /// their resolvers and AfterFinalize could reach outside services.
     private func drainAfterIdleCheck() async {
         await holds.at(.drainStart)
         // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting
