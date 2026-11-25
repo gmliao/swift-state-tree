@@ -1734,7 +1734,12 @@ struct FailedLandStopTests {
             .hook)
         let (_, connection, joined) = try await f.startJoin("p1")
         #expect(await admitted.waitForArrivals(1), "the join is held after its admission")
-        // A helper that returned once the land had the player would return here.
+        // The land has the player once the join's input drain has run, still before the router's
+        // join ends: a helper that returned at that point would return here. OnJoin runs in the
+        // drain the keeper's join scheduled before it returned (a tickless in-turn join): wait for
+        // that drain, not for the state.
+        let keeper = try await f.keeper()
+        #expect(await bounded { await keeper.waitForInputDrainIdleForTesting() } != nil, "the join's input drain ended")
         #expect(await f.players() == ["p1"], "OnJoin ran")
 
         let server = f.server
@@ -1766,6 +1771,12 @@ struct FailedLandStopTests {
         let returned = Events()
         let join = Task { try await f.join("p1"); returned.append("returned") }
         #expect(await admitted.waitForArrivals(1), "the join is held at \(point)")
+        if point == "afterAdmit" {
+            // OnJoin runs in the input drain the keeper's join scheduled; wait for it (see
+            // `joinTailUndoneByAStop`). At `.flipWaitResumed` a turn has consumed OnJoin already.
+            let keeper = try await f.keeper()
+            #expect(await bounded { await keeper.waitForInputDrainIdleForTesting() } != nil, "the join's input drain ended")
+        }
         #expect(await f.players() == ["p1"], "OnJoin ran")
         // The hold keeps the join from ending, so this can't fail on a correct
         // helper, whatever the timing. The pause only gives a helper that returns on the state
