@@ -145,7 +145,7 @@ error: Stored property 'score' in GameState must be marked with @Sync or @Intern
 6. **No `@PlainData` beside `@StateNodeBuilder`**: the macro already writes the witness. `@SnapshotConvertible` beside it is fine
 7. **No `@Sync` inside `#if`**: the sync reads only top-level fields, so such a field would never be synced. `@Internal` inside `#if` is fine, except on a node that is also `@SnapshotConvertible`, whose conversion would drop it
 8. **No freestanding macro expansion among the members**: the check can't see the storage it adds. `#warning` and `#error` are compiler directives and are fine
-9. **No other attached macro on the type**: besides `@StateNodeBuilder`, only `@SnapshotConvertible` and built-in attributes that add no members, such as `@available`. Another macro could add members this macro doesn't see
+9. **No other attached macro on the type**: besides `@StateNodeBuilder`, only `@SnapshotConvertible` and built-in attributes that add no members, such as `@available`. Another macro could add members this macro doesn't see. The same holds on a member that could add declarations, such as a method, a computed property or a nested type: it takes only built-in attributes that add none, such as `@inlinable`, and a nested type may also carry this project's macros
 
 ## Generated Methods
 

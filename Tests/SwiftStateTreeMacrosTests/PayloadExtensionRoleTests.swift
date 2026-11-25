@@ -194,4 +194,102 @@ struct PayloadExtensionRoleTests {
         #expect(!foreign.contains("@Payload already makes this type PlainData; remove @PlainData"), "\(foreign)")
         #expect(!foreign.contains { $0.hasPrefix("@Payload and @SnapshotConvertible both write getFieldMetadata()") }, "\(foreign)")
     }
+
+    @Test("An attribute a payload type doesn't list is refused: another macro could add members its witness doesn't see (#837)")
+    func unknownTypeAttribute() {
+        let (_, messages) = expand("""
+            @Payload
+            @Memoized
+            @available(macOS 14, *)
+            @Other.Payload
+            struct Extra: ServerEventPayload {
+                let n: Int
+            }
+            """, conforming: false)
+        let rest = "can't be on a payload type: a macro there can add members the PlainData check doesn't see; this type takes only @Payload and attributes that add no members"
+        #expect(messages.filter { $0.contains("can't be on a payload type") } == ["@Memoized " + rest, "@Other.Payload " + rest], "\(messages)")
+    }
+
+    @Test("Beside @StateNodeBuilder or @SnapshotConvertible, @Payload leaves the type's attributes to them: one report per type")
+    func typeAttributesCheckedOnce() {
+        for other in ["@StateNodeBuilder", "@SnapshotConvertible"] {
+            let (_, messages) = expand("""
+                \(other)
+                @Payload
+                @Memoized
+                struct Extra: ServerEventPayload {
+                    let n: Int
+                }
+                """, conforming: false)
+            #expect(!messages.contains { $0.contains("can't be on a payload type") }, "\(other): \(messages)")
+        }
+    }
+
+    @Test("An attribute on a payload's member that could add declarations is refused; built-ins pass (#837)")
+    func memberAttributes() {
+        let rest = " can't be in a payload type: a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable"
+        // A nested type's message also names the project macros it may carry.
+        let nested = "; a nested type also takes @Payload, @PlainData, @SnapshotConvertible, @StateNodeBuilder"
+        let refused: [(member: String, name: String)] = [
+            ("@Memoized func cost() -> Int { 0 }", "@Memoized on 'cost()'"),
+            ("@AddRef var view: Int { 0 }", "@AddRef on 'view'"),
+            ("@AddRef static var shared: Int = 0", "@AddRef on 'shared'"),
+            ("@Peer init(x: Int) { self.init() }", "@Peer on 'init(...)'"),
+            ("@Peer subscript(i: Int) -> Int { i }", "@Peer on 'subscript(...)'"),
+            ("@Peer struct Inner {}", "@Peer on 'Inner'"),
+            ("@Peer typealias Alias = Int", "@Peer on 'Alias'"),
+            ("#if DEBUG\n@Memoized func debugCost() -> Int { 0 }\n#endif", "@Memoized on 'debugCost()'"),
+        ]
+        for (member, name) in refused {
+            let (_, messages) = expand("@Payload\nstruct Hit: ServerEventPayload {\nlet n: Int\ninit() { n = 0 }\n\(member)\n}", conforming: false)
+            #expect(messages.filter { $0.contains("a macro attached to a member") } == [name + rest + (name == "@Peer on 'Inner'" ? nested : "")], "\(member): \(messages)")
+        }
+        let allowed = """
+            @inlinable func a() -> Int { 0 }
+            @available(*, deprecated) var b: Int { 0 }
+            @discardableResult mutating func c() -> Int { 0 }
+            @TaskLocal static var d: Int = 0
+            @_spi(Test) public init(e: Int) { self.init() }
+            @PlainData struct Inner { var f: Int }
+            @concurrent func g() async -> Int { 0 }
+            @Sendable func h() -> Int { 0 }
+            """
+        let (_, messages) = expand("@Payload\nstruct Hit: ServerEventPayload {\nlet n: Int\ninit() { n = 0 }\n\(allowed)\n}", conforming: false)
+        #expect(!messages.contains { $0.contains("a macro attached to a member") }, "\(messages)")
+    }
+
+    @Test("An observed property is a field: in the metadata and the positional writer, as in the witness (#837)")
+    func observedPropertyIsAField() {
+        let (text, _) = expand("""
+            @Payload
+            struct Hit: ServerEventPayload {
+                var hp: Int = 0 {
+                    didSet {}
+                }
+                var shown: Int { hp }
+            }
+            """, conforming: false)
+        #expect(text.contains("name: \"hp\""), "\(text)")
+        #expect(text.contains("try writer.field(self.hp)"), "\(text)")
+        #expect(text.contains("PlainDataCheck.field(value.hp)"), "\(text)")
+        #expect(!text.contains("name: \"shown\"") && !text.contains("self.shown"), "\(text)")
+    }
+
+    @Test("A static property is not a payload field (#837)")
+    func staticPropertiesAreNotFields() {
+        let (text, messages) = expand("""
+            @Payload
+            struct Hit: ServerEventPayload {
+                let n: Int
+                static let limit = 3
+                static var shared: Int = 0
+                @TaskLocal static var current: Int = 0
+            }
+            """, conforming: false)
+        #expect(messages.isEmpty, "\(messages)")
+        #expect(text.contains("try writer.field(self.n)"), "\(text)")
+        for name in ["limit", "shared", "current"] {
+            #expect(!text.contains("self.\(name)") && !text.contains("value.\(name)") && !text.contains("name: \"\(name)\""), "\(name): \(text)")
+        }
+    }
 }

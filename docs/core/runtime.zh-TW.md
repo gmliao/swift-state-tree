@@ -57,15 +57,22 @@ HandleAction(SomeAction.self) { state, action, ctx in
 }
 ```
 
-`LandKeeper` 透過 `withMutableStateSync` 執行每個 handler，直接修改 actor 的狀態：
+`LandKeeper` 透過 `withHandlerStep` 執行會修改狀態的 handler，直接修改 actor 的狀態，並為這次呼叫綁定 `ctx.random`。replay 會重跑的 handler（OnInitialize、OnJoin、OnLeave、action、client event、server input 與 tick）拿到延續 land 產生器的 service，handler 回傳後 keeper 會把產生器寫回。OnDestroyWhenEmpty 與 OnFinalize 也經過 `withHandlerStep`，但拿到的是產生器的一份副本，不會寫回。AfterFinalize 拿到狀態的快照，並從同一份副本抽取，所以 drain 的三個 handler 延續同一個序列。CanJoin 與 sync handler 不經過 `withHandlerStep`：各自拿到自己的一份副本，同樣不會寫回。
 
 ```swift
 // 內部實作（簡化版）
-func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows -> T {
+func withHandlerStep<T>(_ ctx: LandContext, _ operation: (inout State, LandContext) throws -> T) rethrows -> T {
+    // 接續 land 產生器的 service，只供這次呼叫使用
+    let random = DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
+    defer { landRandom = random.generator }   // 抽取會推進 land 的產生器
+    var bound = ctx
+    bound.stepRandom = random
     // Actor 序列化確保線程安全
-    return try operation(&state)
+    return try operation(&state, bound)
 }
 ```
+
+land 的產生器是 keeper 的狀態。replay 會依錄製重跑的 handler 從它抽取，handler 返回時 keeper 把它寫回。CanJoin、sync handler 與銷毀階段的 handler 不會依錄製重跑，所以從一份不寫回的副本抽取（[`ctx.random`](#landcontext-功能)）。
 
 ### 狀態讀取
 
@@ -103,7 +110,7 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
     let outputs = try await run(resolvers)
 
     // 在之後的 turn 中：handler 以具型別的參數拿到輸出
-    return try withMutableStateSync { state in
+    return try withHandlerStep(ctx) { state, ctx in
         try handler.invoke(&state, action: action, outputs: outputs, ctx: ctx)
     }
 }
@@ -114,7 +121,8 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
 `LandContext` 提供以下功能：
 
 - **識別資訊**：`playerID`、`clientID`、`sessionID`、`landID`
-- **服務存取**：`services` - 外部服務抽象（資料庫、日誌等）
+- **服務存取**：`services` - 外部服務抽象（資料庫、日誌等）。land 的產生器不在其中。
+- **Deterministic 亂數**：`random` - land 的產生器。請在 handler 內同步抽取：留到 handler 之後才用的 `random`，或在 `Task` 中使用，不會推進 land，或在 replay 無法重現的時點推進它
 - **Deterministic 事件**：`emitEvent(_:to:)` - 將事件排入佇列，於 tick 結尾以 deterministic 順序 flush
 - **Deterministic 同步**：`requestSyncNow()` / `requestSyncBroadcastOnly()` - 請求同步，於 tick 結尾以 deterministic 順序 flush
 - **Resolver 輸出**：handler 在 input 之後，以具型別的參數收到每個 resolver 的輸出（[Resolver](resolver.zh-TW.md)）
@@ -168,7 +176,7 @@ func handleEvent<E: EventPayload>(_ event: E, ...) {
     let ctx = makeContext(...)
 
     // 執行 handler（無返回值）
-    withMutableStateSync { state in
+    withHandlerStep(ctx) { state, ctx in
         handler.invoke(&state, event: event, ctx: ctx)
     }
 }
@@ -207,7 +215,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // 執行 Resolver（如果有的話）
         // 執行 handler
-        withMutableStateSync { state in
+        withHandlerStep(ctx) { state, ctx in
             onJoinHandler(&state, ctx)
         }
     }
@@ -224,7 +232,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
 public func leave(playerID: PlayerID, ...) async throws {
     // 執行 OnLeave handler（如果定義）
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
-        withMutableStateSync { state in
+        withHandlerStep(ctx) { state, ctx in
             onLeaveHandler(&state, ctx)
         }
     }
@@ -329,6 +337,7 @@ HandleAction(AttackAction.self) { state, action, ctx in
 | `emitEvent(_:to:)`           | 排入事件佇列，tick 結尾發送 |
 | `requestSyncNow()`           | 請求立即同步，tick 結尾執行 |
 | `requestSyncBroadcastOnly()` | 請求廣播同步，tick 結尾執行 |
+| `random`                     | land 的產生器，replay 時重現 |
 
 ### Tick 執行
 

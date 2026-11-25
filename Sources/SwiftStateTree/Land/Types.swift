@@ -149,6 +149,14 @@ public struct LandServices: Sendable {
         services.merge(other.services) { _, new in new }
     }
 
+    /// A copy without the service registered under `type`'s key. Only that concrete key: a
+    /// service registered under another type (a protocol, say) stays.
+    func removing<Service: Sendable>(_ type: Service.Type) -> LandServices {
+        var copy = self
+        copy.services.removeValue(forKey: ObjectIdentifier(type))
+        return copy
+    }
+
     /// Return a new LandServices by merging another instance.
     public func merging(_ other: LandServices) -> LandServices {
         var combined = self

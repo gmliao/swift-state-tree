@@ -87,6 +87,8 @@ private actor NewestWinsTransport: Transport {
     var delegate: TransportDelegate?
     private(set) var frames: [(data: Data, target: SwiftStateTreeTransport.EventTarget)] = []
     private(set) var closed: [SessionID] = []
+    /// Each close with its code, reason and grace: `closeSession(_:)` alone drops them.
+    private(set) var closes: [(sessionID: SessionID, close: SessionClose)] = []
 
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
     func start() async throws {}
@@ -101,6 +103,10 @@ private actor NewestWinsTransport: Transport {
     }
 
     func closeSession(_ sessionID: SessionID) async { closed.append(sessionID) }
+    func closeSession(_ sessionID: SessionID, with close: SessionClose) async {
+        closes.append((sessionID, close))
+        closed.append(sessionID)
+    }
     nonisolated var supportsCloseSession: Bool { true }
 
     /// What `sessionID` received, in order: "joinResponse", "actionResponse", "error",
@@ -200,6 +206,10 @@ private func makeFixture(legacyJoin: Bool = false) async -> NewestWinsFixture {
     return NewestWinsFixture(keeper: keeper, adapter: adapter, transport: transport)
 }
 
+/// The close a superseded session gets (#861): 4017, "logged in elsewhere", the short grace. Spelled
+/// out, so the test doesn't read the constant it checks.
+private let supersededClose = SessionClose(code: 4017, reason: "logged in elsewhere", closeGrace: .milliseconds(500))
+
 @Suite("One session per player, newest wins (#92)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct TransportAdapterNewestWinsTests {
     let player = PlayerID("p1")
@@ -218,6 +228,12 @@ struct TransportAdapterNewestWinsTests {
         #expect(await f.adapter.membershipSessionIDs(for: player) == [s2])
         #expect(await f.adapter.supersededSessionCount == 1)
         #expect(await pollUntil { await f.transport.closed == [s1] })
+        let closes = await f.transport.closes
+        #expect(closes.map(\.sessionID) == [s1])
+        #expect(closes.first?.close.code == 4017)
+        #expect(closes.first?.close.reason == "logged in elsewhere")
+        #expect(closes.first?.close.closeGrace == .milliseconds(500))
+        #expect(closes.first?.close == supersededClose)
         // The keeper: OnLeave for the old entry, then OnJoin for the new one.
         let state = await f.keeper.currentState()
         #expect(state.joins == 2 && state.leaves == 1)
@@ -342,6 +358,7 @@ struct TransportAdapterNewestWinsTests {
         }
         #expect(await f.adapter.membershipSessionIDs(for: player) == [s2])
         #expect(await pollUntil { await f.transport.closed == [s1] })
+        #expect(await f.transport.closes.map(\.close) == [supersededClose], "the legacy join closes the old session with 4017 too")
         let state = await f.keeper.currentState()
         #expect(state.joins == 2 && state.leaves == 1)
         #expect(await f.keeper.playerCount() == 1)

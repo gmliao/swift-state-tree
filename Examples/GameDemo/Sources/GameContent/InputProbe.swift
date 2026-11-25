@@ -11,7 +11,7 @@ import SwiftStateTree
 /// `SetMotionAction`. Not synced and not in the schema.
 ///
 /// The keeper calls `noteApplied()` from its handlers; the benchmark reads `applied` after a run.
-/// A lock, not an atomic, because the package targets macOS 14.
+/// A lock, not an atomic: it was written for a macOS 14 floor, and a lock is enough for a counter.
 public final class InputProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
