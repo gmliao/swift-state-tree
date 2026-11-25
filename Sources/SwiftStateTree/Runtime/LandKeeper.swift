@@ -86,8 +86,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
 
 /// What `LandKeeper.submitAction` did with an action.
 package enum ActionSubmission: Sendable {
-    /// Handled through: its response (an ACK on a tick land, the handler's on a tickless one).
-    case completed(AnyCodable)
+    /// Handled through: its outcome (an ACK on a tick land, the handler's response on a
+    /// tickless one).
+    case completed(InputOutcome)
     /// Its resolvers run in a job: `LandKeeper.awaitActionResult(sequence:)` returns its outcome.
     case pending(sequence: Int64)
 }
@@ -2657,12 +2658,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// Cancelling the caller cancels the job's task directly (no actor hop) and marks the job,
     /// so a completion that hasn't run yet fails with `CancellationError` instead of delivering.
-    package func awaitActionResult(sequence: Int64) async throws -> AnyCodable {
-        try await awaitActionOutcome(sequence: sequence).boundaryValue
-    }
-
-    /// `awaitActionResult`'s outcome, before the exit converts it.
-    private func awaitActionOutcome(sequence: Int64) async throws -> InputOutcome {
+    package func awaitActionResult(sequence: Int64) async throws -> InputOutcome {
         let task = actionJobs[sequence]?.task
         let callerCancelled = actionJobs[sequence]?.callerCancelled
         return try await withTaskCancellationHandler {
@@ -3067,10 +3063,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // An awaiting caller holds its own wait: the action-job caps aren't applied, so direct
         // callers that send concurrently (tests, benchmarks) behave as before.
         switch try await submit(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: false) {
-        case .completed(let response):
-            return response
+        case .completed(let outcome):
+            return outcome.boundaryValue
         case .pending(let sequence):
-            return try await awaitActionResult(sequence: sequence)
+            return try await awaitActionResult(sequence: sequence).boundaryValue
         }
     }
 
@@ -3117,7 +3113,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // In re-evaluation mode, actions come from ReevaluationSource, not from transport.
         guard mode == .live else {
             // Return empty response in re-evaluation mode.
-            return .completed(InputOutcome.none.boundaryValue)
+            return .completed(.none)
         }
 
         // Tickless lands apply actions immediately: hold them while frozen and count them as
@@ -3266,12 +3262,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // This maintains backward compatibility for tests and simple use cases
         if definition.lifetimeHandlers.tickHandler == nil {
             // An input turn applies it (with the other ready inputs) and returns its response.
-            return .completed(try await awaitInputTurn(sequence: sequence).boundaryValue)
+            return .completed(try await awaitInputTurn(sequence: sequence))
         }
 
         // Return immediate ACK (handler will execute in tick)
         // Return empty response - actual response will be available after tick execution
-        return .completed(InputOutcome.none.boundaryValue)
+        return .completed(.none)
     }
 
     /// Generate action ID for matching (same format as schema generation).
