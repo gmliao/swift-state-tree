@@ -134,48 +134,47 @@ struct WebSocketFragmentReassemblerTests {
         }
     }
 
-    // MARK: - Protocol Errors
+    // MARK: - Bad fragment sequences (RFC 6455 §5.4, #822)
 
-    @Test("Continuation without preceding fragment is ignored")
-    func testContinuationWithoutPrecedingFragment() throws {
+    @Test("A continuation with nothing to continue is a bad fragment sequence", arguments: [true, false])
+    func orphanContinuationIsRefused(fin: Bool) {
         var fragmentBuffer: WebSocketFragmentReassembler.PartialMessage? = nil
-        let frame = makeFrame(fin: true, opcode: .continuation, data: [1, 2, 3])
+        let frame = makeFrame(fin: fin, opcode: .continuation, data: [1, 2, 3])
 
         let result = WebSocketFragmentReassembler.process(frame: frame, fragmentBuffer: &fragmentBuffer)
 
-        #expect(result == .ignored)
+        #expect(result == .badFragmentSequence)
         #expect(fragmentBuffer == nil)
     }
 
-    @Test("Binary frame while reassembling resets and yields new message")
-    func testBinaryFrameWhileReassembling() throws {
+    @Test("A continuation after a finished message is a bad fragment sequence")
+    func continuationAfterFinishedMessageIsRefused() {
         var fragmentBuffer: WebSocketFragmentReassembler.PartialMessage? = nil
-        _ = WebSocketFragmentReassembler.process(
-            frame: makeFrame(fin: false, opcode: .binary, data: [1, 2, 3]),
-            fragmentBuffer: &fragmentBuffer
-        )
-        #expect(fragmentBuffer != nil)
+        _ = WebSocketFragmentReassembler.process(frame: makeFrame(fin: false, opcode: .binary, data: [1]), fragmentBuffer: &fragmentBuffer)
+        let finished = WebSocketFragmentReassembler.process(frame: makeFrame(fin: true, opcode: .continuation, data: [2]), fragmentBuffer: &fragmentBuffer)
+        #expect(finished == .complete(Data([1, 2]), .binary))
 
-        let frame = makeFrame(fin: true, opcode: .binary, data: [4, 5, 6])
-        let result = WebSocketFragmentReassembler.process(frame: frame, fragmentBuffer: &fragmentBuffer)
+        let orphan = WebSocketFragmentReassembler.process(frame: makeFrame(fin: true, opcode: .continuation, data: [3]), fragmentBuffer: &fragmentBuffer)
 
-        #expect(result == .complete(Data([4, 5, 6]), .binary))
+        #expect(orphan == .badFragmentSequence)
         #expect(fragmentBuffer == nil)
     }
 
-    @Test("Text frame while reassembling resets and yields new message")
-    func testTextFrameWhileReassembling() throws {
-        var fragmentBuffer: WebSocketFragmentReassembler.PartialMessage? = nil
-        _ = WebSocketFragmentReassembler.process(
-            frame: makeFrame(fin: false, opcode: .text, data: [1, 2, 3]),
-            fragmentBuffer: &fragmentBuffer
-        )
+    @Test(
+        "A text or binary opener while a message is unfinished is a bad fragment sequence",
+        arguments: [WebSocketOpcode.text, .binary], [true, false]
+    )
+    func openerMidMessageIsRefused(opener: WebSocketOpcode, fin: Bool) {
+        for first in [WebSocketOpcode.text, .binary] {
+            var fragmentBuffer: WebSocketFragmentReassembler.PartialMessage? = nil
+            let started = WebSocketFragmentReassembler.process(frame: makeFrame(fin: false, opcode: first, data: Array("ab".utf8)), fragmentBuffer: &fragmentBuffer)
+            #expect(started == .incomplete)
 
-        let frame = makeFrame(fin: true, opcode: .text, data: [7, 8, 9])
-        let result = WebSocketFragmentReassembler.process(frame: frame, fragmentBuffer: &fragmentBuffer)
+            let result = WebSocketFragmentReassembler.process(frame: makeFrame(fin: fin, opcode: opener, data: Array("cd".utf8)), fragmentBuffer: &fragmentBuffer)
 
-        #expect(result == .complete(Data([7, 8, 9]), .text))
-        #expect(fragmentBuffer == nil)
+            #expect(result == .badFragmentSequence, "\(first) then \(opener) fin=\(fin)")
+            #expect(fragmentBuffer == nil, "the unfinished message is dropped")
+        }
     }
 
     // MARK: - Max Size

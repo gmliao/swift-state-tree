@@ -1,5 +1,6 @@
 // Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerProtocolTests.swift
-// Tests for RFC 6455 protocol enforcement: RSV bits, reserved opcodes, close validation (#810).
+// Tests for RFC 6455 protocol enforcement: RSV bits, reserved opcodes, close validation (#810),
+// bad fragment sequences (#822).
 
 import Foundation
 import Logging
@@ -288,6 +289,61 @@ struct WebSocketSessionHandlerProtocolTests {
         // No data must reach the transport after a protocol failure.
         await handler.waitForInboundIdle()
         #expect(recorder.messages.isEmpty, "no message must reach the transport after a protocol failure")
+    }
+
+    // MARK: - Bad fragment sequences (RFC 6455 §5.4, #822)
+
+    /// Writes `frames`, then a trailing ping and a whole binary message, and checks that the
+    /// connection failed with 1002 and that nothing after the failure was answered or delivered.
+    private func expectBadFragmentSequence(_ frames: [WebSocketFrame], sessionID: String) async throws {
+        let recorder = RecordingDelegate()
+        let transport = WebSocketTransport()
+        await transport.setDelegate(recorder)
+        let (channel, handler) = try makeSessionWithHandler(sessionID, transport: transport)
+
+        for frame in frames {
+            try channel.writeInbound(frame)
+        }
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(string: "after")))
+        channel.embeddedEventLoop.run()
+
+        var closeCode: UInt16?
+        var opcodes: [WebSocketOpcode] = []
+        while let frame = try channel.readOutbound(as: WebSocketFrame.self) {
+            opcodes.append(frame.opcode)
+            if frame.opcode == .connectionClose {
+                var data = frame.unmaskedData
+                closeCode = data.readInteger(as: UInt16.self)
+            }
+        }
+        #expect(opcodes == [.connectionClose], "expected exactly one close frame, got \(opcodes)")
+        #expect(closeCode == 1002)
+        #expect(!channel.isActive)
+        #expect(handler.closeCause == .error)
+
+        await handler.waitForInboundIdle()
+        #expect(recorder.messages.isEmpty, "no message must reach the transport from a bad fragment sequence")
+    }
+
+    @Test("Continuation with nothing to continue → 1002, trailing frames dropped", arguments: [true, false])
+    func orphanContinuationFails(fin: Bool) async throws {
+        try await expectBadFragmentSequence(
+            [WebSocketFrame(fin: fin, opcode: .continuation, data: ByteBuffer(string: "orphan"))],
+            sessionID: "proto-orphan-\(fin)"
+        )
+    }
+
+    @Test("New opener while a message is unfinished → 1002, neither message delivered", arguments: [true, false])
+    func openerMidMessageFails(fin: Bool) async throws {
+        // Autobahn 5.18 is the fin=true case: two fragments that both carry the text opcode.
+        try await expectBadFragmentSequence(
+            [
+                WebSocketFrame(fin: false, opcode: .text, data: ByteBuffer(string: "first")),
+                WebSocketFrame(fin: fin, opcode: .text, data: ByteBuffer(string: "second")),
+            ],
+            sessionID: "proto-opener-\(fin)"
+        )
     }
 
     @Test("Bad close: trailing ping is dropped after the error close")

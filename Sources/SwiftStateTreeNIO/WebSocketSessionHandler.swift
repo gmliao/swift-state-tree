@@ -464,6 +464,13 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
                 ]
             )
 
+        case .badFragmentSequence:
+            // An orphan continuation or a new opener mid-message fails the connection
+            // (RFC 6455 §5.4, §7.1.7); the reassembler has dropped the unfinished message.
+            noteCloseCause(.error, code: .protocolError)
+            closeOnLoop(code: .protocolError)
+            enqueueDisconnect()
+
         case .exceededMaxSize:
             logger.warning(
                 "Fragmented message exceeded max size (\(WebSocketFragmentReassembler.maxFragmentSize))",
