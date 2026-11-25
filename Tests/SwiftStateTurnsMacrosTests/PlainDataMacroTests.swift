@@ -671,4 +671,52 @@ struct PlainDataMacroTests {
             """)
         #expect(messages == ["a function type isn't plain data: it can call through to anything"])
     }
+
+    @Test("An attribute a PlainData type doesn't list is refused: another macro could add members its witness doesn't see (#837)")
+    func unknownTypeAttribute() {
+        let rest = "can't be on a PlainData type: a macro there can add members the PlainData check doesn't see; this type takes only @PlainData, @SnapshotConvertible and attributes that add no members"
+        let (_, onStruct) = expand("""
+            @PlainData
+            @Memoized
+            @frozen
+            @Other.PlainData
+            struct Room {
+                var size: Int
+            }
+            """)
+        #expect(onStruct.filter { $0.contains("can't be on a PlainData type") } == ["@Memoized " + rest, "@Other.PlainData " + rest], "\(onStruct)")
+        let (_, onEnum) = expand("""
+            @PlainData
+            @Memoized
+            enum Phase {
+                case lobby
+            }
+            """)
+        #expect(onEnum.filter { $0.contains("can't be on a PlainData type") } == ["@Memoized " + rest], "\(onEnum)")
+        let (_, inIf) = expand("""
+            @PlainData
+            #if DEBUG
+            @Memoized
+            #endif
+            struct Room {
+                var size: Int
+            }
+            """)
+        #expect(inIf.contains("an attribute inside #if " + rest), "\(inIf)")
+    }
+
+    @Test("Beside another of the project's macros, @PlainData leaves the type's attributes to it: one report per type")
+    func typeAttributesCheckedOnce() {
+        for other in ["@StateNodeBuilder", "@SnapshotConvertible", "@Payload"] {
+            let (_, messages) = expand("""
+                \(other)
+                @PlainData
+                @Memoized
+                struct Room {
+                    var size: Int
+                }
+                """)
+            #expect(!messages.contains { $0.contains("can't be on a PlainData type") }, "\(other): \(messages)")
+        }
+    }
 }

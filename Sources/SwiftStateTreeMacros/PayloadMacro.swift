@@ -352,6 +352,11 @@ extension PayloadMacro: ExtensionMacro {
     ) throws -> [ExtensionDeclSyntax] {
         // The member role reports a declaration that isn't a struct.
         guard let structDecl = declaration.as(StructDeclSyntax.self) else { return [] }
+        // Another macro on the type could add members the witness doesn't see (#837). The
+        // extension role reports, so the member role's expansion doesn't report twice.
+        if PlainDataAttributes.checks("Payload", on: structDecl.attributes) {
+            PlainDataAttributes.diagnoseType(structDecl.attributes, rule: PlainDataAttributes.payload, in: context)
+        }
         var failed = false
         for attribute in structDecl.attributes {
             guard case .attribute(let other) = attribute else { continue }

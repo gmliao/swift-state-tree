@@ -194,4 +194,34 @@ struct PayloadExtensionRoleTests {
         #expect(!foreign.contains("@Payload already makes this type PlainData; remove @PlainData"), "\(foreign)")
         #expect(!foreign.contains { $0.hasPrefix("@Payload and @SnapshotConvertible both write getFieldMetadata()") }, "\(foreign)")
     }
+
+    @Test("An attribute a payload type doesn't list is refused: another macro could add members its witness doesn't see (#837)")
+    func unknownTypeAttribute() {
+        let (_, messages) = expand("""
+            @Payload
+            @Memoized
+            @available(macOS 14, *)
+            @Other.Payload
+            struct Extra: ServerEventPayload {
+                let n: Int
+            }
+            """, conforming: false)
+        let rest = "can't be on a payload type: a macro there can add members the PlainData check doesn't see; this type takes only @Payload and attributes that add no members"
+        #expect(messages.filter { $0.contains("can't be on a payload type") } == ["@Memoized " + rest, "@Other.Payload " + rest], "\(messages)")
+    }
+
+    @Test("Beside @StateNodeBuilder or @SnapshotConvertible, @Payload leaves the type's attributes to them: one report per type")
+    func typeAttributesCheckedOnce() {
+        for other in ["@StateNodeBuilder", "@SnapshotConvertible"] {
+            let (_, messages) = expand("""
+                \(other)
+                @Payload
+                @Memoized
+                struct Extra: ServerEventPayload {
+                    let n: Int
+                }
+                """, conforming: false)
+            #expect(!messages.contains { $0.contains("can't be on a payload type") }, "\(other): \(messages)")
+        }
+    }
 }
