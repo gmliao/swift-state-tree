@@ -15,11 +15,15 @@ public enum PlainDataWalk {
     ///
     /// - Parameter readThrough: property wrappers whose wrapped value is checked, by the
     ///   attribute's last name component (`Sync` matches `@Sync` and `@SwiftStateTree.Sync`).
-    ///   `value.name` reads the wrapped value, whose type is the annotation's; the wrapper's own
-    ///   storage is checked by `@PlainData` on the wrapper. A field with such a wrapper and no
-    ///   annotation gets no line: the wrapper's generic constraint checks the inferred type. Any
-    ///   other wrapper is refused. Empty for `@PlainData` and `@Payload`, which refuse every
-    ///   wrapper.
+    ///   The name is only a spelling, so a read-through field is checked twice: `value._name`, the
+    ///   wrapper's storage, which compiles only when the wrapper is `PlainData` (the library's
+    ///   `Sync` and `Internal` are, and a namesake that holds a class isn't), and, with an
+    ///   annotation, `value.name`, the wrapped value. Without an annotation only the storage is
+    ///   checked; the library's wrappers constrain the inferred type. Any other wrapper is
+    ///   refused. Empty for `@PlainData` and `@Payload`, which refuse every wrapper.
+    ///
+    /// A freestanding macro expansion among the members is refused: the storage it expands to
+    /// isn't in the syntax this walk reads.
     public static func checkLines(
         _ members: MemberBlockItemListSyntax,
         isEnum: Bool,
@@ -41,6 +45,11 @@ public enum PlainDataWalk {
                 }
                 block.append("#endif")
                 lines.append(block.joined(separator: "\n"))
+                continue
+            }
+            if let expansion = member.decl.as(MacroExpansionDeclSyntax.self) {
+                context.diagnose(Diagnostic(node: expansion, message: PlainDataDiagnostic.macroExpansion))
+                failed = true
                 continue
             }
             if isEnum {
@@ -87,8 +96,13 @@ public enum PlainDataWalk {
                     failed = true
                     continue
                 }
+                if isWrapped, let pattern = binding.pattern.as(IdentifierPatternSyntax.self) {
+                    // The wrapper's storage: the attribute's name doesn't say which wrapper it is.
+                    lines.append(check("value._\(storageName(pattern.identifier))"))
+                }
                 guard let annotation = binding.typeAnnotation?.type ?? typeOfNextBinding(binding, in: variable) else {
-                    // The wrapper's generic constraint checks the inferred type at the field.
+                    // The storage check above covers the wrapper; the wrapper's generic
+                    // constraint checks the inferred type at the field.
                     if isWrapped { continue }
                     context.diagnose(Diagnostic(node: binding.pattern, message: PlainDataDiagnostic.annotation(binding.pattern.trimmedDescription)))
                     failed = true
@@ -130,6 +144,11 @@ public enum PlainDataWalk {
             guard case .attribute(let attribute) = $0 else { return false }
             return lastNameComponent(of: attribute) == name
         }
+    }
+
+    /// A wrapped property's storage name, `_name`, without the backticks of an escaped name.
+    private static func storageName(_ identifier: TokenSyntax) -> String {
+        String(identifier.text.filter { $0 != "`" })
     }
 
     private static func check(_ value: String) -> String {
@@ -246,7 +265,9 @@ public enum PlainDataWalk {
         return nil
     }
 
-    private static func isComputed(_ binding: PatternBindingSyntax) -> Bool {
+    /// Whether a binding has no storage: a getter, or `get`/`set`/`_read`/`_modify` accessors.
+    /// Observers (`willSet`/`didSet`) keep it stored.
+    public static func isComputed(_ binding: PatternBindingSyntax) -> Bool {
         guard let accessors = binding.accessorBlock?.accessors else { return false }
         switch accessors {
         case .getter:
@@ -351,6 +372,8 @@ public enum PlainDataDiagnostic: DiagnosticMessage {
     case existentialInGeneric
     case foundation(String, String)
     case sharedCaseName(String)
+    /// A freestanding macro expansion among a checked type's members.
+    case macroExpansion
 
     /// What to store instead of a Foundation value type, or nil for any other name.
     public static func foundationReplacement(_ name: String) -> String? {
@@ -378,6 +401,7 @@ public enum PlainDataDiagnostic: DiagnosticMessage {
         case .foundation(let type, let replacement): "\(type) isn't plain data; store \(replacement) (for your own type of that name, qualify it with its module)"
         case .tuple: "a tuple can't conform to PlainData; use PlainPair or a @PlainData struct"
         case .sharedCaseName(let name): "@PlainData can't check enum cases that share the base name '\(name)'; give each case its own name"
+        case .macroExpansion: "the PlainData check can't see the storage a macro expansion adds; declare the stored properties in the type"
         }
     }
 

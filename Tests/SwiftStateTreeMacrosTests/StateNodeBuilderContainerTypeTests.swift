@@ -331,6 +331,7 @@ struct StateNodeBuilderContainerTypeTests {
                 static func _plainDataCheck() {
                     @available(*, deprecated, message: "the PlainData checks; never called")
                     func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value._maps)
                         SwiftStateTurns.PlainDataCheck.field(value.maps)
                     }
                 }

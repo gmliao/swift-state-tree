@@ -10,6 +10,22 @@ import Testing
 /// Compiles only when `T` is PlainData.
 private func plainData<T: PlainData>(_: T.Type) -> Bool { true }
 
+/// Compiles only while `StateProtocol` refines `PlainData`.
+private func stateIsPlainData<T: StateProtocol>(_: T.Type) -> Bool { plainData(T.self) }
+
+@SnapshotConvertible
+private struct StatePlainDataValue: StateProtocol, Equatable {
+    var n: Int = 0
+}
+
+/// An observed field is stored, so it is marked and synced like any other.
+@StateNodeBuilder
+private struct StatePlainDataObservedNode: StateNodeProtocol {
+    @Sync(.broadcast) var count: Int = 0 {
+        didSet {}
+    }
+}
+
 @StateNodeBuilder
 private struct StatePlainDataNode: StateNodeProtocol {
     @Sync(.broadcast) var count: Int = 0
@@ -24,5 +40,11 @@ struct StatePlainDataTests {
         #expect(plainData(Internal<[String: Int]>.self))
         #expect(plainData(StatePlainDataNode.self))
         #expect(plainData(Position2.self))
+        #expect(stateIsPlainData(StatePlainDataValue.self))
+    }
+
+    @Test("An observed @Sync field is synced")
+    func observedFieldIsSynced() {
+        #expect(StatePlainDataObservedNode().getSyncFields().map(\.name) == ["count"])
     }
 }

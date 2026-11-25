@@ -24,12 +24,10 @@ func diagnoseRefusedFieldTypes(
     for member in structDecl.memberBlock.members {
         guard let variable = member.decl.as(VariableDeclSyntax.self),
               !variable.modifiers.contains(where: { $0.name.text == "static" }),
-              !variable.bindings.contains(where: { $0.accessorBlock != nil })
+              !variable.bindings.contains(where: PlainDataWalk.isComputed)
         else { continue }
         if onlySynced {
-            let isSynced = variable.attributes.contains { attribute in
-                attribute.as(AttributeSyntax.self)?.attributeName.as(IdentifierTypeSyntax.self)?.name.text == "Sync"
-            }
+            let isSynced = PlainDataWalk.hasAttribute(named: "Sync", in: variable.attributes)
             guard isSynced else { continue }
         }
         for binding in variable.bindings {

@@ -1,7 +1,7 @@
 // Tests/SwiftStateTreeMacrosTests/StatePlainDataMacroTests.swift
 //
 // A land's State is PlainData. `@StateNodeBuilder` writes the `_plainDataCheck` member with
-// one check per `@Sync` and `@Internal` field, read through the wrapper, and
+// checks per `@Sync` and `@Internal` field (the wrapper's storage, and the wrapped value), and
 // `@SnapshotConvertible` writes the PlainData extension unless a sibling macro writes the witness.
 
 import SwiftParser
@@ -36,7 +36,7 @@ private func checkLines(_ expanded: String) -> [String] {
 
 @Suite("State is PlainData: the macros' witness")
 struct StatePlainDataMacroTests {
-    @Test("@StateNodeBuilder checks each @Sync and @Internal field's wrapped value, by name; an unannotated @Internal field gets no line")
+    @Test("@StateNodeBuilder checks each @Sync and @Internal field's storage and wrapped value; an unannotated @Internal field gets the storage check only")
     func memberChecksEachField() {
         let (expanded, messages) = expand("""
             @StateNodeBuilder
@@ -51,9 +51,13 @@ struct StatePlainDataMacroTests {
         #expect(messages.isEmpty, "\(messages)")
         #expect(expanded.contains("static func _plainDataCheck()"))
         #expect(checkLines(expanded) == [
+            "SwiftStateTurns.PlainDataCheck.field(value._players)",
             "SwiftStateTurns.PlainDataCheck.field(value.players)",
+            "SwiftStateTurns.PlainDataCheck.field(value._deck)",
             "SwiftStateTurns.PlainDataCheck.field(value.deck)",
+            "SwiftStateTurns.PlainDataCheck.field(value._lastTick)",
             "SwiftStateTurns.PlainDataCheck.field(value.lastTick)",
+            "SwiftStateTurns.PlainDataCheck.field(value._cache)",
         ], "\(expanded)")
     }
 
@@ -83,7 +87,7 @@ struct StatePlainDataMacroTests {
             }
             """)
         #expect(messages.isEmpty, "\(messages)")
-        #expect(checkLines(expanded) == ["SwiftStateTurns.PlainDataCheck.field(value.value)"], "\(expanded)")
+        #expect(checkLines(expanded) == ["SwiftStateTurns.PlainDataCheck.field(value._value)", "SwiftStateTurns.PlainDataCheck.field(value.value)"], "\(expanded)")
         #expect(!expanded.contains("where T: SwiftStateTurns.PlainData"))
     }
 
@@ -100,8 +104,10 @@ struct StatePlainDataMacroTests {
             """)
         #expect(messages.isEmpty, "\(messages)")
         #expect(checkLines(expanded) == [
+            "SwiftStateTurns.PlainDataCheck.field(value._count)",
             "SwiftStateTurns.PlainDataCheck.field(value.count)",
             "#if DEBUG",
+            "SwiftStateTurns.PlainDataCheck.field(value._trace)",
             "SwiftStateTurns.PlainDataCheck.field(value.trace)",
             "#endif",
         ], "\(expanded)")
@@ -132,6 +138,64 @@ struct StatePlainDataMacroTests {
             }
             """)
         #expect(messages.first == "@StateNodeBuilder writes the PlainData check; remove @PlainData", "\(messages)")
+    }
+
+    @Test("A wrapper named Sync or Internal is read through by any spelling, and its storage is checked: the name alone doesn't make it the library's")
+    func readThroughChecksStorage() {
+        let (expanded, messages) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @SwiftStateTree.Sync(.broadcast) var count: Int = 0
+                @SwiftStateTree.Internal var `default`: Int = 0
+            }
+            """)
+        #expect(messages.isEmpty, "\(messages)")
+        #expect(checkLines(expanded) == [
+            "SwiftStateTurns.PlainDataCheck.field(value._count)",
+            "SwiftStateTurns.PlainDataCheck.field(value.count)",
+            "SwiftStateTurns.PlainDataCheck.field(value._default)",
+            "SwiftStateTurns.PlainDataCheck.field(value.`default`)",
+        ], "\(expanded)")
+    }
+
+    @Test("A @Sync field inside #if is refused: the sync tables read only top-level members")
+    func syncInsideIfConfig() {
+        let (_, messages) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                #if DEBUG
+                @Sync(.broadcast) var trace: [String] = []
+                #endif
+            }
+            """)
+        #expect(messages.first == "@Sync property 'trace' inside #if isn't synced; declare it outside #if, or mark it @Internal", "\(messages)")
+    }
+
+    @Test("An observed property is stored: unmarked, it is refused")
+    func observedUnmarked() {
+        let (_, messages) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                var secret: Int = 0 {
+                    didSet {}
+                }
+            }
+            """)
+        #expect(messages.contains { $0.contains("Stored property 'secret'") && $0.contains("must be marked with @Sync or @Internal") }, "\(messages)")
+    }
+
+    @Test("A freestanding macro expansion among a state's members is refused: its storage can't be checked")
+    func macroExpansionMember() {
+        let (_, messages) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                #addsStorage()
+            }
+            """)
+        #expect(messages.contains("the PlainData check can't see the storage a macro expansion adds; declare the stored properties in the type"), "\(messages)")
     }
 
     @Test("A property wrapper other than @Sync and @Internal is refused, by name")
@@ -165,7 +229,7 @@ struct StatePlainDataMacroTests {
             }
             """)
         #expect(messages.isEmpty, "\(messages)")
-        #expect(checkLines(expanded).first == "SwiftStateTurns.PlainDataCheck.optional(value.token) {", "\(expanded)")
+        #expect(checkLines(expanded).prefix(2) == ["SwiftStateTurns.PlainDataCheck.field(value._token)", "SwiftStateTurns.PlainDataCheck.optional(value.token) {"], "\(expanded)")
         #expect(expanded.contains("SwiftStateTurns.PlainDataCheck.existential($0)"), "\(expanded)")
     }
 
@@ -186,8 +250,8 @@ struct StatePlainDataMacroTests {
         ], "\(expanded)")
     }
 
-    @Test("@SnapshotConvertible writes no witness beside @PlainData or @StateNodeBuilder, bare or qualified", arguments: [
-        "@PlainData", "@SwiftStateTurns.PlainData",
+    @Test("@SnapshotConvertible writes no witness beside @PlainData or @Payload, bare or qualified", arguments: [
+        "@PlainData", "@SwiftStateTurns.PlainData", "@Payload", "@SwiftStateTree.Payload",
     ])
     func snapshotConvertibleYieldsToPlainData(attribute: String) {
         let (expanded, _) = expand("""

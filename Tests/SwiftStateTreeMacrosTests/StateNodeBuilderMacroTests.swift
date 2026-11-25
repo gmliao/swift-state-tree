@@ -227,8 +227,11 @@ final class StateNodeBuilderMacroTests {
                 static func _plainDataCheck() {
                     @available(*, deprecated, message: "the PlainData checks; never called")
                     func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value._players)
                         SwiftStateTurns.PlainDataCheck.field(value.players)
+                        SwiftStateTurns.PlainDataCheck.field(value._hiddenData)
                         SwiftStateTurns.PlainDataCheck.field(value.hiddenData)
+                        SwiftStateTurns.PlainDataCheck.field(value._cache)
                         SwiftStateTurns.PlainDataCheck.field(value.cache)
                     }
                 }
@@ -408,6 +411,7 @@ final class StateNodeBuilderMacroTests {
                 static func _plainDataCheck() {
                     @available(*, deprecated, message: "the PlainData checks; never called")
                     func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value._secret)
                         SwiftStateTurns.PlainDataCheck.field(value.secret)
                     }
                 }

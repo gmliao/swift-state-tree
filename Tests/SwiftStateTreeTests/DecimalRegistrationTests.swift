@@ -23,6 +23,18 @@ extension DecimalHolder: PlainData { static func _plainDataCheck() {} } // lint-
 struct DecimalSyncedRoot: StateNodeProtocol {
     @Sync(.broadcast)
     var holder: DecimalHolder = DecimalHolder()
+    @Sync(.broadcast)
+    var maybe: DecimalHolder? = DecimalHolder()
+    @Sync(.broadcast)
+    var list: [DecimalHolder] = [DecimalHolder()]
+    @Sync(.broadcast)
+    var unique: Set<DecimalHolder> = [DecimalHolder()]
+    @Sync(.broadcast)
+    var byName: [String: DecimalHolder] = ["a": DecimalHolder()]
+    /// Not reported: the walk follows the fields that reach the wire, as the key and open-type
+    /// checks do. Only a hand-written witness gets a `Decimal` here.
+    @Sync(.serverOnly)
+    var hidden: DecimalHolder = DecimalHolder()
 }
 
 @StateNodeBuilder
@@ -63,10 +75,14 @@ private func registrationError<State: StateNodeProtocol>(_ definition: LandDefin
 
 @Suite("Decimal has no wire form: registration refuses it where it would reach the wire (#597)")
 struct DecimalRegistrationTests {
-    @Test("A Decimal behind a hand-written PlainData witness is refused at registration")
+    @Test("A Decimal behind a hand-written PlainData witness is refused at registration, through optionals, arrays, sets and dictionary values; a server-only field is skipped")
     func syncedDecimalFields() {
         #expect(SyncRegistration.problems(DecimalSyncedRoot.self) == [
             .decimalField(path: "DecimalSyncedRoot.holder.amount"),
+            .decimalField(path: "DecimalSyncedRoot.maybe.amount"),
+            .decimalField(path: "DecimalSyncedRoot.list[*].amount"),
+            .decimalField(path: "DecimalSyncedRoot.unique[*].amount"),
+            .decimalField(path: "DecimalSyncedRoot.byName[*].amount"),
         ])
         #expect(SyncRegistration.problems(DecimalCleanRoot.self).isEmpty)
         let message = SyncRegistrationError.Problem.decimalField(path: "Root.price").description

@@ -247,8 +247,11 @@ final class StateNodeBuilderSnapshotDecodeTests {
                 static func _plainDataCheck() {
                     @available(*, deprecated, message: "the PlainData checks; never called")
                     func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value._score)
                         SwiftStateTurns.PlainDataCheck.field(value.score)
+                        SwiftStateTurns.PlainDataCheck.field(value._name)
                         SwiftStateTurns.PlainDataCheck.field(value.name)
+                        SwiftStateTurns.PlainDataCheck.field(value._internal_counter)
                         SwiftStateTurns.PlainDataCheck.field(value.internal_counter)
                     }
                 }

@@ -134,17 +134,16 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         var extensions: [ExtensionDeclSyntax] = [convertibleExtension, storedFieldsExtension]
 
         // A state value type is PlainData: this macro writes the conformance and the
-        // checks, as `@Payload` does, unless `@PlainData` beside it writes them. Beside
-        // `@StateNodeBuilder`, whose member is the witness, it writes only the conformance: the
-        // compiler leaves a conformance this macro's role declares to its expansion, even one
-        // `StateNodeProtocol` implies, so an expansion without it doesn't conform. Any spelling
-        // of either name.
-        let siblingNames = declaration.attributes.compactMap {
-            $0.as(AttributeSyntax.self).map(PlainDataWalk.lastNameComponent(of:))
-        }
-        if siblingNames.contains("PlainData") {
-            // `@PlainData` writes the conformance and the checks.
-        } else if siblingNames.contains("StateNodeBuilder") {
+        // checks, as `@Payload` does, unless `@PlainData` or `@Payload` beside it writes them.
+        // Beside `@StateNodeBuilder`, whose member is the witness, it writes only the
+        // conformance: the compiler leaves a conformance this macro's role declares to its
+        // expansion, even one `StateNodeProtocol` implies, so an expansion without it doesn't
+        // conform. Any spelling of each name.
+        let attributes = declaration.attributes
+        if PlainDataWalk.hasAttribute(named: "PlainData", in: attributes)
+            || PlainDataWalk.hasAttribute(named: "Payload", in: attributes) {
+            // The sibling writes the conformance and the checks.
+        } else if PlainDataWalk.hasAttribute(named: "StateNodeBuilder", in: attributes) {
             if protocols.contains(where: { $0.trimmedDescription.hasSuffix("PlainData") }) {
                 extensions.append(try ExtensionDeclSyntax("extension \(type.trimmed): SwiftStateTurns.PlainData {}"))
             }
@@ -291,10 +290,9 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                 continue
             }
 
-            // Skip computed properties
-            let hasComputedProperty = variableDecl.bindings.contains { binding in
-                return binding.accessorBlock != nil
-            }
+            // Skip computed properties. Observers keep a property stored, and converted, as the
+            // PlainData check counts it.
+            let hasComputedProperty = variableDecl.bindings.contains(where: PlainDataWalk.isComputed)
 
             if hasComputedProperty {
                 continue
