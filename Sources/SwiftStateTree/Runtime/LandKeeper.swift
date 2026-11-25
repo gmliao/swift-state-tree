@@ -1235,7 +1235,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func replayedResolverOutputs(
         _ recorded: [String: ReevaluationRecordedResolverOutput]
     ) -> [String: HeldResolverOutput] {
-        let integralFloats = reevaluationSource is JSONReevaluationSource
+        let integralFloats = reevaluationSource?.readsJSONRecord ?? false
         return recorded.mapValues {
             .recorded(RecordedResolverOutput(typeIdentifier: $0.typeIdentifier, value: $0.value, integralFloats: integralFloats))
         }
@@ -4470,7 +4470,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // Decoded once, here. A payload that doesn't decode is still queued: it fails
                     // alone when it is applied, with the error a decode there would throw. The
                     // JSON view gets its integer-to-float allowance, as its resolver outputs do (#818).
-                    let decoded = Result { try handler.decode(recorded.payload, integralFloats: reevaluationSource is JSONReevaluationSource) }
+                    let decoded = Result { try handler.decode(recorded.payload, integralFloats: reevaluationSource?.readsJSONRecord ?? false) }
                         .mapError { RecordedPayloadDecodeFailure($0) }
                     pendingItems.append(.serverInput(PendingServerInputItem(
                         sequence: recorded.sequence,
