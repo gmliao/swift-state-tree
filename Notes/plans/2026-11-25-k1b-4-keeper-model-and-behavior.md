@@ -1,6 +1,6 @@
 # K1b-4: `KeeperModel<State>` and `KeeperBehavior<State>`, with the census test (#700)
 
-**Status:** rev 1, plan only, a draft. It was read at #835's head 5baa1887 (K1a), without the LSP, and #834's head 636dd69e (P4-1) for `StateNodeProtocol: PlainData`.
+**Status:** rev 1.1, plan only, a draft. Rev 1.1 settles D2, takes K1b-3's GO'd helper (rev 2.1, d7e41fcc) and the K2 survey's shape (1ebd7ddb); §9. Rev 1 It was read at #835's head 5baa1887 (K1a), without the LSP, and #834's head 636dd69e (P4-1) for `StateNodeProtocol: PlainData`.
 - K1b-4 needs K1b-1 (the plain forms), K1b-2 (`FailureID` and the side tables) and K1b-3 (the RNG), and P4-1 (K1b-Q3). So this plan names their results by their planned shapes, and rev 2 re-checks them on K1b-4's base with the LSP.
 - The census is Appendix A of `2026-11-22-keeper-on-turncore.md` (draft 3 and A.7).
 
@@ -50,9 +50,12 @@ struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
 - **The trap.** `model` is a stored property of an actor, so Swift enforces exclusive access to it dynamically, also in release builds. Today a handler runs on `&state`, a property of its own, so the keeper can read `players` while the handler holds `state`. After the move, `&model.state` holds an access to all of `model`. Any read of `model.players` during that access, through the keeper or through a closure that reaches it, is a runtime "simultaneous accesses" trap.
 - **The rule (prior art: SE-0176, Law of Exclusivity).** A step takes `inout KeeperModel` once and reaches every field through that binding. The K1b-3 helper becomes:
   ```swift
-  private func withHandlerStep<R>(_ ctx: LandContext, _ body: (inout KeeperModel<State>, LandContext) throws -> R) rethrows -> R
+  private func withHandlerStep<R>(_ ctx: LandContext, random: HandlerRandom = .step,
+                                  _ body: (inout KeeperModel<State>, LandContext) throws -> R) rethrows -> R
   ```
   It gives the body `&model`, and the body calls the handler with `&m.state`. That is the shape K1b-5's turn bodies take anyway.
+  - **K1b-3's RNG write-back** becomes `defer { model.landRandom = service.generator }`. A `defer` runs after the body returns, so the body's `&model` access has ended, and the write-back is its own access: no overlap.
+  - **K1b-5 and K2** (K2 survey, 1ebd7ddb): the core's `TurnMachine.handle` is `mutating` on the machine itself, so K1b-5's bodies are best written as `mutating` methods on `KeeperModel` taking `KeeperBehavior`. That is the same one-access rule, with `self` as the binding. K1b-4 only adds the types and moves the fields, and the methods come in K1b-5.
 - **Checked at 5baa1887.** The nine `withMutableStateSync` bodies touch no other keeper field. The handlers' context closures (`emitEventHandler`, `requestSyncNow…`) write `outputCollector`, a separate class, not the actor. Hence §3.3.
 - **Test.** Each handler kind runs once under a debug build, which already has dynamic enforcement: `swift test`'s suites cover them. A mutant in §6 moves one read inside the access.
 
@@ -62,7 +65,8 @@ struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
   - But the handler's context closures write them during the handler, while `&model` is held. Moving them into Model now would turn every `ctx.emit` into an exclusivity trap.
   - K2 stages outputs in the step's output (§3.6), and that is when they can move.
   - K1b-4 lists the collector as Outside with "K2" in the census test's exception list.
-- **D2: the replay group.** A.5's fields become one `struct ReplayFields` on the actor (`var replay: ReplayFields?` or non-optional with defaults; rev 2 picks one by reading the replay entry points). `replayPassObserver` is a closure, so `ReplayFields` isn't `PlainData`, and it doesn't have to be (A.5).
+- **D2: the replay group.** A.5's fields become one `struct ReplayFields` on the actor, **non-optional, with today's defaults**: the setters (`setReplayPassObserver`, `setReplayRecordsPassOrdinals`, `setReplayRecordsRejected`, `setReplayFailureEnd`) run on a keeper that already exists, after init (`ReevaluationEngine`:351, `ReevaluationRunnerImpl`:350–358), and a live keeper reads the defaults today. An optional group would add an unwrap at every read for no gain.
+  - **`ReplayFields` stays non-plain.** `replayPassObserver` is a closure that captures the engine's sinks or the runner. Review suggested moving it to Behavior so the group could be `PlainData`, then agreed to decline (2026-11-25): Behavior is fixed at init and must hold no mutable reference, and the observer and its three siblings are set after init, from the record header and from state read off the running keeper. A.5 doesn't need the group plain (the replay owner has no core). **Revisit at #612**, which can build the replay keeper after reading the header.
 
 ### 3.4 The census test (`Tests/SwiftStateTreeTests/KeeperCensusTests.swift`)
 
@@ -107,5 +111,14 @@ None. All the new types are internal. `LandKeeper`'s public members keep their s
 ## 8. Open for rev 2 (on the base)
 
 - K1b-1's final forms (F9 to F11, F3, `LandFailure`) and K1b-2's `FailureID` and side tables. The Model rows in §3.1 copy them.
-- **D1 and D2** (§3.3).
+- **D1** (§3.3): Review's early read agreed. D2 is settled in rev 1.1.
 - The LSP census, and the exact list of the census test's exceptions.
+
+## 9. Rev 1 → rev 1.1
+
+| Change | Where |
+|---|---|
+| Review's early read: the one-inout rule, D1 and D2 fine | §3.2, §3.3 |
+| D2: non-optional with defaults; `replayPassObserver` stays off Behavior (Review's nit, declined and agreed), revisit at #612 | §3.3 |
+| K1b-3 rev 2.1's helper (`random:`), with the write-back in `defer` after the model access | §3.2 |
+| K2 survey: K1b-5's bodies as `mutating` methods on `KeeperModel` | §3.2 |
