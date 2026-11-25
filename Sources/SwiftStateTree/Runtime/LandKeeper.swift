@@ -146,7 +146,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         /// `payload` decoded as the handler's type, once: at submit live (where a failure is
         /// refused, so live holds a value), when the item is built in replay (where a failure is
         /// kept, and thrown when the item is applied).
-        package let decoded: Result<any ServerInputPayload, RecordedPayloadDecodeFailure>
+        package let decoded: DecodedServerInput
         package let resolvedAtTick: Int64
     }
 
@@ -231,7 +231,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         /// The action as the apply step runs it (#521, #700 K1a): decoded at intake live, and
         /// when replay builds the item. A recorded payload that doesn't decode is kept as its
         /// failure, thrown when the item is applied, where a decode at apply threw before.
-        package let decoded: Result<any ActionPayload, RecordedPayloadDecodeFailure>
+        package let decoded: DecodedAction
         /// The handler's action type: found by the recorded type identifier in replay, so it is
         /// known even when the payload didn't decode.
         public let actionType: any ActionPayload.Type
@@ -259,7 +259,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let recorded = try RecordedPayloadBytes(typed: action)
             self.init(
                 sequence: sequence,
-                decoded: .success(try JSONDecoder().decode(A.self, from: recorded.bytes)),
+                decoded: .value(try JSONDecoder().decode(A.self, from: recorded.bytes)),
                 actionType: A.self,
                 recorded: recorded,
                 playerID: playerID,
@@ -272,7 +272,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         package init(
             sequence: Int64,
-            decoded: Result<any ActionPayload, RecordedPayloadDecodeFailure>,
+            decoded: DecodedAction,
             actionType: any ActionPayload.Type,
             recorded: RecordedPayloadBytes?,
             playerID: PlayerID,
@@ -3226,7 +3226,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             startActionJob(
                 PendingActionItem(
                     sequence: sequence,
-                    decoded: .success(decodedAction),
+                    decoded: .value(decodedAction),
                     actionType: actionPayloadType,
                     recorded: recorded,
                     playerID: playerID,
@@ -3246,7 +3246,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try deliverResolvedAction(
             PendingActionItem(
                 sequence: sequence,
-                decoded: .success(decodedAction),
+                decoded: .value(decodedAction),
                 actionType: actionPayloadType,
                 recorded: recorded,
                 playerID: playerID,
@@ -3486,7 +3486,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             sequence: sequence,
             typeIdentifier: typeIdentifier,
             bytes: bytes,
-            decoded: .success(decoded),
+            decoded: .value(decoded),
             resolvedAtTick: lastCommittedTickId
         ))
         serverInputsInFlight += 1
@@ -3822,11 +3822,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Decoded at intake (#521), or when replay built the item (#700 K1a). A recorded
             // payload that didn't decode throws here, before the record, where its decode threw.
-            let decodedAction: any ActionPayload
-            switch actionItem.decoded {
-            case .success(let value): decodedAction = value
-            case .failure(let failure): throw failure.error
-            }
+            let decodedAction = try actionItem.decoded.get()
 
             // Create context with resolver outputs
             let ctx = makeContext(
@@ -3963,11 +3959,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Throws only from the payload's decode (a recorded one that failed when replay built
             // the item) or `validate`, before anything is written (#586).
             try withMutableStateSync { state in
-                let input: any ServerInputPayload
-                switch inputItem.decoded {
-                case .success(let value): input = value
-                case .failure(let failure): throw failure.error
-                }
+                let input = try inputItem.decoded.get()
                 try handler.invoke(&state, input: input, ctx: ctx)
             }
 
@@ -4629,11 +4621,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         bytes: recordedAction.payload,
                         encoding: recordedAction.payloadEncoding ?? replayHeaderPayloadEncoding
                     )
-                    let decoded = Result {
+                    let decoded = DecodedAction(catching: {
                         let source = try payloadDecoders.makeSource(recorded.bytes, recorded.encoding)
                         try source.validateRecordable()
                         return try source.decodeAction(actionType)
-                    }.mapError { RecordedPayloadDecodeFailure($0) }
+                    })
                     let pendingItem = PendingItem.action(
                         PendingActionItem(
                             sequence: recordedAction.sequence,
@@ -4700,8 +4692,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // Decoded once, here, from the recorded bytes (canonical MessagePack in every
                     // record, #700 K1a). A payload that doesn't decode is still queued: it fails
                     // alone when it is applied, with the error a decode there would throw.
-                    let decoded = Result { try handler.decode(recorded.payload) }
-                        .mapError { RecordedPayloadDecodeFailure($0) }
+                    let decoded = DecodedServerInput(catching: { try handler.decode(recorded.payload) })
                     pendingItems.append(.serverInput(PendingServerInputItem(
                         sequence: recorded.sequence,
                         typeIdentifier: recorded.typeIdentifier,

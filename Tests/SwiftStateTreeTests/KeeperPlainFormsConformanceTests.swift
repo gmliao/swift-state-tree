@@ -32,7 +32,9 @@ struct KeeperPlainFormsConformanceTests {
         requirePlain(RecordPayloadEncoding.self)
         requirePlain(RecordedPayloadBytes.self)
         requirePlain(LandKeeper<KeeperPlainFormsPinState>.LifecycleKind.self)
-        // Commit 3: DecodedAction, DecodedServerInput.
+        // Commit 3: the decoded payloads.
+        requirePlain(DecodedAction.self)
+        requirePlain(DecodedServerInput.self)
         // Commit 4: ActionHandlerIndex.
         // Commit 8: the items and PendingItem.
     }
