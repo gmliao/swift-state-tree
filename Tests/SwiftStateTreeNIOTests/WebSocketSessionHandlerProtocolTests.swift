@@ -1,5 +1,6 @@
 // Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerProtocolTests.swift
-// Tests for RFC 6455 protocol enforcement: RSV bits, reserved opcodes, close validation (#810).
+// Tests for RFC 6455 protocol enforcement: RSV bits, reserved opcodes, close validation (#810),
+// bad fragment sequences and oversized fragmented messages (#822).
 
 import Foundation
 import Logging
@@ -31,15 +32,36 @@ private func makeSession(_ sessionID: String = "proto-s1") throws -> EmbeddedCha
     try makeSessionWithHandler(sessionID).0
 }
 
-/// Records messages delivered to the transport (thread-safe).
+/// Records messages and disconnects delivered to the transport, in order (thread-safe).
 private final class RecordingDelegate: TransportDelegate, @unchecked Sendable {
+    enum Event: Equatable {
+        case message(Data)
+        case disconnect
+    }
+
     private let lock = NSLock()
-    private(set) var messages: [Data] = []
+    private var recorded: [Event] = []
+
+    var events: [Event] { lock.withLock { recorded } }
+    var messages: [Data] {
+        events.compactMap { if case .message(let data) = $0 { data } else { nil } }
+    }
 
     func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo?) async {}
-    func onDisconnect(sessionID: SessionID, clientID: ClientID) async {}
+    func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
+        lock.withLock { recorded.append(.disconnect) }
+    }
     func onMessage(_ data: Data, from sessionID: SessionID) async {
-        lock.withLock { messages.append(data) }
+        lock.withLock { recorded.append(.message(data)) }
+    }
+}
+
+/// Holds flushes while `holding`, so the handler's close frame stays unwritten until released.
+private final class FlushHold: ChannelOutboundHandler, @unchecked Sendable {
+    typealias OutboundIn = WebSocketFrame
+    var holding = true
+    func flush(context: ChannelHandlerContext) {
+        if !holding { context.flush() }
     }
 }
 
@@ -288,6 +310,147 @@ struct WebSocketSessionHandlerProtocolTests {
         // No data must reach the transport after a protocol failure.
         await handler.waitForInboundIdle()
         #expect(recorder.messages.isEmpty, "no message must reach the transport after a protocol failure")
+    }
+
+    // MARK: - Bad fragment sequences (RFC 6455 §5.4) and oversized messages (§7.4.1), #822
+
+    /// Writes a complete message, then `frames`, then a trailing ping, continuation and whole
+    /// binary message, with the close frame's write held. Checks that the earlier message and
+    /// then the disconnect reach the transport while the close write is still pending (the
+    /// handler doesn't wait for it), and once released, that the connection failed with `code`
+    /// and nothing after the failure was answered or delivered.
+    private func expectFailure(_ frames: [WebSocketFrame], code: UInt16, sessionID: String) async throws {
+        let recorder = RecordingDelegate()
+        let transport = WebSocketTransport()
+        await transport.setDelegate(recorder)
+        let channel = EmbeddedChannel()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+        let hold = FlushHold()
+        let handler = WebSocketSessionHandler(
+            sessionID: SessionID(sessionID),
+            path: "/test",
+            transport: transport,
+            eventLoop: channel.eventLoop,
+            logger: Logger(label: "test")
+        )
+        // Outbound order: handler → hold → channel.
+        try channel.pipeline.syncOperations.addHandler(hold)
+        try channel.pipeline.syncOperations.addHandler(handler)
+
+        let before = Data("before".utf8)
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(bytes: before)))
+        for frame in frames {
+            try channel.writeInbound(frame)
+        }
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(string: "after")))
+        channel.embeddedEventLoop.run()
+
+        // The close frame isn't written yet, so the channel hasn't closed: the disconnect came
+        // from the failure itself.
+        await handler.waitForInboundIdle()
+        #expect(channel.isActive, "the close write is held")
+        #expect(recorder.events == [.message(before), .disconnect], "\(recorder.events)")
+
+        hold.holding = false
+        channel.flush()
+        channel.embeddedEventLoop.run()
+
+        var closeCode: UInt16?
+        var opcodes: [WebSocketOpcode] = []
+        while let frame = try channel.readOutbound(as: WebSocketFrame.self) {
+            opcodes.append(frame.opcode)
+            if frame.opcode == .connectionClose {
+                var data = frame.unmaskedData
+                closeCode = data.readInteger(as: UInt16.self)
+            }
+        }
+        #expect(opcodes == [.connectionClose], "expected exactly one close frame, got \(opcodes)")
+        #expect(closeCode == code)
+        #expect(!channel.isActive)
+        #expect(handler.closeCause == .error)
+
+        await handler.waitForInboundIdle()
+        #expect(recorder.events == [.message(before), .disconnect], "nothing after the failure is delivered: \(recorder.events)")
+    }
+
+    @Test("Continuation with nothing to continue → 1002, trailing frames dropped", arguments: [true, false])
+    func orphanContinuationFails(fin: Bool) async throws {
+        try await expectFailure(
+            [WebSocketFrame(fin: fin, opcode: .continuation, data: ByteBuffer(string: "orphan"))],
+            code: 1002,
+            sessionID: "proto-orphan-\(fin)"
+        )
+    }
+
+    @Test("New opener while a message is unfinished → 1002, neither message delivered", arguments: [
+        (WebSocketOpcode.text, WebSocketOpcode.text, true),
+        (.text, .text, false),
+        (.text, .binary, true),
+        (.binary, .text, false),
+    ])
+    func openerMidMessageFails(first: WebSocketOpcode, opener: WebSocketOpcode, fin: Bool) async throws {
+        // Autobahn 5.18 is text, text, fin=true: two fragments that both carry the text opcode.
+        try await expectFailure(
+            [
+                WebSocketFrame(fin: false, opcode: first, data: ByteBuffer(string: "first")),
+                WebSocketFrame(fin: fin, opcode: opener, data: ByteBuffer(string: "second")),
+            ],
+            code: 1002,
+            sessionID: "proto-opener-\(first)-\(opener)-\(fin)"
+        )
+    }
+
+    /// `count` bytes of a fragment.
+    private func fragment(_ opcode: WebSocketOpcode, fin: Bool, count: Int) -> WebSocketFrame {
+        WebSocketFrame(fin: fin, opcode: opcode, data: ByteBuffer(bytes: [UInt8](repeating: 0x61, count: count)))
+    }
+
+    @Test("A fragmented message past the reassembly limit → 1009, never 1002: an oversized first fragment, its continuation follows")
+    func oversizedOpenerFails() async throws {
+        let limit = WebSocketFragmentReassembler.maxFragmentSize
+        try await expectFailure(
+            [fragment(.binary, fin: false, count: limit + 1), fragment(.continuation, fin: true, count: 1)],
+            code: 1009,
+            sessionID: "proto-oversize-opener"
+        )
+    }
+
+    @Test("A fragmented message past the reassembly limit → 1009, never 1002: crossed mid-message, a continuation follows")
+    func oversizedMidMessageFails() async throws {
+        let limit = WebSocketFragmentReassembler.maxFragmentSize
+        try await expectFailure(
+            [
+                fragment(.text, fin: false, count: limit - 10),
+                fragment(.continuation, fin: false, count: 20),
+                fragment(.continuation, fin: true, count: 1),
+            ],
+            code: 1009,
+            sessionID: "proto-oversize-mid"
+        )
+    }
+
+    @Test("A fragmented message past the reassembly limit → 1009, never dropped silently: crossed on the final fragment")
+    func oversizedFinalFragmentFails() async throws {
+        let limit = WebSocketFragmentReassembler.maxFragmentSize
+        try await expectFailure(
+            [fragment(.binary, fin: false, count: limit - 10), fragment(.continuation, fin: true, count: 20)],
+            code: 1009,
+            sessionID: "proto-oversize-final"
+        )
+    }
+
+    @Test("Invalid UTF-8 in a fragmented text message → 1007, through the same failure")
+    func invalidUTF8Fails() async throws {
+        try await expectFailure(
+            [
+                WebSocketFrame(fin: false, opcode: .text, data: ByteBuffer(bytes: [0x61, 0xC3])),
+                WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(bytes: [0x28])),
+            ],
+            code: 1007,
+            sessionID: "proto-utf8"
+        )
     }
 
     @Test("Bad close: trailing ping is dropped after the error close")
