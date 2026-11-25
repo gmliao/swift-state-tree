@@ -33,7 +33,9 @@ The same split hid a second drift, found by a must-not-compile snippet: the walk
 
 ## Fix
 
-`PlainDataWalk.isStoredInstance(_:)` (not `static`, no computed binding) is the one predicate. The three field collectors, the `#if` marker check, the walk and the member-attribute check all call it; `storedProperty(naming:)` calls `PlainDataWalk.isComputed`.
+`PlainDataWalk.isStoredInstance(_:)` (not `static`, no computed binding) is the one predicate for a whole declaration. The three field collectors, both `#if` marker checks, the refused-field diagnostics and the member-attribute check call it.
+
+Two sites ask per binding instead, and build on the same two helpers, `PlainDataWalk.isStatic` and `PlainDataWalk.isComputed`, rather than a test of their own: the walk (it diagnoses each binding, so it skips `static` first and then each computed binding), and `PayloadMacro`'s `storedProperty(naming:)` (it reads each binding's type). `LandMacro`'s private `isComputed` answers a different question, whether `static var body` is a computed property, and doesn't decide storage.
 
 ## Prevention
 

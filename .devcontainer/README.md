@@ -18,7 +18,7 @@
 
 ## 注意事項
 
-在 Dev Container 中，即使 `Package.swift` 指定了 `platforms: [.macOS(.v14)]`，Swift Package Manager 在 Linux 容器環境中仍可直接編譯，無需額外修改。
+在 Dev Container 中，即使 `Package.swift` 指定了 `platforms: [.macOS(.v15)]`，Swift Package Manager 在 Linux 容器環境中仍可直接編譯，無需額外修改。
 
 如果遇到編譯錯誤，請檢查：
 - 是否有 macOS 特定的 API（需要使用條件編譯 `#if os(macOS)`）

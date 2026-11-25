@@ -306,8 +306,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                 guard case .decls(let nested) = clause.elements else { continue }
                 for item in nested {
                     if let variable = item.decl.as(VariableDeclSyntax.self),
-                       !variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }),
-                       !variable.bindings.contains(where: PlainDataWalk.isComputed) {
+                       PlainDataWalk.isStoredInstance(variable) {
                         return variable
                     }
                 }

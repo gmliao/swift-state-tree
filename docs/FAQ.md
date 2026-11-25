@@ -22,7 +22,7 @@ For detailed instructions, please refer to [README.md](../README.md#-quick-start
 
 A: 
 - Swift 6.4+
-- macOS 14.0+ (development environment)
+- macOS 15.0+ (development environment)
 - Platforms with a Swift 6.4+ toolchain (deployment environment)
 
 ### Q: How do I verify the project runs correctly?

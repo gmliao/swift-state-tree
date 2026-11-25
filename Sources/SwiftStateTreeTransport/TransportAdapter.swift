@@ -1521,10 +1521,12 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Closes `sessionID` from a detached task, only while its connection is the one with
     /// `generation`; with nil, whatever connection has the ID. A transport that doesn't
     /// implement the generation-aware close (the `Transport` default) closes by ID (#531).
-    func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?) {
+    /// `close` is what the connection is closed with: a plain 1000 unless the caller says
+    /// otherwise (a supersede passes `.superseded`, #861).
+    func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose = .normal) {
         let transport = self.transport
         guard tracksDetachedClosesForTesting else {
-            Task { await transport.closeSession(sessionID, with: .normal, generation: generation) }
+            Task { await transport.closeSession(sessionID, with: close, generation: generation) }
             return
         }
         let id = nextDetachedCloseID
@@ -1532,7 +1534,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // The Task ends on this actor, after this segment, so the handle is stored before then.
         // Weak: a close that never returns doesn't keep the adapter.
         detachedCloses[id] = Task { [weak self] in
-            await transport.closeSession(sessionID, with: .normal, generation: generation)
+            await transport.closeSession(sessionID, with: close, generation: generation)
             await self?.detachedCloseEnded(id)
         }
     }
@@ -1924,7 +1926,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - each old session leaves the membership (it stops being a recipient and its inbound
     ///   finds no player), is ended (its frames are dropped) and its connection is closed; its
     ///   later disconnect callback finds no membership, so it clears nothing and doesn't leave
-    ///   the keeper again;
+    ///   the keeper again; the close is 4017 `superseded` (#861), so the client can tell it from
+    ///   a plain close;
     /// - an old session still joining loses its mark;
     /// - the player's per-player sync state (cache, firstSync mark, initial-sync mark) is
     ///   cleared, and the clear recorded, so the new session's firstSync starts from empty like
@@ -1956,7 +1959,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "newSessionID": .string(sessionID.rawValue),
                 "supersededTotal": .stringConvertible(supersededSessionCount),
             ])
-            closeSessionDetached(old, generation: generation)
+            closeSessionDetached(old, generation: generation, with: .superseded)
         }
         syncEngine.clearCacheForDisconnectedPlayer(playerID)
         perPlayerTables?.clear(playerID)

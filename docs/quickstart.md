@@ -5,7 +5,7 @@
 ## Prerequisites
 
 - Swift 6.4+
-- macOS 14+
+- macOS 15+
 
 ## Option A: Run Demo Directly
 

@@ -5,7 +5,7 @@
 ## 前置需求
 
 - Swift 6.4+
-- macOS 14+
+- macOS 15+
 
 ## 方案 A：直接跑 Demo
 

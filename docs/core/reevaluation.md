@@ -47,7 +47,7 @@ In Reevaluation mode, `LandKeeper`:
 3. Executes handlers with same inputs
 4. Compares state hash after each tick
 
-A keeper built by hand for replay takes the record's land ID and RNG seed, as below; without them both default to the land type. `ReevaluationEngine.run` and `ConcreteReevaluationRunner` do this for you.
+A keeper built by hand for replay takes the record's land ID and RNG seed, as below; without them both default to the land type. `ReevaluationEngine.run` and `ConcreteReevaluationRunner` do this for you. The keeper reads only the registered service's seed: it starts the land's generator from it and removes the service from the contexts it builds, so handlers draw through `ctx.random` and resolvers don't reach it.
 
 Inputs are recorded before their handler runs, so an input whose `validate` throws is in the record too, in order, and is listed as rejected ([Rejected Inputs](#rejected-inputs-35)). Replay runs its `validate` again, which must therefore be deterministic, and checks that it refuses the same inputs.
 

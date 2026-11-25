@@ -23,8 +23,7 @@ func diagnoseRefusedFieldTypes(
     var refused = false
     for member in structDecl.memberBlock.members {
         guard let variable = member.decl.as(VariableDeclSyntax.self),
-              !variable.modifiers.contains(where: { $0.name.text == "static" }),
-              !variable.bindings.contains(where: PlainDataWalk.isComputed)
+              PlainDataWalk.isStoredInstance(variable)
         else { continue }
         if onlySynced {
             let isSynced = PlainDataWalk.hasAttribute(named: "Sync", in: variable.attributes)
