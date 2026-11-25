@@ -65,6 +65,14 @@ public protocol ReevaluationSource: Sendable {
     /// Whether a record older than 3.3 holds a string or a map key that is not NFC (#446): its
     /// state hashes may then differ from this build's (`ReevaluationRecordVersion.hashIncomparability`).
     func getHoldsNonNFCText() async throws -> Bool
+
+    /// True only when this source parsed its frames from JSON bytes — the two JSON-reading
+    /// initializers (`init(data:)` and `init(filePath:)`). JSON's number representation loses the
+    /// float/integer distinction, so a runner reading such a source decodes with the integral-float
+    /// allowance. Sources that hold canonical frames built in memory (`init(metadata:frames:)`) or
+    /// that read a 3.x binary record never set this, and their runners decode strictly.
+    /// A source that wraps another source and forwards its reads must also forward this property.
+    nonisolated var readsJSONRecord: Bool { get }
 }
 
 extension ReevaluationSource {
@@ -112,6 +120,9 @@ extension ReevaluationSource {
     public func getHoldsNonNFCText() async throws -> Bool {
         false
     }
+
+    /// Default for conformers that hold canonical frames built in memory: no JSON was parsed.
+    public nonisolated var readsJSONRecord: Bool { false }
 
     /// Whether the record carries a sync stream (see `ReevaluationSyncStreamPresence`).
     public func getSyncStreamPresence() async throws -> ReevaluationSyncStreamPresence {
@@ -239,6 +250,8 @@ public actor JSONReevaluationSource: ReevaluationSource {
     private let framesByTickId: [Int64: ReevaluationTickFrame]
     private let maxTickId: Int64
     private let holdsNonNFCText: Bool
+    private let _readsJSONRecord: Bool
+    public nonisolated var readsJSONRecord: Bool { _readsJSONRecord }
     
     /// Initialize from a JSON file path.
     ///
@@ -294,6 +307,7 @@ public actor JSONReevaluationSource: ReevaluationSource {
         self.maxTickId = frames.map { $0.tickId }.max() ?? -1
         // Every 2.x record is older than 3.3 (#446).
         self.holdsNonNFCText = Self.holdsNonNFCText(try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]))
+        self._readsJSONRecord = true
     }
 
     private static func holdsNonNFCText(_ value: Any) -> Bool {
@@ -328,6 +342,7 @@ public actor JSONReevaluationSource: ReevaluationSource {
         }
         self.maxTickId = frames.map { $0.tickId }.max() ?? -1
         self.holdsNonNFCText = false
+        self._readsJSONRecord = false
     }
 
     public func getMetadata() async throws -> ReevaluationRecordMetadata {
