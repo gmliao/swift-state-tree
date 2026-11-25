@@ -48,9 +48,6 @@ package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
     }
 
     /// The current ticket of `key`, if it has one.
-    /// The keys that currently have a ticket.
-    package var keys: Dictionary<Key, Epoch>.Keys { current.keys }
-
     package func ticket(for key: Key) -> Ticket<Key>? {
         current[key].map { Ticket(key: key, epoch: $0) }
     }

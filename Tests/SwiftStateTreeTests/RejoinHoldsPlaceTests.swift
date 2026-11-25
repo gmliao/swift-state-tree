@@ -126,6 +126,7 @@ struct RejoinHoldsPlaceTests {
     @Test("a newcomer during the kick is refused, the returning player keeps its place, and the land never holds more than maxPlayers")
     func newcomerDuringKickIsRefused() async throws {
         let (keeper, box) = try await makeFullKeeper()
+        defer { box.gate.open() }
         let rejoin = Task { try await join(keeper, "p1", client: "p1-b") }
         #expect(await box.gate.waitForArrivals(1), "the kick is held in OnLeave's resolver")
         // The old entry is gone and the rejoin hasn't inserted yet.
@@ -153,6 +154,7 @@ struct RejoinHoldsPlaceTests {
     @Test("control: a rejoin whose kick fails releases the hold, so a later newcomer is admitted")
     func failedKickReleasesTheHold() async throws {
         let (keeper, box) = try await makeFullKeeper()
+        defer { box.gate.open() }
         box.failsAfterGate = true
         let rejoin = Task { () -> Bool in
             do { _ = try await join(keeper, "p1", client: "p1-b"); return false } catch { return true }
@@ -171,6 +173,7 @@ struct RejoinHoldsPlaceTests {
     @Test("control: a second duplicate login of the same player keeps its own hold when the first one's join ends")
     func secondLoginKeepsItsHold() async throws {
         let (keeper, box) = try await makeFullKeeper()
+        defer { box.gate.open() }
         box.failsAfterGate = true
         // The first duplicate login suspends in the kick (hold 1).
         let first = Task { () -> Bool in
@@ -179,6 +182,7 @@ struct RejoinHoldsPlaceTests {
         #expect(await box.gate.waitForArrivals(1))
         // The second one is held at the join hold point, after the cap check issued its hold 2.
         let atJoin = TestGate()
+        defer { atJoin.open() }
         // Only the next join to reach the point is held; a later one passes.
         let claimed = NSLock()
         nonisolated(unsafe) var taken = false
@@ -203,6 +207,7 @@ struct RejoinHoldsPlaceTests {
     @Test("a newer login that inserts and leaves while the older one is still in its kick doesn't free the older one's place")
     func newerLoginEndsFirst() async throws {
         let (keeper, box) = try await makeFullKeeper()
+        defer { box.gate.open() }
         // Login A kicks the old session and parks in OnLeave's resolver (arrival 1).
         let older = Task { try await join(keeper, "p1", client: "p1-b") }
         #expect(await box.gate.waitForArrivals(1))
@@ -218,5 +223,41 @@ struct RejoinHoldsPlaceTests {
         let finalCount = await keeper.playerCount()
         #expect(newcomer == .roomIsFull, "the older login's place was given away when the newer login ended")
         #expect(finalCount <= 2, "the land holds more than maxPlayers: players.count == \(finalCount)")
+    }
+
+    @Test("a rejoin that succeeded leaves no reservation behind: after the player leaves, its place is free")
+    func successfulRejoinReleasesItsReservation() async throws {
+        let (keeper, box) = try await makeFullKeeper()
+        defer { box.gate.open() }
+        let rejoin = Task { try await join(keeper, "p1", client: "p1-b") }
+        #expect(await box.gate.waitForArrivals(1))
+        box.gate.open()
+        #expect(try await rejoin.value == .admitted)
+        // p1 leaves (its OnLeave passes the open gate): nobody holds its place any more.
+        try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("p1-b"), sessionID: SessionID("p1-b"))
+        #expect(await keeper.playerCount() == 1)
+        #expect(try await join(keeper, "p3", client: "p3-a") == .admitted)
+        #expect(await keeper.playerCount() == 2)
+    }
+
+    @Test("teardown during a kick: a late newcomer is told the land is shutting down, not that it is full")
+    func lateNewcomerDuringTeardownGetsShuttingDown() async throws {
+        let (keeper, box) = try await makeFullKeeper()
+        defer { box.gate.open() }
+        let rejoin = Task { _ = try? await join(keeper, "p1", client: "p1-b") }
+        #expect(await box.gate.waitForArrivals(1))
+        let shutdown = Task { await keeper.forceShutdown() }
+        while !keeper.isDraining { await Task.yield() }
+        do {
+            _ = try await join(keeper, "p3", client: "p3-a")
+            Issue.record("the join of a draining land was admitted")
+        } catch JoinError.landShuttingDown {
+            // expected
+        } catch {
+            Issue.record("expected landShuttingDown, got \(error)")
+        }
+        box.gate.open()
+        await shutdown.value
+        await rejoin.value
     }
 }
