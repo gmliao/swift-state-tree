@@ -717,8 +717,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         // A 1-byte payload is malformed (RFC 6455 §5.5.1).
         guard payload.readableBytes != 1 else {
-            closeOnLoop(code: .protocolError)
-            enqueueDisconnect()
+            failConnection(code: .protocolError)
             return
         }
 
@@ -727,8 +726,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         // Invalid close code (RFC 6455 §7.4.2).
         guard isValidCloseCode(codeValue) else {
-            closeOnLoop(code: .protocolError)
-            enqueueDisconnect()
+            failConnection(code: .protocolError)
             return
         }
 
@@ -737,8 +735,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
            let reasonBytes = payload.readBytes(length: payload.readableBytes),
            String(bytes: reasonBytes, encoding: .utf8) == nil
         {
-            closeOnLoop(code: .dataInconsistentWithMessage)
-            enqueueDisconnect()
+            failConnection(code: .dataInconsistentWithMessage)
             return
         }
 
@@ -960,12 +957,23 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         }
     }
 
-    /// A frame read during the close grace: the client's close frame ends it, every other frame
-    /// is discarded (no message reaches the transport, no pong is written). Nothing is kept, so
-    /// memory doesn't grow; each frame is bounded by the decoder's maximum frame size, and the
-    /// total by the grace's length times the read rate. No frame cap ends the grace early: a
-    /// close at once with data still arriving is the RST this grace avoids.
+    /// A frame read during the close grace: the client's close frame ends it, and so does a frame
+    /// with RSV bits set (RFC 6455 §5.2, as on the open path); data frames are discarded (no
+    /// message reaches the transport); pings are answered with pong (RFC 6455 §5.5.2). Inbound,
+    /// nothing is kept, so memory doesn't grow; each frame is bounded by the decoder's maximum
+    /// frame size, and the total by the grace's length times the read rate. Outbound, at most
+    /// one pong is being written and one more payload waits (`answerPingInGrace`). No frame cap
+    /// ends the grace early: a close at once with data still arriving is the RST this grace avoids.
     private func handleFrameInCloseGrace(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
+        // A protocol violation ends the grace. No second close frame goes out (this side's is
+        // written), and the close's cause stays the one already recorded.
+        if frame.rsv1 || frame.rsv2 || frame.rsv3 {
+            closeGraceDeadline?.cancel()
+            closeGraceDeadline = nil
+            guard !channelCloseRequested else { return }
+            closeChannel(context)
+            return
+        }
         switch frame.opcode {
         case .connectionClose:
             closeGraceDeadline?.cancel()
@@ -974,8 +982,37 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             closeChannel(context)
         case .binary, .text, .continuation:
             closeGraceDiscardedFramesForTesting += 1
+        case .ping:
+            // RFC 6455 §5.5.2: a pong is required unless a close was already received.
+            guard !channelCloseRequested else { break }
+            answerPingInGrace(frame.unmaskedData, context: context)
         default:
             break
+        }
+    }
+
+    /// The pong of the grace's latest ping that is waiting for the one being written.
+    private var gracePongQueued: ByteBuffer?
+    /// A grace pong was written and its write isn't complete (an unwritable channel).
+    private var gracePongInFlight = false
+
+    /// Answers a ping in the grace with a bounded outbound: one pong is written at a time, and
+    /// pings read while it is unwritten leave only the latest payload, which is sent when it
+    /// completes (RFC 6455 §5.5.3: an endpoint may answer only the most recent ping).
+    private func answerPingInGrace(_ payload: ByteBuffer, context: ChannelHandlerContext) {
+        guard !gracePongInFlight else {
+            gracePongQueued = payload
+            return
+        }
+        gracePongInFlight = true
+        let pong = WebSocketFrame(fin: true, opcode: .pong, data: payload)
+        context.writeAndFlush(wrapOutboundOut(pong)).whenComplete { [weak self] _ in
+            guard let self else { return }
+            self.gracePongInFlight = false
+            guard let next = self.gracePongQueued else { return }
+            self.gracePongQueued = nil
+            guard !self.channelCloseRequested, let context = self.context else { return }
+            self.answerPingInGrace(next, context: context)
         }
     }
 }
