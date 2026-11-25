@@ -1,0 +1,48 @@
+job: 835-c4-mutants
+commit: 792741b7874225be235ad913eb8b39add95f7234
+date: 2026-11-25
+
+Baseline (all pass at 792741b7):
+  Suite "Canonical MessagePack writes CanonicalBinary as bin (#700 K1a)" — 5 tests pass
+  Suite "The keeper grants the integral-float allowance by readsJSONRecord, not by the source's type (#824)" — 2 tests pass
+  Suite "The record header's payload encoding (#700 K1a)" — 3 tests pass
+
+--- Mutant 1 ---
+Change: slot.setValue(.binary(Array(binary.bytes)))
+     → slot.setValue(.array(Array(binary.bytes).map { .uint(UInt64($0)) }))
+(CanonicalMessagePack.swift, CanonicalNodeEncoder.encode, CanonicalBinary branch)
+
+Build: ok (13.23 s)
+
+binInShortestForm — FAIL (all 6 argument cases fail; bin8/bin16/bin32 headers all wrong)
+binInsideAValue  — FAIL (bytes encode as fixarray [147, 1, 2, 204, 250] not bin8 [196, 3, 1, 2, 250];
+                         decode throws "expected bin at bytes")
+
+--- Mutant 2 ---
+Change: added Data interception before Double check:
+    if let data = value as? Data { slot.setValue(.binary(Array(data))); return }
+(CanonicalMessagePack.swift, CanonicalNodeEncoder.encode, after CanonicalBinary branch)
+
+Build: ok (11.04 s)
+
+plainDataUnchanged          — FAIL (PlainDataHolder encodes as bin8 [196, 3, 1, 2, 250]
+                                    instead of fixarray [147, 1, 2, 204, 250];
+                                    decode into PlainDataHolder throws "expected array at bytes";
+                                    AnyCodable decode throws "AnyCodable value cannot be decoded")
+ReplayJSONAllowanceKeeperTests — FAIL (3/3 argument cases fail: "AnyCodable value cannot be decoded"
+                                       at actions[0].resolverOutputs.resolverReplayStampFetch.value;
+                                       resolver output's Data payload re-encoded as bin, which
+                                       AnyCodable cannot decode from binary node)
+
+--- Mutant 3 ---
+Change: if value.count <= 0xff  →  if value.count < 0xff
+(CanonicalMessagePack.swift, CanonicalWriter.write, .binary case)
+
+Build: ok (11.31 s)
+
+binInShortestForm — FAIL only for count=255 argument:
+  expected header [0xc4, 255] (bin8), got [0xc5, 0x00, 0xff] (bin16)
+  (counts 0,1,256,65535,65536 all pass; only 255 is at the moved boundary)
+
+--- Summary ---
+All 3 mutants killed by their named tests. File restored to 792741b7 state after each run.
