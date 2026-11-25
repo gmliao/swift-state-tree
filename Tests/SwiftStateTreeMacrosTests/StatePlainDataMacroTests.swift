@@ -141,7 +141,7 @@ struct StatePlainDataMacroTests {
         #expect(messages.first == "@StateNodeBuilder writes the PlainData check; remove @PlainData", "\(messages)")
     }
 
-    @Test("A wrapper named Sync or Internal is read through by any spelling, and its storage is checked: the name alone doesn't make it the library's")
+    @Test("A wrapper named Sync or Internal is read through, bare or qualified by an exporting module, and its storage is checked: the name alone doesn't make it the library's")
     func readThroughChecksStorage() {
         let (expanded, messages) = expand("""
             @StateNodeBuilder
@@ -180,11 +180,28 @@ struct StatePlainDataMacroTests {
         let (_, messages) = expand("""
             @StateNodeBuilder
             struct Node: StateNodeProtocol {
-                @Sync(.broadcast) var count: Int = 0
-                @MyModule.Internal var hits: Int = 0
+                @Sync(.broadcast) @MyModule.Internal var hits: Int = 0
+                @Sync(.broadcast) @SwiftStateTurns.Internal var misses: Int = 0
             }
             """)
-        #expect(!messages.isEmpty, "\(messages)")
+        // Each field passes the marker check through its bare `@Sync`; the qualified wrapper is
+        // not read through, so the walk refuses it as a wrapper it can't read.
+        let refusals = messages.filter { $0.hasPrefix("the PlainData check reads only @Internal and @Sync fields") }
+        #expect(refusals.count == 2, "\(messages)")
+    }
+
+    @Test("A wrapper or macro qualified by SwiftStateTreeNIO, which re-exports SwiftStateTree, is the library's")
+    func reexportingModule() {
+        let (expanded, messages) = expand("""
+            @StateNodeBuilder
+            @SwiftStateTreeNIO.SnapshotConvertible
+            struct Node: StateNodeProtocol {
+                @SwiftStateTreeNIO.Sync(.broadcast) var count: Int = 0
+                @SwiftStateTreeNIO.Internal var hits: Int = 0
+            }
+            """)
+        #expect(messages.isEmpty, "\(messages)")
+        #expect(checkLines(expanded).contains("SwiftStateTurns.PlainDataCheck.field(value._hits)"), "\(expanded)")
     }
 
     @Test("A @Sync field inside #if is refused: the sync tables read only top-level members")
@@ -270,8 +287,8 @@ struct StatePlainDataMacroTests {
     ])
     func stateTypeAttributeRefusals(site: String) {
         let takes = site == "@StateNodeBuilder"
-            ? "@PlainData, @SnapshotConvertible, @StateNodeBuilder"
-            : "@Payload, @PlainData, @SnapshotConvertible, @StateNodeBuilder"
+            ? "@SnapshotConvertible, @StateNodeBuilder"
+            : "@PlainData, @SnapshotConvertible, @StateNodeBuilder"
         let unknown = "can't be on a state type: a macro there can add members the PlainData check doesn't see; this type takes only \(takes) and attributes that add no members"
         let conformance = site == "@StateNodeBuilder" ? "StateNodeProtocol" : "Codable"
         // A macro this project doesn't list, a namesake qualified by another module, and an
@@ -325,6 +342,8 @@ struct StatePlainDataMacroTests {
         let (_, messages) = expand("""
             @available(macOS 10.15, *)
             @usableFromInline
+            @dynamicMemberLookup
+            @dynamicCallable
             @StateNodeBuilder
             @SwiftStateTree.SnapshotConvertible
             struct Node: StateNodeProtocol {
@@ -337,8 +356,41 @@ struct StatePlainDataMacroTests {
             struct Value: Codable {
                 var count: Int = 0
             }
+
+            @resultBuilder
+            @SnapshotConvertible
+            struct Builder: Codable {
+                var count: Int = 0
+            }
             """)
         #expect(!messages.contains { $0.contains("can't be on a state type") }, "\(messages)")
+    }
+
+    @Test("A wrong module's qualifier isn't the library's macro: refused on a state type")
+    func wrongModuleQualifier() {
+        let (_, messages) = expand("""
+            @SnapshotConvertible
+            @SwiftStateTurns.StateNodeBuilder
+            struct Value: Codable {
+                var count: Int = 0
+            }
+            """)
+        #expect(messages.contains { $0.hasPrefix("@SwiftStateTurns.StateNodeBuilder can't be on a state type") }, "\(messages)")
+    }
+
+    @Test("Beside @StateNodeBuilder, @SnapshotConvertible still refuses a stored property inside #if: its conversion would drop it")
+    func snapshotStoredInIfConfigBesideBuilder() {
+        let (_, messages) = expand("""
+            @StateNodeBuilder
+            @SnapshotConvertible
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                #if DEBUG
+                @Internal var trace: Int = 0
+                #endif
+            }
+            """)
+        #expect(messages.contains("@SnapshotConvertible: stored property 'trace' inside #if isn't converted; declare it outside #if"), "\(messages)")
     }
 
     @Test("A property wrapper other than @Sync and @Internal is refused, by name")

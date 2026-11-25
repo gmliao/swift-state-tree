@@ -1,8 +1,8 @@
 // expect-error: cannot conform to 'PlainData'
 import SwiftStateTree
 
-// An @Internal field without a type annotation: nothing is emitted for it, and `Internal`'s
-// constraint checks the inferred type.
+// An @Internal field without a type annotation: its storage and value lines are written, and
+// `Internal`'s constraint refuses the inferred type first.
 @StateNodeBuilder
 struct CacheState: StateNodeProtocol {
     @Sync(.broadcast)

@@ -17,6 +17,11 @@ enum StateTypeAttributes {
     /// `@PlainData` and `@Payload`, and `@Payload` refuses the pair on its own.
     static let besideSnapshotConvertible: Set<String> = ["SnapshotConvertible", "StateNodeBuilder", "PlainData", "Payload"]
 
+    /// The names a refusal lists as allowed: those that are legitimate on the type. A name kept in
+    /// an allowed set only so that another macro's own refusal is reported isn't listed.
+    static let advertisedBesideStateNodeBuilder: Set<String> = ["StateNodeBuilder", "SnapshotConvertible"]
+    static let advertisedBesideSnapshotConvertible: Set<String> = ["SnapshotConvertible", "StateNodeBuilder", "PlainData"]
+
     /// Built-in attributes that add no members.
     static let builtins: Set<String> = [
         "available", "usableFromInline", "frozen", "propertyWrapper", "resultBuilder",
@@ -31,6 +36,7 @@ enum StateTypeAttributes {
     static func diagnoseUnknown(
         _ attributes: AttributeListSyntax,
         allowed: Set<String>,
+        advertised: Set<String>,
         in context: some MacroExpansionContext
     ) {
         for element in attributes {
@@ -39,11 +45,11 @@ enum StateTypeAttributes {
                 if !isAllowed(attribute, allowed: allowed) {
                     context.diagnose(Diagnostic(
                         node: attribute,
-                        message: StateTypeAttributeDiagnostic(name: "@" + attribute.attributeName.trimmedDescription, allowed: allowed)
+                        message: StateTypeAttributeDiagnostic(name: "@" + attribute.attributeName.trimmedDescription, allowed: advertised)
                     ))
                 }
             case .ifConfigDecl(let ifConfig):
-                context.diagnose(Diagnostic(node: ifConfig, message: StateTypeAttributeDiagnostic(name: "an attribute inside #if", allowed: allowed)))
+                context.diagnose(Diagnostic(node: ifConfig, message: StateTypeAttributeDiagnostic(name: "an attribute inside #if", allowed: advertised)))
             }
         }
     }

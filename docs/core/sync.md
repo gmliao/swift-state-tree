@@ -118,11 +118,13 @@ The same rule shapes a few declarations:
 
 A reference the land needs but doesn't sync, such as a cache or a service handle, goes in the land's services.
 
-**At registration and conversion.** Two things get past the compile-time check:
+**At registration and conversion.** Four things get past the compile-time check:
 - **A hand-written witness.** A type can conform to `PlainData` through one (`static func _plainDataCheck() {}`), and it checks nothing. This repository's lint refuses one, but a project outside it compiles one.
 - **A macro of your own with one of this project's names.** A macro sees spellings, not declarations. So a macro named `SnapshotConvertible` in your own module, written bare beside `@StateNodeBuilder`, passes as this project's, and the members it adds aren't checked.
+- **A macro attached to a member.** The allow list reads only the attributes on the state type itself. A peer macro on a method, an initializer, or a computed or static property can add stored members to the type, and nothing checks them. Tracked in #837.
+- **A nested `@PlainData` or `@Payload` type.** The allow list runs on `@StateNodeBuilder` and `@SnapshotConvertible` types only. A `@PlainData` or `@Payload` type stored in a state field doesn't run it, so another attached macro on that type can add members its witness doesn't see. Tracked in #837.
 
-For both, two runtime checks stay behind the compiler:
+For all four, two runtime checks stay behind the compiler:
 - **At registration.** `LandTypeRegistry.init` (so every host that serves the land), `NIOLandHost.register`, `SchemaExtractor.extract` and `SchemaGenCLI.generateSchema` throw a `LandRegistrationError` whose `sync` holds a `.valueSemantics` problem, a `SyncValueSemanticsError` that names each field and class, for example `GameState.inventory: Inventory is a class; synced state must be value types`. The check walks every synced field's type, `.serverOnly` ones included, through optionals, arrays, sets, dictionary keys and values, and nested state nodes. It looks into plain structs, tuples, enum payloads and existential properties (`any P`) through a default instance.
 - **When the state is converted.** A class the check couldn't see (one stored later in an existential field, one in an enum case the default instance doesn't take, or one added to a collection that was empty at registration) makes the conversion throw `SyncError.unsupportedValue`. A dictionary key is the exception: it is converted through its description, so a class held inside a key of a value type (a `CustomStringConvertible` struct with a class property) is refused only at registration, when the default instance's first key holds one (the check samples a dictionary's first entry). Conversion runs for every sync, so that land's syncs fail (a `.serverOnly` field is converted only when the state is recorded or hashed, so those fail instead); when the class is in an event payload, the sync-output verifier can't canonicalize the event and reports its events scope as unverifiable.
 

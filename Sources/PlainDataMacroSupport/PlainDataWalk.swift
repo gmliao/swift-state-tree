@@ -13,17 +13,18 @@ public enum PlainDataWalk {
     /// only one configuration compiles is still checked there, and a type that only exists in
     /// that configuration is named only under its condition.
     ///
-    /// - Parameter readThrough: property wrappers whose wrapped value is checked, by the
-    ///   attribute's last name component (`Sync` matches `@Sync` and `@SwiftStateTree.Sync`).
-    ///   The name is only a spelling, so a read-through field is checked twice: `value._name`, the
-    ///   wrapper's storage, which compiles only when the wrapper is `PlainData` (the library's
-    ///   `Sync` and `Internal` are, and a namesake that holds a class isn't), and, with an
-    ///   annotation, `value.name`, the wrapped value. Without an annotation only the storage is
-    ///   checked; the library's wrappers constrain the inferred type. Any other wrapper is
-    ///   refused. Empty for `@PlainData` and `@Payload`, which refuse every wrapper.
+    /// - Parameter readThrough: property wrappers whose wrapped value is checked, spelled bare or
+    ///   qualified by a module that exports them (`isProjectAttribute`: `Sync` matches `@Sync`
+    ///   and `@SwiftStateTree.Sync`, not `@Other.Sync`). The name is only a spelling, so a
+    ///   read-through field is checked twice: `value._name`, the wrapper's storage, which compiles
+    ///   only when the wrapper is `PlainData` (the library's `Sync` and `Internal` are, and a
+    ///   namesake that holds a class isn't), and `value.name`, the wrapped value, annotated or
+    ///   not. Any other wrapper is refused. Empty for `@PlainData` and `@Payload`, which refuse
+    ///   every wrapper.
     ///
     /// A freestanding macro expansion among the members is refused: the storage it expands to
-    /// isn't in the syntax this walk reads.
+    /// isn't in the syntax this walk reads. `#warning` and `#error` are compiler directives and
+    /// pass.
     public static func checkLines(
         _ members: MemberBlockItemListSyntax,
         isEnum: Bool,
@@ -298,9 +299,10 @@ public enum PlainDataWalk {
         case .getter:
             return true
         case .accessors(let list):
-            // Observers (`willSet`/`didSet`) keep the property stored.
-            return list.contains {
-                [.keyword(.get), .keyword(.set), .keyword(._read), .keyword(._modify)].contains($0.accessorSpecifier.tokenKind)
+            // Stored only when every accessor is an observer (`willSet`/`didSet`). Any other
+            // accessor (`get`, `set`, `_read`, `_modify`, or a newer one) makes it computed.
+            return !list.allSatisfy {
+                [.keyword(.willSet), .keyword(.didSet)].contains($0.accessorSpecifier.tokenKind)
             }
         }
     }

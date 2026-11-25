@@ -32,7 +32,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
         // Another macro on the type could add members this macro doesn't see (#100).
         StateTypeAttributes.diagnoseUnknown(
-            structDecl.attributes, allowed: StateTypeAttributes.besideStateNodeBuilder, in: context)
+            structDecl.attributes, allowed: StateTypeAttributes.besideStateNodeBuilder,
+            advertised: StateTypeAttributes.advertisedBesideStateNodeBuilder, in: context)
 
         // Collect all stored properties
         let propertiesWithNodes = collectStoredProperties(from: structDecl)
@@ -194,8 +195,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 continue
             }
 
-            // Skip computed properties. Observers (`willSet`/`didSet`) keep a property stored, so
-            // an observed field is marked and synced like any other.
+            // Skip computed properties. Observers (`willSet`/`didSet`) keep a property stored, so an
+            // observed field needs a marker like any other; `validateObservedSync` refuses it on
+            // a `@Sync` field.
             let hasComputedProperty = variableDecl.bindings.contains(where: PlainDataWalk.isComputed)
 
             if hasComputedProperty {

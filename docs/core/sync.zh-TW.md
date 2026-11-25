@@ -118,11 +118,13 @@ struct TableState: StateNodeProtocol {
 
 Land 需要但不同步的參照（例如快取或 service handle）放在 land 的 services。
 
-**註冊與轉換時。** 有兩種情況會通過編譯期檢查：
+**註冊與轉換時。** 有四種情況會通過編譯期檢查：
 - **手寫的 witness。** 型別可以用它（`static func _plainDataCheck() {}`）符合 `PlainData`，這樣什麼都不檢查。本 repository 的 lint 會拒絕它，但在 repository 之外的專案可以編譯。
 - **自己定義、與本專案 macro 同名的 macro。** macro 只看得到寫法，看不到宣告。因此在自己的 module 裡定義、名為 `SnapshotConvertible` 的 macro，不加 module 名稱掛在 `@StateNodeBuilder` 旁邊時，會被當成本專案的 macro，它加入的成員不會被檢查。
+- **掛在成員上的 macro。** 允許清單只讀 state 型別本身的 attribute。掛在 method、initializer、computed property 或 static property 上的 peer macro 可以替型別加入 stored member，而沒有檢查會看到它們。由 #837 追蹤。
+- **巢狀的 `@PlainData` 或 `@Payload` 型別。** 允許清單只在 `@StateNodeBuilder` 與 `@SnapshotConvertible` 型別上執行。存放在 state 欄位裡的 `@PlainData` 或 `@Payload` 型別不會執行它，因此那個型別上的其他 attached macro 可以加入它的 witness 看不到的成員。由 #837 追蹤。
 
-對這兩種情況，編譯器之後還留著兩道執行期檢查：
+對這四種情況，編譯器之後還留著兩道執行期檢查：
 - **註冊時。** `LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會拋出 `LandRegistrationError`，其 `sync` 含有 `.valueSemantics` 問題，也就是列出每個欄位與 class 的 `SyncValueSemanticsError`，例如 `GameState.inventory: Inventory is a class; synced state must be value types`。檢查會走訪每個同步欄位的型別（包含 `.serverOnly` 欄位），穿過 optional、array、set、dictionary 的 key 與 value，以及巢狀 state node，並透過預設實例檢查一般 struct、tuple、enum payload 與 existential property（`any P`）的內容。
 - **轉換狀態時。** 檢查看不到的 class（之後才存入 existential 欄位的、位於預設實例沒有採用的 enum case 裡的、或加進註冊時還是空的集合裡的）會讓轉換拋出 `SyncError.unsupportedValue`。Dictionary 的 key 是例外：key 是透過它的 description 轉換的，因此放在 value type key 內部的 class（例如含有 class 屬性的 `CustomStringConvertible` struct）只有在註冊時、且預設實例的第一個 key 含有 class 時才會被拒絕（檢查只取 dictionary 的第一個項目）。每次同步都會轉換，因此該 Land 的同步會失敗（`.serverOnly` 欄位只在錄製或計算狀態雜湊時才會轉換，因此失敗的是這些步驟）；若 class 位於事件 payload 中，sync-output verifier 無法將該事件正規化，會把 events 範圍回報為無法驗證。
 

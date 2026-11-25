@@ -49,7 +49,7 @@ struct Position: Codable, Sendable {
 - 與 `@StateNodeBuilder` 並用時，只寫 conformance，因為 node 的成員就是 witness。
 - 型別上的其他 attached macro 會被拒絕，因為它可能加入檢查看不到的成員。不加入成員的內建 attribute（例如 `@available`）沒有問題。
 
-`#if` 裡的 stored property 會被拒絕，因為轉換只讀型別最上層的成員。與 `@StateNodeBuilder` 並用時，套用該 macro 自己的 `#if` 規則。
+`#if` 裡的 stored property 會被拒絕，因為轉換只讀型別最上層的成員。與 `@StateNodeBuilder` 並用時也一樣：在可轉換的 node 上，`#if` 裡的 `@Internal` 欄位會被拒絕，雖然單獨使用 `@StateNodeBuilder` 時可以接受。
 
 ### 生成的程式碼
 

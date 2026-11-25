@@ -84,16 +84,18 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         // `@StateNodeBuilder` reports for both when it is beside this one.
         if !PlainDataWalk.hasAttribute(named: "StateNodeBuilder", in: structDecl.attributes) {
             StateTypeAttributes.diagnoseUnknown(
-                structDecl.attributes, allowed: StateTypeAttributes.besideSnapshotConvertible, in: context)
-            // The conversion reads only the type's top-level members, so a stored property inside
-            // `#if` would be checked but never converted or snapshotted: refused, as
-            // `@StateNodeBuilder` refuses a `@Sync` field there. Beside `@StateNodeBuilder`, its
-            // own `#if` rules apply.
-            if let stored = firstStoredPropertyInIfConfig(structDecl.memberBlock.members) {
-                let error = SnapshotConvertibleError.storedInIfConfig(node: Syntax(stored), name: stored.bindings.first?.pattern.trimmedDescription ?? "?")
-                error.diagnose(context: context)
-                throw error
-            }
+                structDecl.attributes, allowed: StateTypeAttributes.besideSnapshotConvertible,
+                advertised: StateTypeAttributes.advertisedBesideSnapshotConvertible, in: context)
+        }
+
+        // The conversion reads only the type's top-level members, so a stored property inside
+        // `#if` would be checked but never converted or snapshotted: refused, as
+        // `@StateNodeBuilder` refuses a `@Sync` field there. Beside `@StateNodeBuilder` too, where
+        // an `@Internal` field inside `#if` would otherwise drop out of the conversion.
+        if let stored = firstStoredPropertyInIfConfig(structDecl.memberBlock.members) {
+            let error = SnapshotConvertibleError.storedInIfConfig(node: Syntax(stored), name: stored.bindings.first?.pattern.trimmedDescription ?? "?")
+            error.diagnose(context: context)
+            throw error
         }
 
         // Collect all stored properties
@@ -154,7 +156,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         // Beside `@StateNodeBuilder`, whose member is the witness, it writes only the
         // conformance: the compiler leaves a conformance this macro's role declares to its
         // expansion, even one `StateNodeProtocol` implies, so an expansion without it doesn't
-        // conform. Any spelling of each name.
+        // conform. Each name bare, or qualified by a module that exports it (`isProjectAttribute`).
         let attributes = declaration.attributes
         if PlainDataWalk.hasAttribute(named: "PlainData", in: attributes)
             || PlainDataWalk.hasAttribute(named: "Payload", in: attributes) {
@@ -297,7 +299,6 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         return true
     }
 
-    /// Collect all stored properties from a struct declaration
     /// The first stored instance property inside an `#if` clause, at any depth.
     private static func firstStoredPropertyInIfConfig(_ members: MemberBlockItemListSyntax) -> VariableDeclSyntax? {
         for member in members {
@@ -317,6 +318,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         return nil
     }
 
+    /// Collect all stored properties from a struct declaration
     private static func collectStoredProperties(from structDecl: StructDeclSyntax) -> [PropertyInfo] {
         var properties: [PropertyInfo] = []
 
