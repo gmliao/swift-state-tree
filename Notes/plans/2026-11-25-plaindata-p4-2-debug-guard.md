@@ -1,14 +1,18 @@
 # PlainData P4-2: the registration walks become a debug-build guard
 
-**Status:** rev 1.1, plan only. Review ruled Q1 = (a) on 2026-11-25, provided the PR maps each removed group-A test to the kept test that covers its branch and shape. This is slice P4-2 of `2026-11-24-plaindata-p4-state.md` (rev 3, §3.6 and §7), under P4-Q4 (b), which the maintainer decided on 2026-11-24. It builds on P4-1 (#834). Code pointers were re-checked at #834's round-1 head 41e7c7ee; round 1 moved none of them.
+**Status:** rev 1.2, plan only (rev 1.2: §1's boundaries as of #834 round 4). Review ruled Q1 = (a) on 2026-11-25, provided the PR maps each removed group-A test to the kept test that covers its branch and shape. This is slice P4-2 of `2026-11-24-plaindata-p4-state.md` (rev 3, §3.6 and §7), under P4-Q4 (b), which the maintainer decided on 2026-11-24. It builds on P4-1 (#834). Code pointers were re-checked at #834's round-1 head 41e7c7ee; round 1 moved none of them.
 
 ## 1. Goal
 
-Since P4-1, the compiler refuses a class, `Any`, an existential or a `Decimal` anywhere in a state field. In this repository the lint refuses a hand-written `PlainData` witness, so the registration walks that looked for these find nothing here. Outside the repository two things still get past the compiler, and those walks are the only check they meet:
+Since P4-1, the compiler refuses a class, `Any`, an existential or a `Decimal` anywhere in a state field. In this repository the lint refuses a hand-written `PlainData` witness, so the registration walks that looked for these find nothing here. Outside the repository four things get past the compiler (`sync.md` § "At registration and conversion", as of #834 round 4):
 - a hand-written witness;
-- since #100, a bare namesake of one of this project's macros (a user macro named `SnapshotConvertible`) beside `@StateNodeBuilder`, whose members go unchecked.
+- a bare namesake of one of this project's macros (a user macro named `SnapshotConvertible`) beside `@StateNodeBuilder`;
+- a peer macro on a member of a state type (#102 = B);
+- a nested `@PlainData`/`@Payload` type, which doesn't run the allow list (#102 = B).
 
-`sync.md` § "At registration and conversion" names both (#834 round 1).
+The walks reach only fields in the state type's field metadata and the values nested in them. So they guard the hand-written witness and the nested type's members. They never saw the members a macro adds to the state type itself (the bare namesake's, a member peer macro's).
+
+With the walks debug-only, the hand-written witness and the nested-type case are guarded in debug builds only. The member-macro cases have no runtime check in either build. #837 closes two of the four at compile time: the member peer macro, and the nested `@PlainData`/`@Payload` type. After #837, the walks are the only check for the hand-written witness, and nothing checks the bare namesake.
 
 P4-Q4 (b) settles it this way:
 - **Debug builds** keep the walks, as the guard for a user's project during development.
