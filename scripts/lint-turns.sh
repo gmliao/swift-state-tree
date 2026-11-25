@@ -64,7 +64,6 @@ Tests/SwiftStateTreeTests/SyncTableDiffTests.swift 2 classes in state for the re
 Tests/SwiftStateTreeTests/SyncTableFallbackFieldsTests.swift 1 a class in state for the reference-type fallback of the sync tables (SyncTables.swift), which stays in every build
 Tests/SwiftStateTreeTests/SyncWrapperInPlaceTests.swift 1 a shared box that tells a copy of a synced value from an in-place change (the probe is a class holder on purpose)
 Tests/SwiftStateTreeTests/SyncValueSemanticsTests.swift 9 classes in state for the runtime walk (#464), which keeps guarding hand-written witnesses
-Tests/SwiftStateTreeTransportTests/LandTypeRegistryTests.swift 1 a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 '
 
 RULES='plain-data|let-core|machine-file|isolated'

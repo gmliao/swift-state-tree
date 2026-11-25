@@ -631,14 +631,15 @@ struct SchemaFingerprintTests {
 
     @Test("A land refused for its synced state isn't fingerprinted: the sync row is kept and schemaFingerprint is nil")
     func fingerprintSkippedWhenSyncFails() throws {
-        // A class in a synced field (`.valueSemantics`). The fingerprint walk would throw the same
-        // LandRegistrationError, so the error alone can't show the `sync == nil` clause held; the
-        // definition's fingerprint cache can: it is still empty when the walk didn't run.
-        let land = Land("fp-sync-problem", using: ValueCheckClassFieldRoot.self) { Rules {} }
+        // A key type the sync can't convert (`.unsupportedKey`, a row every build runs). The
+        // fingerprint walk would throw the same LandRegistrationError, so the error alone can't
+        // show the `sync == nil` clause held; the definition's fingerprint cache can: it is still
+        // empty when the walk didn't run.
+        let land = Land("fp-sync-problem", using: RegistrationKeysRoot.self) { Rules {} }
         let error = try #require(throws: LandRegistrationError.self) {
             try land.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
         }
-        #expect(error.sync?.problems.contains(where: { if case .valueSemantics = $0 { true } else { false } }) == true)
+        #expect(error.sync?.problems.contains(where: { if case .unsupportedKey = $0 { true } else { false } }) == true)
         #expect(error.schemaFingerprint == nil)
         #expect(try land.schemaFingerprintCache.value { "not computed" }.get() == "not computed")
     }

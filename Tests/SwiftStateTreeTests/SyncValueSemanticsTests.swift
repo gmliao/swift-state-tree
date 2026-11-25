@@ -1,7 +1,8 @@
 // Tests/SwiftStateTreeTests/SyncValueSemanticsTests.swift
 //
 // #464: synced state is made of value types. Registration refuses a synced field that holds a
-// class, at any depth; `SnapshotValue` refuses one that only appears at runtime. `@Internal`
+// class, at any depth (RegistrationValueWalkTests through registration); `SnapshotValue` refuses
+// one that only appears at runtime. `@Internal`
 // fields may hold a class.
 
 import Foundation
@@ -182,15 +183,6 @@ private func valueViolations(_ type: any StateNodeProtocol.Type) -> [SyncValueSe
 
 @Suite("Synced state is made of value types (#464)")
 struct SyncValueSemanticsTests {
-    @Test("A synced field whose type is a class is refused, server-only ones included")
-    func classField() {
-        #expect(valueViolations(ValueCheckClassFieldRoot.self) == [
-            .init(path: "ValueCheckClassFieldRoot.inventory", typeName: "ValueCheckObject"),
-            .init(path: "ValueCheckClassFieldRoot.hidden", typeName: "ValueCheckObject"),
-            .init(path: "ValueCheckClassFieldRoot.convertible", typeName: "ValueCheckConvertibleObject"),
-        ])
-    }
-
     @Test("A class as a dictionary key, a set element, in a tuple, an enum payload or a converted struct is refused")
     func classInOtherShapes() {
         #expect(valueViolations(ValueCheckShapesRoot.self) == [
@@ -270,18 +262,6 @@ struct SyncValueSemanticsTests {
         root.box.maybe = ValueCheckFullObject()
         let fullConverted = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
         #expect(fullConverted.map { "\($0)" }?.contains("ValueCheckFullObject is a class") == true, "\(String(describing: fullConverted))")
-    }
-
-    @Test("The error names the field and the type, and says what to change")
-    func errorMessage() {
-        do {
-            try SyncValueSemantics.validate(ValueCheckClassFieldRoot.self)
-            Issue.record("expected a rejection")
-        } catch {
-            let text = "\(error)"
-            #expect(text.contains("ValueCheckClassFieldRoot.inventory: ValueCheckObject is a class; synced state must be value types"))
-            #expect(text.contains("land's services"))
-        }
     }
 
     @Test("Schema extraction and SchemaGen refuse the land, with the class in LandRegistrationError.sync (#535)")

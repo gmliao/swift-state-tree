@@ -138,31 +138,6 @@ struct LandTypeRegistryNestedState: StateNodeProtocol {
     var nodes: [String: LandTypeRegistryPerPlayerNode] = [:]
 }
 
-final class LandTypeRegistryClassBox: @unchecked Sendable {
-    var count = 0
-}
-extension LandTypeRegistryClassBox: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class the runtime walk must refuse (#464)
-
-
-@StateNodeBuilder
-struct LandTypeRegistryClassState: StateNodeProtocol {
-    @Sync(.broadcast)
-    var box: LandTypeRegistryClassBox = LandTypeRegistryClassBox()
-}
-
-@Test("LandTypeRegistry rejects a state whose synced field holds a class (#464)")
-func testLandTypeRegistryRejectsClassField() throws {
-    let error = try #require(throws: LandRegistrationError.self) {
-        _ = try LandTypeRegistry<LandTypeRegistryClassState>(
-            landFactory: { landType, _ in
-                Land(landType, using: LandTypeRegistryClassState.self) { Rules {} }
-            },
-            initialStateFactory: { _, _ in LandTypeRegistryClassState() }
-        )
-    }
-    #expect(error.sync?.problems.contains(where: { if case .valueSemantics = $0 { true } else { false } }) == true)
-}
-
 @Test("LandTypeRegistry rejects a state with a per-player field under a broadcast field (#179)")
 func testLandTypeRegistryRejectsNestedPerPlayer() throws {
     let error = try #require(throws: LandRegistrationError.self) {
