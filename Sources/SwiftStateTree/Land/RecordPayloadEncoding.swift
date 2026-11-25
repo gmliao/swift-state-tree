@@ -29,7 +29,8 @@ package struct JSONRecordBytesSource: PayloadDecodingSource {
     package let bytes: Data
 
     /// Checks the nesting first, as a client's JSON frame is checked (#362): a record read from
-    /// disk is as untrusted as a frame.
+    /// disk is as untrusted as a frame. Bytes that aren't JSON pass this check and fail at
+    /// `decode`, so replay reports them at their input, not for the whole record.
     package init(validating bytes: Data) throws {
         try PayloadNesting.checkClientJSON(bytes)
         self.bytes = bytes
@@ -57,8 +58,10 @@ package struct JSONRecordBytesSource: PayloadDecodingSource {
 public struct RecordPayloadDecoders: Sendable {
     package let makeSource: @Sendable (Data, RecordPayloadEncoding) throws -> any PayloadDecodingSource
 
-    /// The encodings these decoders read. A replay checks the record's header against it before
-    /// it applies any input, so a record it can't decode is refused whole, not input by input.
+    /// The encodings these decoders read. A replay checks the record's header encoding against it
+    /// before it applies any input, so a record in an encoding it has no decoder for is refused
+    /// whole. Bytes that don't decode are another case: they fail at their own input, as a recorded
+    /// payload that doesn't decode fails today (#700 plan §3.11, "Replay's decode failures").
     package let encodings: Set<RecordPayloadEncoding>
 
     package init(

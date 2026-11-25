@@ -159,6 +159,7 @@ package enum RecordFieldList {
         "metadata.landID",
         "metadata.landType",
         "metadata.metadata",
+        "metadata.payloadEncoding",
         "metadata.recordsSyncStream",
         "metadata.rngSeed",
         "metadata.ruleParams",

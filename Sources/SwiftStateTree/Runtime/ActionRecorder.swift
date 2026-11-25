@@ -77,6 +77,12 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
     /// it. Nil in records before 3.6, and in a record whose keeper had none.
     public let schemaFingerprint: String?
 
+    /// The encoding of the recorded actions' and client events' payload bytes, unless an entry
+    /// names its own (#700 K1a): the encoding of the decoder the land's transport uses live. Nil in
+    /// records before 3.7; a 3.7 record without it means `json`, which a keeper with no transport
+    /// writes. A server input's bytes are canonical MessagePack, whatever this says.
+    public let payloadEncoding: RecordPayloadEncoding?
+
     public init(
         landID: String,
         landType: String,
@@ -93,7 +99,8 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         hardwareInfo: HardwareInfo? = nil,
         recordsSyncStream: Bool? = nil,
         syncConfig: ReevaluationSyncConfig? = nil,
-        schemaFingerprint: String? = nil
+        schemaFingerprint: String? = nil,
+        payloadEncoding: RecordPayloadEncoding? = nil
     ) {
         self.landID = landID
         self.landType = landType
@@ -111,6 +118,7 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         self.recordsSyncStream = recordsSyncStream
         self.syncConfig = syncConfig
         self.schemaFingerprint = schemaFingerprint
+        self.payloadEncoding = payloadEncoding
     }
 
     /// This metadata with `version` set to the version this build writes, and the recorder's
@@ -132,7 +140,8 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
             hardwareInfo: hardwareInfo,
             recordsSyncStream: recordsSyncStream,
             syncConfig: syncConfig,
-            schemaFingerprint: recorderFingerprint ?? schemaFingerprint
+            schemaFingerprint: recorderFingerprint ?? schemaFingerprint,
+            payloadEncoding: payloadEncoding
         )
     }
 
@@ -140,7 +149,7 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         case landID, landType, createdAt, metadata, landDefinitionID, initialStateHash, landConfig
         case rngSeedCoding = "rngSeed"
         case ruleVariantId, ruleParams, version, extensions, hardwareInfo, recordsSyncStream, syncConfig
-        case schemaFingerprint
+        case schemaFingerprint, payloadEncoding
     }
 }
 

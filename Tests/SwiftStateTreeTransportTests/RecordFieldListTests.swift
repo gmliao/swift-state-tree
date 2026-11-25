@@ -32,6 +32,7 @@ private nonisolated(unsafe) let recordSamples: [any Decodable] = [
     ReevaluationRecordedSyncMarker.ViewDrop.extraction, ReevaluationRecordedSyncMarker.ViewDrop.encode,
     LandFailure.Kind.syncPlan, LandFailure.Kind.handlerWrite,
     LandFailurePosition.Stage.input, LandFailurePosition.Stage.actionResponse,
+    RecordPayloadEncoding.json, RecordPayloadEncoding.messagepack,
 ]
 
 /// Dynamic values: their content is a payload or a state value, not a fixed field set, so the

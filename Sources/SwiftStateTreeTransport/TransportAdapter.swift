@@ -100,6 +100,14 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
+    /// The encoding of the payload bytes a record of this adapter's land keeps, for the record
+    /// header (`ReevaluationRecordMetadata.payloadEncoding`, #700 K1a): `messagepack` when the
+    /// codec's frames are MessagePack, whose payloads decode through the MessagePack decoder, and
+    /// `json` otherwise (`json` and `opcodeJsonArray` frames carry JSON payloads).
+    public nonisolated var payloadEncodingForRecord: RecordPayloadEncoding {
+        codec.encoding == .messagepack ? .messagepack : .json
+    }
+
     /// The keeper's serial executor: the keeper can then call `runSyncPhaseInTurn` synchronously
     /// inside its own turn (`assumeIsolated`).
     public nonisolated var unownedExecutor: UnownedSerialExecutor {
