@@ -58,7 +58,8 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     public let payload: PayloadRegistrationError?
     /// The state type's synced-state problems (#535): a class in a synced field
     /// (`.valueSemantics`, #464), a per-player field under a broadcast one (`.policyNesting`,
-    /// #179), an unsupported key type, or a type that holds a value of any type. Before #535 the
+    /// #179), an unsupported key type, or a type that holds a value of any type. The class, the
+    /// open type and the `Decimal` rows come from walks that run in debug builds only. Before #535 the
     /// first two were thrown on their own, as `SyncValueSemanticsError` and
     /// `SyncPolicyNestingError`; each is now this field's associated value.
     public let sync: SyncRegistrationError?

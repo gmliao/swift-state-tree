@@ -3,8 +3,8 @@
 // #597: `Decimal` has no wire form. A state field's value is PlainData, so a synced,
 // server-only or internal `Decimal` doesn't compile under any spelling, a typealias included
 // (scripts/must-not-compile/state-decimal-alias.swift, state-serveronly-decimal.swift). The
-// registration walk stays as the guard for a hand-written PlainData witness, which only a project
-// outside this repository's lint can write. A payload can't hold one either
+// registration walk stays, in debug builds, as the guard for a hand-written PlainData witness,
+// which only a project outside this repository's lint can write (RegistrationDebugGuardTests). A payload can't hold one either
 // (scripts/must-not-compile/decimal-alias-*.swift).
 
 import Foundation
@@ -75,20 +75,6 @@ private func registrationError<State: StateNodeProtocol>(_ definition: LandDefin
 
 @Suite("Decimal has no wire form: registration refuses it where it would reach the wire (#597)")
 struct DecimalRegistrationTests {
-    @Test("A Decimal behind a hand-written PlainData witness is refused at registration, through optionals, arrays, sets and dictionary values; a server-only field is skipped")
-    func syncedDecimalFields() {
-        #expect(SyncRegistration.problems(DecimalSyncedRoot.self) == [
-            .decimalField(path: "DecimalSyncedRoot.holder.amount"),
-            .decimalField(path: "DecimalSyncedRoot.maybe.amount"),
-            .decimalField(path: "DecimalSyncedRoot.list[*].amount"),
-            .decimalField(path: "DecimalSyncedRoot.unique[*].amount"),
-            .decimalField(path: "DecimalSyncedRoot.byName[*].amount"),
-        ])
-        #expect(SyncRegistration.problems(DecimalCleanRoot.self).isEmpty)
-        let message = SyncRegistrationError.Problem.decimalField(path: "Root.price").description
-        #expect(message.contains("Root.price") && message.contains("integer of the smallest unit"), "\(message)")
-    }
-
     @Test("A land with no Decimal on the wire registers")
     func cleanLandRegisters() throws {
         let definition = Land("decimal-clean", using: DecimalCleanRoot.self) {

@@ -26,8 +26,11 @@ import Foundation
 /// compiler checks (#767). They are also outside the #87 checks.
 ///
 /// The registration check (`LandDefinition.validateForRegistration`, which
-/// `LandTypeRegistry.init`, `NIOLandHost.register` and `SchemaExtractor.extract` run) includes it,
-/// next to `SyncPolicyNesting.validate`. It is `package`, not public: users meet the rule as
+/// `LandTypeRegistry.init`, `NIOLandHost.register` and `SchemaExtractor.extract` run) includes it
+/// in debug builds only, next to `SyncPolicyNesting.validate`. The compiler already refuses a class
+/// in state, so the walk guards a hand-written `PlainData` witness during development; a release
+/// build doesn't call it, and `SnapshotValue`'s conversion refuses such a class at the land's first
+/// sync. It is `package`, not public: users meet the rule as
 /// `LandRegistrationError.sync`'s `.valueSemantics` problem, not by calling it.
 package enum SyncValueSemantics {
     /// Throws `SyncValueSemanticsError` naming every synced field, at any depth, whose type is
@@ -99,7 +102,8 @@ package enum SyncValueSemantics {
     }
 }
 
-/// Synced fields that hold a class (#464).
+/// Synced fields that hold a class (#464). Produced by the registration check in debug builds
+/// only; a release build never produces it.
 public struct SyncValueSemanticsError: Error, CustomStringConvertible, Equatable {
     public struct Violation: Sendable, Equatable {
         /// The field, from the root type: `Root.items[*].owner` (`[*]` is any key or element).

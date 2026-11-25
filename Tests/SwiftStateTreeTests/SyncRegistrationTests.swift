@@ -251,15 +251,21 @@ struct SyncRegistrationTests {
     func rows() {
         #expect(SyncRegistration.problems(RegistrationCleanRoot.self).isEmpty)
         let problems = SyncRegistration.problems(RegistrationMixedRoot.self)
+        #expect(problems.last == .unsupportedKey(path: "RegistrationMixedRoot.keyed", keyType: "RegistrationOpaqueKey"))
+        let description = SyncRegistrationError(problems: problems).description
+        #expect(description.contains("RegistrationMixedRoot.keyed"))
+        #if DEBUG
+        // The value walk runs in debug builds only (RegistrationDebugGuardTests).
         #expect(problems.count == 2)
         guard case .valueSemantics(let error) = problems.first else {
             Issue.record("expected the value-semantics row first: \(problems)")
             return
         }
         #expect(error.violations.map(\.path) == ["RegistrationMixedRoot.object"])
-        #expect(problems.last == .unsupportedKey(path: "RegistrationMixedRoot.keyed", keyType: "RegistrationOpaqueKey"))
-        let description = SyncRegistrationError(problems: problems).description
-        #expect(description.contains("value types") && description.contains("RegistrationMixedRoot.keyed"))
+        #expect(description.contains("value types"))
+        #else
+        #expect(problems.count == 1)
+        #endif
     }
 
     @Test("The cached result, failures included, is the walk's, and is kept per type")
@@ -270,17 +276,6 @@ struct SyncRegistrationTests {
         #expect(first == SyncRegistration.problems(RegistrationCacheRoot.self))
         #expect(first == [.unsupportedKey(path: "RegistrationCacheRoot.keyed", keyType: "RegistrationOpaqueKey")])
         #expect(SyncRegistration.cachedProblems(RegistrationCacheRoot.self) == first)
-    }
-
-    @Test("Open types (Any, AnyObject, AnyHashable, AnyCodable) are found as elements, keys, values and wrapped types")
-    func openTypes() {
-        let problems = SyncRegistration.problems(RegistrationOpenRoot.self)
-        #expect(problems == [
-            .existentialField(path: "RegistrationOpenRoot.holder.bag[*]", typeName: "Any"),
-            .existentialField(path: "RegistrationOpenRoot.holder.hashed[key]", typeName: "AnyHashable"),
-            .existentialField(path: "RegistrationOpenRoot.holder.boxed", typeName: "AnyCodable"),
-            .existentialField(path: "RegistrationOpenRoot.holder.list[*]", typeName: "AnyObject"),
-        ], "\(problems)")
     }
 
     @Test("validateForRegistration reports the synced-state rows in LandRegistrationError.sync, whatever the context")
@@ -335,7 +330,11 @@ struct SyncRegistrationTests {
                 definition: land, initialState: RegistrationMixedRoot(), recordFilePath: "/nonexistent/record.json"
             )
         }
+        #if DEBUG
         #expect(error.sync?.problems.count == 2)
+        #else
+        #expect(error.sync?.problems.count == 1)
+        #endif
     }
 
     @Test("@SnapshotConvertible storage is checked through its declared types, also with no sample; a FullSnapshotValueConvertible-only type is reflected; a hand-written conversion and a hand-witnessed Any aren't seen")
