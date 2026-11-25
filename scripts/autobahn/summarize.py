@@ -10,7 +10,8 @@ The script also validates the index: it exits non-zero unless the index contains
 agent (EXPECTED_AGENT), that agent has exactly EXPECTED_CASE_COUNT cases, and every case has
 both `behavior` and `behaviorClose`.
 
-Usage: summarize.py <reports/servers/index.json> [--failed-only | --expected-failures]
+Usage: summarize.py <reports/servers/index.json>
+           [--failed-only | --expected-failures | --check-expected <expected-failures.txt>]
 With --failed-only it prints just the FAILED case ids, one per line, sorted by section.
 With --expected-failures it prints the FAILED cases as "<case id> <cause>" lines, the format of
 expected-failures.txt. A cause is a guess from the case's report file (next to index.json):
@@ -24,6 +25,11 @@ expected-failures.txt. A cause is a guess from the case's report file (next to i
   guess:close-code     section 7: an invalid close code or payload wasn't answered with 1002;
   guess:utf8-close-reason  section 7, specifically an invalid UTF-8 close reason;
   other                anything else.
+With --check-expected <file> it is the gate: it prints nothing on success and exits GATE_EXIT (10)
+when a FAILED case isn't listed in <file> (the first token of each line; blank lines and `#`
+comments are skipped). A listed case that isn't FAILED is a warning on stderr, not a failure, so a
+fix doesn't need the list edited in the same run (drop it in the same change). NON-STRICT,
+INFORMATIONAL and UNIMPLEMENTED never fail it.
 Causes prefixed `guess:` are derived from the section number, not from the case report; they may
 be wrong for individual cases.
 """
@@ -45,10 +51,20 @@ CLOSE_VERDICT_MAP = {
 EXPECTED_CASE_COUNT = 247
 # Agent name configured in fuzzingclient.json.
 EXPECTED_AGENT = "SwiftStateTreeNIO"
+# Exit status of --check-expected when a FAILED case isn't listed. (7 is run.sh's "the harness
+# exited mid-suite", 8 and 9 are the index validation below.)
+GATE_EXIT = 10
 
 
 def case_key(case_id: str):
     return [int(part) for part in case_id.split(".")]
+
+
+def case_key_or_zero(case_id: str):
+    try:
+        return case_key(case_id)
+    except ValueError:
+        return [0]
 
 
 def result_of(entry: dict) -> str:
@@ -96,7 +112,26 @@ def cause_of(case_id: str, entry: dict, index_dir: str) -> str:
     return SECTION_CAUSE.get(case_id.split(".")[0], "other")
 
 
+def read_listed(path: str) -> set[str]:
+    """The case ids of an expected-failures file: the first token of each non-comment line."""
+    listed = set()
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                listed.add(line.split()[0])
+    return listed
+
+
 def main(argv: list[str]) -> int:
+    check_path = None
+    if "--check-expected" in argv:
+        position = argv.index("--check-expected")
+        if position + 1 >= len(argv):
+            print(__doc__, file=sys.stderr)
+            return 2
+        check_path = argv[position + 1]
+        argv = argv[:position] + argv[position + 2:]
     failed_only = "--failed-only" in argv
     expected_failures = "--expected-failures" in argv
     paths = [arg for arg in argv[1:] if not arg.startswith("--")]
@@ -139,6 +174,23 @@ def main(argv: list[str]) -> int:
         failed = sorted((c for c, r in results.items() if r == "FAILED"), key=case_key)
         if failed_only:
             print("\n".join(failed))
+            continue
+        if check_path is not None:
+            try:
+                listed = read_listed(check_path)
+            except OSError as error:
+                print(f"summarize: can't read {check_path}: {error}", file=sys.stderr)
+                return 2
+            unlisted = [c for c in failed if c not in listed]
+            fixed = sorted((c for c in listed if results.get(c) != "FAILED"), key=case_key_or_zero)
+            if fixed:
+                print(f"summarize: warning: listed in {os.path.basename(check_path)} but not "
+                      f"FAILED: {', '.join(fixed)} (drop them from the list in the same change)",
+                      file=sys.stderr)
+            if unlisted:
+                print(f"summarize: FAILED and not listed in {os.path.basename(check_path)}: "
+                      f"{', '.join(unlisted)}", file=sys.stderr)
+                return GATE_EXIT
             continue
         if expected_failures:
             index_dir = os.path.dirname(os.path.abspath(paths[0]))
