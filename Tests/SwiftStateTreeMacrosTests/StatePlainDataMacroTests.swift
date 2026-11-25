@@ -509,6 +509,8 @@ struct StatePlainDataMacroTests {
     @Test("An attribute on a member that could add declarations is refused, in #if too; built-ins and a nested type's own macros pass (#837)")
     func memberAttributes() {
         let rest = " can't be in a state type: a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable"
+        // A nested type's message also names the project macros it may carry.
+        let nested = "; a nested type also takes @Payload, @PlainData, @SnapshotConvertible, @StateNodeBuilder"
         let refused: [(member: String, name: String)] = [
             ("@Memoized func cost() -> Int { 0 }", "@Memoized on 'cost()'"),
             ("@AddRef var view: Int { 0 }", "@AddRef on 'view'"),
@@ -526,7 +528,7 @@ struct StatePlainDataMacroTests {
         for (macro, source) in shapes {
             for (member, name) in refused {
                 let (_, messages) = expand(source(member))
-                #expect(messages.filter { $0.contains("a macro attached to a member") } == [name + rest], "\(macro) \(member): \(messages)")
+                #expect(messages.filter { $0.contains("a macro attached to a member") } == [name + rest + (name == "@Peer on 'Inner'" ? nested : "")], "\(macro) \(member): \(messages)")
             }
         let allowed = """
             @inlinable func a() -> Int { 0 }
@@ -535,6 +537,8 @@ struct StatePlainDataMacroTests {
             @TaskLocal static var d: Int = 0
             @_spi(Test) public init(e: Int) { self.init() }
             @PlainData struct Inner { var f: Int }
+            @concurrent func g() async -> Int { 0 }
+            @Sendable func h() -> Int { 0 }
             """
             let (_, messages) = expand(source(allowed))
             #expect(!messages.contains { $0.contains("a macro attached to a member") }, "\(macro): \(messages)")

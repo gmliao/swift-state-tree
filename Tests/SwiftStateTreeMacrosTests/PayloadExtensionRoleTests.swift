@@ -228,6 +228,8 @@ struct PayloadExtensionRoleTests {
     @Test("An attribute on a payload's member that could add declarations is refused; built-ins pass (#837)")
     func memberAttributes() {
         let rest = " can't be in a payload type: a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable"
+        // A nested type's message also names the project macros it may carry.
+        let nested = "; a nested type also takes @Payload, @PlainData, @SnapshotConvertible, @StateNodeBuilder"
         let refused: [(member: String, name: String)] = [
             ("@Memoized func cost() -> Int { 0 }", "@Memoized on 'cost()'"),
             ("@AddRef var view: Int { 0 }", "@AddRef on 'view'"),
@@ -240,7 +242,7 @@ struct PayloadExtensionRoleTests {
         ]
         for (member, name) in refused {
             let (_, messages) = expand("@Payload\nstruct Hit: ServerEventPayload {\nlet n: Int\ninit() { n = 0 }\n\(member)\n}", conforming: false)
-            #expect(messages.filter { $0.contains("a macro attached to a member") } == [name + rest], "\(member): \(messages)")
+            #expect(messages.filter { $0.contains("a macro attached to a member") } == [name + rest + (name == "@Peer on 'Inner'" ? nested : "")], "\(member): \(messages)")
         }
         let allowed = """
             @inlinable func a() -> Int { 0 }
@@ -249,6 +251,8 @@ struct PayloadExtensionRoleTests {
             @TaskLocal static var d: Int = 0
             @_spi(Test) public init(e: Int) { self.init() }
             @PlainData struct Inner { var f: Int }
+            @concurrent func g() async -> Int { 0 }
+            @Sendable func h() -> Int { 0 }
             """
         let (_, messages) = expand("@Payload\nstruct Hit: ServerEventPayload {\nlet n: Int\ninit() { n = 0 }\n\(allowed)\n}", conforming: false)
         #expect(!messages.contains { $0.contains("a macro attached to a member") }, "\(messages)")
