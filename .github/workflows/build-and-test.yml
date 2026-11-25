@@ -715,13 +715,13 @@ jobs:
         sw_vers
 
     - name: Build
-      run: swift build --build-tests
+      run: echo PROBE skip build
 
     - name: Tests
       shell: bash
       run: |
         set -o pipefail
-        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \
+        echo "PROBE: forced failure to exercise the log upload" 2>&1 | tee "$RUNNER_TEMP/tests.log" && false \
           || { echo "::error title=Tests::the tests failed"; exit 1; }
       timeout-minutes: 60
 
