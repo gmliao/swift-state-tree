@@ -593,10 +593,21 @@ struct ReevaluationRunnerMain {
             return
         }
         let source = try JSONReevaluationSource(data: data, maxReplayTicks: maxReplayTicks)
+        let metadata = try await source.getMetadata()
+        // The binary record is written as the current version, so its payloads must already be
+        // bytes: a JSON record before 3.7 holds trees, which no 3.7 record may hold. Only the
+        // version is checked: converting doesn't need a fingerprint, replaying does.
+        let version = (metadata.version ?? "").split(separator: ".").compactMap { Int($0) }
+        let holdsBytes = version.count == 2
+            && (version[0] > 3 || (version[0] == 3 && version[1] >= ReevaluationRecordVersion.payloadBytesMinor))
+        guard holdsBytes else {
+            throw ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: metadata.version ?? "missing")
+        }
         let directory = URL(fileURLWithPath: output).deletingLastPathComponent()
         let recorder = ReevaluationRecorder(spoolDirectory: directory)
-        await recorder.setMetadata(try await source.getMetadata())
+        await recorder.setMetadata(metadata)
         for frame in await source.getAllFrames() {
+            // Every field the frame holds, so the binary record reads back as the JSON one.
             await recorder.recordTick(ReevaluationTickRecord(
                 tickId: frame.tickId,
                 actions: frame.actions,
@@ -609,7 +620,10 @@ struct ReevaluationRunnerMain {
                 syncOutputs: frame.syncOutputs,
                 syncMarkers: frame.syncMarkers,
                 initialize: frame.initialize,
-                passes: frame.passes
+                passes: frame.passes,
+                serverInputs: frame.serverInputs,
+                landFailure: frame.landFailure,
+                rejected: frame.rejected
             ))
         }
         try await recorder.save(to: output)
