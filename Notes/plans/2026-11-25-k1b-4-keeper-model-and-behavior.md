@@ -1,6 +1,6 @@
 # K1b-4: `KeeperModel<State>` and `KeeperBehavior<State>`, with the census test (#700)
 
-**Status:** rev 2.4, plan only. Rev 2.4 adds the two private nested action types to the moved types (§3.1, §15). Rev 2.3 aligns one row with K1b-2's plan: `failureIDs` is a model field, so the model has 59 (§14). Rev 2.2 is two corrections found in implementation prep, after Review's GO on rev 2.1: a tuple field needs a struct, and the model row has 58 fields, not 59 (§13). Review on rev 2: 1 must-fix (a one-row correction; GO once fixed), 4 should, 1 nit; rev 2.1 takes all of them (§12). Rev 2 answered Review's NOT GO on rev 1.2 (3 must-fix, 5 should, 1 nit; §11). It was read at #853's reviewed head 2afb96fc (K1b-3, on #835's K1a). The review fix round a87e0278 changes no line of `LandKeeper.swift`, so its line numbers hold there too. Rev 1.2 took Appendix A's F5–F8 (#700 plan rev 5.8) and K1b-3's fields (§10). Rev 1.1 settled D2 and took the K2 survey's shape (§9).
+**Status:** rev 2.5, plan only. Rev 2.5 makes `KeeperActionJob` generic, since it holds a type nested in the actor (§16). Rev 2.4 adds the two private nested action types to the moved types (§3.1, §15). Rev 2.3 aligns one row with K1b-2's plan: `failureIDs` is a model field, so the model has 59 (§14). Rev 2.2 is two corrections found in implementation prep, after Review's GO on rev 2.1: a tuple field needs a struct, and the model row has 58 fields, not 59 (§13). Review on rev 2: 1 must-fix (a one-row correction; GO once fixed), 4 should, 1 nit; rev 2.1 takes all of them (§12). Rev 2 answered Review's NOT GO on rev 1.2 (3 must-fix, 5 should, 1 nit; §11). It was read at #853's reviewed head 2afb96fc (K1b-3, on #835's K1a). The review fix round a87e0278 changes no line of `LandKeeper.swift`, so its line numbers hold there too. Rev 1.2 took Appendix A's F5–F8 (#700 plan rev 5.8) and K1b-3's fields (§10). Rev 1.1 settled D2 and took the K2 survey's shape (§9).
 - K1b-4 needs K1b-1 (the plain forms), K1b-2 (`FailureID` and the side tables), K1b-3 (the RNG) and P4-1 (K1b-Q3). It names their results by their planned shapes. It rebases on their landed types and regenerates its references and its census then (§8).
 - The census is Appendix A of `2026-11-22-keeper-on-turncore.md` (draft 3 and A.7), with this plan's changes in §2.
 
@@ -89,10 +89,10 @@ struct KeeperModel<State: StateNodeProtocol> {
   - `SyncBindingState` (nested, private) → `KeeperSyncBinding`;
   - `ActionTicket` (nested, internal, used by `ActionJob`) → `KeeperActionTicket`;
   - `InternalPlayerSession` (file level, private) → `KeeperPlayerEntry`;
-  - `ActionJob` (nested, private, LK:2446), its plain half after K1b-2's split (`item`, `ticket`, `input`, `completed`, `cancelledByKeeper`) → `KeeperActionJob`;
+  - `ActionJob` (nested, private, LK:2446), its plain half after K1b-2's split (`item`, `ticket`, `input`, `completed`, `cancelledByKeeper`) → `KeeperActionJob<State>`, generic because `item` is `LandKeeper<State>.PendingActionItem` (LK:2448), a type nested in the generic actor, which can be named only with its argument;
   - `ActionSlot` (nested, private, LK:2467), its plain half after K1b-2's split (`result: InputResult?`) → `KeeperActionSlot`.
 
-  All five move to `KeeperModel.swift` as internal types, with a `Keeper` prefix and `@PlainData`. None depends on `State`, and none is exposed publicly. Their uses in `LandKeeper.swift` are renamed in the same commit. K1b-2's names for the halves are taken from the base.
+  All five move to `KeeperModel.swift` as internal types, with a `Keeper` prefix and `@PlainData`. Four don't depend on `State`; `KeeperActionJob<State>` carries it, and the model's row is `actionJobs: [Int64: KeeperActionJob<State>]`. None is exposed publicly. Their uses in `LandKeeper.swift` are renamed in the same commit. K1b-2's names for the halves are taken from the base.
 - **Internal stored fields that tests read** (`foldedSyncs`, `lateFoldedSyncs`, `requestedSyncTurnsForTesting` and the other `private(set)` counters) become computed getters over `model`, with the same name and access. K1b-4 lists them with `findReferences` from the test targets on its base.
 - **Public members that are stored today stay public,** as computed accessors over the new homes: `definition` (`public let`, now `nonisolated public var definition { behavior.definition }`) and `serverInputCapRejections` (`public private(set) var`, now a `public var` with a getter over `model`). The package ones too: `replayedInitializeRefusal` and `joinSyncRequestTurnsForTesting` (getters); `abandonmentCounter` stays a stored `nonisolated let`.
 
@@ -331,3 +331,9 @@ Each commit runs the touched suites. The full debug `swift test` runs before the
 | Change | Where |
 |---|---|
 | `ActionJob` and `ActionSlot` are `private` and nested in the actor (LK:2446, :2467), and their plain halves are model fields (`actionJobs`, `actionSlots`), so they move out too, as `KeeperActionJob` and `KeeperActionSlot`. The reason a type moves is its privacy, not the generic parameter: a `package` nested type is named `LandKeeper<State>.X`, so K1b-1's queued items stay nested | §3.1 |
+
+## 16. Rev 2.4 → rev 2.5 (Review on rev 2.4: one row)
+
+| Change | Where |
+|---|---|
+| `KeeperActionJob` is generic, `KeeperActionJob<State>`: its `item` is `LandKeeper<State>.PendingActionItem`, and a type nested in a generic type is named only with its argument (Review's `swiftc -typecheck` probe: `K.Item` fails, `K<State>.Item` passes). The other choice, moving `PendingActionItem` to file level, is a K1b-1 rename and larger. The other four moved types don't depend on `State` | §3.1 |
