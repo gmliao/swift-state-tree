@@ -1,10 +1,10 @@
 # K1b-5a: turn bodies on the model, the turn side, and the staging rule (#700)
 
-**Status:** rev 2, plan only, for Review. This is the first half of K1b-5 (plan rev 2.1, `2026-11-25-k1b5-turn-bodies-and-segments.md`), split as that plan's §9 proposed and Main approved. K1b-5b, the segments, follows once this plan is GO, and its PR opens after this one merges.
+**Status:** rev 2.1, plan only, for Review. Rev 2.1 corrects three §3.1 rows found by the LSP check of rev 2 (listed at the end of §3.1). This is the first half of K1b-5 (plan rev 2.1, `2026-11-25-k1b5-turn-bodies-and-segments.md`), split as that plan's §9 proposed and Main approved. K1b-5b, the segments, follows once this plan is GO, and its PR opens after this one merges.
 
 **Base:** #853's head 5d53571a (K1b-3, on #835's K1a). Its `LandKeeper.swift` has the same line numbers as a87e0278, which K1b-4's rev 2.1 names. K1b-5a needs K1b-4.
 
-**How the tables were checked.** Each table ends with a line saying what was checked against 5d53571a, and which rows weren't verified. Rev 1's rows were checked with the LSP (`findReferences`, `incomingCalls`, `goToDefinition`) and grep. **Rev 2's new rows were checked by grep** on a copy of 5d53571a's `LandKeeper.swift` and `TransportAdapter.swift`, each call site with its enclosing function. The LSP wasn't run again for them: the working clone stays at main for now. Each such line says "grep".
+**How the tables were checked.** Each table ends with a line saying what was checked against 5d53571a, and which rows weren't verified. Rev 1's rows were checked with the LSP (`findReferences`, `incomingCalls`, `goToDefinition`) and grep. **Rev 2's new rows were checked by grep** on 5d53571a's `LandKeeper.swift` and `TransportAdapter.swift`, each call site with its enclosing function, and **then with the LSP** on a fresh index of 5d53571a (rev 2.1). Each check line says which.
 
 `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift` and `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`, both at 5d53571a.
 
@@ -97,10 +97,10 @@ private func withModel<R>(_ step: (inout KeeperModel<State>, inout KeeperTurnSid
 | `services(for:generation:)` | read | `makeContext`'s player services (:3584) |
 | `insertServices(…)`, `removeServices(…)` | staged | the joins' inserts and the leave's removal (K1b-5b) |
 | `markFailedFirst(_:) -> Bool` | **direct** (flushes first): `drainFlag.setFailed`. K2 sets a model flag and stages the atomic set | `failLand` (:5847, the `setFailed` at :5870) |
-| `setDrainCause(_:)` | **direct** (flushes first), `drainFlag.set(cause:)` | `completeShutdownTurn` (:5768) |
+| `setDrainCause(_:)` | **direct** (flushes first), `drainFlag.set(cause:)` | `completeShutdownTurn` (:5768), in a body; `shutdownIfIdle` (:6245), an outside caller in `withModel` (§3.3), where the write precedes the releases and cancellations as today |
 | `closeOutputs(for:)` | **direct** (flushes first), on the binding token: the attached port, or else the bound requester, chosen at the call as today (:5896) | `failLand` (:5898) |
 | `syncNowInTurn(…)`, `settleNowInTurn(…)` | **direct** (flush first), on the binding token: they return frames mid-turn | `runTurnOutputs` (:4951), `runSyncOnlyTurn` (:5427), `settleTurn` (:1868) |
-| the keeper's other port calls: `refusesResolvedJoin`, `noteJoinInputsConsumed`, `hasJoinsAwaitingSync`, `runsSyncPhaseInTurn(of:)`, and the profiler hooks `noteInTurnJoinSyncTick` (:5106) and `noteInTurnSyncFold` (:5135) | **direct** (flush first) | as listed |
+| the keeper's other port calls | **direct** (flush first) | `refusesResolvedJoin` (:2288, in `refusesResolvedJoinInTurn`), `noteJoinInputsConsumed` (:2295), `hasJoinsAwaitingSync` (:2301, a property read in `transportHasJoinsAwaitingSync`), `runsSyncPhaseInTurn(of:)` (:832 `syncsInTurn`, :1857 the settle, :5574 `acceptsSyncTurn`, :5594 `syncTurnTicket`; :591 is a nonisolated static check outside the keeper's isolation), and the profiler hooks `noteInTurnJoinSyncTick` (:5106) and `noteInTurnSyncFold` (:5135) |
 | `takeEmittedEvents(forTick:)`, `takeSyncRequest(…)` | read and drain, on the collector | the context closures keep the collector reference they capture before the step borrows the model (:3606) |
 | `readPosition()` | **assembled by the model:** `lastCommittedTickId` and `passOrdinal` from the model, `nextSequence` through a side read of the collector | the position read |
 | `takePendingFold()`, `now()` | read | `takePendingFold` (:5124) and the tick clock, at today's point (below) |
@@ -109,10 +109,15 @@ private func withModel<R>(_ step: (inout KeeperModel<State>, inout KeeperTurnSid
 | `noteReplayRejected(sequence:)` | turn-local, then staged | `applyInputs` writes it and `takeReplayRejected` (:4460) reads it in the same turn. The body keeps it in a local that the turn's record reads, as today, and the side hands the list to `replay` after. Nothing on a live keeper |
 | `recordFailure(_:) -> FailureID` | the ID from the model's counter; the error staged into the side's table | K1b-2's table |
 | `takeWaiter(…)`, `takeHeldInputs()`, `takeDrainWaiters()` | the removal and the outcome inline; the resume staged | §3.5 |
-| `cancelJob(_:)` | the mark, the outcome and the slot fill inline; then `task.cancel()`, a direct call | §3.5 |
+| `cancelJob(_:)` | the mark, the outcome and the slot fill inline; then `task.cancel()`, a direct call | §3.5. `job.task?.cancel()` (:2736) is the only `cancel()` a K1b-5a body reaches. The joins' `destroyTask?.cancel()` (:1962, :2183) are in K1b-5b's segments, and are direct calls there |
 | `probe(_:)` | **direct; flushes first when a hook is installed.** It must not call back into the keeper (§3.6) | `inTurnProbeForTesting` (:924 and the in-turn labels) |
 
-*Checked against 5d53571a: every LK line by grep. With LSP (rev 1): `findReferences` on `pendingTransportFailure` (:654, 666, 670, 4289, 5403); `incomingCalls` on `failLand` and `completeShutdownTurn`. By grep (rev 2): `applyInTurnSyncResult`'s three follow-up calls (:4987, 4993, 5002) and the three Task launches. The mailbox's lines by reading LandFailureMailbox.swift. Not verified: none.*
+*Checked against 5d53571a: every LK line by grep. With LSP (rev 1): `findReferences` on `pendingTransportFailure` (:654, 666, 670, 4289, 5403); `incomingCalls` on `failLand` and `completeShutdownTurn`. With LSP (rev 2.1): `findReferences` on `DrainFlag.setFailed` (:5870 only), `DrainFlag.set(cause:)` (:5768, 6245), `closeOutputs` (:5898 only), `refusesResolvedJoin`, `noteJoinInputsConsumed`, `hasJoinsAwaitingSync`, `runsSyncPhaseInTurn(of:)`, `noteInTurnSyncFold`, `noteInTurnJoinSyncTick` and `inTurnProbeForTesting` (the sites at :924 and the in-turn labels); `incomingCalls` on `scheduleJoinSyncTurn` (:4987), `requestSyncTurnAfterThisTurn` (:4993) and `retrySyncOnlyTurnAfterWriterDrain` (:5002), all from `applyInTurnSyncResult`, and on `runSyncOnlyTurn` (`syncTurnNow` at :5617 among six). The `cancel()` sites by grep, each with its enclosing function. The three Task launches by grep. The mailbox's lines by reading LandFailureMailbox.swift. Not verified: none.*
+
+**Rev 2.1's corrections, from the LSP check:**
+- `setDrainCause` has a second write, in `shutdownIfIdle` (:6245). Rev 2 listed only `completeShutdownTurn`'s.
+- The other port calls' row now gives each call's line and enclosing function. Rev 2 said "as listed" with no lines.
+- The `cancelJob` row now says :2736 is the only `cancel()` a K1b-5a body reaches.
 
 **The clock read stays where it is.** The tick turn reads the time after it consumes the pending fold and checks `inTurnSyncDue`, the test override included. The body keeps that point through `side.now()`. Reading it earlier, in the driver, could change the reported duration or cross the strict `>` lateness threshold with no interleaving at all. K2's input timestamp is a stated behavior change at the cut-over, not part of K1b-5a.
 
@@ -188,7 +193,7 @@ For example, `failLand` (:5847–5907) today and in K1b-5a:
 
 The shutdown path doesn't call `failLand`: `completeShutdownTurn` (:5761) is reached from the input turn's apply (:4285), inside a body.
 
-*Checked against 5d53571a: rev 1's rows by LSP `incomingCalls` on `failLand`, `dropPendingInputs`, `cancelAllActionJobs`, `releaseHeldInputsForDrain`, `resumeDrainStartedWaitersForTesting` and `completeShutdownTurn`. Rev 2's rows by grep, each call site with its enclosing function: `fillActionSlot` (:2585, 2735, 5941, 6089), `cancelActionJobs` (:2861), `debugEndWork` (:2657, 3146, 3419, 3532, 4548), `applyInputs` (:3054, 4175, 4366, 5051, 6041), `enqueueRecorderSubmission` (:5306, 5324, 5376, 5886), `enqueueTicklessTurnEnd` (:1849, 1889, 5420, 5432, 5996). Not verified by LSP: rev 2's rows.*
+*Checked against 5d53571a: rev 1's rows by LSP `incomingCalls` on `failLand`, `dropPendingInputs`, `cancelAllActionJobs`, `releaseHeldInputsForDrain`, `resumeDrainStartedWaitersForTesting` and `completeShutdownTurn`. Rev 2's rows by grep, then by LSP `incomingCalls` (rev 2.1), with the same result: `fillActionSlot` (:2585, 2735, 5941, 6089), `cancelActionJobs` (:2861, from `leave` only), `debugEndWork` (:2657, 3146, 3419, 3532, 4548), `applyInputs` (:3054, 4175, 4366, 5051, 6041), `enqueueRecorderSubmission` (:5306, 5324, 5376, 5886), `enqueueTicklessTurnEnd` (:1849, 1889, 5420, 5432, 5996), `resumeInputTurnWaiters` (:4410 in tickless replay, :5998 in the input drain). Not verified: none.*
 
 ### 3.4 The alignment check
 
@@ -280,7 +285,7 @@ A port call the keeper makes during a body can call back into it synchronously. 
 
 Tick replay can't call the live tick body: its W1 apply and its handler step are separated by suspensions, as listed above. K2-1's "handle calls the same bodies" applies to live turns only. Replay keeps its own drivers until #612.
 
-*Checked against 5d53571a: the replay lines by grep and by reading :4172–4215, :4314–4420 and :4805–4895 (rev 2). Not verified by LSP: the replay rows.*
+*Checked against 5d53571a: the replay lines by grep and by reading :4172–4215, :4314–4420 and :4805–4895 (rev 2). With LSP (rev 2.1): `incomingCalls` on `applyInputs` (:4175 in `processPendingActions`, :4366 in `replayRecordedPasses`) and on `resumeInputTurnWaiters` (:4410). Not verified: none.*
 
 ## 5. Commits, tests, mutants
 
