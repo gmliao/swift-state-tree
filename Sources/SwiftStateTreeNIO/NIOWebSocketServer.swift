@@ -314,6 +314,10 @@ public struct NIOWebSocketServerConfiguration: Sendable {
 /// Auth is resolved via `AuthInfoResolverProtocol` from SwiftStateTreeTransport;
 /// use `ClosureAuthInfoResolver` to wrap a closure if needed.
 public actor NIOWebSocketServer {
+    /// Whether NIO's built-in `WebSocketProtocolErrorHandler` is in the pipeline.
+    /// Off: the session handler maps decoder errors through `closeCode(for:)` instead (#827 F2).
+    package static let automaticProtocolErrorHandling = false
+
     private let configuration: NIOWebSocketServerConfiguration
     private let transportResolver: @Sendable (String) -> WebSocketTransport?
     private let pathMatcher: @Sendable (String) -> Bool
@@ -407,7 +411,7 @@ public actor NIOWebSocketServer {
 
         let upgrader = NIOWebSocketServerUpgrader(
             maxFrameSize: maxFrameSize,
-            automaticErrorHandling: true,
+            automaticErrorHandling: NIOWebSocketServer.automaticProtocolErrorHandling,
             shouldUpgrade: { channel, head in
                 let path = head.uri.components(separatedBy: "?").first ?? head.uri
                 if pathMatcher(path) {

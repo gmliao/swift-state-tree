@@ -151,6 +151,9 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     var closeGraceDeadlineForTesting: Scheduled<Void>? { closeGraceDeadline }
     /// Data frames read and discarded during a close grace (tests).
     private(set) var closeGraceDiscardedFramesForTesting = 0
+    /// Set when a NIO frame-decoder error reaches `errorCaught`: the decoder can no longer deliver
+    /// the peer's close frame, so no grace should start (or any running grace should end).
+    private var decoderFailed = false
     /// Counts pong-timeout closes when transport profiling is on.
     private let profilerCounters: TransportProfilerCounters?
     /// The lifecycle log's `sessionClosed` line (off unless `LAND_LIFECYCLE_LOG_PATH` is set).
@@ -166,6 +169,20 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             return [ECONNRESET, EPIPE, ETIMEDOUT].contains(ioError.errnoCode)
         }
         return false
+    }
+
+    /// Maps NIO's frame-decoder errors to their RFC 6455 close codes. Exhaustive so a new NIO
+    /// case breaks the build.
+    ///
+    /// - Note: Spell `NIOWebSocket.NIOWebSocketError`, not the bare name: this module declares
+    ///   its own `NIOWebSocketError`, which shadows NIO's inside `SwiftStateTreeNIO`. A bare cast
+    ///   compiles but never matches.
+    static func closeCode(for error: NIOWebSocket.NIOWebSocketError) -> WebSocketErrorCode {
+        switch error {
+        case .invalidFrameLength: return .messageTooLarge
+        case .fragmentedControlFrame: return .protocolError
+        case .multiByteControlFrameLength: return .protocolError
+        }
     }
 
     /// Records the close decided now, in the segment that decides it: the first one only.
@@ -431,6 +448,21 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        // After the frame decoder throws, ByteToMessageHandler wraps every later read in
+        // ByteToMessageDecoderError.dataReceivedInErrorState. When a close is already in flight
+        // (`isClosed`), let it finish: the write-completion or deadline (#229) closes the channel.
+        // When a close grace is active, the failed decoder can never deliver the peer's close
+        // frame, so end the grace immediately.
+        if case .dataReceivedInErrorState = error as? ByteToMessageDecoderError {
+            if isInCloseGrace {
+                closeGraceDeadline?.cancel()
+                closeGraceDeadline = nil
+                guard !channelCloseRequested else { return }
+                closeChannel(context)
+            }
+            return
+        }
+
         logger.error(
             "WebSocket error",
             metadata: [
@@ -438,6 +470,19 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
                 "error": .string(String(describing: error)),
             ]
         )
+
+        if let decoderError = error as? NIOWebSocket.NIOWebSocketError {
+            decoderFailed = true
+            if isInCloseGrace {
+                closeGraceDeadline?.cancel()
+                closeGraceDeadline = nil
+                guard !channelCloseRequested else { return }
+                closeChannel(context)
+                return
+            }
+            failConnection(code: Self.closeCode(for: decoderError))
+            return
+        }
 
         noteCloseCause(Self.isConnectionLoss(error) ? .connectionLost : .error, code: nil)
 
@@ -926,7 +971,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             self.closeFrameDeadline?.cancel()
             self.closeFrameDeadline = nil
             guard !self.channelCloseRequested else { return }
-            if case .success = result, let grace, grace > .zero, !self.peerCloseReceived, self.context != nil {
+            if case .success = result, let grace, grace > .zero, !self.peerCloseReceived, self.context != nil, !self.decoderFailed {
                 self.beginCloseGrace(grace, context: context)
             } else {
                 self.closeChannel(context)
