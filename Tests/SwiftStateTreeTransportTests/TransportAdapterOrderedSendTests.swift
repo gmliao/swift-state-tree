@@ -637,6 +637,7 @@ final class BlockingTransportBox: @unchecked Sendable {
     private var recorded: [(SessionID?, Data)] = []
     private var isBlocked = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var heldSendWaiters: [CheckedContinuation<Void, Never>] = []
     private var closed: [SessionID] = []
 
     func recordClose(_ sessionID: SessionID) { lock.lock(); closed.append(sessionID); lock.unlock() }
@@ -655,6 +656,9 @@ final class BlockingTransportBox: @unchecked Sendable {
 
     var frameCount: Int { lock.lock(); defer { lock.unlock() }; return recorded.count }
 
+    /// Sends that went into `waitIfBlocked` and haven't been released: held by the transport.
+    var heldSendCount: Int { lock.lock(); defer { lock.unlock() }; return waiters.count }
+
     func frames(for session: SessionID) -> [Data] {
         lock.lock(); defer { lock.unlock() }
         return recorded.compactMap { $0.0 == session ? $0.1 : nil }
@@ -665,12 +669,29 @@ final class BlockingTransportBox: @unchecked Sendable {
         if case .session(let id) = target { recorded.append((id, data)) } else { recorded.append((nil, data)) }
     }
 
+    /// Returns once a send is held by the transport (blocked, not released): no polling.
+    func awaitHeldSend() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if !waiters.isEmpty {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                heldSendWaiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
     func waitIfBlocked() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
             if isBlocked {
                 waiters.append(continuation)
+                let observers = heldSendWaiters
+                heldSendWaiters.removeAll()
                 lock.unlock()
+                for observer in observers { observer.resume() }
             } else {
                 lock.unlock()
                 continuation.resume()
@@ -691,6 +712,10 @@ actor BlockingTransport: Transport {
     nonisolated func block() { box.block() }
     nonisolated func release() { box.release() }
     nonisolated var frameCount: Int { box.frameCount }
+    /// Sends the transport holds right now (blocked, not yet released).
+    nonisolated var heldSendCount: Int { box.heldSendCount }
+    /// Returns once the transport holds a send.
+    nonisolated func awaitHeldSend() async { await box.awaitHeldSend() }
     nonisolated func frames(for session: SessionID) -> [Data] { box.frames(for: session) }
     /// Sessions closed through `closeSession`, in call order.
     nonisolated var closedSessions: [SessionID] { box.closedSessions }
