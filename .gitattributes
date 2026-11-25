@@ -37,3 +37,11 @@ Examples/Demo/WebClient/src/generated/** text eol=lf
 # Plan index workflow, which runs on a push or pull request to main or exp/** that changes the
 # index, the check or the workflow, index-only changes included.
 Notes/plans/README.md merge=union
+
+# The solutions index (Notes/solutions/README.md) is generated from each entry's front matter
+# (scripts/solutions-index.py), and every lesson adds a row, so two branches that each add an
+# entry conflict on adjacent lines. As for the plan index, the union driver keeps both sides'
+# rows in a local `git merge`; a row both sides changed comes out twice, and
+# `scripts/solutions-index.py --check` fails on that (in pre-push and in CI's lint step) until
+# `scripts/solutions-index.py` regenerates the block: one command, no hand-resolved conflict.
+Notes/solutions/README.md merge=union

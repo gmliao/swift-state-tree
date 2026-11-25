@@ -79,6 +79,13 @@ jobs:
         scripts/lint-lessons.sh --self-test
         scripts/lint-lessons.sh
 
+    # The index of Notes/solutions/README.md is generated from each entry's front matter; the
+    # self-test proves the check still finds a stale index and a malformed entry first.
+    - name: Check the solutions index
+      run: |
+        python3 scripts/solutions-index.py --self-test
+        python3 scripts/solutions-index.py --check
+
     # The turn core's rules the compiler can't check (Notes/plans/2026-11-18-swift-state-turns-core.md §7).
     - name: Lint turns
       run: |

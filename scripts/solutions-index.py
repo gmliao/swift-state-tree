@@ -41,6 +41,12 @@ class Entry:
         return f"| {self.date} | [{self.title}]({self.name}) | {', '.join(self.tags)} |"
 
 
+def read_exact(path):
+    """The file's text with its line endings untouched."""
+    with open(path, encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
 def front_matter_lines(text):
     lines = text.split("\n")
     if lines[0] != "---" or "---" not in lines[1:]:
@@ -160,7 +166,7 @@ def run(argv, solutions=SOLUTIONS, out=sys.stdout):
         return 2
     readme_path = solutions / "README.md"
     entries, errors = load_entries(solutions)
-    old = readme_path.read_text(encoding="utf-8", newline="")
+    old = read_exact(readme_path)
     new, marker_error = replace_block(old, entries)
     if marker_error:
         errors.append(marker_error)
@@ -213,7 +219,7 @@ def call(argv, directory):
 
 
 def read(directory):
-    return (directory / "README.md").read_text(encoding="utf-8", newline="")
+    return read_exact(directory / "README.md")
 
 
 GOOD = {
