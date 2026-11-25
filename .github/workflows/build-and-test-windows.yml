@@ -1,0 +1,82 @@
+# This workflow builds and tests the Swift package on Windows.
+#
+# Windows is in testing: the job is non-blocking (`continue-on-error: true`) and must NOT be added
+# to the required checks until it has been green for a while (issue #845).
+#
+# Written from what passes on one Windows 11 host (Swift 6.4.3, VS2022 build tools, default SwiftPM
+# backend). The first run on a GitHub runner is the test of the lines marked CHECK.
+#
+# SwiftBuild backend and C targets: the default backend failed on any C target (`stdlib.h` not found)
+# ONLY under VS 2019 BuildTools 14.29; under VS 2022 (MSVC 14.42) the default backend and
+# `--build-system native` both pass, so no `--build-system` flag is used. The runner needs a VS 2022
+# C++ toolset with a Windows 10/11 SDK. CHECK that windows-2022 has both and that `swift build` finds
+# them without a vcvars step.
+# SwiftStateTreeNIOProvisioning is not built on Windows (the manifest leaves it out: AsyncHTTPClient's
+# C target needs strptime); that is a separate cause from the one above.
+
+name: Swift Build & Test (Windows)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'Notes/**'
+      - '.devcontainer/**'
+      - 'README*'
+  pull_request:
+    branches: [ "main" ]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'Notes/**'
+      - '.devcontainer/**'
+      - 'README*'
+
+concurrency:
+  group: build-and-test-windows-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  windows:
+    name: build and test (Windows)
+    runs-on: windows-2022   # CHECK: has Visual Studio 2022; windows-latest may move to a newer image
+    # Non-blocking while Windows is in testing: a red run here never fails the pull request.
+    continue-on-error: true
+    timeout-minutes: 60
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # CHECK: whether the action can install release 6.4.3 on a hosted runner.
+    # Pinned by full commit SHA, as the Linux jobs pin their image by digest.
+    - name: Install Swift 6.4.3
+      uses: compnerd/gha-setup-swift@9ff1ee4c44888c5817fc14d1b257ac8cabb4935f # v0.5.1
+      with:
+        swift-version: swift-6.4.3-release
+        swift-build: 6.4.3-RELEASE
+
+    - name: Show toolchain
+      run: swift --version
+
+    # Same single debug build that every test run reuses, as on Linux.
+    # Not built on Windows: SwiftStateTreeNIOProvisioning (left out of the manifest there).
+    - name: Build
+      run: swift build --build-tests
+
+    # The whole suite. POSIX-only suites (ProcessSignalsTests, ShutdownSignalsTests) are compiled
+    # out on Windows.
+    - name: Tests
+      shell: bash
+      run: |
+        set -o pipefail
+        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \
+          || { echo "::error title=Tests::the tests failed"; exit 1; }
+      timeout-minutes: 30
+
+    # The Demo server must build. The E2E scenarios (Tools/CLI, npm) are not part of this job: on the
+    # host they run against DemoServer.exe started by a script specific to that machine.
+    - name: Build DemoServer
+      working-directory: Examples/Demo
+      run: swift build --product DemoServer
