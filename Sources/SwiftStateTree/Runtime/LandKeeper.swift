@@ -5702,7 +5702,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// In re-evaluation the shutdown only ends the replay: the recorded inputs left are dropped,
     /// the tick that replays it runs no tick handler, and no later tick runs (`runTick`). The
-    /// viewers stay, the land stays open, and its own empty-room destroy still applies.
+    /// viewers stay, the land stays open, and its own empty-room destroy still applies. The
+    /// destroy runs, but runs no handlers (#826).
     private func completeShutdownTurn() {
         shutdownTurnApplied = true
         guard mode == .live else {
@@ -6195,6 +6196,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The destruction proper: stop the loops, run the destroy handlers, notify the transport.
+    /// A reevaluation keeper skips all destroy handlers and goes straight to transport notification
+    /// (#826): the record holds no finalize event, so there is nothing to verify them against, and
+    /// their resolvers and AfterFinalize could reach outside services.
     private func drainAfterIdleCheck() async {
         await holds.at(.drainStart)
         // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting
@@ -6217,6 +6221,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A land whose initialization failed (#104) never ran OnInitialize: its destroy handlers
         // would act on (or save) a state that was never set up, so they are skipped.
         guard initializationFailure == nil else {
+            await notifyTransportDestroyedAndRelease()
+            return
+        }
+
+        // A reevaluation keeper runs land code only for recorded inputs: the record holds no
+        // destroy or finalize event, so nothing would verify these handlers against the record,
+        // and their resolvers and AfterFinalize could reach outside services (#826).
+        guard mode == .live else {
             await notifyTransportDestroyedAndRelease()
             return
         }

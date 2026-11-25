@@ -279,6 +279,9 @@ struct BenchmarkConfig {
     /// `--wide-response`: the visibility test's actions are `SetMotionWideAction`s, answered with
     /// `WideVisibilityResponse` instead of `VisibilityTestResponse`.
     var wideResponse: Bool = false
+    /// `--resolver-action`: the tickless visibility test's actions are `SetMotionResolvedAction`s,
+    /// answered with `VisibilityTestResponse` via a `MotionTagResolver` (zero-latency resolver).
+    var resolverAction: Bool = false
     /// `--rejoin-every <k>`: hero-defense, player 0 of each room leaves and rejoins every k-th
     /// measured iteration (Rejoin.swift). 0: never.
     var rejoinEvery: Int = 0
@@ -569,6 +572,8 @@ enum ArgumentParser {
             i += 1
         case "--wide-response":
             config.wideResponse = true
+        case "--resolver-action":
+            config.resolverAction = true
         case "--rejoin-every":
             guard i + 1 < args.count, let value = Int(args[i + 1]), value > 0 else {
                 try? FileHandle.standardError.write(contentsOf: Data("--rejoin-every needs a positive integer\n".utf8))
@@ -779,6 +784,11 @@ enum ArgumentParser {
                               Recorded as wideResponse in each result's config and in the saved
                               results' metadata. The tick land answers an action with an ACK, so
                               there the response is built and held, not encoded.
+      --resolver-action       With --actions-per-player and visibility-test-tickless: send
+                              SetMotionResolvedAction instead, routed through MotionTagResolver
+                              (a zero-latency ContextResolver). The response is still
+                              VisibilityTestResponse. Mutually exclusive with --wide-response.
+                              Recorded as resolverAction in each result's config.
       --rejoin-every <k>      Hero-defense: every k-th measured iteration, player 0 of each room
                               leaves and joins again with a new session. The leave and the
                               admission run before the timed span; the joiner's standalone

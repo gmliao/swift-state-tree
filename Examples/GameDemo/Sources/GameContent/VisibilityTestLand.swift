@@ -285,6 +285,19 @@ public struct SetMotionAction: ActionPayload {
     }
 }
 
+/// `SetMotionAction` with a `MotionTagResolver`: the same state change and the same
+/// `VisibilityTestResponse`, but via the resolver/job path (EncodingBenchmark
+/// `--resolver-action`). The resolver is the only difference from the plain tickless cell.
+@Payload
+public struct SetMotionResolvedAction: ActionPayload {
+    public typealias Response = VisibilityTestResponse
+    public let enabled: Bool
+
+    public init(enabled: Bool) {
+        self.enabled = enabled
+    }
+}
+
 /// `SetMotionAction` answered with `WideVisibilityResponse`: the same state change, and a
 /// response too wide for an existential's inline buffer (EncodingBenchmark `--wide-response`).
 @Payload
@@ -347,6 +360,32 @@ public struct WideVisibilityResponse: ResponsePayload {
         self.tickCount = tickCount
         self.entityCount = entityCount
         self.tag = tag
+    }
+}
+
+/// `MotionTagResolver`'s output: a tag derived from the action's `enabled` flag, carried
+/// through the resolver path to the handler.
+@PlainData
+public struct MotionTag: ResolverOutput {
+    public let value: Int
+
+    public init(value: Int) {
+        self.value = value
+    }
+}
+
+/// Resolver for `SetMotionResolvedAction`: no services, no await, returns a `MotionTag`
+/// derived from `enabled`. Used in EncodingBenchmark `--resolver-action` to measure
+/// resolver-path overhead without async latency.
+@PlainData
+public struct MotionTagResolver: Resolver {
+    public typealias Dependencies = NoServices
+    public typealias Output = MotionTag
+
+    public let enabled: Bool
+
+    public func resolve(_ deps: NoServices) async throws -> MotionTag {
+        MotionTag(value: enabled ? 1 : 0)
     }
 }
 
@@ -439,6 +478,12 @@ public enum VisibilityTest {
 
             HandleAction(SetMotionAction.self) { state, action, ctx in
                 setMotion(&state, enabled: action.enabled, ctx: ctx)
+                return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
+            }
+
+            HandleAction(SetMotionResolvedAction.self, resolvers: { _, action, _ in MotionTagResolver(enabled: action.enabled) }) { (state: inout State, action: SetMotionResolvedAction, _: MotionTag?, ctx: LandContext) in
+                ctx.services.get(InputProbe.self)?.noteApplied()
+                state.motion = action.enabled
                 return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
             }
 

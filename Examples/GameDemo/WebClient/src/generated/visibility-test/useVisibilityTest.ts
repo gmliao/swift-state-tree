@@ -7,7 +7,7 @@ import { StateTreeRuntime, ConnectionClosedError } from '@swiftstatetree/sdk/cor
 import { VisibilityTestStateTree } from './index.js'
 import { LAND_TYPE } from './bindings.js'
 import type { VisibilityTestState } from '../defs.js'
-import type { MoveViewerEvent, ParkEntitiesAction, PlaceEntityAction, SetMotionAction, SetMotionWideAction } from '../defs.js'
+import type { MoveViewerEvent, ParkEntitiesAction, PlaceEntityAction, SetMotionAction, SetMotionResolvedAction, SetMotionWideAction } from '../defs.js'
 
 interface ConnectOptions {
   wsUrl: string
@@ -44,6 +44,7 @@ export interface VisibilityTestComposableReturn {
   parkEntities: (payload: ParkEntitiesAction) => Promise<any>
   placeEntity: (payload: PlaceEntityAction) => Promise<any>
   setMotion: (payload: SetMotionAction) => Promise<any>
+  setMotionResolved: (payload: SetMotionResolvedAction) => Promise<any>
   setMotionWide: (payload: SetMotionWideAction) => Promise<any>
   moveViewer: (payload: MoveViewerEvent) => Promise<void>
   tree: ComputedRef<VisibilityTestStateTree | null>
@@ -211,6 +212,21 @@ export function useVisibilityTest(): VisibilityTestComposableReturn {
     }
   }
 
+  async function setMotionResolved(payload: SetMotionResolvedAction): Promise<any> {
+    if (!tree.value || !isJoined.value) {
+      throw new Error('Not connected or not joined')
+    }
+    try {
+      const res = await tree.value.actions.setMotionResolved(payload)
+      lastError.value = null
+      return res
+    } catch (error) {
+      console.error('setMotionResolved failed:', error)
+      lastError.value = (error as Error).message ?? String(error)
+      throw error
+    }
+  }
+
   async function setMotionWide(payload: SetMotionWideAction): Promise<any> {
     if (!tree.value || !isJoined.value) {
       throw new Error('Not connected or not joined')
@@ -249,6 +265,7 @@ export function useVisibilityTest(): VisibilityTestComposableReturn {
     parkEntities,
     placeEntity,
     setMotion,
+    setMotionResolved,
     setMotionWide,
     moveViewer,
     // Advanced: access to underlying tree instance
