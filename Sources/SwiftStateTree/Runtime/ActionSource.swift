@@ -66,14 +66,12 @@ public protocol ReevaluationSource: Sendable {
     /// state hashes may then differ from this build's (`ReevaluationRecordVersion.hashIncomparability`).
     func getHoldsNonNFCText() async throws -> Bool
 
-    /// Whether the record's payloads were written as JSON, so a whole-valued number can be an
-    /// integer where the payload's type declares a `Double` or `Float` (JSON's number
-    /// representation loses the float/integer split). A runner reading such a source decodes with
-    /// the integral-float allowance; any other source decodes strictly. The flag describes where
-    /// the returned payloads came from, not the source's type: `JSONReevaluationSource`'s
-    /// `init(data:)` and `init(filePath:)` set it, `init(metadata:frames:)` (canonical frames
-    /// built in memory) and a 3.x binary record don't. A source that forwards another source's
-    /// reads must forward this too, or its payloads decode strictly.
+    /// True only when this source parsed its frames from JSON bytes — the two JSON-reading
+    /// initializers (`init(data:)` and `init(filePath:)`). JSON's number representation loses the
+    /// float/integer distinction, so a runner reading such a source decodes with the integral-float
+    /// allowance. Sources that hold canonical frames built in memory (`init(metadata:frames:)`) or
+    /// that read a 3.x binary record never set this, and their runners decode strictly.
+    /// A source that wraps another source and forwards its reads must also forward this property.
     nonisolated var readsJSONRecord: Bool { get }
 }
 

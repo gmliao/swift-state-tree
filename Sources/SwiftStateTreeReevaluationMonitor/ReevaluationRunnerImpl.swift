@@ -603,5 +603,5 @@ struct FaultingReevaluationSource: ReevaluationSource {
     func getInitializeRecord() async throws -> ReevaluationRecordedInitialize? { try await base.getInitializeRecord() }
     func getRecordCompleteness() async throws -> ReevaluationRecordCompleteness { try await base.getRecordCompleteness() }
     func getHoldsNonNFCText() async throws -> Bool { try await base.getHoldsNonNFCText() }
-    var readsJSONRecord: Bool { base.readsJSONRecord }
+    nonisolated var readsJSONRecord: Bool { base.readsJSONRecord }
 }
