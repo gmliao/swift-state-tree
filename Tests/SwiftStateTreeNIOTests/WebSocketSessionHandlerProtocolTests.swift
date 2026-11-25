@@ -342,16 +342,18 @@ struct WebSocketSessionHandlerProtocolTests {
         for frame in frames {
             try channel.writeInbound(frame)
         }
+        channel.embeddedEventLoop.run()
+
+        // The close frame isn't written yet, so the channel hasn't closed: the disconnect came
+        // from the failure itself, not from a trailing orphan continuation.
+        await handler.waitForInboundIdle()
+        #expect(channel.isActive, "the close write is held")
+        #expect(recorder.events == [.message(before), .disconnect], "\(recorder.events)")
+
         try channel.writeInbound(WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
         try channel.writeInbound(WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
         try channel.writeInbound(WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(string: "after")))
         channel.embeddedEventLoop.run()
-
-        // The close frame isn't written yet, so the channel hasn't closed: the disconnect came
-        // from the failure itself.
-        await handler.waitForInboundIdle()
-        #expect(channel.isActive, "the close write is held")
-        #expect(recorder.events == [.message(before), .disconnect], "\(recorder.events)")
 
         hold.holding = false
         channel.flush()
