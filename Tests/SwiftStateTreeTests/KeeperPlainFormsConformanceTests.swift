@@ -37,6 +37,9 @@ struct KeeperPlainFormsConformanceTests {
         requirePlain(DecodedServerInput.self)
         // Commit 4: the handler index.
         requirePlain(ActionHandlerIndex.self)
+        // Commit 6: the held resolver outputs.
+        requirePlain(HeldResolverOutput.self)
+        requirePlain(RecordedResolverOutput.self)
         // Commit 8: the items and PendingItem.
     }
 }

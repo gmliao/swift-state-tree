@@ -37,6 +37,30 @@ struct HeldResolverOutputTests {
         #expect(try canonicalBytes(replayed.value) == canonicalBytes(tree))
     }
 
+    @Test("A recorded output whose bytes don't read back as a tree has no record entry (#700 K1b-1)")
+    func unreadableRecordedOutputHasNoEntry() throws {
+        // Nested past the canonical limit: the encode fails, and the item holds the failure.
+        var deep = AnyCodable(0)
+        for _ in 0...CanonicalMessagePack.maxDepth { deep = AnyCodable([deep]) }
+        let tooDeep = RecordedResolverOutput(typeIdentifier: "Deep", value: deep)
+        guard case .failed(.recordTooDeep) = tooDeep.payload else {
+            Issue.record("the too-deep tree was held as \(tooDeep.payload)")
+            return
+        }
+        // An unsigned value above Int.max, read with strict integral floats.
+        let big = RecordedResolverOutput(typeIdentifier: "Big", value: AnyCodable(UInt64.max), integralFloats: false)
+        let held: [String: HeldResolverOutput] = [
+            "deep": .recorded(tooDeep),
+            "big": .recorded(big),
+            "fresh": .live(HeldQuote(cents: 1, label: "control")),
+        ]
+        let entries = held.recordedEntries
+        #expect(entries["deep"] == nil)
+        #expect(entries["big"] == nil)
+        // Control: the live output still projects.
+        #expect(entries["fresh"]?.typeIdentifier == "HeldQuote")
+    }
+
     @Test("The monitor's state text: a String passes through, any other value is JSON text with sorted keys")
     func stateText() throws {
         #expect(try ReevaluationStateText.text(of: AnyCodable(#"{"b":1}"#)) == #"{"b":1}"#)
