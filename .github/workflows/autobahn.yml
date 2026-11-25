@@ -1,8 +1,9 @@
 # The Autobahn|Testsuite WebSocket conformance run against the NIO server (#798).
 #
-# Not a gate: the server fails many cases today (scripts/autobahn/expected-failures.txt), so the
-# run reports them and stays green. It fails only when the harness doesn't start or the suite
-# doesn't run (scripts/autobahn/run.sh exits non-zero then).
+# A gate on unlisted failures: the run fails when a case FAILED that isn't listed in
+# scripts/autobahn/expected-failures.txt (run.sh exits 10), and when the harness doesn't start or
+# the suite doesn't run (run.sh exits non-zero then). NON-STRICT and INFORMATIONAL cases never
+# fail it, and a listed case that passes is a warning.
 #
 # Two jobs, because GitHub can't run a job in a container and also give it Docker: `build` builds
 # the echo harness in the pinned Swift image, as a binary with the Swift runtime linked in;
@@ -88,6 +89,10 @@ jobs:
         name: autobahn-echo-harness
         path: harness
 
+    # The gate's own test (fixture indexes), before the long run.
+    - name: Test the gate
+      run: python3 -m unittest discover -s scripts/autobahn -p 'test_*.py'
+
     - name: Run the suite
       env:
         AUTOBAHN_ECHO_BIN: ${{ github.workspace }}/harness/AutobahnEcho
@@ -95,8 +100,8 @@ jobs:
         chmod +x "$AUTOBAHN_ECHO_BIN"
         scripts/autobahn/run.sh
 
-    # The per-case reports (JSON and HTML) and the summary. Also when the suite found failures:
-    # run.sh exits 0 then, and a step that did fail should still leave what it wrote.
+    # The per-case reports (JSON and HTML) and the summary. Also when the gate failed: a step
+    # that did fail should still leave what it wrote.
     - name: Upload the reports
       if: always()
       uses: actions/upload-artifact@v4

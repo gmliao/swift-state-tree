@@ -7,10 +7,12 @@
 # on the host's loopback), stops the harness and prints a summary of the report.
 #
 # The report is written to scripts/autobahn/reports/ (index.json, one JSON file and one HTML
-# page per case; open reports/servers/index.html). The exit status is 0 when the suite ran and
-# the report exists, whatever the cases found: Autobahn failures are reported, not gated, yet.
-# It is non-zero when the harness doesn't build or start, the suite doesn't run, the harness
-# exits mid-suite, or the index is partial (summarize.py validates the case count).
+# page per case; open reports/servers/index.html). The run is a gate on unlisted failures: the
+# exit status is 0 when the suite ran, the report exists and every FAILED case is listed in
+# expected-failures.txt (NON-STRICT and INFORMATIONAL cases never fail it; a listed case that
+# passes is a warning). It is non-zero when the harness doesn't build or start (3, 4), the suite
+# doesn't run (5, 6), the harness exits mid-suite (7), the index is partial (8, 9: summarize.py
+# validates it), or a FAILED case isn't listed (10).
 #
 # Environment:
 #   AUTOBAHN_ECHO_BIN   a built AutobahnEcho executable; skips the build.
@@ -103,3 +105,12 @@ if [[ ! -f "$reports/servers/index.json" ]]; then
 fi
 
 python3 "$here/summarize.py" "$reports/servers/index.json" | tee "$reports/summary.txt"
+
+# The gate: a FAILED case that expected-failures.txt doesn't list fails the run (exit 10).
+gate=0
+python3 "$here/summarize.py" "$reports/servers/index.json" \
+    --check-expected "$here/expected-failures.txt" || gate=$?
+if [[ "$gate" != 0 ]]; then
+    echo "autobahn: the gate failed (exit $gate); see the summary above and reports/servers/index.html" >&2
+    exit "$gate"
+fi
