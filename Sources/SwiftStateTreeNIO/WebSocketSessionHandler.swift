@@ -957,11 +957,11 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         }
     }
 
-    /// A frame read during the close grace: the client's close frame ends it, every other frame
-    /// is discarded (no message reaches the transport, no pong is written). Nothing is kept, so
-    /// memory doesn't grow; each frame is bounded by the decoder's maximum frame size, and the
-    /// total by the grace's length times the read rate. No frame cap ends the grace early: a
-    /// close at once with data still arriving is the RST this grace avoids.
+    /// A frame read during the close grace: the client's close frame ends it; data frames are
+    /// discarded (no message reaches the transport); pings are answered with pong (RFC 6455
+    /// §5.5.2). Nothing is kept, so memory doesn't grow; each frame is bounded by the decoder's
+    /// maximum frame size, and the total by the grace's length times the read rate. No frame cap
+    /// ends the grace early: a close at once with data still arriving is the RST this grace avoids.
     private func handleFrameInCloseGrace(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
         switch frame.opcode {
         case .connectionClose:
@@ -971,6 +971,10 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             closeChannel(context)
         case .binary, .text, .continuation:
             closeGraceDiscardedFramesForTesting += 1
+        case .ping:
+            // RFC 6455 §5.5.2: a pong is required unless a close was already received.
+            guard !channelCloseRequested else { break }
+            handlePing(frame, context: context)
         default:
             break
         }

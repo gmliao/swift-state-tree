@@ -177,8 +177,9 @@ struct WebSocketSessionHandlerCloseGraceTests {
         try f.clientSends("late ack 1")
         try f.clientSends("late ack 2")
         try f.channel.writeInbound(WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
-        #expect(f.handler.closeGraceDiscardedFramesForTesting == 2)
-        #expect(try f.writtenFrames().isEmpty, "no pong in the grace")
+        #expect(f.handler.closeGraceDiscardedFramesForTesting == 2, "text/binary/continuation frames are discarded")
+        let pong = try f.writtenFrames()
+        #expect(pong.map(\.opcode) == [.pong], "ping in grace → pong")
         #expect(f.channel.isActive)
 
         try f.clientCloses()
@@ -325,6 +326,29 @@ struct WebSocketSessionHandlerCloseGraceTests {
         #expect(f.handler.closeGraceDeadlineForTesting == nil)
         f.advance(.seconds(3))
         #expect(f.handler.channelCloseCallsForTesting == 0, "the removed handler's timer closed nothing")
+        _ = try? f.channel.finish()
+    }
+
+    @Test("Ping in close grace → pong with ping's payload; peer's close ends the grace")
+    func pingInCloseGrace() async throws {
+        let f = try await GraceFixture()
+        f.handler.close(code: Self.unresponsive, reason: "unresponsive", grace: .seconds(2))
+        _ = try f.writtenFrames()  // consume the close frame
+        #expect(f.handler.isInCloseGrace)
+
+        var pingBuf = ByteBuffer()
+        pingBuf.writeBytes([0x01, 0x02, 0x03])
+        try f.channel.writeInbound(WebSocketFrame(fin: true, opcode: .ping, data: pingBuf))
+
+        let graceFrames = try f.writtenFrames()
+        #expect(graceFrames.map(\.opcode) == [.pong], "ping in grace → pong")
+        var pongData = graceFrames.first!.unmaskedData
+        #expect(pongData.readBytes(length: 3) == [0x01, 0x02, 0x03], "pong carries the ping's payload")
+
+        // After the peer's close the channel becomes inactive; no pong after it.
+        try f.clientCloses()
+        #expect(!f.channel.isActive)
+        #expect(try f.writtenFrames().isEmpty, "no pong after the peer's close (handshake done)")
         _ = try? f.channel.finish()
     }
 
