@@ -11,6 +11,7 @@ import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeMessagePack
 import SwiftStateTreeTestSupport
+import SwiftStateTreeReevaluationMonitor
 
 @StateNodeBuilder
 struct PayloadFormatState: StateNodeProtocol {
@@ -170,6 +171,39 @@ struct RecordPayloadFormatTests {
             definition: makePayloadFormatLand(), initialState: PayloadFormatState(), recordFilePath: path, payloadDecoders: .standard
         )
         #expect(result.maxTickId == 0)
+    }
+
+    @Test("Each replay entry refuses a MessagePack record with JSON decoders only, itself: the runner at its init, a keeper at its initialization")
+    func eachReplayEntryChecksTheDecoders() async throws {
+        let bytes = Data(try CanonicalMessagePack.encode(PayloadFormatAction(label: "x")))
+        let path = try jsonRecord(version: ReevaluationRecordVersion.current, payloadEncoding: .messagepack, payloadJSON: "\"\(bytes.base64EncodedString())\"")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let refusal = ReevaluationRecordPayloadError.noDecoder(encoding: .messagepack)
+
+        // The runner refuses at its init, before it builds a keeper (whose own check would
+        // otherwise report it as an initialization failure later).
+        await #expect(throws: refusal) {
+            _ = try await ConcreteReevaluationRunner<PayloadFormatState>(definition: makePayloadFormatLand(), recordFilePath: path, payloadDecoders: .jsonOnly)
+        }
+        await #expect(throws: refusal) {
+            _ = try await ConcreteReevaluationRunner<PayloadFormatState>(
+                definition: makePayloadFormatLand(), initialState: PayloadFormatState(), recordFilePath: path, payloadDecoders: .jsonOnly
+            )
+        }
+
+        // A keeper built directly on the source refuses at its initialization, before any input.
+        let keeper = LandKeeper<PayloadFormatState>(
+            definition: makePayloadFormatLand(),
+            initialState: PayloadFormatState(),
+            mode: .reevaluation,
+            reevaluationSource: try ReevaluationRecordFile.openSource(filePath: path),
+            payloadDecoders: .jsonOnly,
+            autoStartLoops: false
+        )
+        let failure = try await #require(throws: LandInitializationError.self) {
+            try await keeper.leave(playerID: PlayerID("p"), clientID: ClientID("c"), sessionID: SessionID("s"))
+        }
+        #expect(failure.underlying as? ReevaluationRecordPayloadError == refusal)
     }
 
     @Test("A replay with JSON decoders only refuses a record whose header says MessagePack, before any input; the standard decoders replay it")

@@ -251,6 +251,27 @@ struct RecordedPayloadReplayTests {
         #expect(frames.flatMap(\.clientEvents).map(\.payloadEncoding) == [expected])
     }
 
+    @Test("Every entry records the client's payload, not a re-encode of the decoded value: a key the type ignores is kept", arguments: encodings)
+    func entriesRecordTheClientPayload(encoding: TransportEncoding) async throws {
+        // The decoded value drops `extra`, so a record of its re-encode wouldn't hold it.
+        let inputs: [RecordedInput] = [
+            .action(type: String(describing: RecordedPlainAction.self), payload: AnyCodable(["label": "p", "ratio": 1.5, "extra": "kept"] as [String: Any])),
+            .action(type: String(describing: RecordedMaybeAction.self), payload: AnyCodable(["label": "j", "fetch": true, "extra": "kept"] as [String: Any])),
+            .action(type: String(describing: RecordedMaybeAction.self), payload: AnyCodable(["label": "n", "fetch": false, "extra": "kept"] as [String: Any])),
+            .event(payload: AnyCodable(["label": "e", "extra": "kept"] as [String: Any])),
+        ]
+        let run = try await runRecordedPayloadLand(encoding: encoding, inputs: inputs)
+        defer { try? FileManager.default.removeItem(atPath: run.recordPath) }
+        #expect(run.liveApplied == ["plain:p:1.5", "maybe:j:7", "maybe:n:none", "event:e"])
+        let source = try #require(try ReevaluationRecordFile.openSource(filePath: run.recordPath) as? ReevaluationRecordLogSource)
+        let frames = await source.getAllFrames()
+        let actionExtras = try frames.flatMap(\.actions).map { (try RecordedPayloadTree.tree(of: $0).base as? [String: Any])?["extra"] as? String }
+        let eventExtras = try frames.flatMap(\.clientEvents).map { (try RecordedPayloadTree.tree(of: $0).base as? [String: Any])?["extra"] as? String }
+        #expect(actionExtras == ["kept", "kept", "kept"])
+        #expect(eventExtras == ["kept"])
+        try await expectReplayMatchesLive(run)
+    }
+
     @Test("A JSON client's integer for a Double replays equal", arguments: [TransportEncoding.json, .opcodeJsonArray])
     func integralFloatReplaysEqual(encoding: TransportEncoding) async throws {
         let run = try await runRecordedPayloadLand(encoding: encoding, inputs: [.integralFloat])
