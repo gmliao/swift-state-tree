@@ -174,6 +174,79 @@ struct WebSocketSessionHandlerDecoderErrorTests {
         #expect(handler.closeCause == .serverClose)
     }
 
+    // MARK: 4b. Server close held + oversized frame + further read → still one close frame
+
+    @Test("A further read while the close frame is held does not send a second close or discard the first")
+    func serverCloseHeldThenDecoderErrorAndFurtherRead() throws {
+        let lines = SessionLines()
+        let (channel, handler, hold) = try makeDecoderPipeline(
+            maxFrameSize: 10,
+            sessionID: "dec-further",
+            lifecycleLog: lines.log,
+            includeFlushHold: true
+        )
+        let h = try #require(hold)
+
+        // Request a server close (1000); the flush is held, so the frame isn't on the wire yet.
+        handler.close(code: .normalClosure)
+        channel.embeddedEventLoop.run()
+        #expect(channel.isActive, "close write is held")
+
+        // Send an oversized frame — the decoder errors and failConnection is called.
+        var buf = channel.allocator.buffer(capacity: 2)
+        buf.writeBytes([0x82, 0x0B])
+        try channel.writeInbound(buf)
+        channel.embeddedEventLoop.run()
+
+        // Send another frame — the decoder now fires dataReceivedInErrorState. The fix must
+        // return early instead of calling closeChannel, leaving the pending close frame intact.
+        var buf2 = channel.allocator.buffer(capacity: 2)
+        buf2.writeBytes([0x82, 0x01])
+        try channel.writeInbound(buf2)
+        channel.embeddedEventLoop.run()
+
+        // Release the hold so the pending frame flushes.
+        h.holding = false
+        channel.flush()
+        channel.embeddedEventLoop.run()
+
+        let codes = try outboundCloseCodes(channel)
+        #expect(codes == [1000], "expected exactly one 1000 close frame, got \(codes)")
+        #expect(!channel.isActive)
+        #expect(handler.closeCause == .serverClose)
+        #expect(lines.records.count == 1, "expected exactly one sessionClosed event, got \(lines.records.count)")
+    }
+
+    // MARK: 4c. Decoder failure during close grace → grace cancelled, channel closes
+
+    @Test("A decoder failure during a close grace cancels the grace and closes the channel")
+    func decoderErrorDuringCloseGraceCancelsGrace() throws {
+        let (channel, handler, _) = try makeDecoderPipeline(sessionID: "dec-grace")
+
+        // Start a close with a long grace so the deadline doesn't fire during the test.
+        handler.close(code: .normalClosure, grace: .seconds(60))
+        channel.embeddedEventLoop.run()
+
+        // Write completes synchronously on EmbeddedChannel, so the grace should be active.
+        #expect(handler.isInCloseGrace, "grace should be active after the close frame is written")
+        #expect(handler.closeGraceDeadlineForTesting != nil)
+
+        // Inject dataReceivedInErrorState directly (as ByteToMessageHandler would after a decode
+        // error). The fix must cancel the grace and close the channel.
+        let emptyBuffer = channel.allocator.buffer(capacity: 0)
+        let origError = NIOWebSocket.NIOWebSocketError.invalidFrameLength
+        channel.pipeline.fireErrorCaught(
+            ByteToMessageDecoderError.dataReceivedInErrorState(origError, emptyBuffer)
+        )
+        channel.embeddedEventLoop.run()
+
+        #expect(handler.closeGraceDeadlineForTesting == nil, "grace deadline must be cancelled")
+        #expect(!channel.isActive)
+        // The close frame written before the grace is in the buffer; no second one was added.
+        let codes = try outboundCloseCodes(channel)
+        #expect(codes == [1000], "expected exactly the initial 1000 close frame, got \(codes)")
+    }
+
     // MARK: 5. IOError(ECONNRESET) → .connectionLost, no close frame
 
     @Test("An IOError(ECONNRESET) gives .connectionLost and sends no close frame")

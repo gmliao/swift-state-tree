@@ -42,3 +42,11 @@ Spell the imported type **module-qualified**: `error as? NIOWebSocket.NIOWebSock
 Whenever a module-local type shares a name with an imported one, always use the module prefix at every use site in the same module, even where the local type is intended, so the distinction is visible and auditable.
 
 The same rule applies to any `as?` cast, `is` check, or switch-on-type: compile-time silence does not mean runtime correctness.
+
+## Replacing a library's error handler: list every error the pipeline emits after the first one
+
+When replacing a library-provided error handler (here `WebSocketProtocolErrorHandler`) with custom handling in `errorCaught`, consider all errors the pipeline can fire — not only the initial error from the failing component.
+
+`ByteToMessageHandler` enters an error state after the first decode error and fires `ByteToMessageDecoderError.dataReceivedInErrorState(original, buffer)` for every subsequent read until the channel is closed. If `errorCaught` only handles the original error type and falls through on this wrapper, the wrapper takes the generic close path: it can call `closeChannel` while the initial error's close frame is still pending (flush not yet complete), discarding it. It also fires once per buffered read, logging noise.
+
+**Rule:** when replacing a library error handler, enumerate every error type that handler's pipeline stage produces, including post-error state errors. Add a branch for each, or verify the fallthrough is harmless.

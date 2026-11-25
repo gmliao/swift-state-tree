@@ -445,6 +445,21 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        // After the frame decoder throws, ByteToMessageHandler wraps every later read in
+        // ByteToMessageDecoderError.dataReceivedInErrorState. When a close is already in flight
+        // (`isClosed`), let it finish: the write-completion or deadline (#229) closes the channel.
+        // When a close grace is active, the failed decoder can never deliver the peer's close
+        // frame, so end the grace immediately.
+        if case .dataReceivedInErrorState = error as? ByteToMessageDecoderError {
+            if isInCloseGrace {
+                closeGraceDeadline?.cancel()
+                closeGraceDeadline = nil
+                guard !channelCloseRequested else { return }
+                closeChannel(context)
+            }
+            return
+        }
+
         logger.error(
             "WebSocket error",
             metadata: [
