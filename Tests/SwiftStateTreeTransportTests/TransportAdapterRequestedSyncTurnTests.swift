@@ -32,7 +32,7 @@ struct RequestedSyncTurnSetResponse: ResponsePayload {
 private func requestedSyncTurnLand() -> LandDefinition<RequestedSyncTurnState> {
     Land("requested-sync-turn", using: RequestedSyncTurnState.self) {
         Rules {
-            HandleAction(RequestedSyncTurnSetAction.self) { (state: inout RequestedSyncTurnState, action: RequestedSyncTurnSetAction, _: LandContext) in
+            HandleAction(RequestedSyncTurnSetAction.self) { state, action, _ in
                 state.stamp = action.stamp
                 return RequestedSyncTurnSetResponse(ok: true)
             }

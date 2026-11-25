@@ -23,7 +23,7 @@ private func requestedSyncTurnKeeperLand(periodic: Bool) -> LandDefinition<Reque
     if periodic {
         return Land("requested-sync-turn-keeper", using: RequestedSyncTurnKeeperState.self) {
             Lifetime {
-                StateSync(every: .seconds(3600)) { (_: RequestedSyncTurnKeeperState, _: LandContext) in }
+                StateSync(every: .seconds(3600)) { _, _ in }
             }
         }
     }

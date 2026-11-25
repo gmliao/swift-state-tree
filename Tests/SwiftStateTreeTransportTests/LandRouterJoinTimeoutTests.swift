@@ -27,7 +27,7 @@ private actor TimeoutConnection: WebSocketConnection {
 
     private(set) var closed = false
 
-    func send(_ data: Data) async throws { frames.append(data) }
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws { frames.append(data) }
     func close() async throws { closed = true }
 
     var errors: [ErrorPayload] {
@@ -73,10 +73,10 @@ private struct TimeoutHarness {
     static func make(budget: Duration) async throws -> TimeoutHarness {
         let definition = Land("join-timeout", using: JoinTimeoutState.self) {
             Rules {
-                OnJoin { (state: inout JoinTimeoutState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players.append(ctx.playerID.rawValue)
                 }
-                OnLeave { (state: inout JoinTimeoutState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.players.removeAll { $0 == ctx.playerID.rawValue }
                 }
             }

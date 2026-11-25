@@ -25,7 +25,7 @@ func testJoinFailsWithoutAuthInfoWhenRequired() async throws {
         using: JWTErrorTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout JWTErrorTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -80,7 +80,7 @@ func testJWTPayloadClearedOnDisconnectWithReconnect() async throws {
         using: JWTErrorTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout JWTErrorTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -145,7 +145,7 @@ func testJoinRequestMismatchedLandIDInJWTErrorSuite() async throws {
         using: JWTErrorTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout JWTErrorTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }
@@ -199,7 +199,7 @@ func testDuplicateJoinRequests() async throws {
         using: JWTErrorTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout JWTErrorTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }

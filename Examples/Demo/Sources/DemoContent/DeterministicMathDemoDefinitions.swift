@@ -41,7 +41,7 @@ public struct DeterministicMathDemo {
             
             Lifetime {
                 // Minimal lifetime for testing codegen
-                Tick(every: .milliseconds(1000)) { (_: inout DeterministicMathDemoState, _: LandContext) in
+                Tick(every: .milliseconds(1000)) { _, _ in
                     // Empty tick handler for testing
                 }
             }

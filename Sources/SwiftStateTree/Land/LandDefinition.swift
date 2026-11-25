@@ -50,11 +50,19 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// (`LandRegistrationError.unrecognizedNodes`), and so does a keeper built without
     /// registration, at initialization.
     package let unrecognizedNodes: [String]
+    /// Resolver declarations registration refuses (#769), one line each: resolvers that depend on
+    /// other services than the land's, or two resolvers of one declaration that store their
+    /// outputs under one name.
+    package let resolverDeclarationProblems: [String]
     /// Lifecycle handlers (join, leave, tick, initialize and finalize).
     public let lifetimeHandlers: LifetimeHandlers<State>
     /// The services type the land declares (`Land(_:using:services:)`), nil for a land without
     /// services (`Land(_:using:)`). Read by registration and the keeper from #769 R1 on.
     package let servicesType: Any.Type?
+    /// Whether a value is of the declared services type (`value is Services`), nil for a land
+    /// without services. A live keeper checks the value it was given before it initializes, so an
+    /// erased factory of the wrong type fails the land's creation, not its first resolving input.
+    package let acceptsServices: (@Sendable (any Sendable) -> Bool)?
     /// This definition's record schema fingerprint, computed once (#521 D15). A copy of the
     /// definition shares it; a definition built again computes its own.
     let schemaFingerprintCache = SchemaFingerprintCache()
@@ -75,8 +83,10 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
             duplicateHandlers: duplicateHandlers,
             clientEventMismatches: clientEventMismatches,
             unrecognizedNodes: unrecognizedNodes,
+            resolverDeclarationProblems: resolverDeclarationProblems,
             lifetimeHandlers: lifetimeHandlers,
-            servicesType: servicesType
+            servicesType: servicesType,
+            acceptsServices: acceptsServices
         )
     }
 }
@@ -165,8 +175,9 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     /// it writes (#593): a refusal is `InitializeHandler`'s `validate`, before anything is written.
     public var onInitialize: InitializeHandler<State>?
     
-    /// Resolver executors for the onInitialize handler (empty if no resolvers declared).
-    public var onInitializeResolverExecutors: [any AnyResolverExecutor]
+    /// The onInitialize handler's resolvers (#769), built when the land initializes. `nil` when it
+    /// declares none.
+    package var onInitializeResolvers: ResolverDeclaration<State>?
 
     /// What a throwing OnInitialize resolver does (#238); `.failLand` by default.
     public var onInitializeResolverFailure: InitializeResolverFailure
@@ -177,8 +188,9 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     /// It can use resolvers to save final state or perform cleanup.
     public var onFinalize: (@Sendable (inout State, LandContext) -> Void)?
     
-    /// Resolver executors for the onFinalize handler (empty if no resolvers declared).
-    public var onFinalizeResolverExecutors: [any AnyResolverExecutor]
+    /// The onFinalize handler's resolvers (#769), built when the land finalizes. `nil` when it
+    /// declares none.
+    package var onFinalizeResolvers: ResolverDeclaration<State>?
     
     /// Handler called after the Land is completely finalized (async cleanup).
     ///
@@ -202,10 +214,8 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = [],
         persistInterval: Duration? = nil,
         onInitialize: InitializeHandler<State>? = nil,
-        onInitializeResolverExecutors: [any AnyResolverExecutor] = [],
         onInitializeResolverFailure: InitializeResolverFailure = .failLand,
         onFinalize: (@Sendable (inout State, LandContext) -> Void)? = nil,
-        onFinalizeResolverExecutors: [any AnyResolverExecutor] = [],
         afterFinalize: (@Sendable (State, LandContext) async -> Void)? = nil
     ) {
         self.canJoin = canJoin
@@ -223,10 +233,8 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         self.onDestroyWhenEmptyResolverExecutors = onDestroyWhenEmptyResolverExecutors
         self.persistInterval = persistInterval
         self.onInitialize = onInitialize
-        self.onInitializeResolverExecutors = onInitializeResolverExecutors
         self.onInitializeResolverFailure = onInitializeResolverFailure
         self.onFinalize = onFinalize
-        self.onFinalizeResolverExecutors = onFinalizeResolverExecutors
         self.afterFinalize = afterFinalize
     }
 }
@@ -248,6 +256,11 @@ public struct InitializeHandler<State: StateNodeProtocol>: Sendable {
     /// A handler that can't fail.
     public init(_ body: @escaping @Sendable (inout State, LandContext) -> Void) {
         invoke = { state, ctx in body(&state, ctx) }
+    }
+
+    /// The DSL's form for the entries with resolvers (#769): `invoke` throws only from `validate`.
+    package init(invoke: @escaping @Sendable (inout State, LandContext) throws -> Void) {
+        self.invoke = invoke
     }
 
     /// A handler in two stages: `validate` returns the plan that `apply` writes.
@@ -288,8 +301,9 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     /// The handler's checks and its write, as one call: it throws only from the payload type
     /// check or `validate`, before anything is written (#586).
     private let handler: @Sendable (inout State, Any, LandContext) throws -> any ResponsePayload
-    /// Resolver executors for this action handler (empty if no resolvers declared)
-    public let resolverExecutors: [any AnyResolverExecutor]
+    /// The handler's resolvers (#769): built when the action is admitted. `nil` when it declares
+    /// none.
+    package let resolvers: ResolverDeclaration<(State, Any)>?
 
     /// A handler in two stages (#586): `validate` reads the state, may throw, and returns the
     /// plan; `apply` writes, can't throw, and returns the action's declared `Response` (#561).
@@ -298,7 +312,6 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
         _ type: A.Type,
         validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
         apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response,
-        resolverExecutors: [any AnyResolverExecutor] = [],
         fileID: String = #fileID,
         line: Int = #line
     ) {
@@ -313,7 +326,7 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
                 let plan = try validate(state, action, ValidateContext(ctx))
                 return apply(&state, action, plan, ctx)
             },
-            resolverExecutors: resolverExecutors
+            resolvers: nil
         )
     }
 
@@ -324,13 +337,13 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
         responseType: Any.Type?,
         site: String? = nil,
         invoke: @escaping @Sendable (inout State, Any, LandContext) throws -> any ResponsePayload,
-        resolverExecutors: [any AnyResolverExecutor]
+        resolvers: ResolverDeclaration<(State, Any)>?
     ) {
         self.type = type
         self.responseType = responseType
         self.site = site
         self.handler = invoke
-        self.resolverExecutors = resolverExecutors
+        self.resolvers = resolvers
     }
 
     /// The action type, for the one-handler-per-type check.

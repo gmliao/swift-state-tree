@@ -163,6 +163,13 @@ public protocol TransportDelegate: Sendable {
     func onMessage(_ message: Data, from sessionID: SessionID) async
 }
 
+/// A delegate that also learns each message's frame kind, from a transport that knows it
+/// (`WebSocketTransport.handleIncomingMessage(sessionID:data:kind:)`). The transport calls this
+/// form instead of `onMessage(_:from:)`; serial delivery per session holds as there.
+public protocol FrameKindTransportDelegate: TransportDelegate {
+    func onMessage(_ message: Data, kind: WebSocketFrameKind, from sessionID: SessionID) async
+}
+
 // MARK: - Transport Send Queue
 
 /// Thread-safe queue for non-blocking send. When available, producers enqueue without awaiting the transport actor.

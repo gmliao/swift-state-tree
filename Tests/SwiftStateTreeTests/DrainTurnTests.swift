@@ -50,21 +50,29 @@ private func landGateKey(landID: String) -> Int {
     Int(landID.split(separator: ":").last ?? "") ?? 0
 }
 
-struct DrainActionResolver: ContextResolver {
+@PlainData
+struct DrainActionResolver: Resolver {
+    typealias Dependencies = NoServices
+    let amount: Int
+
     typealias Output = DrainResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> DrainResolverOutput {
-        let amount = (ctx.actionPayload as? DrainGatedAction)?.amount ?? -1
+    func resolve(_ deps: NoServices) async throws -> DrainResolverOutput {
+        let amount = amount
         await DeliveryGates.gate(amount).enterAndWait()
         return DrainResolverOutput(value: amount)
     }
 }
 
-struct DrainFinalizeResolver: ContextResolver {
+@PlainData
+struct DrainFinalizeResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = DrainResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> DrainResolverOutput {
-        await DeliveryGates.gate(landGateKey(landID: ctx.landID)).enterAndWait()
+    func resolve(_ deps: NoServices) async throws -> DrainResolverOutput {
+        await DeliveryGates.gate(landGateKey(landID: landID)).enterAndWait()
         return DrainResolverOutput(value: 0)
     }
 }
@@ -73,32 +81,32 @@ private func makeDrainDefinition(tick: Bool, finalizeResolver: Bool = false) -> 
     if tick {
         return Land("drain-test", using: DrainTestState.self) {
             Rules {
-                OnJoin { (state: inout DrainTestState, _: LandContext) in
+                OnJoin { state, _ in
                     state.log.append("join")
                 }
                 // On the legacy tick path an applied OnLeave awaits the broadcast sync before
                 // the tick handler; one test holds the tick there.
-                OnLeave { (state: inout DrainTestState, _: LandContext) in
+                OnLeave { state, _ in
                     state.log.append("leave")
                 }
                 HandleAction(DrainPlainAction.self) {
-                    (state: inout DrainTestState, action: DrainPlainAction, _: LandContext) in
+                    state, action, _ in
                     state.total += action.amount
                     state.log.append("action")
                     return DrainAck(ok: true)
                 }
-                HandleAction(DrainGatedAction.self, resolvers: DrainActionResolver.self) {
-                    (state: inout DrainTestState, action: DrainGatedAction, _: LandContext) in
+                HandleAction(DrainGatedAction.self, resolvers: { _, action, _ in DrainActionResolver(amount: action.amount) }) {
+                    state, action, _, _ in
                     state.total += action.amount
                     state.log.append("action")
                     return DrainAck(ok: true)
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (state: inout DrainTestState, _: LandContext) in
+                Tick(every: .seconds(3600)) { state, _ in
                     state.log.append("tick")
                 }
-                OnFinalize { (state: inout DrainTestState, _: LandContext) in
+                OnFinalize { state, _ in
                     state.log.append("finalize")
                 }
             }
@@ -107,24 +115,24 @@ private func makeDrainDefinition(tick: Bool, finalizeResolver: Bool = false) -> 
     if finalizeResolver {
         return Land("drain-test", using: DrainTestState.self) {
             Rules {
-                OnJoin { (state: inout DrainTestState, _: LandContext) in
+                OnJoin { state, _ in
                     state.log.append("join")
                 }
                 HandleAction(DrainPlainAction.self) {
-                    (state: inout DrainTestState, action: DrainPlainAction, _: LandContext) in
+                    state, action, _ in
                     state.total += action.amount
                     state.log.append("action")
                     return DrainAck(ok: true)
                 }
-                HandleAction(DrainGatedAction.self, resolvers: DrainActionResolver.self) {
-                    (state: inout DrainTestState, action: DrainGatedAction, _: LandContext) in
+                HandleAction(DrainGatedAction.self, resolvers: { _, action, _ in DrainActionResolver(amount: action.amount) }) {
+                    state, action, _, _ in
                     state.total += action.amount
                     state.log.append("action")
                     return DrainAck(ok: true)
                 }
             }
             Lifetime {
-                OnFinalize(resolvers: DrainFinalizeResolver.self) { (state: inout DrainTestState, _: LandContext) in
+                OnFinalize(resolvers: { _, ctx in DrainFinalizeResolver(landID: ctx.landID) }) { state, _, _ in
                     state.log.append("finalize")
                 }
             }
@@ -132,24 +140,24 @@ private func makeDrainDefinition(tick: Bool, finalizeResolver: Bool = false) -> 
     }
     return Land("drain-test", using: DrainTestState.self) {
         Rules {
-            OnJoin { (state: inout DrainTestState, _: LandContext) in
+            OnJoin { state, _ in
                 state.log.append("join")
             }
             HandleAction(DrainPlainAction.self) {
-                (state: inout DrainTestState, action: DrainPlainAction, _: LandContext) in
+                state, action, _ in
                 state.total += action.amount
                 state.log.append("action")
                 return DrainAck(ok: true)
             }
-            HandleAction(DrainGatedAction.self, resolvers: DrainActionResolver.self) {
-                (state: inout DrainTestState, action: DrainGatedAction, _: LandContext) in
+            HandleAction(DrainGatedAction.self, resolvers: { _, action, _ in DrainActionResolver(amount: action.amount) }) {
+                state, action, _, _ in
                 state.total += action.amount
                 state.log.append("action")
                 return DrainAck(ok: true)
             }
         }
         Lifetime {
-            OnFinalize { (state: inout DrainTestState, _: LandContext) in
+            OnFinalize { state, _ in
                 state.log.append("finalize")
             }
         }
@@ -260,16 +268,16 @@ struct DrainJoinResolver: ContextResolver {
 private func makeLifecycleDrainDefinition() -> LandDefinition<DrainTestState> {
     Land("drain-test", using: DrainTestState.self) {
         Rules {
-            OnJoin(resolvers: DrainJoinResolver.self) { (state: inout DrainTestState, ctx: LandContext) in
+            OnJoin(resolvers: DrainJoinResolver.self) { state, _, ctx in
                 state.log.append("join:\(ctx.playerID.rawValue)")
             }
-            OnLeave(resolvers: DrainLeaveResolver.self) { (state: inout DrainTestState, ctx: LandContext) in
+            OnLeave(resolvers: DrainLeaveResolver.self) { state, _, ctx in
                 state.log.append("leave:\(ctx.playerID.rawValue)")
             }
         }
         Lifetime {
-            DestroyWhenEmpty(after: .milliseconds(1)) { (_: inout DrainTestState, _: LandContext) in }
-            OnFinalize { (state: inout DrainTestState, _: LandContext) in
+            DestroyWhenEmpty(after: .milliseconds(1)) { _, _ in }
+            OnFinalize { state, _ in
                 state.log.append("finalize")
             }
         }

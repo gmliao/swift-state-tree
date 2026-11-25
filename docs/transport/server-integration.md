@@ -49,6 +49,11 @@ public protocol TokenValidatorProtocol: Sendable {
 
 Your server must provide a type that conforms to `WebSocketConnection` (send/receive and close). The transport only uses this interface; it does not care whether the backing is NIO, Vapor, or something else.
 
+Each frame's type follows the bytes it carries, so one connection carries both types: the JoinResponse is always JSON, and a hybrid configuration sends JSON messages beside MessagePack state updates.
+
+- **Sending:** `send(_:kind:)` writes a text frame for `.text` (JSON) and a binary frame for `.binary` (MessagePack). The transport takes the kind from the encoder that produced the bytes.
+- **Receiving:** accept both frame types, and pass a message's type with it, through `handleIncomingMessage(sessionID:data:kind:)`. Close a text message that isn't valid UTF-8 with 1007, as RFC 6455 requires; `SwiftStateTreeNIO` does both.
+
 ### 4. Schema and admin (optional)
 
 - **Schema**: If you expose `GET /schema`, return JSON from your Land definitions (e.g. via `SchemaGenCLI.generateSchema`). The NIO host uses a `schemaProvider: () -> Data?` closure; other frameworks can implement the same contract.

@@ -27,7 +27,7 @@ private func makeSyncStreamLand() -> LandDefinition<SyncStreamTestState> {
     Land("sync-stream-test", using: SyncStreamTestState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout SyncStreamTestState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(SyncStreamTestEvent(message: "tick-\(state.ticks)"), to: .all)
                 ctx.requestSyncNow()
@@ -322,13 +322,13 @@ private func makeSyncStreamDropLand() -> LandDefinition<SyncStreamDropState> {
     Land("sync-stream-drop-test", using: SyncStreamDropState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout SyncStreamDropState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.requestSyncNow()
             }
         }
         Rules {
-            HandleAction(SyncStreamSetAction.self) { (state: inout SyncStreamDropState, action: SyncStreamSetAction, ctx: LandContext) in
+            HandleAction(SyncStreamSetAction.self) { state, action, ctx in
                 switch action.field {
                 case "break": state.fragile.broken = true
                 case "fix": state.fragile.broken = false

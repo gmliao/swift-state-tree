@@ -30,7 +30,7 @@ actor PathIndexReplyConnection: WebSocketConnection {
     private(set) var messages: [Data] = []
     private var waiters: [CheckedContinuation<Data, Never>] = []
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         messages.append(data)
         let first = messages[0]
         let pending = waiters

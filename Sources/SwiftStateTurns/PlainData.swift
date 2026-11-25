@@ -20,7 +20,8 @@ public protocol PlainData {
 
 /// Writes the `PlainData` conformance and one check per stored property or associated value,
 /// which fails to compile unless that type is `PlainData`. Every stored property needs a type
-/// annotation; a generic type gets `where T: PlainData`; a class, actor or protocol is refused.
+/// annotation; a generic type gets `where T: PlainData` for each parameter a stored value names
+/// (one stored nowhere adds no condition); a class, actor or protocol is refused.
 @attached(extension, conformances: PlainData, names: named(_plainDataCheck))
 public macro PlainData() = #externalMacro(module: "SwiftStateTurnsMacros", type: "PlainDataMacro")
 

@@ -21,7 +21,7 @@ private struct DummyActionPayload: Codable, Sendable, Equatable {
 private actor RecordingWebSocketConnection: WebSocketConnection {
     private(set) var sentMessages: [Data] = []
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         sentMessages.append(data)
     }
 

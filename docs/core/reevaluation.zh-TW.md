@@ -224,7 +224,7 @@ Replay 會從 tick 0 逐一走到錄製檔的最後一個 tick，沒有 frame �
 
 ### Replay 中的 resolver output
 
-replay 時，handler 讀取錄製的 resolver output（`ctx.productInfo`）的方式，和 replay land 讀取錄製的 server event 相同：用錄製檔自己的 codec（#707）。action 的 resolver、`OnJoin` 與 `OnLeave`、`OnInitialize` 都是如此。`Date`、`Data`、`URL` 或 `Decimal` 欄位讀回的值與 live handler 看到的相同，`Decimal` NaN 也一樣。儲存的錄製檔嚴格解碼。在 JSON 檢視中，整數若能精確轉換，會解碼成 `Double` 或 `Float`。上面的值域限制同樣適用：帶小數秒的 `Date` replay 時會被截斷。無法解碼成所要型別的 output 讀成 `nil`，land 的 logger 會記一則警告，指出該 output、錄製的型別與要求的型別，以及錯誤。
+replay 時，handler 收到錄製的 resolver output（它的 `productInfo` 參數）的方式，和 replay land 讀取錄製的 server event 相同：用錄製檔自己的 codec（#707）。action 的 resolver、`OnJoin` 與 `OnLeave`、`OnInitialize` 都是如此。`Date`、`Data`、`URL` 或 `Decimal` 欄位讀回的值與 live handler 看到的相同，`Decimal` NaN 也一樣。儲存的錄製檔嚴格解碼。在 JSON 檢視中，整數若能精確轉換，會解碼成 `Double` 或 `Float`。上面的值域限制同樣適用：帶小數秒的 `Date` replay 時會被截斷。無法解碼成所要型別的 output 讀成 `nil`，land 的 logger 會記一則警告，指出該 output、錄製的型別與要求的型別，以及錯誤。
 
 限制：錄製的 action 本身的 payload 仍以 JSON 來回轉換解碼，所以 payload 含 `Date`、`Data` 或 `URL` 欄位的 action 在 replay 時會被丟棄（#709）。
 

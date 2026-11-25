@@ -51,7 +51,7 @@ private func refusedLand(_ landType: String) -> LandDefinition<RegistrationTestS
     Land(landType, using: RegistrationTestState.self) {
         ServerEvents { Register(PWHandWrittenEvent.self) }
         Rules {
-            HandleAction(RTHandWrittenAction.self) { (_: inout RegistrationTestState, _: RTHandWrittenAction, _: LandContext) in
+            HandleAction(RTHandWrittenAction.self) { _, _, _ in
                 RTHandWrittenResponse(ok: true)
             }
         }
@@ -62,7 +62,7 @@ private func cleanLand(_ landType: String) -> LandDefinition<RegistrationTestSta
     Land(landType, using: RegistrationTestState.self) {
         ServerEvents { Register(RTTypedNotice.self) }
         Rules {
-            HandleAction(RTTypedAction.self) { (_: inout RegistrationTestState, _: RTTypedAction, _: LandContext) in
+            HandleAction(RTTypedAction.self) { _, _, _ in
                 RTTypedResponse(ok: true)
             }
         }

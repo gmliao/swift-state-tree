@@ -9,7 +9,8 @@ symptoms:
   - "a Double of 3.0 read back from the JSON record view fails a strict decode: expected float64"
   - "-0.0 replays as +0.0 from the JSON view"
   - "a replayed handler sees nil for a resolver output with a Date, Data or URL field"
-root_cause: a_recorded_payload_was_decoded_with_a_codec_other_than_the_one_that_wrote_it
+  - "a recorded server input with ratio: 2.0 replayed from the JSON view is refused: expected float64"
+root_cause: a_recorded_payload_was_decoded_with_rules_other_than_its_writers_codec_and_its_sources_allowance
 resolution_type: design_rule
 severity: high
 tags:
@@ -31,6 +32,7 @@ related:
   - "#710"
   - "#633"
   - "#713"
+  - "#818"
 ---
 
 # Decode a record with the codec that wrote it
@@ -43,7 +45,7 @@ The JSON record view looked like a second format with its own rules, so a second
 
 ## Root cause
 
-A recorded payload is a tree whose shape is set by the encoder that wrote it, not by the type it came from. Decoding it with another codec applies that codec's rules for the special types (dates, bytes, URLs, decimals) to values written under different rules. The tree type (`AnyCodable`) hides the mismatch: the read succeeds, and the failure appears only when the tree is decoded into the type.
+A recorded payload is a tree whose shape is set by the encoder that wrote it, not by the type it came from. Decoding it with another codec applies that codec's rules for the special types (dates, bytes, URLs, decimals) to values written under different rules. The tree type (`AnyCodable`) hides the mismatch: the read succeeds, and the failure appears only when the tree is decoded into the type. The source is part of the rule set too: the JSON view holds the record codec's trees with JSON's numbers, so the right codec without the view's integer-to-float allowance still refuses a whole-valued float (#818).
 
 ## Fix
 
@@ -58,5 +60,6 @@ A recorded payload is a tree whose shape is set by the encoder that wrote it, no
 - Test on what the writer produced (a saved record, then its JSON view), never on a tree built by hand or by a different encoder: the hand-built tree is in the shape you expect, not the shape on disk.
 - A comparison of stored against live values has the same trap: normalize both sides through the stored codec first (#633, the offline verifier).
 - Every reader of a record needs this rule, not only the one that was fixed. A recorded resolver output was still read back through `JSONEncoder` and `JSONDecoder` (`LandContext`'s dynamic member lookup over `AnyCodableResolverOutput`). An output with a `Date`, `Data` or `URL` field failed that read, so the replayed handler saw `nil` instead of the value (#707). A probe through a saved record showed it. #710 fixed it: the subscript decodes with `RecordPayloadSource`, with the JSON view's allowance, and a decode that still fails logs a warning, because a silent `nil` is how it stayed hidden. A recorded action's own payload still goes through the JSON round trip; a probe shows replay drops an action with a `Date`, `Data` or `URL` field (#709). When the record codec is fixed for one reader, list the others (events, server inputs, actions, client events, resolver outputs, the verifier) and check each one.
+- The codec and the JSON view's allowance are two checks, and a reader can pass one and miss the other. Server inputs already used the record codec, so #707 left them alone, but their replay decode had no allowance: a whole-valued `Double` (`ratio: 2.0`) replayed from the JSON view was refused (#818). For each reader, test the saved record and its JSON view with a whole-valued float.
 - A comparison is a reader too. The offline verifier compared a recorded server event with the replayed one by the JSON of both payloads, a tree in the record's form against a typed value, so a `Date`, `Data`, `URL` or `Float` field reported a mismatch on a correct replay (#633). #713 puts the emitted payload in the record's form (a `CanonicalMessagePack` round trip) before comparing. Put both sides of a comparison in one form, the record's, rather than converting each with a different codec. A value the record itself has lost (the sign of `-0.0` on the JSON view) still differs, and that is the record's stated limit, not the comparison's.
 - A byte-identical re-encode doesn't show that a value reads back: a `Decimal` resolver output re-encoded to the same bytes, in Darwin's keyed form, which no JSON read accepts (#597). Test the reader's decode into the type.

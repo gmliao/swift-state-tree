@@ -89,10 +89,10 @@ private struct TargetedOnceFixture {
                 Register(TargetedOnceEvent.self)
             }
             Rules {
-                OnJoin { (state: inout TargetedOnceTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.scores[ctx.playerID] = 0
                 }
-                HandleAction(TargetedOnceSetScoreAction.self) { (state: inout TargetedOnceTestState, action: TargetedOnceSetScoreAction, ctx: LandContext) in
+                HandleAction(TargetedOnceSetScoreAction.self) { state, action, ctx in
                     state.scores[ctx.playerID] = action.value
                     return TargetedOnceSetScoreResponse(ok: true)
                 }

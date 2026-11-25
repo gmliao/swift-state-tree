@@ -18,7 +18,7 @@ import SwiftStateTreeTestSupport
 private actor IdentityReplyConnection: WebSocketConnection {
     private(set) var messages: [Data] = []
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         messages.append(data)
     }
 
@@ -151,7 +151,7 @@ struct JoinPlayerIdentityTests {
     private func legacyAdapter(authenticatesPlayers: Bool = false) async -> (TransportAdapter<RouterTestState>, LandKeeper<RouterTestState>, WebSocketTransport) {
         let definition = Land("identity-legacy", using: RouterTestState.self) {
             Rules {
-                OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players[ctx.playerID] = "Joined"
                 }
             }
@@ -216,7 +216,7 @@ private func authenticatingRouter() async throws -> (WebSocketTransport, LandRou
     let transport = WebSocketTransport()
     let definition = Land("basic-test", using: RouterTestState.self) {
         Rules {
-            OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.players[ctx.playerID] = "Joined"
             }
         }

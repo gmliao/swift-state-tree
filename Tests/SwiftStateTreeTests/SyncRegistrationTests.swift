@@ -319,7 +319,7 @@ struct SyncRegistrationTests {
     func backstop() async throws {
         let definition = Land("registration-backstop", using: RegistrationBackstopRoot.self) {
             Lifetime {
-                OnInitialize { (state: inout RegistrationBackstopRoot, _: LandContext) in
+                OnInitialize { state, _ in
                     state.initialized = true
                 }
             }

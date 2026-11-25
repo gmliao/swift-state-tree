@@ -41,7 +41,7 @@ func makeHybridGoldenLand() -> LandDefinition<HybridGoldenState> {
     Land("hybrid-event-frames", using: HybridGoldenState.self) {
         ServerEvents { Register(HybridGoldenEvent.self) }
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout HybridGoldenState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(HybridGoldenEvent(message: "all", n: state.ticks), to: .all)
                 ctx.emitEvent(HybridGoldenEvent(message: "nobody", n: state.ticks), to: .players([]))

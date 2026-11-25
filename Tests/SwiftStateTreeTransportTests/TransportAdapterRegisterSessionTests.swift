@@ -58,14 +58,14 @@ private struct RegisterSessionFixture {
     init() async {
         let definition = Land("register-session", using: RegisterSessionTestState.self) {
             Rules {
-                OnJoin { (state: inout RegisterSessionTestState, _: LandContext) in
+                OnJoin { state, _ in
                     state.joins += 1
                 }
-                OnLeave { (state: inout RegisterSessionTestState, _: LandContext) in
+                OnLeave { state, _ in
                     state.leaves += 1
                 }
                 HandleAction(RegisterSessionBumpAction.self) {
-                    (state: inout RegisterSessionTestState, action: RegisterSessionBumpAction, _: LandContext) in
+                    state, action, _ in
                     state.bumps += action.by
                     return RegisterSessionBumpResponse(bumps: state.bumps)
                 }
@@ -526,7 +526,7 @@ struct TransportAdapterGenerationCloseTests {
         let (adapter, _, transport) = await makeAdapter()
         let withFrame = SessionID("timed-out-frame"), withoutFrame = SessionID("timed-out")
         #expect(await adapter.endJoinBeforeAdmission(
-            withFrame, finalFrame: Data("error".utf8), attemptEnd: JoinAttemptEnd(), connectionGeneration: 4
+            withFrame, finalFrame: EncodedFrame(data: Data("error".utf8), kind: .text), attemptEnd: JoinAttemptEnd(), connectionGeneration: 4
         ))
         #expect(await adapter.endJoinBeforeAdmission(
             withoutFrame, finalFrame: nil, attemptEnd: JoinAttemptEnd(), connectionGeneration: 8

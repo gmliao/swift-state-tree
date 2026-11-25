@@ -71,10 +71,10 @@ private func makeDeadlineDefinition(destroyWhenEmpty: Bool) -> LandDefinition<De
     guard destroyWhenEmpty else {
         return Land("deadline-test", using: DeadlineTestState.self) {
             Rules {
-                OnJoin(resolvers: DeadlineJoinResolver.self) { (state: inout DeadlineTestState, ctx: LandContext) in
+                OnJoin(resolvers: DeadlineJoinResolver.self) { state, _, ctx in
                     state.log.append("join:\(ctx.playerID.rawValue)")
                 }
-                OnLeave(resolvers: DeadlineLeaveResolver.self) { (state: inout DeadlineTestState, ctx: LandContext) in
+                OnLeave(resolvers: DeadlineLeaveResolver.self) { state, _, ctx in
                     state.log.append("leave:\(ctx.playerID.rawValue)")
                 }
             }
@@ -82,25 +82,29 @@ private func makeDeadlineDefinition(destroyWhenEmpty: Bool) -> LandDefinition<De
     }
     return Land("deadline-test", using: DeadlineTestState.self) {
         Rules {
-            OnJoin(resolvers: DeadlineJoinResolver.self) { (state: inout DeadlineTestState, ctx: LandContext) in
+            OnJoin(resolvers: DeadlineJoinResolver.self) { state, _, ctx in
                 state.log.append("join:\(ctx.playerID.rawValue)")
             }
-            OnLeave(resolvers: DeadlineLeaveResolver.self) { (state: inout DeadlineTestState, ctx: LandContext) in
+            OnLeave(resolvers: DeadlineLeaveResolver.self) { state, _, ctx in
                 state.log.append("leave:\(ctx.playerID.rawValue)")
             }
         }
         Lifetime {
-            DestroyWhenEmpty(after: .milliseconds(1)) { (_: inout DeadlineTestState, _: LandContext) in }
+            DestroyWhenEmpty(after: .milliseconds(1)) { _, _ in }
         }
     }
 }
 
 /// OnInitialize: waits on `DeliveryGates` gate n of its land "deadline-init:<n>", a key from
 /// `freshKey()`, ignoring cancellation.
-struct DeadlineInitResolver: ContextResolver {
+@PlainData
+struct DeadlineInitResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = DeadlineResolverOutput
-    static func resolve(ctx: ResolverContext) async throws -> DeadlineResolverOutput {
-        let key = Int(ctx.landID.split(separator: ":").last ?? "") ?? 0
+    func resolve(_ deps: NoServices) async throws -> DeadlineResolverOutput {
+        let key = Int(landID.split(separator: ":").last ?? "") ?? 0
         await DeliveryGates.gate(key).enterAndWait()
         return DeadlineResolverOutput(value: 0)
     }
@@ -110,15 +114,15 @@ struct DeadlineInitResolver: ContextResolver {
 private func makeInitDefinition() -> LandDefinition<DeadlineTestState> {
     Land("deadline-init", using: DeadlineTestState.self) {
         Rules {
-            OnJoin { (state: inout DeadlineTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.log.append("join:\(ctx.playerID.rawValue)")
             }
         }
         Lifetime {
-            OnInitialize(resolvers: DeadlineInitResolver.self) { (state: inout DeadlineTestState, _: LandContext) in
+            OnInitialize(resolvers: { _, ctx in DeadlineInitResolver(landID: ctx.landID) }) { state, _, _ in
                 state.log.append("init")
             }
-            OnFinalize { (state: inout DeadlineTestState, _: LandContext) in
+            OnFinalize { state, _ in
                 state.log.append("finalize")
             }
         }
@@ -225,6 +229,7 @@ struct ResolverDeadlineTests {
         }
         #expect(await keeper.playerCount() == 0, "the inserted player is removed")
         #expect(metrics.snapshot == .init(timeouts: 1, abandoned: 1, onLeaveDropped: 0, abandonedOnJoin: 1))
+        try await expectAbandoned(keeper, .onJoin, 1)
 
         try await withDeadline(generous, metrics: metrics) { try await join(keeper, "p-1") }
         #expect(await keeper.playerCount() == 1)
@@ -312,6 +317,7 @@ struct ResolverDeadlineTests {
         }
         #expect(await keeper.playerCount() == 0)
         #expect(metrics.snapshot == .init(timeouts: 1, abandoned: 1, onLeaveDropped: 1, abandonedOnLeave: 1))
+        try await expectAbandoned(keeper, .onLeave, 1)
 
         // The rejoin, while the old OnLeave resolver still runs.
         try await withDeadline(generous, metrics: metrics) {

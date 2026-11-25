@@ -44,7 +44,7 @@ private func writerLand(_ id: String) -> LandDefinition<WriterTestState> {
     Land(id, using: WriterTestState.self) {
         ServerEvents { Register(WriterEvent.self) }
         Rules {
-            HandleAction(WriterSetAction.self) { (state: inout WriterTestState, action: WriterSetAction, _: LandContext) in
+            HandleAction(WriterSetAction.self) { state, action, _ in
                 state.stamp = writerMarker(action.stamp)
                 return WriterSetResponse(ok: true)
             }
@@ -54,7 +54,7 @@ private func writerLand(_ id: String) -> LandDefinition<WriterTestState> {
 
 private actor WriterConnection: WebSocketConnection {
     private var frames: [Data] = []
-    func send(_ data: Data) async throws { frames.append(data) }
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws { frames.append(data) }
     func close() async throws {}
     func recorded() -> [Data] { frames }
 }

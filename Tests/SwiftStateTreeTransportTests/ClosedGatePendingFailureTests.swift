@@ -77,7 +77,7 @@ func makeClosedGateLand() -> LandDefinition<UntypedPayloadState> {
         Rules {
             unencodableResponseHandler()
             HandleAction(ClosedGateOkAction.self) {
-                (state: inout UntypedPayloadState, action: ClosedGateOkAction, ctx: LandContext) in
+                state, action, ctx in
                 state.round += action.amount
                 ctx.requestSyncNow()
                 return ClosedGateOkReply(ok: true)
@@ -95,13 +95,13 @@ let notedFailure = LandFailure(
 func makeClosedGatePendingLand() -> LandDefinition<UntypedPayloadState> {
     Land("closed-gate-pending", using: UntypedPayloadState.self) {
         Rules {
-            HandleAction(HooksPingAction.self, resolvers: HooksPingResolver.self) {
-                (_: inout UntypedPayloadState, action: HooksPingAction, _: LandContext) in
+            HandleAction(HooksPingAction.self, resolvers: { _, _, _ in HooksPingResolver() }) {
+                _, action, _, _ in
                 HooksPingResponse(tag: action.tag)
             }
         }
         Lifetime {
-            Tick(every: .seconds(3600)) { (_: inout UntypedPayloadState, _: LandContext) in }
+            Tick(every: .seconds(3600)) { _, _ in }
         }
     }
 }
@@ -113,7 +113,7 @@ func makeClosedGateTickLand() -> LandDefinition<UntypedPayloadState> {
         ServerEvents { Register(UntypedPayloadTypedEvent.self) }
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout UntypedPayloadState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.round += 1
                 ctx.emitEvent(UntypedPayloadTypedEvent(hp: 9), to: .all)
             }
@@ -332,7 +332,7 @@ struct ClosedGatePendingFailureTests {
         let sentBefore = await land.transport.sends
         // The door a join ended before its admission, an inbound overflow after the join and the
         // router's join failure use (`endJoinBeforeAdmission`, TA:1789 and :2390, LR:1420).
-        await land.adapter.sendFinalFrameAndClose(Data("final".utf8), to: UntypedPayloadLand.session)
+        await land.adapter.sendFinalFrameAndClose(Data("final".utf8), kind: .binary, to: UntypedPayloadLand.session)
         await land.adapter.waitForOutboundIdleForTesting()
         #expect(await land.transport.sends == sentBefore + 1, "the final frame goes out")
         #expect(await land.transport.plainCloses == [UntypedPayloadLand.session], "the close behind it goes out")

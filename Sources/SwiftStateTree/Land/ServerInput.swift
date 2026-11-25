@@ -92,9 +92,8 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
     let site: String?
     /// Throws only before it writes: from `validate` (#586).
     private let handler: @Sendable (inout State, any ServerInputPayload, LandContext) throws -> Void
-    /// Decodes a payload in its record form as this handler's type, with the record codec: at
-    /// submit live, and when replay builds the item, so live and replay apply the same value.
-    let decode: @Sendable (AnyCodable) throws -> any ServerInputPayload
+    /// `decode(_:integralFloats:)`'s body, which knows the handler's type.
+    private let decodePayload: @Sendable (AnyCodable, Bool) throws -> any ServerInputPayload
 
     init<I: ServerInputPayload>(
         inputType: I.Type,
@@ -104,7 +103,9 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
         self.inputType = inputType
         self.typeIdentifier = String(describing: inputType)
         self.site = site
-        self.decode = { payload in try ServerInputCodec.decode(I.self, from: payload) }
+        self.decodePayload = { payload, integralFloats in
+            try ServerInputCodec.decode(I.self, from: payload, integralFloats: integralFloats)
+        }
         self.handler = { state, input, ctx in
             // The item's value came from this handler's `decode` (at submit, after the type's
             // identity check, or when replay built it), so it is an `I`.
@@ -113,6 +114,15 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
             }
             try invoke(&state, input, ctx)
         }
+    }
+
+    /// Decodes a payload in its record form as this handler's type, with the record codec: at
+    /// submit live, and when replay builds the item, so live and replay apply the same value.
+    /// `integralFloats` is the JSON record view's allowance (`RecordPayloadSource.integralFloats`):
+    /// JSON doesn't keep the float/integer split, so an integer decodes into `Double` or `Float`
+    /// when it converts exactly (#818). False (strict) live and for a saved record.
+    func decode(_ payload: AnyCodable, integralFloats: Bool = false) throws -> any ServerInputPayload {
+        try decodePayload(payload, integralFloats)
     }
 
     func invoke(_ state: inout State, input: any ServerInputPayload, ctx: LandContext) throws {
@@ -211,9 +221,10 @@ enum ServerInputCodec {
         return payload
     }
 
-    /// Decodes a recorded payload as `I`, with the record codec.
-    static func decode<I: Decodable>(_ type: I.Type, from payload: AnyCodable) throws -> I {
-        try CanonicalMessagePack.decode(type, from: CanonicalMessagePack.encode(payload))
+    /// Decodes a recorded payload as `I`, with the record codec; with `integralFloats`, the JSON
+    /// record view's integer-to-float allowance.
+    static func decode<I: Decodable>(_ type: I.Type, from payload: AnyCodable, integralFloats: Bool = false) throws -> I {
+        try CanonicalMessagePack.decode(type, from: CanonicalMessagePack.encode(payload), integralFloats: integralFloats)
     }
 }
 

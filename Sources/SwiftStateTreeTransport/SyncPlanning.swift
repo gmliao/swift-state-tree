@@ -113,7 +113,7 @@ extension SyncPhasePlan {
     /// The held event frames the plan packed for the targeted events it consumed. Every plan that
     /// consumes targeted events packs them while planning, so a pack failure ends the land there;
     /// the commit never packs. A plan that consumed none holds none.
-    func heldEventFramesPacked() -> [SessionID: [Data]] {
+    func heldEventFramesPacked() -> [SessionID: [EncodedFrame]] {
         guard consumedEvents.targeted > 0 else { return [:] }
         assert(heldEvents != nil && heldEventsEnd == consumedEvents.targeted,
                "a plan that consumes targeted events packs their held frames")

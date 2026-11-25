@@ -70,7 +70,7 @@ private actor LimitConnection: WebSocketConnection {
 
     func failSends() { failing = true }
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         sendAttempts += 1
         resumeWaiters()
         if failing { throw SendFailed() }
@@ -143,13 +143,13 @@ private struct LimitFixture {
         let definition = Land("handshake-limit", using: HandshakeLimitTestState.self) {
             Rules {
                 // Player "deny" is refused: a join the router refuses after its decode.
-                CanJoin { (_: HandshakeLimitTestState, session: PlayerSession, _: LandContext) in
+                CanJoin { _, session, _ in
                     session.playerID == "deny" ? .deny(reason: "denied") : .allow(playerID: PlayerID(session.playerID))
                 }
-                OnJoin { (state: inout HandshakeLimitTestState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players[ctx.playerID] = "Joined"
                 }
-                HandleAction(HandshakeLimitNoteAction.self) { (state: inout HandshakeLimitTestState, action: HandshakeLimitNoteAction, _: LandContext) in
+                HandleAction(HandshakeLimitNoteAction.self) { state, action, _ in
                     state.notes += 1
                     return HandshakeLimitNoteResponse(length: action.text.utf8.count)
                 }

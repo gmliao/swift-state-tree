@@ -66,9 +66,11 @@ struct TwoPhaseLimitOutput: ResolverOutput {
     let limit: Int
 }
 
-struct TwoPhaseLimitResolver: ContextResolver {
+@PlainData
+struct TwoPhaseLimitResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = TwoPhaseLimitOutput
-    static func resolve(ctx: ResolverContext) async throws -> TwoPhaseLimitOutput {
+    func resolve(_ deps: NoServices) async throws -> TwoPhaseLimitOutput {
         TwoPhaseLimitOutput(limit: 10)
     }
 }
@@ -92,42 +94,42 @@ enum TwoPhaseRefusals {
 
 private func makeTwoPhaseDefinition(tick: Bool) -> LandDefinition<TwoPhaseState> {
     let rules: LandRules<TwoPhaseState, NoServices> = Rules {
-        HandleAction(TwoPhaseAddAction.self, validate: { (_: TwoPhaseState, action: TwoPhaseAddAction, _: ValidateContext) in
+        HandleAction(TwoPhaseAddAction.self, validate: { _, action, _ in
             if TwoPhaseRefusals.isRefused(action.key) { throw TwoPhaseRefused(reason: "key \(action.key)") }
-        }, apply: { (state: inout TwoPhaseState, action: TwoPhaseAddAction, ctx: LandContext) in
+        }, apply: { state, action, ctx in
             state.total += action.amount
             state.log.append("add:\(action.amount)")
             return TwoPhaseAck(total: state.total)
         })
         // The plan carries what validate computed; apply only writes it.
-        HandleAction(TwoPhasePlanAction.self, validate: { (state: TwoPhaseState, action: TwoPhasePlanAction, ctx: ValidateContext) -> Int in
+        HandleAction(TwoPhasePlanAction.self, validate: { state, action, ctx in
             let cap = ctx.services.get(TwoPhaseCatalog.self)?.maxAmount ?? Int.max
             guard action.amount <= cap else { throw TwoPhaseRefused(reason: "over cap") }
             return state.total + action.amount
-        }, apply: { (state: inout TwoPhaseState, _: TwoPhasePlanAction, newTotal: Int, _: LandContext) in
+        }, apply: { state, _, newTotal, _ in
             state.total = newTotal
             state.log.append("plan:\(newTotal)")
             return TwoPhaseAck(total: newTotal)
         })
         // validate reads a resolver's output from its context.
-        HandleAction(TwoPhaseResolvedAction.self, resolvers: TwoPhaseLimitResolver.self, validate: {
-            (state: TwoPhaseState, _: TwoPhaseResolvedAction, ctx: ValidateContext) -> Int in
-            let output: TwoPhaseLimitOutput? = ctx.twoPhaseLimit
+        HandleAction(TwoPhaseResolvedAction.self, resolvers: { _, _, _ in TwoPhaseLimitResolver() }, validate: {
+            state, _, twoPhaseLimit, ctx in
+            let output: TwoPhaseLimitOutput? = twoPhaseLimit
             guard let limit = output?.limit else { throw TwoPhaseRefused(reason: "no resolver output") }
             guard state.total < limit else { throw TwoPhaseRefused(reason: "at limit") }
             return limit
-        }, apply: { (state: inout TwoPhaseState, _: TwoPhaseResolvedAction, limit: Int, _: LandContext) in
+        }, apply: { state, _, _, limit, _ in
             state.total = limit
             return TwoPhaseAck(total: limit)
         })
-        HandleEvent(TwoPhaseBumpEvent.self, validate: { (_: TwoPhaseState, event: TwoPhaseBumpEvent, _: ValidateContext) in
+        HandleEvent(TwoPhaseBumpEvent.self, validate: { _, event, _ in
             if event.amount < 0 { throw TwoPhaseRefused(reason: "negative bump") }
-        }, apply: { (state: inout TwoPhaseState, event: TwoPhaseBumpEvent, _: LandContext) in
+        }, apply: { state, event, _ in
             state.total += event.amount
         })
-        HandleServerInput(TwoPhaseInput.self, validate: { (_: TwoPhaseState, input: TwoPhaseInput, _: ValidateContext) in
+        HandleServerInput(TwoPhaseInput.self, validate: { _, input, _ in
             if input.amount < 0 { throw TwoPhaseRefused(reason: "negative input") }
-        }, apply: { (state: inout TwoPhaseState, input: TwoPhaseInput, _: LandContext) in
+        }, apply: { state, input, _ in
             state.total += input.amount
             state.log.append("input:\(input.amount)")
         })
@@ -138,7 +140,7 @@ private func makeTwoPhaseDefinition(tick: Bool) -> LandDefinition<TwoPhaseState>
             rules
             Lifetime {
                 // Hourly and stepped by hand: no real tick runs during a test.
-                Tick(every: .seconds(3600)) { (_: inout TwoPhaseState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
     }
@@ -374,8 +376,8 @@ struct TwoPhaseHandlerTests {
         let definition = Land("dup-event", using: TwoPhaseState.self) {
             ClientEvents { Register(TwoPhaseBumpEvent.self) }
             Rules {
-                HandleEvent(TwoPhaseBumpEvent.self) { (_: inout TwoPhaseState, _: TwoPhaseBumpEvent, _: LandContext) in }
-                HandleEvent(TwoPhaseBumpEvent.self) { (_: inout TwoPhaseState, _: TwoPhaseBumpEvent, _: LandContext) in }
+                HandleEvent(TwoPhaseBumpEvent.self) { _, _, _ in }
+                HandleEvent(TwoPhaseBumpEvent.self) { _, _, _ in }
             }
         }
         #expect(definition.eventHandlers.count == 1, "the first is kept")
@@ -398,8 +400,8 @@ struct TwoPhaseHandlerTests {
     func duplicateServerInputHandlerRefused() throws {
         let definition = Land("dup-input", using: TwoPhaseState.self) {
             Rules {
-                HandleServerInput(TwoPhaseInput.self) { (_: inout TwoPhaseState, _: TwoPhaseInput, _: LandContext) in }
-                HandleServerInput(TwoPhaseInput.self) { (_: inout TwoPhaseState, _: TwoPhaseInput, _: LandContext) in }
+                HandleServerInput(TwoPhaseInput.self) { _, _, _ in }
+                HandleServerInput(TwoPhaseInput.self) { _, _, _ in }
             }
         }
         let error = try #require(throws: LandRegistrationError.self) {
@@ -413,11 +415,11 @@ struct TwoPhaseHandlerTests {
     func duplicateActionHandlerRefused() throws {
         let definition = Land("dup-action", using: TwoPhaseState.self) {
             Rules {
-                HandleAction(TwoPhasePlanAction.self) { (state: inout TwoPhaseState, action: TwoPhasePlanAction, _: LandContext) in
+                HandleAction(TwoPhasePlanAction.self) { state, action, _ in
                     TwoPhaseAck(total: state.total)
                 }
-                HandleAction(TwoPhasePlanAction.self, validate: { (_: TwoPhaseState, _: TwoPhasePlanAction, _: ValidateContext) in
-                }, apply: { (state: inout TwoPhaseState, _: TwoPhasePlanAction, _: LandContext) in
+                HandleAction(TwoPhasePlanAction.self, validate: { _, _, _ in
+                }, apply: { state, _, _ in
                     TwoPhaseAck(total: state.total)
                 })
             }
@@ -447,7 +449,7 @@ struct TwoPhaseHandlerTests {
         let definition = Land("erased-action", using: TwoPhaseState.self) {
             Rules {
                 handler
-                HandleAction(TwoPhasePlanAction.self) { (state: inout TwoPhaseState, _: TwoPhasePlanAction, _: LandContext) in
+                HandleAction(TwoPhasePlanAction.self) { state, _, _ in
                     TwoPhaseAck(total: state.total)
                 }
             }
@@ -463,12 +465,12 @@ struct TwoPhaseHandlerTests {
         let definition = Land("dup-keeper", using: TwoPhaseState.self) {
             ClientEvents { Register(TwoPhaseBumpEvent.self) }
             Rules {
-                HandleAction(TwoPhasePlanAction.self) { (state: inout TwoPhaseState, _: TwoPhasePlanAction, _: LandContext) in TwoPhaseAck(total: state.total) }
-                HandleAction(TwoPhasePlanAction.self) { (state: inout TwoPhaseState, _: TwoPhasePlanAction, _: LandContext) in TwoPhaseAck(total: -1) }
-                HandleEvent(TwoPhaseBumpEvent.self) { (state: inout TwoPhaseState, _: TwoPhaseBumpEvent, _: LandContext) in state.total += 1 }
-                HandleEvent(TwoPhaseBumpEvent.self) { (state: inout TwoPhaseState, _: TwoPhaseBumpEvent, _: LandContext) in state.total += 100 }
-                HandleServerInput(TwoPhaseInput.self) { (state: inout TwoPhaseState, _: TwoPhaseInput, _: LandContext) in state.total += 1 }
-                HandleServerInput(TwoPhaseInput.self) { (state: inout TwoPhaseState, _: TwoPhaseInput, _: LandContext) in state.total += 100 }
+                HandleAction(TwoPhasePlanAction.self) { state, _, _ in TwoPhaseAck(total: state.total) }
+                HandleAction(TwoPhasePlanAction.self) { state, _, _ in TwoPhaseAck(total: -1) }
+                HandleEvent(TwoPhaseBumpEvent.self) { state, _, _ in state.total += 1 }
+                HandleEvent(TwoPhaseBumpEvent.self) { state, _, _ in state.total += 100 }
+                HandleServerInput(TwoPhaseInput.self) { state, _, _ in state.total += 1 }
+                HandleServerInput(TwoPhaseInput.self) { state, _, _ in state.total += 100 }
             }
         }
         let keeper = LandKeeper<TwoPhaseState>(definition: definition, initialState: TwoPhaseState(), autoStartLoops: false)

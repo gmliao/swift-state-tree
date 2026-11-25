@@ -18,10 +18,10 @@ private func makeThrowingActionLand() -> LandDefinition<UntypedPayloadState> {
         Rules {
             HandleAction(
                 UntypedResponseAction.self,
-                validate: { (_: UntypedPayloadState, _: UntypedResponseAction, _: ValidateContext) throws in
+                validate: { _, _, _ throws in
                     throw ErrorReplyTestError()
                 },
-                apply: { (_: inout UntypedPayloadState, _: UntypedResponseAction, _: LandContext) in
+                apply: { _, _, _ in
                     UntypedResponseReply(count: 0)
                 }
             )

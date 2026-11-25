@@ -36,10 +36,14 @@ enum RoomSetupError: Error, Equatable {
 }
 
 /// Throws for a land ID that contains "missing"; otherwise a room for 4.
-struct RoomConfigResolver: ContextResolver {
+@PlainData
+struct RoomConfigResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = RoomConfigOutput
-    static func resolve(ctx: ResolverContext) async throws -> RoomConfigOutput {
-        if ctx.landID.contains("missing") { throw RoomSetupError.noConfig }
+    func resolve(_ deps: NoServices) async throws -> RoomConfigOutput {
+        if landID.contains("missing") { throw RoomSetupError.noConfig }
         return RoomConfigOutput(maxPlayers: 4)
     }
 }
@@ -49,18 +53,18 @@ private func makeRoomDefinition() -> LandDefinition<RoomState> {
     Land("room", using: RoomState.self) {
         Lifetime {
             OnInitialize(
-                resolvers: RoomConfigResolver.self,
+                resolvers: { _, ctx in RoomConfigResolver(landID: ctx.landID) },
                 onResolverFailure: .continue,
-                validate: { _, ctx in
-                    guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
+                validate: { _, roomConfig, ctx in
+                    guard let config: RoomConfigOutput = roomConfig else { throw RoomSetupError.noConfig }
                     return config
                 },
-                apply: { state, config, _ in
+                apply: { state, _, config, _ in
                     state.maxPlayers = config.maxPlayers
                 }
             )
-            OnFinalize { (state: inout RoomState, _: LandContext) in state.log.append("finalize") }
-            DestroyWhenEmpty(after: .seconds(3600)) { (state: inout RoomState, _: LandContext) in
+            OnFinalize { state, _ in state.log.append("finalize") }
+            DestroyWhenEmpty(after: .seconds(3600)) { state, _ in
                 state.log.append("destroyWhenEmpty")
             }
         }
@@ -104,18 +108,18 @@ private func makeReplayDefinition(voidForm: Bool = false, tickless: Bool = false
         if InitializeRefusals.isRefused(ctx.landID) { throw ReplayRefusedError() }
     }
     let onInitialize: LifetimeDirective<RoomState> = voidForm
-        ? OnInitialize(validate: { (_: RoomState, ctx: ValidateContext) in
+        ? OnInitialize(validate: { _, ctx in
             try refuse(ctx)
-        }, apply: { (state: inout RoomState, ctx: LandContext) in
+        }, apply: { state, ctx in
             openRoom(&state, maxPlayers: 2, ctx)
         })
-        : OnInitialize(resolvers: RoomConfigResolver.self, validate: { (_: RoomState, ctx: ValidateContext) throws -> Int in
+        : (OnInitialize(resolvers: { _, ctx in RoomConfigResolver(landID: ctx.landID) }, validate: { _, roomConfig, ctx throws in
             try refuse(ctx)
-            guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
+            guard let config: RoomConfigOutput = roomConfig else { throw RoomSetupError.noConfig }
             return config.maxPlayers
-        }, apply: { (state: inout RoomState, maxPlayers: Int, ctx: LandContext) in
+        }, apply: { state, _, maxPlayers, ctx in
             openRoom(&state, maxPlayers: maxPlayers, ctx)
-        })
+        }) as ResolvingNode<LifetimeDirective<RoomState>, NoServices>).node
     if tickless {
         return Land("init-replay", using: RoomState.self) {
             ServerEvents { Register(RoomOpenedEvent.self) }
@@ -125,7 +129,7 @@ private func makeReplayDefinition(voidForm: Bool = false, tickless: Bool = false
     return Land("init-replay", using: RoomState.self) {
         ServerEvents { Register(RoomOpenedEvent.self) }
         Lifetime {
-            Tick(every: .milliseconds(50)) { (_: inout RoomState, _: LandContext) in }
+            Tick(every: .milliseconds(50)) { _, _ in }
             onInitialize
         }
     }
@@ -321,10 +325,14 @@ private func expectReplayRefusal(_ verdict: ReevaluationEngine.InitializeVerific
 
 /// OnInitialize's resolver, held at the gate keyed by the land ID's last part
 /// ("init-wait:<key>"), then a room for 4.
-struct GatedRoomConfigResolver: ContextResolver {
+@PlainData
+struct GatedRoomConfigResolver: Resolver {
+    typealias Dependencies = NoServices
+    let landID: String
+
     typealias Output = RoomConfigOutput
-    static func resolve(ctx: ResolverContext) async throws -> RoomConfigOutput {
-        let key = Int(ctx.landID.split(separator: ":").last ?? "") ?? 0
+    func resolve(_ deps: NoServices) async throws -> RoomConfigOutput {
+        let key = Int(landID.split(separator: ":").last ?? "") ?? 0
         await DeliveryGates.gate(key).enterAndWait()
         return RoomConfigOutput(maxPlayers: 4)
     }
@@ -351,18 +359,18 @@ struct InitWaitInput: ServerInputPayload {
 private func makeWaitDefinition() -> LandDefinition<RoomState> {
     Land("init-wait", using: RoomState.self) {
         Rules {
-            HandleAction(InitWaitAction.self) { (state: inout RoomState, _: InitWaitAction, _: LandContext) in
+            HandleAction(InitWaitAction.self) { state, _, _ in
                 state.log.append("action")
                 return InitWaitAck(ok: true)
             }
-            HandleServerInput(InitWaitInput.self) { (state: inout RoomState, _: InitWaitInput, _: LandContext) in
+            HandleServerInput(InitWaitInput.self) { state, _, _ in
                 state.log.append("input")
             }
         }
         Lifetime {
-            OnInitialize(resolvers: GatedRoomConfigResolver.self, validate: { (_: RoomState, _: ValidateContext) in
+            OnInitialize(resolvers: { _, ctx in GatedRoomConfigResolver(landID: ctx.landID) }, validate: { _, _, _ in
                 throw RoomSetupError.noConfig
-            }, apply: { (state: inout RoomState, _: LandContext) in
+            }, apply: { state, _, _ in
                 state.log.append("init")
             })
         }
@@ -384,10 +392,10 @@ private enum ValidateRuns {
 private func makeFailLandDefinition() -> LandDefinition<RoomState> {
     Land("init-fail-land", using: RoomState.self) {
         Lifetime {
-            OnInitialize(resolvers: RoomConfigResolver.self, validate: { (_: RoomState, ctx: ValidateContext) -> Int in
+            OnInitialize(resolvers: { _, ctx in RoomConfigResolver(landID: ctx.landID) }, validate: { _, _, ctx in
                 ValidateRuns.note(ctx.landID)
                 return 1
-            }, apply: { (state: inout RoomState, maxPlayers: Int, _: LandContext) in
+            }, apply: { state, _, maxPlayers, _ in
                 state.maxPlayers = maxPlayers
             })
         }
@@ -399,10 +407,10 @@ private func makeFailLandDefinition() -> LandDefinition<RoomState> {
 private func makeNoWriteDefinition() -> LandDefinition<RoomState> {
     Land("init-no-write", using: RoomState.self) {
         Lifetime {
-            Tick(every: .milliseconds(50)) { (_: inout RoomState, _: LandContext) in }
-            OnInitialize(validate: { (_: RoomState, ctx: ValidateContext) in
+            Tick(every: .milliseconds(50)) { _, _ in }
+            OnInitialize(validate: { _, ctx in
                 if InitializeRefusals.isRefused(ctx.landID) { throw ReplayRefusedError() }
-            }, apply: { (_: inout RoomState, _: LandContext) in })
+            }, apply: { _, _ in })
         }
     }
 }
@@ -427,23 +435,25 @@ private func hostedRun(_ definition: LandDefinition<RoomState>, _ path: String) 
 // MARK: - Destroy handlers (#593 §1)
 
 /// Throws, so the destroy handler it belongs to is skipped.
-struct FailingFinalizeResolver: ContextResolver {
+@PlainData
+struct FailingFinalizeResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = RoomConfigOutput
-    static func resolve(ctx: ResolverContext) async throws -> RoomConfigOutput {
+    func resolve(_ deps: NoServices) async throws -> RoomConfigOutput {
         throw RoomSetupError.noConfig
     }
 }
 
 /// OnDestroyWhenEmpty and OnFinalize log; with `failingResolver`, OnFinalize's resolver throws.
 private func makeDestroyDefinition(failingResolver: Bool) -> LandDefinition<RoomState> {
-    let destroyWhenEmpty: LifetimeDirective<RoomState> = DestroyWhenEmpty(after: .seconds(3600)) { (state: inout RoomState, _: LandContext) in
+    let destroyWhenEmpty: LifetimeDirective<RoomState> = DestroyWhenEmpty(after: .seconds(3600)) { state, _ in
         state.log.append("destroyWhenEmpty")
     }
     if failingResolver {
         return Land("destroy-handlers", using: RoomState.self) {
             Lifetime {
                 destroyWhenEmpty
-                OnFinalize(resolvers: FailingFinalizeResolver.self) { (state: inout RoomState, _: LandContext) in
+                OnFinalize(resolvers: { _, _ in FailingFinalizeResolver() }) { state, _, _ in
                     state.log.append("finalize")
                 }
             }
@@ -452,7 +462,7 @@ private func makeDestroyDefinition(failingResolver: Bool) -> LandDefinition<Room
     return Land("destroy-handlers", using: RoomState.self) {
         Lifetime {
             destroyWhenEmpty
-            OnFinalize { (state: inout RoomState, _: LandContext) in state.log.append("finalize") }
+            OnFinalize { state, _ in state.log.append("finalize") }
         }
     }
 }

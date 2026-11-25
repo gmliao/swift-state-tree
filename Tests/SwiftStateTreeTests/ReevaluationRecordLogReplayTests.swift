@@ -33,7 +33,7 @@ struct RecordLogNumberResponse: ResponsePayload {
 func makeRecordLogNumberLand() -> LandDefinition<RecordLogNumberState> {
     Land("record-log-numbers", using: RecordLogNumberState.self) {
         Rules {
-            HandleAction(RecordLogNumberAction.self) { (state: inout RecordLogNumberState, action: RecordLogNumberAction, _: LandContext) in
+            HandleAction(RecordLogNumberAction.self) { state, action, _ in
                 state.total += action.amount
                 state.fraction += action.fraction
                 state.count += action.count
@@ -41,7 +41,7 @@ func makeRecordLogNumberLand() -> LandDefinition<RecordLogNumberState> {
             }
         }
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout RecordLogNumberState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
         }
@@ -116,7 +116,7 @@ func ticklessRecordKeepsEveryPassEvents() async throws {
     let definition = Land("record-log-tickless", using: RecordLogNumberState.self) {
         ServerEvents { Register(RecordLogNumberEvent.self) }
         Rules {
-            HandleAction(RecordLogNumberAction.self) { (state: inout RecordLogNumberState, action: RecordLogNumberAction, ctx: LandContext) in
+            HandleAction(RecordLogNumberAction.self) { state, action, ctx in
                 state.count += action.count
                 ctx.emitEvent(RecordLogNumberEvent(count: state.count), to: .all)
                 return RecordLogNumberResponse(total: state.total)
@@ -189,14 +189,14 @@ func tickLandReplayKeepsExactServerEvents() async throws {
     let definition = Land("record-log-tick-events", using: RecordLogNumberState.self) {
         ServerEvents { Register(RecordLogNumberEvent.self) }
         Rules {
-            HandleAction(RecordLogNumberAction.self) { (state: inout RecordLogNumberState, action: RecordLogNumberAction, ctx: LandContext) in
+            HandleAction(RecordLogNumberAction.self) { state, action, ctx in
                 state.count += action.count
                 ctx.emitEvent(RecordLogNumberEvent(count: state.count), to: .all)
                 return RecordLogNumberResponse(total: state.total)
             }
         }
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout RecordLogNumberState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(RecordLogNumberEvent(count: -state.ticks), to: .all)
             }
@@ -255,7 +255,7 @@ func ticklessReplayExtraEventFails() async throws {
     let silent = Land("record-log-tickless-extra", using: RecordLogNumberState.self) {
         ServerEvents { Register(RecordLogNumberEvent.self) }
         Rules {
-            HandleAction(RecordLogNumberAction.self) { (state: inout RecordLogNumberState, action: RecordLogNumberAction, _: LandContext) in
+            HandleAction(RecordLogNumberAction.self) { state, action, _ in
                 state.count += action.count
                 return RecordLogNumberResponse(total: state.total)
             }
@@ -265,7 +265,7 @@ func ticklessReplayExtraEventFails() async throws {
     let emitting = Land("record-log-tickless-extra", using: RecordLogNumberState.self) {
         ServerEvents { Register(RecordLogNumberEvent.self) }
         Rules {
-            HandleAction(RecordLogNumberAction.self) { (state: inout RecordLogNumberState, action: RecordLogNumberAction, ctx: LandContext) in
+            HandleAction(RecordLogNumberAction.self) { state, action, ctx in
                 state.count += action.count
                 ctx.emitEvent(RecordLogNumberEvent(count: state.count), to: .all)
                 return RecordLogNumberResponse(total: state.total)

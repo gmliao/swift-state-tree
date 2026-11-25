@@ -25,7 +25,7 @@ private actor RouterShutdownConnection: WebSocketConnection {
     private(set) var closeGrace: Duration?
     private var frameWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         frames.append(data)
         let ready = frameWaiters.filter { $0.count <= frames.count }
         frameWaiters.removeAll { $0.count <= frames.count }
@@ -55,7 +55,7 @@ private actor GraceConnection: ClosedAwaitingConnection {
 
     init(closedGate: TestGate) { self.closedGate = closedGate }
 
-    func send(_ data: Data) async throws {}
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {}
     func close() async throws { closeCode = 1000 }
     func close(with close: SessionClose) async throws { closeCode = close.code }
     func closed() async { await closedGate.arrive() }
@@ -73,13 +73,13 @@ private struct RouterShutdownHarness {
     static func make() async throws -> RouterShutdownHarness {
         let definition = Land("router-shutdown", using: RouterShutdownState.self) {
             Rules {
-                CanJoin { (_: RouterShutdownState, session: PlayerSession, _: LandContext) in
+                CanJoin { _, session, _ in
                     .allow(playerID: PlayerID(session.playerID))
                 }
-                OnJoin { (state: inout RouterShutdownState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players.append(ctx.playerID.rawValue)
                 }
-                OnLeave { (state: inout RouterShutdownState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.players.removeAll { $0 == ctx.playerID.rawValue }
                     state.leaves.append(ctx.playerID.rawValue)
                 }

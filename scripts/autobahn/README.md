@@ -49,18 +49,15 @@ python3 scripts/autobahn/summarize.py scripts/autobahn/reports/servers/index.jso
 
 ## What the harness is
 
-`AutobahnEcho` registers a `TransportDelegate` on a `WebSocketTransport` and sends each message
-back with `transport.send(_, to: .session(id))`. It listens on `127.0.0.1` (the port is the first
+`AutobahnEcho` registers a `FrameKindTransportDelegate` on a `WebSocketTransport` and sends each
+message back to its session in the frame type it arrived in (`sendSessionFrames` with the
+message's kind, #813), so the suite measures the server's rule: a frame's type follows its bytes. It listens on `127.0.0.1` (the port is the first
 argument, else `AUTOBAHN_ECHO_PORT`, else 9001), accepts every path, takes the default limits except
 a 16 MiB frame limit (`maxFrameSize`, the default), and stops on SIGINT or SIGTERM.
 
-**Limit of the harness:** the server sends every message as a binary frame
-(`WebSocketSessionHandler.sendOnLoop`), so a text message comes back with the right payload in the
-wrong frame type. Autobahn counts that as a failure of every text-echo case. The cause is listed as
-`text-as-binary`; the data-exchange check fails for that reason, but a `text-as-binary` case can
-still have a second failure hidden behind it: the close verdict (`behaviorClose`) and the payload
-preview in the report may be incomplete because Autobahn stops inspecting once it records the
-binary-frame mismatch. If the server gets a text send path, this is the first thing to re-run.
+Before #813 the server sent every message as a binary frame, so every text-echo case failed as
+`text-as-binary`. Since #813 a text message comes back as text, and the server checks a text
+message for UTF-8 once it is complete, failing an invalid one with 1007.
 
 ## Reading a result
 
@@ -79,17 +76,17 @@ dependent on the machine), 12 and 13 (permessage-deflate).
 
 ## Baseline
 
-`expected-failures.txt` lists the cases that failed on the baseline run. Each cause is a
-guess from `summarize.py`. Causes without a `guess:` prefix (`text-as-binary`) are diagnosed from
-the case report. Causes with `guess:` are derived from the section number alone — the section's
+`expected-failures.txt` lists the cases that failed on the baseline run (the Autobahn workflow's
+run on #813's change: 11 FAILED, 9 NON-STRICT, 3 INFORMATIONAL, 224 OK of 247). Each cause is a
+guess from `summarize.py`. Causes without a `guess:` prefix (`text-as-binary`, none since #813)
+are diagnosed from the case report. Causes with `guess:` are derived from the section number alone — the section's
 usual failure mode — and may be wrong for individual cases; file separate issues when a cause is
 confirmed.
 
 | Cause | Cases | What the suite saw |
 |-------|-------|--------------------|
-| `text-as-binary` | 91 | The echo has the payload but arrives as a binary frame (the limit above). A `text-as-binary` case can hide a second failure in the same case; see the note in [What the harness is](#what-the-harness-is). |
-| `guess:fragmentation` | 10 | Section 5: a bad fragment sequence is not failed. |
-| `guess:utf8` | 75 | Section 6: invalid UTF-8 in a text message is not failed with 1007. |
+| `guess:fragmentation` | 10 | Section 5 (5.9–5.18): a bad fragment sequence is not failed. Diagnosed from the reports: the reassembler ignores a continuation with nothing to continue, and a new text or binary opener replaces an unfinished message, where RFC 6455 fails the connection with 1002. |
+| `guess:utf8` | 1 | 6.4.4: one invalid frame sent in three chops. Diagnosed: NIO's frame decoder hands over a frame only once all of it has arrived, so the check can't fail fast inside one frame; the suite times out and closes first. 6.4.1–6.4.3, the same payload across frames, are NON-STRICT for the same reason (the check runs on the complete message). |
 
 A case that fails and isn't listed is a regression, a listed case that passes is a fix: update the
 file with the second command above in the same change.

@@ -401,7 +401,7 @@ public enum VisibilityTest {
             rules(State.self, settings: settings)
 
             Lifetime {
-                Tick(every: .milliseconds(VisibilityTestConfig.tickIntervalMs)) { (state: inout State, ctx: LandContext) in
+                Tick(every: .milliseconds(VisibilityTestConfig.tickIntervalMs)) { state, ctx in
                     tick(&state, ctx: ctx, settings: settings)
                 }
             }
@@ -424,7 +424,7 @@ public enum VisibilityTest {
     /// The land's rules, shared by the tick land and the tickless one.
     private static func rules<State: VisibilityTestStateShape>(_ type: State.Type, settings: VisibilityTestSettings) -> LandRules<State, NoServices> {
         Rules {
-            OnJoin { (state: inout State, ctx: LandContext) in
+            OnJoin { state, ctx in
                 spawnEntitiesIfNeeded(&state, settings: settings)
                 let taken = Set(state.viewers.values.map(\.slot))
                 let slot = (0...).first { !taken.contains($0) } ?? 0
@@ -432,17 +432,17 @@ public enum VisibilityTest {
                 updateVisibility(&state, settings: settings)
             }
 
-            OnLeave { (state: inout State, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.viewers.removeValue(forKey: ctx.playerID)
                 updateVisibility(&state, settings: settings)
             }
 
-            HandleAction(SetMotionAction.self) { (state: inout State, action: SetMotionAction, ctx: LandContext) in
+            HandleAction(SetMotionAction.self) { state, action, ctx in
                 setMotion(&state, enabled: action.enabled, ctx: ctx)
                 return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
             }
 
-            HandleAction(SetMotionWideAction.self) { (state: inout State, action: SetMotionWideAction, ctx: LandContext) in
+            HandleAction(SetMotionWideAction.self) { state, action, ctx in
                 setMotion(&state, enabled: action.enabled, ctx: ctx)
                 return WideVisibilityResponse(
                     viewEntries: state.viewEntries, viewExits: state.viewExits,
@@ -450,7 +450,7 @@ public enum VisibilityTest {
                     tag: VisibilityTestConfig.wideResponseTag)
             }
 
-            HandleAction(ParkEntitiesAction.self) { (state: inout State, _: ParkEntitiesAction, _: LandContext) in
+            HandleAction(ParkEntitiesAction.self) { state, _, _ in
                 spawnEntitiesIfNeeded(&state, settings: settings)
                 for id in state.entities.keys {
                     state.entities[id]?.position = VisibilityTestConfig.parkPosition
@@ -461,11 +461,11 @@ public enum VisibilityTest {
 
             // validate refuses an unknown id before anything is written (#586): before the
             // lazy spawn, by the id scheme `spawnEntitiesIfNeeded` uses.
-            HandleAction(PlaceEntityAction.self, validate: { (state: State, action: PlaceEntityAction, _: ValidateContext) in
+            HandleAction(PlaceEntityAction.self, validate: { state, action, _ in
                 guard entityExists(action.id, in: state, settings: settings) else {
                     throw VisibilityTestError.unknownEntity(action.id)
                 }
-            }, apply: { (state: inout State, action: PlaceEntityAction, _: LandContext) in
+            }, apply: { state, action, _ in
                 spawnEntitiesIfNeeded(&state, settings: settings)
                 for position in action.positions {
                     state.entities[action.id]?.position = position
@@ -474,7 +474,7 @@ public enum VisibilityTest {
                 return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
             })
 
-            HandleEvent(MoveViewerEvent.self) { (state: inout State, event: MoveViewerEvent, ctx: LandContext) in
+            HandleEvent(MoveViewerEvent.self) { state, event, ctx in
                 guard state.viewers[ctx.playerID] != nil else { return }
                 state.viewers[ctx.playerID]?.position = event.position
                 updateVisibility(&state, settings: settings)

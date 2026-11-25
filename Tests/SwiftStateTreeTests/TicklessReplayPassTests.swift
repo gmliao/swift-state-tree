@@ -68,20 +68,26 @@ enum PassGates {
     static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
-struct PassGatedResolver: ContextResolver {
+@PlainData
+struct PassGatedResolver: Resolver {
+    typealias Dependencies = NoServices
+    let key: Int
+
     typealias Output = PassResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> PassResolverOutput {
-        let key = (ctx.actionPayload as? PassGatedAction)?.key ?? -1
+    func resolve(_ deps: NoServices) async throws -> PassResolverOutput {
+        let key = key
         await PassGates.gate(key).enterAndWait()
         return PassResolverOutput(key: key)
     }
 }
 
-struct PassInitResolver: ContextResolver {
+@PlainData
+struct PassInitResolver: Resolver {
+    typealias Dependencies = NoServices
     typealias Output = PassResolverOutput
 
-    static func resolve(ctx: ResolverContext) async throws -> PassResolverOutput {
+    func resolve(_ deps: NoServices) async throws -> PassResolverOutput {
         for _ in 0..<5 { await Task.yield() }
         return PassResolverOutput(key: 7)
     }
@@ -98,62 +104,62 @@ private func makePassDefinition(initializeWithResolver: Bool = false) -> LandDef
         ClientEvents { Register(PassNoteEvent.self) }
         ServerEvents { Register(PassLogged.self) }
         Rules {
-            OnJoin { (state: inout PassOrderState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 appendEntry("join:\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
             }
-            OnLeave { (state: inout PassOrderState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 appendEntry("leave:\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
             }
-            HandleAction(PassGatedAction.self, resolvers: PassGatedResolver.self) {
-                (state: inout PassOrderState, action: PassGatedAction, ctx: LandContext) in
+            HandleAction(PassGatedAction.self, resolvers: { _, action, _ in PassGatedResolver(key: action.key) }) {
+                state, action, _, ctx in
                 appendEntry(action.tag, to: &state, ctx: ctx)
                 return PassAck(ok: true)
             }
             HandleAction(PassPlainAction.self) {
-                (state: inout PassOrderState, action: PassPlainAction, ctx: LandContext) in
+                state, action, ctx in
                 appendEntry(action.tag, to: &state, ctx: ctx)
                 return PassAck(ok: true)
             }
             HandleAction(PassSyncAction.self) {
-                (state: inout PassOrderState, action: PassSyncAction, ctx: LandContext) in
+                state, action, ctx in
                 appendEntry(action.tag, to: &state, ctx: ctx)
                 ctx.requestSyncNow()
                 return PassAck(ok: true)
             }
-            HandleEvent(PassNoteEvent.self) { (state: inout PassOrderState, event: PassNoteEvent, ctx: LandContext) in
+            HandleEvent(PassNoteEvent.self) { state, event, ctx in
                 appendEntry(event.tag, to: &state, ctx: ctx)
             }
         }
         }
     }
-    let onInitialize: LifetimeDirective<PassOrderState> = OnInitialize(resolvers: PassInitResolver.self) {
-        (state: inout PassOrderState, ctx: LandContext) in
+    let onInitialize: ResolvingNode<LifetimeDirective<PassOrderState>, NoServices> = OnInitialize(resolvers: { _, _ in PassInitResolver() }) {
+        state, _, ctx in
         appendEntry("init", to: &state, ctx: ctx)
     }
     return Land("pass-order", using: PassOrderState.self) {
         ClientEvents { Register(PassNoteEvent.self) }
         ServerEvents { Register(PassLogged.self) }
         Rules {
-            OnJoin { (state: inout PassOrderState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 appendEntry("join:\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
             }
-            HandleAction(PassGatedAction.self, resolvers: PassGatedResolver.self) {
-                (state: inout PassOrderState, action: PassGatedAction, ctx: LandContext) in
+            HandleAction(PassGatedAction.self, resolvers: { _, action, _ in PassGatedResolver(key: action.key) }) {
+                state, action, _, ctx in
                 appendEntry(action.tag, to: &state, ctx: ctx)
                 return PassAck(ok: true)
             }
             HandleAction(PassPlainAction.self) {
-                (state: inout PassOrderState, action: PassPlainAction, ctx: LandContext) in
+                state, action, ctx in
                 appendEntry(action.tag, to: &state, ctx: ctx)
                 return PassAck(ok: true)
             }
             HandleAction(PassSyncAction.self) {
-                (state: inout PassOrderState, action: PassSyncAction, ctx: LandContext) in
+                state, action, ctx in
                 appendEntry(action.tag, to: &state, ctx: ctx)
                 ctx.requestSyncNow()
                 return PassAck(ok: true)
             }
-            HandleEvent(PassNoteEvent.self) { (state: inout PassOrderState, event: PassNoteEvent, ctx: LandContext) in
+            HandleEvent(PassNoteEvent.self) { state, event, ctx in
                 appendEntry(event.tag, to: &state, ctx: ctx)
             }
         }
@@ -764,13 +770,13 @@ struct TicklessReplayPassTests {
             ServerEvents { Register(PassLogged.self) }
             Rules {
                 HandleAction(PassPlainAction.self) {
-                    (state: inout PassOrderState, action: PassPlainAction, ctx: LandContext) in
+                    state, action, ctx in
                     appendEntry(action.tag, to: &state, ctx: ctx)
                     return PassAck(ok: true)
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout PassOrderState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
         let keeper = LandKeeper<PassOrderState>(definition: definition, initialState: PassOrderState(), enableLiveStateHashRecording: true, autoStartLoops: false, landID: "pass-tick:\(UUID().uuidString)")

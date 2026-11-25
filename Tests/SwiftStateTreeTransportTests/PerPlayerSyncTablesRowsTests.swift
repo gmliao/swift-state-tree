@@ -61,7 +61,7 @@ private func ppRowsLand(_ script: PPRowsScript) -> LandDefinition<PPRowsState> {
     Land("pp-rows", using: PPRowsState.self) {
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout PPRowsState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 script.apply(&state)
                 ctx.requestSyncNow()
             }

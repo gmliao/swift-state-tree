@@ -46,7 +46,7 @@ public struct GameReevaluationFactory: ReevaluationTargetFactory {
         case ResolverTestConfig.landType:
             // Replay applies the recorded resolver outputs and never calls the service.
             return try await ConcreteReevaluationRunner(
-                definition: ResolverTest.makeLand(),
+                definition: ResolverTest.makeLand().definition,
                 initialState: ResolverTestState(),
                 recordFilePath: recordFilePath,
                 services: LandServices()

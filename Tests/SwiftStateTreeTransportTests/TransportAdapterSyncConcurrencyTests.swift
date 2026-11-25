@@ -98,7 +98,7 @@ struct TransportAdapterSyncConcurrencyTests {
             using: SyncConcurrencyTestState.self
         ) {
             Rules {
-                OnLeave { (state: inout SyncConcurrencyTestState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.players.removeValue(forKey: ctx.playerID)
                 }
             }
@@ -173,7 +173,7 @@ struct TransportAdapterSyncConcurrencyTests {
             using: SyncConcurrencyTestState.self
         ) {
             Rules {
-                OnLeave { (state: inout SyncConcurrencyTestState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.players.removeValue(forKey: ctx.playerID)
                 }
             }
@@ -247,7 +247,7 @@ struct TransportAdapterSyncConcurrencyTests {
             using: SyncConcurrencyTestState.self
         ) {
             Rules {
-                HandleAction(IncrementCounterAction.self) { (state: inout SyncConcurrencyTestState, action: IncrementCounterAction, ctx: LandContext) in
+                HandleAction(IncrementCounterAction.self) { state, action, ctx in
                     state.counter += action.amount
                     state.lastModifiedBy = action.modifier
                     return IncrementCounterResponse(success: true, newValue: state.counter)

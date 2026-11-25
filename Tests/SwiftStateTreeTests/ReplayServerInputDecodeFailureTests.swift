@@ -103,13 +103,13 @@ struct ReplayServerInputDecodeFailureTests {
     static func definition(probe: ReplaySIStackProbe? = nil) -> LandDefinition<ReplaySIDecodeState> {
         Land(landType, using: ReplaySIDecodeState.self) {
             Rules {
-                HandleServerInput(ReplaySIDecodeInput.self) { (state: inout ReplaySIDecodeState, input: ReplaySIDecodeInput, _: LandContext) in
+                HandleServerInput(ReplaySIDecodeInput.self) { state, input, _ in
                     probe?.note()
                     state.hits.append("server:\(input.tag):\(input.n)")
                 }
             }
             Lifetime {
-                Tick(every: .seconds(3600)) { (_: inout ReplaySIDecodeState, _: LandContext) in }
+                Tick(every: .seconds(3600)) { _, _ in }
             }
         }
     }

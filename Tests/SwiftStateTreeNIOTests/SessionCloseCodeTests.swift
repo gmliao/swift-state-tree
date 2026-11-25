@@ -14,7 +14,7 @@ import Testing
 
 private actor RecordingConnection: WebSocketConnection {
     private(set) var closes: [SessionClose?] = []
-    func send(_ data: Data) async throws {}
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {}
     func close() async throws { closes.append(nil) }
     func close(with close: SessionClose) async throws { closes.append(close) }
 }
@@ -22,7 +22,7 @@ private actor RecordingConnection: WebSocketConnection {
 /// A connection without its own `close(with:)`: the protocol's default.
 private actor PlainConnection: WebSocketConnection {
     private(set) var closes = 0
-    func send(_ data: Data) async throws {}
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {}
     func close() async throws { closes += 1 }
 }
 

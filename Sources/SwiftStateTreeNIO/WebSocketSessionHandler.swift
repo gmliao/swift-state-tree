@@ -54,7 +54,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     }
 
     /// Pending messages to be processed in batch
-    private var pendingMessages: [Data] = []
+    private var pendingMessages: [(data: Data, kind: WebSocketFrameKind)] = []
     /// Whether a flush task is scheduled
     private var flushScheduled: Bool = false
     /// Maximum messages per batch before immediate flush
@@ -111,7 +111,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     private let inboundBacklogEventForTesting: (@Sendable (InboundBacklogTestEvent) -> Void)?
 
     /// Fragment reassembly: buffer for accumulating fragmented message payloads
-    private var fragmentBuffer: ByteBuffer?
+    private var fragmentBuffer: WebSocketFragmentReassembler.PartialMessage?
 
     // MARK: - Ping/Pong Keepalive
     
@@ -449,8 +449,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         let result = WebSocketFragmentReassembler.process(frame: frame, fragmentBuffer: &fragmentBuffer)
 
         switch result {
-        case .complete(let data):
-            enqueueMessage(data, context: context)
+        case .complete(let data, let kind):
+            enqueueMessage(data, kind: kind, context: context)
 
         case .incomplete:
             break
@@ -469,14 +469,21 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
                 "Fragmented message exceeded max size (\(WebSocketFragmentReassembler.maxFragmentSize))",
                 metadata: ["sessionID": .string(sessionID.rawValue)]
             )
+
+        case .invalidUTF8:
+            // A text message that isn't UTF-8 fails the connection (RFC 6455 §8.1).
+            fragmentBuffer = nil
+            noteCloseCause(.error, code: .dataInconsistentWithMessage)
+            closeOnLoop(code: .dataInconsistentWithMessage)
+            enqueueDisconnect()
         }
     }
 
-    private func enqueueMessage(_ data: Data, context: ChannelHandlerContext) {
+    private func enqueueMessage(_ data: Data, kind: WebSocketFrameKind, context: ChannelHandlerContext) {
         // A data frame read after the close (same read) would reach the transport after the
         // session's disconnect, as a message from an unknown session: drop it.
         guard !disconnectEnqueued else { return }
-        pendingMessages.append(data)
+        pendingMessages.append((data, kind))
         noteInboundRead(bytes: data.count)
 
         if pendingMessages.count >= Self.maxBatchSize {
@@ -496,17 +503,18 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
         let messages = pendingMessages
         pendingMessages = []
-        let bytes = messages.reduce(0) { $0 + $1.count }
+        let bytes = messages.reduce(0) { $0 + $1.data.count }
 
         inbound.enqueue {
             // Delivered (or, for a rejected connection, dropped): off the backlog.
             defer { self.noteInboundDelivered(messages: messages.count, bytes: bytes) }
             // A rejected connection's frames are dropped.
             guard !self.rejection.isSet else { return }
-            for data in messages {
+            for message in messages {
                 await self.transport.handleIncomingMessage(
                     sessionID: self.sessionID,
-                    data: data
+                    data: message.data,
+                    kind: message.kind
                 )
             }
         }
@@ -750,24 +758,33 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
     // MARK: - Outbound
 
-    /// Sends a binary frame to the client. Callable from any thread: off the event loop it hops
-    /// there, and the closed check runs in the same loop task as the write, so a send that races
-    /// the handler's removal writes nothing. Calls from one thread keep their order.
-    func send(_ buffer: ByteBuffer) {
+    /// Sends one message to the client, in a text or a binary frame as `kind` says. Callable
+    /// from any thread: off the event loop it hops there, and the closed check runs in the same
+    /// loop task as the write, so a send that races the handler's removal writes nothing. Calls
+    /// from one thread keep their order.
+    func send(_ buffer: ByteBuffer, kind: WebSocketFrameKind) {
         if eventLoop.inEventLoop {
-            sendOnLoop(buffer)
+            sendOnLoop(buffer, kind: kind)
         } else {
-            hop { self.sendOnLoop(buffer) }
+            hop { self.sendOnLoop(buffer, kind: kind) }
         }
     }
 
-    private func sendOnLoop(_ buffer: ByteBuffer) {
+    private func sendOnLoop(_ buffer: ByteBuffer, kind: WebSocketFrameKind) {
         eventLoop.assertInEventLoop()
         guard let context = context, !isClosed else { return }
-        let frame = WebSocketFrame(fin: true, opcode: .binary, data: buffer)
+        let frame = WebSocketFrame(fin: true, opcode: Self.opcode(for: kind), data: buffer)
         context.writeAndFlush(wrapOutboundOut(frame), promise: nil)
         if !context.channel.isWritable {
             noteBufferedBytes(context: context)
+        }
+    }
+
+    /// The data frame opcode for a message of `kind`.
+    static func opcode(for kind: WebSocketFrameKind) -> WebSocketOpcode {
+        switch kind {
+        case .text: return .text
+        case .binary: return .binary
         }
     }
 

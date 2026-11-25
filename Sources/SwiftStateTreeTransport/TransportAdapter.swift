@@ -484,7 +484,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// Targeted events held for an in-turn join until its flip (#69), as encoded event
         /// frames in arrival order. The flip sends them after its firstSync; a join that ends
         /// without a flip discards them.
-        var heldEvents: [Data] = []
+        var heldEvents: [EncodedFrame] = []
         /// Encoded bytes of `heldEvents`.
         var heldBytes = 0
         /// Inbound frames from the session while its in-turn join waits for its flip (#69), in
@@ -1783,7 +1783,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///   close carry this one, and act only on that connection (#531). Nil: by ID.
     func endJoinBeforeAdmission(
         _ sessionID: SessionID,
-        finalFrame: Data?,
+        finalFrame: EncodedFrame?,
         attemptEnd: JoinAttemptEnd,
         connectionGeneration: UInt64? = nil
     ) -> Bool {
@@ -1795,7 +1795,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // queued while thousands of the land's sessions end.
         attemptEnd.markEnded()
         if let finalFrame {
-            sendFinalFrameAndClose(finalFrame, to: sessionID, generation: connectionGeneration)
+            // The router's join error, with the kind of the encoder that wrote it.
+            sendFinalFrameAndClose(finalFrame.data, kind: finalFrame.kind, to: sessionID, generation: connectionGeneration)
         } else {
             endedSessions.insert(sessionID)
             closeSessionDetached(sessionID, generation: connectionGeneration)
@@ -2396,7 +2397,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 message: "Too many frames were sent while the join completed"
             )
             if let data = try? messageEncoder.encode(TransportMessage.error(error)) {
-                sendFinalFrameAndClose(data, to: sessionID)
+                sendFinalFrameAndClose(data, kind: messageEncoder.encoding.frameKind, to: sessionID)
             } else {
                 let transport = self.transport
                 Task { await transport.closeSession(sessionID) }
@@ -2498,7 +2499,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
                 let errorData = try messageEncoder.encode(errorResponse)
-                enqueueOutbound(errorData, to: sessionID)
+                enqueueOutbound(errorData, to: sessionID, kind: messageEncoder.encoding.frameKind)
             } catch {
                 logger.error("❌ Failed to send decode error to client", metadata: [
                     "sessionID": .string(sessionID.rawValue),
@@ -2703,7 +2704,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         )
                         let errorResponse = TransportMessage.error(errorPayload)
                         if let errorData = try? messageEncoder.encode(errorResponse) {
-                            enqueueOutbound(errorData, to: sessionID)
+                            enqueueOutbound(errorData, to: sessionID, kind: messageEncoder.encoding.frameKind)
                         }
                     }
                 } else if case .fromServer = event {
@@ -2997,7 +2998,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
                     // The filtered expansion: a joining session gets no `.players` event either.
                     guard !outputGate.isClosed else { continue }
-                    enqueueOutbound(data, toSessions: withoutPendingSyncLag(sessionIDs(for: .player(playerID), holding: data)))
+                    let frame = EncodedFrame(data: data, kind: messageEncoder.encoding.frameKind)
+                    enqueueOutbound(data, kind: frame.kind, toSessions: withoutPendingSyncLag(sessionIDs(for: .player(playerID), holding: frame)))
                 }
                 return true
             }
@@ -3037,7 +3039,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Expanded to this land's sessions (#84): the transport is shared by every land
             // of the type, so its `.broadcast` and player map reach other lands' sessions.
             guard !outputGate.isClosed else { return true }
-            enqueueOutbound(data, toSessions: withoutPendingSyncLag(sessionIDs(for: transportTarget, holding: data)))
+            let frame = EncodedFrame(data: data, kind: messageEncoder.encoding.frameKind)
+            enqueueOutbound(data, kind: frame.kind, toSessions: withoutPendingSyncLag(sessionIDs(for: transportTarget, holding: frame)))
             return true
         } catch {
             logger.error("❌ Failed to send event", metadata: [
@@ -3101,7 +3104,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     throw SyncPhaseInjectedEncodeFault()
                 }
                 guard let data = try encodingPipeline.packEventFrame(body) else { continue }
-                frames.append(SyncPhaseFrame(data: data, sessionID: sessionID))
+                // MessagePack (`packEventFrame`): binary.
+                frames.append(SyncPhaseFrame(data: data, sessionID: sessionID, kind: .binary))
             } catch {
                 throw LandFailure(
                     kind: .eventEncode,
@@ -4018,17 +4022,17 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Whether holding `frames` too would take `sessionID`'s held events over the bound.
-    private func heldEventsWouldOverflow(_ sessionID: SessionID, adding frames: [Data]) -> Bool {
+    private func heldEventsWouldOverflow(_ sessionID: SessionID, adding frames: [EncodedFrame]) -> Bool {
         guard let joining = joiningSessions[sessionID], !frames.isEmpty else { return false }
         let limit = heldEventsLimit
-        let bytes = frames.reduce(0) { $0 + $1.count }
+        let bytes = frames.reduce(0) { $0 + $1.data.count }
         return joining.heldEvents.count + frames.count > limit.count || joining.heldBytes + bytes > limit.bytes
     }
 
     /// Holds `frames` (encoded event frames) for the joining `sessionID`, after the ones it
     /// holds. Returns false when that goes over the bound: then the session's held events and
     /// `frames` are discarded and counted, and the caller fails the join with `eventOverflow`.
-    private func holdEvents(_ frames: [Data], for sessionID: SessionID) -> Bool {
+    private func holdEvents(_ frames: [EncodedFrame], for sessionID: SessionID) -> Bool {
         guard !frames.isEmpty, var joining = joiningSessions[sessionID] else { return true }
         if heldEventsWouldOverflow(sessionID, adding: frames) {
             noteEventsDroppedForJoiningSessions(joining.heldEvents.count + frames.count)
@@ -4038,7 +4042,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return false
         }
         joining.heldEvents.append(contentsOf: frames)
-        joining.heldBytes += frames.reduce(0) { $0 + $1.count }
+        joining.heldBytes += frames.reduce(0) { $0 + $1.data.count }
         joiningSessions[sessionID] = joining
         return true
     }
@@ -4046,7 +4050,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// A target resolution's event for a joining session: held when the session holds events
     /// (an overflow is recorded, and fails the join after the emit returns), counted as
     /// dropped otherwise.
-    func holdOrDropEvent(_ frame: Data?, for sessionID: SessionID) {
+    func holdOrDropEvent(_ frame: EncodedFrame?, for sessionID: SessionID) {
         guard let frame, holdsEvents(sessionID) else {
             noteEventsDroppedForJoiningSessions(1)
             return
@@ -4098,9 +4102,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Opcode 107: the event frames of the first `end` queued targeted events for each session
     /// that holds events, with the stamp checks a joined recipient's events get. In-turn
     /// joiners past the flip budget are included: they keep their events to their own flip.
-    private func heldEventFrames(events: PendingEventManager, endingBefore end: Int) throws -> [SessionID: [Data]] {
+    private func heldEventFrames(events: PendingEventManager, endingBefore end: Int) throws -> [SessionID: [EncodedFrame]] {
         guard end > 0 else { return [:] }
-        var held: [SessionID: [Data]] = [:]
+        var held: [SessionID: [EncodedFrame]] = [:]
         for (sessionID, joining) in joiningSessions where holdsEvents(sessionID) {
             let bodies = pendingTargetedEventBodies(
                 events: events,
@@ -4111,7 +4115,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             var frames: [SyncPhaseFrame] = []
             try appendEventFrames(bodies, to: sessionID, into: &frames)
             if !frames.isEmpty {
-                held[sessionID] = frames.map(\.data)
+                held[sessionID] = frames.map { EncodedFrame(data: $0.data, kind: $0.kind) }
             }
         }
         return held
@@ -4191,14 +4195,14 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         noteEventsDroppedForJoiningSessions(targetedEventsForJoiningSessions(endingBefore: plan.consumedEvents.targeted))
         // The flips (#69), in the commit's segment: the joins end, their waiters resume. Each
         // flip's held events follow its firstSync in this element.
-        var frames = plan.frames.map { sessionFrame($0.data, to: $0.sessionID) }
+        var frames = plan.frames.map { sessionFrame($0.data, kind: $0.kind, to: $0.sessionID) }
         var drainsToStart: [SessionID] = []
         for flip in plan.flips where joiningSessions[flip.sessionID]?.ticket == flip.ticket {
             guard let joining = joiningSessions.removeValue(forKey: flip.sessionID) else { continue }
             noteSessionJoined(flip.sessionID, playerID: joining.playerID)
             startSyncLagTracking(flip.sessionID, plan: plan)
-            for data in joining.heldEvents {
-                frames.append(sessionFrame(data, to: flip.sessionID))
+            for held in joining.heldEvents {
+                frames.append(sessionFrame(held, to: flip.sessionID))
             }
             // The frames the session sent while joining are applied after its flip, in order,
             // by a drain started once this element is enqueued (#69).
@@ -4641,7 +4645,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             into: &plan
         )
         for recipient in recipients {
-            plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, isStateUpdate: true))
+            // The merged frame (opcode 107) is MessagePack: binary.
+            plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, kind: .binary, isStateUpdate: true))
         }
         plan.stateUpdateCount += recipients.count
     }
@@ -4725,7 +4730,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for joiner in joiners {
             let sessionID = joiner.recipient.sessionID
             let own = firstSyncFrames.filter { $0.sessionID == sessionID }
-            plan.frames.append(SyncPhaseFrame(data: joiner.joinResponse, sessionID: sessionID))
+            // JSON, as in the handshake (`LandRouter` builds it with the JSON encoder).
+            plan.frames.append(SyncPhaseFrame(data: joiner.joinResponse, sessionID: sessionID, kind: .text))
             plan.frames.append(contentsOf: own)
             plan.flips.append((sessionID: sessionID, ticket: joiner.ticket))
         }
@@ -4769,7 +4775,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             if let payload = payloadBySession[recipient.sessionID] {
                 plan.frames.append(SyncPhaseFrame(
-                    data: payload, sessionID: recipient.sessionID, isStateUpdate: true,
+                    data: payload, sessionID: recipient.sessionID, kind: stateUpdateEncoder.encoding.frameKind, isStateUpdate: true,
                     isResyncSnapshot: plan.syncLag.resyncs[recipient.sessionID] != nil
                 ))
                 plan.stateUpdateCount += 1
@@ -5343,7 +5349,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
 
-        plan.frames = [SyncPhaseFrame(data: updateData, sessionID: sessionID, isStateUpdate: true)]
+        plan.frames = [SyncPhaseFrame(data: updateData, sessionID: sessionID, kind: stateUpdateEncoder.encoding.frameKind, isStateUpdate: true)]
         plan.stateUpdateCount = 1
         // Marked as synced in the commit, so subsequent updates use diffs.
         plan.staged.firstSyncReceived.insert(playerID)
@@ -5610,7 +5616,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
 
             let sent: Void? = actionResponseTickets.ifCurrent(ticket) { _ in
-                enqueueOutbound(responseData, to: sessionID)
+                enqueueOutbound(responseData, to: sessionID, kind: messageEncoder.encoding.frameKind)
             }
             if sent == nil { droppedStaleActionAnswer(requestID: requestID, sessionID: sessionID) }
             return nil
@@ -5698,7 +5704,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             let errorData = try messageEncoder.encode(errorResponse)
             let sent: Void? = actionResponseTickets.ifCurrent(ticket) { _ in
-                enqueueOutbound(errorData, to: sessionID)
+                enqueueOutbound(errorData, to: sessionID, kind: messageEncoder.encoding.frameKind)
             }
             if sent == nil { droppedStaleActionAnswer(requestID: requestID, sessionID: sessionID) }
             return nil
@@ -6003,7 +6009,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
             let errorData = try messageEncoder.encode(errorResponse)
-            enqueueOutbound(errorData, to: sessionID)
+            enqueueOutbound(errorData, to: sessionID, kind: messageEncoder.encoding.frameKind)
 
             if logger.logLevel <= .debug {
                 logger.debug("📤 Sent join error", metadata: [
@@ -6043,7 +6049,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 stateUpdateFeatures: success && !stateUpdateFeatures.isEmpty ? stateUpdateFeatures : nil
             )
             let responseData = try messageEncoder.encode(response)
-            enqueueOutbound(responseData, to: sessionID)
+            enqueueOutbound(responseData, to: sessionID, kind: messageEncoder.encoding.frameKind)
 
             if logger.logLevel <= .debug {
                 logger.debug("📤 Sent join response", metadata: [

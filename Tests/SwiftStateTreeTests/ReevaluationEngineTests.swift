@@ -36,18 +36,18 @@ func makeReevaluationEngineTestDefinition() -> LandDefinition<ReevaluationEngine
         }
 
         Rules {
-            HandleAction(ReevaluationAddAction.self) { (state: inout ReevaluationEngineTestState, action: ReevaluationAddAction, _: LandContext) in
+            HandleAction(ReevaluationAddAction.self) { state, action, _ in
                 state.total += action.amount
                 return ReevaluationAddResponse(total: state.total)
             }
 
-            HandleEvent(ReevaluationAddEvent.self) { (state: inout ReevaluationEngineTestState, event: ReevaluationAddEvent, _: LandContext) in
+            HandleEvent(ReevaluationAddEvent.self) { state, event, _ in
                 state.total += event.amount
             }
         }
 
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout ReevaluationEngineTestState, _: LandContext) in
+            Tick(every: .seconds(3600)) { state, _ in
                 state.ticks += 1
             }
         }
@@ -243,7 +243,7 @@ func makeServerEventRecordingTestDefinition() -> LandDefinition<ServerEventRecor
         }
         Rules {}
         Lifetime {
-            Tick(every: .seconds(3600)) { (state: inout ServerEventRecordingTestState, ctx: LandContext) in
+            Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
                 ctx.emitEvent(ServerEventRecordingTestEvent(value: state.ticks), to: .all)
             }

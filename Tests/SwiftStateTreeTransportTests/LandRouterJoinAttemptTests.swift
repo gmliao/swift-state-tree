@@ -32,7 +32,7 @@ private actor AttemptConnection: WebSocketConnection {
     private var frameWaiters: [Int: FrameWaiter] = [:]
     private var nextWaiterID = 0
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         frames.append(data)
         let sent = messages
         for (id, waiter) in frameWaiters where waiter.condition(sent) {
@@ -109,17 +109,17 @@ private struct AttemptHarness {
     static func make() async throws -> AttemptHarness {
         let definition = Land("join-attempt", using: JoinAttemptState.self) {
             Rules {
-                CanJoin { (_: JoinAttemptState, session: PlayerSession, _: LandContext) in
+                CanJoin { _, session, _ in
                     if session.playerID == "deny" { return .deny(reason: "denied") }
                     // A mapped player (#234): "alias-<p>" joins as <p>.
                     let requested = session.playerID
                     let prefix = "alias-"
                     return .allow(playerID: PlayerID(requested.hasPrefix(prefix) ? String(requested.dropFirst(prefix.count)) : requested))
                 }
-                OnJoin { (state: inout JoinAttemptState, ctx: LandContext) in
+                OnJoin { state, ctx in
                     state.players.append(ctx.playerID.rawValue)
                 }
-                OnLeave { (state: inout JoinAttemptState, ctx: LandContext) in
+                OnLeave { state, ctx in
                     state.players.removeAll { $0 == ctx.playerID.rawValue }
                     state.leaves += 1
                 }

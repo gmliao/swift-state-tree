@@ -352,7 +352,7 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     let onJoinSuccess: (@Sendable (SessionID, [String]?) async -> Void)?
     let messageKindRecorder: MessageKindRecorder?
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data, kind: WebSocketFrameKind) async throws {
         // Server sends to Client = Client receives
         await counter.recordReceived(bytes: data.count, sessionID: sessionID)
         if let seq = SyncSequencePeek.seq(data) {

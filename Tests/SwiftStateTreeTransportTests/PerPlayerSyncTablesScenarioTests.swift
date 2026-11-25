@@ -79,16 +79,16 @@ private func makePPScenarioLand(landID: String) -> LandDefinition<PPScenarioStat
     Land(landID, using: PPScenarioState.self) {
         ClientEvents { Register(PPScenarioStep.self) }
         Rules {
-            OnJoin { (state: inout PPScenarioState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 state.hands[ctx.playerID] = []
             }
-            OnLeave { (state: inout PPScenarioState, ctx: LandContext) in
+            OnLeave { state, ctx in
                 state.hands.removeValue(forKey: ctx.playerID)
                 for key in state.marks.keys.sorted() where key.hasPrefix(ctx.playerID.rawValue) {
                     state.marks.removeValue(forKey: key)
                 }
             }
-            HandleEvent(PPScenarioStep.self) { (state: inout PPScenarioState, step: PPScenarioStep, ctx: LandContext) in
+            HandleEvent(PPScenarioStep.self) { state, step, ctx in
                 state.steps += 1
                 if !step.hand.isEmpty { state.hands[ctx.playerID, default: []].append(step.hand) }
                 if step.clearHand { state.hands.removeValue(forKey: ctx.playerID) }
@@ -110,7 +110,7 @@ private func makePPScenarioBroadcastLand(landID: String) -> LandDefinition<PPSce
     Land(landID, using: PPScenarioBroadcastState.self) {
         ClientEvents { Register(PPScenarioStep.self) }
         Rules {
-            HandleEvent(PPScenarioStep.self) { (state: inout PPScenarioBroadcastState, step: PPScenarioStep, _: LandContext) in
+            HandleEvent(PPScenarioStep.self) { state, step, _ in
                 if step.risky != PPScenarioStep.none { state.flaky.n = step.risky }
                 if step.board != PPScenarioStep.none {
                     state.round += 1

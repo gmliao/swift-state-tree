@@ -36,7 +36,7 @@ func testCompleteJWTFlow() async throws {
         using: EndToEndTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout EndToEndTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 let username = ctx.metadata["username"]
                 state.players[ctx.playerID] = EndToEndPlayerInfo(
@@ -117,7 +117,7 @@ func testCompleteGuestFlow() async throws {
         using: EndToEndTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout EndToEndTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 let username = ctx.metadata["username"]
                 state.players[ctx.playerID] = EndToEndPlayerInfo(
@@ -187,7 +187,7 @@ func testMixedJWTAndGuestUsers() async throws {
         using: EndToEndTestState.self
     ) {
         Rules {
-            OnJoin { (state: inout EndToEndTestState, ctx: LandContext) in
+            OnJoin { state, ctx in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 let username = ctx.metadata["username"]
                 state.players[ctx.playerID] = EndToEndPlayerInfo(

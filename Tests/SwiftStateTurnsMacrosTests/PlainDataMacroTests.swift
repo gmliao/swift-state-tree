@@ -87,6 +87,87 @@ struct PlainDataMacroTests {
         #expect(text.contains("PlainDataCheck.field(value.index)"))
     }
 
+    @Test("A generic parameter no stored value names adds no constraint (#769)")
+    func unstoredParameters() {
+        let (text, messages) = expand("""
+            @PlainData
+            struct ProductInfo<D: HasProductDatabase> {
+                let productID: Int
+                func lookup(_ deps: D) -> String { "" }
+                var none: D? { nil }
+            }
+            @PlainData
+            enum Choice<T, U> {
+                case some(T)
+                case none
+            }
+            @PlainData
+            struct Nested<A, B, C: Collection> {
+                var list: [A]
+                var first: C.Element?
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("extension ProductInfo: SwiftStateTurns.PlainData {"))
+        #expect(text.contains("extension Choice: SwiftStateTurns.PlainData where T: SwiftStateTurns.PlainData {"))
+        // Named inside another type, or by a member type: `[A]` names A, `C.Element` names C.
+        #expect(text.contains("extension Nested: SwiftStateTurns.PlainData where A: SwiftStateTurns.PlainData, C: SwiftStateTurns.PlainData {"))
+    }
+
+    @Test("A same-type requirement makes the other side's generic parameters named when one side's are, either way round and transitively")
+    func sameTypeRequirementsCarryTheName() {
+        let (text, messages) = expand("""
+            @PlainData
+            struct First<C: Collection, T> where C.Element == T {
+                let first: C.Element?
+            }
+            @PlainData
+            struct Reversed<C: Collection, T, U> where T == C.Element, U == T {
+                let first: C.Element?
+            }
+            @PlainData
+            struct OutOfOrder<C: Collection, T, U> where U == T, T == C.Element {
+                let first: C.Element?
+            }
+            @PlainData
+            struct Concrete<D: HasID> where D.ID == Int {
+                let productID: Int
+            }
+            @PlainData
+            struct Unrelated<C: Collection, T, U> where C.Element == T {
+                let u: U
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("extension First: SwiftStateTurns.PlainData where C: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData {"))
+        #expect(text.contains("extension Reversed: SwiftStateTurns.PlainData where C: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData, U: SwiftStateTurns.PlainData {"))
+        // `U == T` comes first, before anything names `T`: only a second pass over the
+        // requirements reaches `U`.
+        #expect(text.contains("extension OutOfOrder: SwiftStateTurns.PlainData where C: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData, U: SwiftStateTurns.PlainData {"))
+        // A concrete type isn't a parameter: a field of `Int` doesn't reach `D` through `D.ID == Int`.
+        #expect(text.contains("extension Concrete: SwiftStateTurns.PlainData {"))
+        // A requirement whose sides no field names adds nothing.
+        #expect(text.contains("extension Unrelated: SwiftStateTurns.PlainData where U: SwiftStateTurns.PlainData {"))
+    }
+
+    @Test("A field of a type or typealias the body declares constrains every parameter, `#if` included", arguments: [
+        "struct Inner { let x: Int }",
+        "enum Inner { case x }",
+        "typealias Inner = Int",
+        "#if DEBUG\ntypealias Inner = Int\n#endif",
+    ])
+    func localTypesConstrainEverything(_ local: String) {
+        let (text, messages) = expand("""
+            @PlainData
+            struct Outer<A, B> {
+                \(local)
+                let inner: Inner
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("extension Outer: SwiftStateTurns.PlainData where A: SwiftStateTurns.PlainData, B: SwiftStateTurns.PlainData {"))
+    }
+
     @Test("An enum checks every associated value of every case")
     func enumAssociatedValues() {
         let (text, messages) = expand("""

@@ -52,7 +52,7 @@ private struct BacklogFixture {
     func send(bytes: Int) {
         var buffer = channel.allocator.buffer(capacity: bytes)
         buffer.writeRepeatingByte(7, count: bytes)
-        handler.send(buffer)
+        handler.send(buffer, kind: .binary)
     }
 
     func setWritable(_ writable: Bool) {
