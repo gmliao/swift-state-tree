@@ -1,0 +1,23 @@
+job: 836-fix1
+at: 2026-11-25T06:03:00Z
+status: done
+head: ed10a76b (pushed to fix/apt-helper-stub-log-first)
+
+comment: https://github.com/gmliao/swift-state-tree/pull/836#issuecomment-7154300789
+
+text: |
+  Should fix: added case_ slow-forks-hang 0 "hang ok ok" "ok" 1 6
+  - Red on old stub (84f26c98): all stubs killed at 2 s before basename completes;
+    no entries recorded; 5 attempts run; "calls wrong, 18 s (limit 6)"
+  - Green on fixed stub: log written first (builtins), hang path ps/tr killed
+    before completing (fine); "ok   slow-forks-hang (exit 0, 2 s)"
+  - Comment also updated: "ends any stub before it can record" (not just ok/fail)
+
+  Nit (load loop): 20/20 passed under yes > /dev/null x nproc (4 workers)
+
+  Verify closing lines:
+  - shellcheck: clean
+  - pre-push-checks: "pre-push-checks: passed"
+  - test-ci-apt-install.sh: "ok   usage without a package (exit 2, the usage text, no apt-get)"
+
+git status --short: (empty - clean working tree)
