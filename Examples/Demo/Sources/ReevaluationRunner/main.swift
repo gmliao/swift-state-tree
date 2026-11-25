@@ -1,6 +1,8 @@
 import Foundation
 import DemoContent
 import SwiftStateTree
+// The standard record payload decoders: a record from a MessagePack transport holds MessagePack payloads.
+import SwiftStateTreeMessagePack
 
 @main
 struct ReevaluationRunnerMain {
@@ -162,7 +164,8 @@ struct ReevaluationRunnerMain {
                 recordFilePath: recordFilePath,
                 sink: sink,
                 exportJsonlPath: exportJsonlPath,
-                maxReplayTicks: maxReplayTicks
+                maxReplayTicks: maxReplayTicks,
+                payloadDecoders: .standard
             )
         } catch let error as ReevaluationExportWriteError {
             // The export is incomplete: the run must not report success (#263).
@@ -235,7 +238,8 @@ struct ReevaluationRunnerMain {
             definition: definition,
             initialState: initialState,
             recordFilePath: recordFilePath,
-            maxReplayTicks: maxReplayTicks
+            maxReplayTicks: maxReplayTicks,
+            payloadDecoders: .standard
         )
         
         let mismatches = diffHashes(a: first.tickHashes, b: second.tickHashes)

@@ -2,6 +2,8 @@ import Foundation
 import GameContent
 import Logging
 @_spi(Testing) import SwiftStateTree
+// The standard record payload decoders: a record from a MessagePack transport holds MessagePack payloads.
+import SwiftStateTreeMessagePack
 
 @main
 struct ReevaluationRunnerMain {
@@ -262,7 +264,8 @@ struct ReevaluationRunnerMain {
                     exportJsonlPath: exportJsonlPath,
                     diffWithPath: diffWithPath,
                     logger: logger,
-                    maxReplayTicks: maxReplayTicks
+                    maxReplayTicks: maxReplayTicks,
+                    payloadDecoders: .standard
                 )
             }
         case VisibilityTestConfig.landType:
@@ -283,7 +286,8 @@ struct ReevaluationRunnerMain {
                         exportJsonlPath: exportJsonlPath,
                         diffWithPath: diffWithPath,
                         logger: logger,
-                        maxReplayTicks: maxReplayTicks
+                        maxReplayTicks: maxReplayTicks,
+                        payloadDecoders: .standard
                     )
                 }
                 break
@@ -297,7 +301,8 @@ struct ReevaluationRunnerMain {
                     exportJsonlPath: exportJsonlPath,
                     diffWithPath: diffWithPath,
                     logger: logger,
-                    maxReplayTicks: maxReplayTicks
+                    maxReplayTicks: maxReplayTicks,
+                    payloadDecoders: .standard
                 )
             }
         case ResolverTestConfig.landType:
@@ -310,7 +315,8 @@ struct ReevaluationRunnerMain {
                     exportJsonlPath: exportJsonlPath,
                     diffWithPath: diffWithPath,
                     logger: logger,
-                    maxReplayTicks: maxReplayTicks
+                    maxReplayTicks: maxReplayTicks,
+                    payloadDecoders: .standard
                 )
             }
         default:

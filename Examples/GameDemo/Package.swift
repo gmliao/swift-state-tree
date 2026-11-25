@@ -68,6 +68,7 @@ let package = Package(
             dependencies: [
                 "GameContent",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
             ],
             path: "Sources/ReevaluationRunner"
         ),
