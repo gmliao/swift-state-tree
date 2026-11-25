@@ -233,7 +233,7 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 
 ## 12. Probes
 
-Each point below rests on Swift semantics, so it is checked by a probe, not argued. The files are kept with the plan's working notes; the code is quoted where it decides the point.
+Each point below rests on Swift semantics, so it is checked by a probe, not argued. The probe files are next to this plan, with their commands and expected output in their headers, so a review can rerun them at the pinned toolchain: `2026-11-25-k2-probe-p1-p3.swift` (typecheck against the built modules) and `2026-11-25-k2-probe-p2-p4.swift` (self-contained; run on Linux, since its trap mode crashes on purpose).
 
 | # | Point (section) | Probe | Result |
 |---|---|---|---|
@@ -250,4 +250,4 @@ What the probes don't cover:
 
 | Change | Where |
 |---|---|
-| The probes for the Swift-semantics points (the maintainer's rule of 2026-11-25: every plan revision has a probe section) | §12 |
+| The probes for the Swift-semantics points (the maintainer's rule of 2026-11-25: every plan revision has a probe section); the probe files committed next to the plan (Review's early look) | §12 |
