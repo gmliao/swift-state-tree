@@ -76,17 +76,18 @@ dependent on the machine), 12 and 13 (permessage-deflate).
 
 ## Baseline
 
-`expected-failures.txt` lists the cases that failed on the baseline run (the Autobahn workflow's
-run on #813's change: 11 FAILED, 9 NON-STRICT, 3 INFORMATIONAL, 224 OK of 247). Each cause is a
-guess from `summarize.py`. Causes without a `guess:` prefix (`text-as-binary`, none since #813)
-are diagnosed from the case report. Causes with `guess:` are derived from the section number alone — the section's
-usual failure mode — and may be wrong for individual cases; file separate issues when a cause is
-confirmed.
+`expected-failures.txt` lists the cases that failed on the baseline run: none since #822, whose
+Autobahn workflow run had 0 FAILED, 11 NON-STRICT, 3 INFORMATIONAL and 233 OK of 247. Before it,
+#813's run had 11 FAILED: 5.9–5.18, a bad fragment sequence the server didn't fail (#822 fails it
+with 1002), and 6.4.4.
 
-| Cause | Cases | What the suite saw |
-|-------|-------|--------------------|
-| `guess:fragmentation` | 10 | Section 5 (5.9–5.18): a bad fragment sequence is not failed. Diagnosed from the reports: the reassembler ignores a continuation with nothing to continue, and a new text or binary opener replaces an unfinished message, where RFC 6455 fails the connection with 1002. |
-| `guess:utf8` | 1 | 6.4.4: one invalid frame sent in three chops. Diagnosed: NIO's frame decoder hands over a frame only once all of it has arrived, so the check can't fail fast inside one frame; the suite times out and closes first. 6.4.1–6.4.3, the same payload across frames, are NON-STRICT for the same reason (the check runs on the complete message). |
+The NON-STRICT cases, for reference:
+
+| Cases | What the suite saw |
+|-------|--------------------|
+| 3.2, 3.3, 4.1.3, 4.1.4, 4.2.3, 4.2.4, 5.15 | The connection is failed with 1002 as expected, but a message sent before the bad frame in the same chop isn't echoed first: the failure closes the connection before the message's echo goes out. |
+| 6.4.1–6.4.3 | Invalid UTF-8 across fragments: the check runs on the complete message, so the connection fails at the message's end, not at the first bad fragment. |
+| 6.4.4 | One invalid frame sent in three chops. NIO's frame decoder hands over a frame only once all of it has arrived, so the check can't fail fast inside one frame. On #813's run the suite timed out and closed first (FAILED); on #822's it saw the 1007 close (NON-STRICT). It depends on timing, so it may show as FAILED again. |
 
 A case that fails and isn't listed is a regression, a listed case that passes is a fix: update the
 file with the second command above in the same change.

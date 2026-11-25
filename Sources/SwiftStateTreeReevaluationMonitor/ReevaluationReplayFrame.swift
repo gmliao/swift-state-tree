@@ -170,11 +170,12 @@ public struct ReevaluationReplayFrame: Sendable {
         return nil
     }
 
-    /// Whether a runner reading `source` decodes with the JSON record view's allowance: only the
-    /// JSON view (`JSONReevaluationSource`), whose numbers lost the float/integer split. Any other
-    /// source, a custom one included, is strict.
+    /// Whether a runner reading `source` decodes with the JSON record view's allowance: only when
+    /// the source parsed its frames from JSON bytes, where numbers lost the float/integer split.
+    /// A source that holds canonical frames built in memory (`init(metadata:frames:)`) is strict,
+    /// even if its type is `JSONReevaluationSource`. Any custom source is also strict by default.
     package static func integralFloats(for source: any ReevaluationSource) -> Bool {
-        source is JSONReevaluationSource
+        source.readsJSONRecord
     }
 
     private static func resolveEvents<State: StateNodeProtocol>(
