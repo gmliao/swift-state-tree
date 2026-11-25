@@ -1,4 +1,4 @@
-// expect-error: 'HasPriceCache'
+// expect-error: requires that 'ThinServices' conform to 'HasPriceCache'
 // #769 §3.4: a resolver's Dependencies is the land's Services, so a land whose services lack
 // the capability the resolver needs doesn't compile at the declaration.
 import SwiftStateTree

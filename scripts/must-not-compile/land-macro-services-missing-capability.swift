@@ -1,4 +1,4 @@
-// expect-error: 'HasPriceCache'
+// expect-error: requires that 'ThinServices' conform to 'HasPriceCache'
 // #769 §4: @Land(…, services:) puts the body under the land's services, so a resolver needing a
 // capability they lack doesn't compile.
 import SwiftStateTree
