@@ -17,7 +17,12 @@
 ///         let result = await task.result
 ///         lifecycle.finishStart(token, succeeded: (try? result.get()) != nil)
 ///         try result.get()
-///     case .join(let task): try await task.value
+///     case .join(let task, let token):
+///         // A joiner finishes too: it may resume before the runner does, and the phase is
+///         // written by whichever call comes first (the other is a no-op).
+///         let result = await task.result
+///         lifecycle.finishStart(token, succeeded: (try? result.get()) != nil)
+///         try result.get()
 ///     case .alreadyRunning: return
 ///     case .stopped: throw LifecycleError.stopped
 ///     }
@@ -32,8 +37,10 @@ package struct Lifecycle: Sendable {
     package enum StartDecision: Sendable {
         /// This call starts it: await `task`, then call `finishStart(token, succeeded:)`.
         case run(Task<Void, Error>, token: Epoch)
-        /// A start is in flight: await it.
-        case join(Task<Void, Error>)
+        /// A start is in flight: await `task`, then call `finishStart(token, succeeded:)`, as
+        /// `.run` does. The joiner may resume before the runner, and the phase must be written
+        /// when either returns; the second finish call is a no-op.
+        case join(Task<Void, Error>, token: Epoch)
         case alreadyRunning
         case stopped
     }
@@ -42,8 +49,10 @@ package struct Lifecycle: Sendable {
     package enum StopDecision: Sendable {
         /// This call stops it: await `task`, then call `finishStop(token)`.
         case run(Task<Void, Never>, token: Epoch)
-        /// A stop is in flight: await it.
-        case join(Task<Void, Never>)
+        /// A stop is in flight: await `task`, then call `finishStop(token)`, as `.run` does. The
+        /// joiner may resume before the runner, and the phase must be `.stopped` when either
+        /// returns; the second finish call is a no-op.
+        case join(Task<Void, Never>, token: Epoch)
         /// Never started, or already stopped.
         case nothingToStop
     }
@@ -68,8 +77,8 @@ package struct Lifecycle: Sendable {
             phase = .starting
             return .run(task, token: token)
         case .starting:
-            guard let startTask else { return .alreadyRunning }
-            return .join(startTask)
+            guard let startTask, let token else { return .alreadyRunning }
+            return .join(startTask, token: token)
         case .running:
             return .alreadyRunning
         case .stopping, .stopped:
@@ -93,8 +102,8 @@ package struct Lifecycle: Sendable {
             phase = .stopped
             return .nothingToStop
         case .stopping:
-            guard let stopTask else { return .nothingToStop }
-            return .join(stopTask)
+            guard let stopTask, let token else { return .nothingToStop }
+            return .join(stopTask, token: token)
         case .starting, .running:
             let task = make(phase == .starting ? startTask : nil)
             let token = counter.next()

@@ -544,12 +544,11 @@ public actor NIOLandHost {
     /// serving.
     func start() async throws {
         switch lifecycle.beginStart({ Task { try await self.performStart() } }) {
-        case .run(let task, let token):
+        case .run(let task, let token), .join(let task, let token):
+            // A joiner finishes too, so `start()` returns after the phase is written.
             let result = await task.result
             lifecycle.finishStart(token, succeeded: (try? result.get()) != nil)
             try result.get()
-        case .join(let task):
-            try await task.value
         case .alreadyRunning:
             return
         case .stopped:
@@ -722,8 +721,11 @@ public actor NIOLandHost {
             resumeStopWaiters()
             await task.value
             lifecycle.finishStop(token)
-        case .join(let task):
+        case .join(let task, let token):
+            // A joiner finishes too: `run()` joins the stop another caller runs, and returns
+            // "once the shutdown finished" (#351) only when the phase says so.
             await task.value
+            lifecycle.finishStop(token)
         case .nothingToStop:
             resumeStopWaiters()
         }

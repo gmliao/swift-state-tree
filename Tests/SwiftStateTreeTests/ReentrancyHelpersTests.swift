@@ -123,7 +123,7 @@ struct ReentrancyHelpersTests {
         guard case .run(let task, let token) = lifecycle.beginStart({ Task { await gate.wait() } }) else {
             Issue.record("first start should run"); return
         }
-        guard case .join(let joined) = lifecycle.beginStart({ Task {} }) else {
+        guard case .join(let joined, let joinerToken) = lifecycle.beginStart({ Task {} }) else {
             Issue.record("second start should join"); return
         }
         #expect(lifecycle.phase == .starting)
@@ -131,6 +131,9 @@ struct ReentrancyHelpersTests {
         try await task.value
         try await joined.value
         lifecycle.finishStart(token, succeeded: true)
+        #expect(lifecycle.phase == .running)
+        // The joiner's own finish after the runner's is a no-op, as the runner's is after the joiner's.
+        lifecycle.finishStart(joinerToken, succeeded: true)
         #expect(lifecycle.phase == .running)
         guard case .alreadyRunning = lifecycle.beginStart({ Task {} }) else {
             Issue.record("start while running should report alreadyRunning"); return
@@ -168,9 +171,10 @@ struct ReentrancyHelpersTests {
         // The start finishing after the stop took over does not move the phase.
         lifecycle.finishStart(startToken, succeeded: true)
         #expect(lifecycle.phase == .stopping)
-        guard case .join = lifecycle.beginStop({ _ in Task {} }) else {
+        guard case .join(_, let joinerToken) = lifecycle.beginStop({ _ in Task {} }) else {
             Issue.record("second stop should join"); return
         }
+        #expect(joinerToken == stopToken, "a joiner gets the running stop's token")
         guard case .stopped = lifecycle.beginStart({ Task {} }) else {
             Issue.record("start while stopping should report stopped"); return
         }
@@ -287,8 +291,9 @@ private actor LifecycleOwner {
     }
 
     func joinStop() async -> Lifecycle.Phase {
-        guard case .join(let task) = lifecycle.beginStop({ _ in Task {} }) else { return lifecycle.phase }
+        guard case .join(let task, let token) = lifecycle.beginStop({ _ in Task {} }) else { return lifecycle.phase }
         await task.value
+        lifecycle.finishStop(token)
         return lifecycle.phase
     }
 
@@ -301,8 +306,9 @@ private actor LifecycleOwner {
     }
 
     func joinStart() async -> Lifecycle.Phase {
-        guard case .join(let task) = lifecycle.beginStart({ Task {} }) else { return lifecycle.phase }
-        try? await task.value
+        guard case .join(let task, let token) = lifecycle.beginStart({ Task {} }) else { return lifecycle.phase }
+        let result = await task.result
+        lifecycle.finishStart(token, succeeded: (try? result.get()) != nil)
         return lifecycle.phase
     }
 }
