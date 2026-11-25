@@ -478,3 +478,17 @@ private final class HoldSequence: @unchecked Sendable {
     }
 }
 
+
+@Suite("The superseded close code (#861)")
+struct SupersededCloseCodeTests {
+    @Test("4017 is its own code: none of the other application codes, and the TypeScript SDK's value")
+    func codeTable() {
+        #expect(SessionClose.Code.superseded == 4017)
+        let others: [UInt16] = [
+            SessionClose.Code.sendBacklog, SessionClose.Code.slowConsumer, SessionClose.Code.unresponsive,
+            SessionClose.Code.unencodableView, SessionClose.Code.landStopped, SessionClose.Code.landFailed,
+        ]
+        #expect(!others.contains(SessionClose.Code.superseded))
+        #expect(SessionClose.superseded == SessionClose(code: 4017, reason: "logged in elsewhere", closeGrace: .milliseconds(500)))
+    }
+}
