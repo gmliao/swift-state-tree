@@ -144,6 +144,30 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     func waitForWriterDrainForInTurnSync() async {}
 }
 
+/// An in-turn transport whose sync phase returns two distinguishable drafts together with a
+/// failure, as no production adapter does (its failing plan returns before it records), so the
+/// record order of a failing phase can be pinned.
+final class TurnSkeletonFailingPhaseTransport: LandKeeperTransport, @unchecked Sendable {
+    static let failure = LandFailure(kind: .syncPlan, detail: "the stub's failing plan", position: LandFailurePosition(stage: .syncPhase))
+
+    var hasJoinsAwaitingSync: Bool { false }
+    func closeOutputs(for failure: LandFailure) {}
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
+    func syncNowFromTransport() async {}
+    func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async {}
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(.landFailed(Self.failure), syncStream: [outputDraft(1), outputDraft(2)], keepsEvents: false)
+    }
+    func waitForWriterDrainForInTurnSync() async {}
+}
+
 private final class Counter: @unchecked Sendable {
     private let lock = NSLock()
     private var n = 0
@@ -242,6 +266,51 @@ struct KeeperTurnSkeletonTests {
         #expect(await keeper.bodyDepthForTesting == 0)
         // Applied in the turn: the backstop, whose guard skips a draining land, had nothing.
         #expect(await keeper.lateReentriesAppliedForTesting == 0)
+    }
+
+    @Test("A failing sync phase's drafts are recorded in order, then the terminal entry, then the turn's end; teardown adds nothing")
+    func failingPhaseRecordOrder() async throws {
+        let keeper = makeKeeper(recording: true)
+        let transport = TurnSkeletonFailingPhaseTransport()
+        await keeper.setTransport(transport)
+        let tracker = await keeper.recorderSubmissionsForTesting
+        tracker.startTraceForTesting()
+        let counterBefore = await keeper.syncStreamCounterForTesting()
+
+        let result = await keeper.syncTurnNow(via: transport, reason: .syncNow)
+
+        #expect(result == .landFailed(TurnSkeletonFailingPhaseTransport.failure))
+        let expected = ["sync-output", "sync-output", "terminal", "endTurn"]
+        #expect(tracker.traceForTesting == expected)
+        #expect(await keeper.syncStreamCounterForTesting() == counterBefore + 2)
+
+        // The teardown the failure starts submits nothing and numbers nothing.
+        #expect(await withinHangBound { await keeper.waitUntilDrainStartedForTesting() })
+        await keeper.waitUntilDrained()
+        await tracker.waitForAll()
+        #expect(tracker.traceForTesting == expected)
+        #expect(await keeper.syncStreamCounterForTesting() == counterBefore + 2)
+
+        // The two drafts reached the recorder in the phase's order (the trace's labels can't
+        // tell them apart; their tags can).
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        let outputs = await recorder.getAllFrames().flatMap(\.syncOutputs)
+        #expect(outputs.map(\.broadcastHash) == [0xbeef_0001, 0xbeef_0002])
+        #expect(outputs.map(\.streamIndex) == [counterBefore, counterBefore + 1])
+    }
+
+    @Test("A tickless input batch that holds only a failure ends its trace with the turn's end")
+    func failureOnlyBatchEndsWithItsTurnEnd() async throws {
+        let keeper = makeKeeper(recording: true)
+        let tracker = await keeper.recorderSubmissionsForTesting
+        tracker.startTraceForTesting()
+
+        await keeper.submitLandFailure(TurnSkeletonFailingPhaseTransport.failure)
+
+        #expect(await keeper.waitForFailureForTesting())
+        await keeper.waitForInputDrainIdleForTesting()
+        await tracker.waitForAll()
+        #expect(tracker.traceForTesting == ["terminal", "endTurn"])
     }
 
     @Test("Without a re-entry the same turn commits, and nothing is refused")
