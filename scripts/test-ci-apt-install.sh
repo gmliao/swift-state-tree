@@ -37,6 +37,7 @@ trap 'exit 143' TERM
 tmp="$(mktemp -d)"
 fail=0
 deadline=60
+stub_path_prefix=""
 
 mkdir -p "$tmp/bin"
 for tool in apt-get dpkg; do
@@ -86,7 +87,7 @@ case_() {
   tr ' ' '\n' <<<"$apt" > "$dir/apt-get.plan"
   tr ' ' '\n' <<<"$dpkg" > "$dir/dpkg.plan"
   start=$SECONDS
-  APT_STUB_DIR="$dir" APT_STUB_GROUPS="$dir/groups" PATH="$tmp/bin:$PATH" CI_APT_UPDATE_TIMEOUT=1 CI_APT_INSTALL_TIMEOUT=1 \
+  APT_STUB_DIR="$dir" APT_STUB_GROUPS="$dir/groups" PATH="${stub_path_prefix}$tmp/bin:$PATH" CI_APT_UPDATE_TIMEOUT=1 CI_APT_INSTALL_TIMEOUT=1 \
     CI_APT_DPKG_TIMEOUT=1 CI_APT_KILL_AFTER=1 CI_APT_RETRY_DELAY=0 \
     timeout --kill-after=5 "$deadline" bash "$root/scripts/ci-apt-install.sh" curl > "$dir/out" 2>&1 || rc=$?
   elapsed=$((SECONDS - start))
@@ -115,6 +116,21 @@ case_ repair-hangs-then-ok 0 "fail ok ok" "hang" 1 15 'dpkg --configure -a faile
 case_ repair-ignores-term-then-ok 0 "fail ok ok" "stubborn" 1 6 'dpkg --configure -a failed or timed out \(exit 137\)'
 case_ repair-fails-then-ok 0 "fail ok ok" "fail" 1 3 'dpkg --configure -a failed or timed out \(exit 100\)'
 case_ every-attempt-hangs 1 "hang hang hang hang hang" "ok ok ok ok" 4 30 'apt failed after 5 attempts'
+
+# slow-forks: each of basename, ps, tr, cat and sed is shimmed to sleep 3 s before exec-ing the
+# real tool. With the old stub those forks happen before the log write; a 2 s kill (1 s bound +
+# 1 s --kill-after) ends an ok or fail stub before it can record. With the fixed stub the ok and
+# fail paths use only builtins, so the shims are never reached.
+shim_dir="$tmp/shims"
+mkdir -p "$shim_dir"
+for _stool in basename ps tr cat sed; do
+  _sreal="$(command -v "$_stool")"
+  printf '#!/usr/bin/env bash\nsleep 3\nexec %s "$@"\n' "$_sreal" > "$shim_dir/$_stool"
+  chmod +x "$shim_dir/$_stool"
+done
+stub_path_prefix="$shim_dir:"
+case_ slow-forks 0 "fail ok ok" "ok" 1 3
+stub_path_prefix=""
 
 # No package: the usage text, and no apt-get call.
 dir="$tmp/no-package-args"; mkdir -p "$dir" && : > "$dir/log" && echo 0 > "$dir/apt-get.calls"
