@@ -300,7 +300,7 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     package let site: String?
     /// The handler's checks and its write, as one call: it throws only from the payload type
     /// check or `validate`, before anything is written (#586).
-    private let handler: @Sendable (inout State, Any, LandContext) throws -> AnyCodable
+    private let handler: @Sendable (inout State, Any, LandContext) throws -> any ResponsePayload
     /// The handler's resolvers (#769): built when the action is admitted. `nil` when it declares
     /// none.
     package let resolvers: ResolverDeclaration<(State, Any)>?
@@ -324,7 +324,7 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
                     throw LandError.invalidActionType
                 }
                 let plan = try validate(state, action, ValidateContext(ctx))
-                return AnyCodable(apply(&state, action, plan, ctx))
+                return apply(&state, action, plan, ctx)
             },
             resolvers: nil
         )
@@ -336,7 +336,7 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
         type: Any.Type,
         responseType: Any.Type?,
         site: String? = nil,
-        invoke: @escaping @Sendable (inout State, Any, LandContext) throws -> AnyCodable,
+        invoke: @escaping @Sendable (inout State, Any, LandContext) throws -> any ResponsePayload,
         resolvers: ResolverDeclaration<(State, Any)>?
     ) {
         self.type = type
@@ -372,7 +372,7 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
         action: A,
         ctx: LandContext
     ) throws -> AnyCodable {
-        try handler(&state, action, ctx)
+        AnyCodable(try handler(&state, action, ctx))
     }
     
     /// Invoke using an already type-erased action payload.
@@ -381,6 +381,15 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
         action: Any,
         ctx: LandContext
     ) throws -> AnyCodable {
+        AnyCodable(try handler(&state, action, ctx))
+    }
+
+    /// The keeper's form: the response as the handler returned it, not boxed.
+    package func invokeTyped(
+        _ state: inout State,
+        action: Any,
+        ctx: LandContext
+    ) throws -> any ResponsePayload {
         try handler(&state, action, ctx)
     }
 }
