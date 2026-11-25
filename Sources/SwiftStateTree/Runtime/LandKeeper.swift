@@ -417,6 +417,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var players: [PlayerID: InternalPlayerSession] = [:]
     /// Mints `InternalPlayerSession.generation`: every insert of a player entry gets a new one.
     private var entryGenerations = EpochCounter()
+
+    /// Players whose duplicate login is between its cap check and its insert (#852). The kick of
+    /// the old session awaits, and the player's entry is gone meanwhile; the hold keeps its place,
+    /// so a newcomer can't take it. Held in `joinReportingAdmission`, ended by ticket.
+    private var rejoinHolds = GenerationTable<PlayerID>()
     private let services: LandServices
 
     private var transport: LandKeeperTransport?
@@ -2066,10 +2071,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
         // Skip check if player is already in the room (reconnection scenario)
-        let isReconnection = players[playerID] != nil
+        // A player whose old session is being kicked has no entry for a while, but still has a hold.
+        let isReconnection = players[playerID] != nil || rejoinHolds.ticket(for: playerID) != nil
 
         if let maxPlayers = definition.config.maxPlayers, !isReconnection {
-            let currentPlayerCount = players.count
+            // Held places count too: their owners are about to come back with a new connection.
+            let heldPlaces = rejoinHolds.keys.filter { players[$0] == nil }.count
+            let currentPlayerCount = players.count + heldPlaces
             guard currentPlayerCount < maxPlayers else {
                 logger.info("Join rejected: room is full", metadata: [
                     "currentPlayers": .stringConvertible(currentPlayerCount),
@@ -2078,6 +2086,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 throw JoinError.roomIsFull
             }
         }
+
+        // Hold the returning player's place until its entry is back or this join fails. Ended by
+        // ticket: a later login of the same player issues its own, which this one's end must not clear.
+        let rejoinTicket = isReconnection ? rejoinHolds.issue(playerID) : nil
+        defer { if let rejoinTicket { rejoinHolds.end(rejoinTicket) } }
 
         await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
@@ -2114,6 +2127,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let entryGeneration = entryGenerations.next()
         playerSession.generation = entryGeneration
         players[playerID] = playerSession
+        if let rejoinTicket { rejoinHolds.end(rejoinTicket) }
 
         destroyTask?.cancel()
         destroyTask = nil
