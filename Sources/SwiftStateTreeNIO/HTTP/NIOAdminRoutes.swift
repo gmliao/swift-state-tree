@@ -750,8 +750,9 @@ extension NIOAdminRoutes {
         return .accepted(resolvedRecordPath)
     }
 
-    /// Refuses a record without a schema fingerprint, one whose fingerprint differs from the land
-    /// type's, and any record when the land type has no fingerprint to compare with (#521 D15).
+    /// Refuses a record whose version this build can't read, a record without a schema
+    /// fingerprint, one whose fingerprint differs from the land type's, and any record when the
+    /// land type has no fingerprint to compare with (#521 D15).
     /// The replay land's runner checks again before its first step, against the bytes it reads.
     private func validateSchemaFingerprint(metadata: ReevaluationRecordMetadata, landType: String) async throws {
         let recorded: String
@@ -759,6 +760,9 @@ extension NIOAdminRoutes {
             recorded = try ReevaluationSchemaFingerprint.recordedFingerprint(of: metadata)
         } catch let error as ReevaluationRecordFingerprintError {
             throw ReplayStartCompatibilityError(error)
+        } catch let ReevaluationRecordVersionError.incompatible(recordedVersion, required) {
+            // A missing, malformed or future version, refused whether or not the request named one.
+            throw ReplayStartCompatibilityError.recordVersionMismatch(expectedVersion: required, recordedVersion: recordedVersion)
         }
         let current: String?
         do {

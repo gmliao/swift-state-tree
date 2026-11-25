@@ -320,6 +320,12 @@ struct RecordPayloadFormatTests {
         #expect(input(Data(), legacy: AnyCodable(["a": 1] as [String: Any])) != input(Data()))
         #expect(input(Data(), legacy: AnyCodable(["a": 1] as [String: Any])) == input(Data(), legacy: AnyCodable(["a": 1] as [String: Any])))
         #expect(input(Data(), legacy: AnyCodable(["a": 1] as [String: Any])) != input(Data(), legacy: AnyCodable(["a": 2] as [String: Any])))
+        // A tree without canonical bytes (nested past `maxDepth`) equals nothing, itself included.
+        var deep: Any = 1
+        for _ in 0...CanonicalMessagePack.maxDepth { deep = [deep] }
+        let unencodable = AnyCodable(deep)
+        #expect(throws: (any Error).self) { try CanonicalMessagePack.encode(unencodable) }
+        #expect(input(Data(), legacy: unencodable) != input(Data(), legacy: unencodable))
     }
 
     @Test("A replay with JSON decoders only refuses a record whose header says MessagePack, before any input; the standard decoders replay it")

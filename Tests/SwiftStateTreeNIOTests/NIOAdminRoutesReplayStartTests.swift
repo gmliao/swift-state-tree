@@ -307,6 +307,28 @@ struct NIOAdminRoutesReplayStartTests {
         }
     }
 
+    @Test(
+        "Both start routes refuse a record whose version is missing, malformed or newer than this build reads, even with a matching fingerprint and no version asked for",
+        arguments: [nil, "bogus", "3.7.1", "3.8", "4.0"] as [String?]
+    )
+    func startRefusesAnUnreadableVersionWithAMatchingFingerprint(_ version: String?) async throws {
+        let recordFileURL = try writeRecordFile(landType: "hero-defense", landDefinitionID: "hero-defense", version: version)
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+        let router = try await makeRouter()
+        let body = try JSONSerialization.data(withJSONObject: [
+            "landType": "hero-defense", "recordFilePath": recordFileURL.path,
+        ])
+        for uri in Self.startURIs {
+            let response = try await sendReplayStartRequest(body: body, on: router, uri: uri)
+            #expect(response.status == .conflict, "\(uri), \(version ?? "nil")")
+            let decoded = try decodeAdminResponse(from: response)
+            #expect(!decoded.success)
+            #expect(decoded.error?.code == "RECORD_VERSION_MISMATCH", "\(uri), \(version ?? "nil")")
+            #expect(detailString(decoded.error?.details, key: "recordedRecordVersion") == version, "\(uri)")
+            #expect(detailString(decoded.error?.details, key: "expectedRecordVersion") == ReevaluationRecordVersion.current, "\(uri)")
+        }
+    }
+
     @Test("Both start routes refuse a record past the default run length limit, naming the last tick and the limit (#728)")
     func startRefusesARecordPastTheDefaultLimit() async throws {
         let limit = ReevaluationRecordFile.defaultMaxReplayTicks
@@ -596,7 +618,7 @@ private struct ReplayRecordFile: Codable {
 private func writeRecordFile(
     landType: String,
     landDefinitionID: String?,
-    version: String,
+    version: String?,
     schemaFingerprint: String? = testRecordFingerprint,
     tickIds: [Int64] = []
 ) throws -> URL {

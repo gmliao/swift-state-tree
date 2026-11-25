@@ -957,11 +957,17 @@ public struct ReevaluationRecordedServerInput: Codable, Sendable, Equatable {
             && legacyPayloadsEqual(lhs.legacyPayload, rhs.legacyPayload)
     }
 
-    /// Two trees compare by their canonical bytes; a tree and no tree differ.
+    /// Two trees compare by their canonical bytes; a tree and no tree differ. A tree that has no
+    /// canonical bytes (a `Set`, NaN, or one too deep) equals nothing, itself included: it errs
+    /// toward "different", so two trees that can't be compared never pass as the same.
     private static func legacyPayloadsEqual(_ lhs: AnyCodable?, _ rhs: AnyCodable?) -> Bool {
         switch (lhs, rhs) {
         case (nil, nil): return true
-        case let (l?, r?): return (try? CanonicalMessagePack.encode(l)) == (try? CanonicalMessagePack.encode(r))
+        case let (l?, r?):
+            guard let left = try? CanonicalMessagePack.encode(l), let right = try? CanonicalMessagePack.encode(r) else {
+                return false
+            }
+            return left == right
         default: return false
         }
     }

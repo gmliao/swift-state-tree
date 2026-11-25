@@ -532,7 +532,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // Not used in step model
     }
 
-    /// Refuses a record whose schema fingerprint is missing or differs (#521 D15), before the
+    /// Refuses a record whose version this build can't read, or whose schema fingerprint is
+    /// missing or differs (#521 D15), before the
     /// first step.
     private static func validateSchemaFingerprint(
         metadata: ReevaluationRecordMetadata,
@@ -542,6 +543,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             try ReevaluationSchemaFingerprint.checkRecord(metadata, against: definition)
         } catch let error as ReevaluationRecordFingerprintError {
             throw ReevaluationReplayCompatibilityError(error)
+        } catch let ReevaluationRecordVersionError.incompatible(recordedVersion, required) {
+            // A missing, malformed or future version, refused whether or not a version was required.
+            throw ReevaluationReplayCompatibilityError.recordVersionMismatch(expectedVersion: required, recordedVersion: recordedVersion)
         }
     }
 

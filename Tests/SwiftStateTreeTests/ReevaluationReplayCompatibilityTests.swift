@@ -655,6 +655,19 @@ struct ReevaluationRecordVersionCompatibilityTests {
         }
     }
 
+    /// Without a required version the runner still refuses a version it can't read: the
+    /// fingerprint check refuses it first (#835 review).
+    @Test("A record whose version is malformed or newer than this build reads is refused by a runner that requires none", arguments: ["bogus", "3.7.1", "3.8", "4.0"])
+    func unreadableVersionIsRefused(recorded: String) async throws {
+        do {
+            _ = try await runner(recorded: recorded, required: nil, recordsSyncStream: true)
+            Issue.record("\(recorded): expected the record to be refused")
+        } catch ReevaluationReplayCompatibilityError.recordVersionMismatch(let expected, let actual) {
+            #expect(expected == ReevaluationRecordVersion.current)
+            #expect(actual == recorded)
+        }
+    }
+
     @Test("A different major version fails")
     func majorMismatch() async throws {
         await #expect(throws: ReevaluationReplayCompatibilityError.self) {

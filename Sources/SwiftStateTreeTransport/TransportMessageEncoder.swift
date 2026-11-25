@@ -412,9 +412,6 @@ public extension TransportEncoding {
     }
 }
 
-/// A payload's positional form for the JSON encoders (#521): the `@Payload` writer's fields as
-/// one array. A leaf is encoded with its own `Codable`, any other field through `AnyCodable`, as
-/// each field of the `[AnyCodable]` array it replaces was.
 extension OpcodeTransportMessageEncoder: ActionResponseFrameEncoder {
     package func encodeActionResponse(requestID: String, outcome: InputOutcome) throws -> Data {
         let array = ActionResponseOpcodeArray(
@@ -465,6 +462,9 @@ private struct PositionalPayloadJSONOf<P: PayloadCompression>: Encodable {
     }
 }
 
+/// A payload's positional form for the JSON encoders (#521): the `@Payload` writer's fields as
+/// one array. A leaf is encoded with its own `Codable`, any other field through `AnyCodable`, as
+/// each field of the `[AnyCodable]` array it replaces was.
 struct PositionalPayloadJSON: Encodable {
     let payload: any PayloadCompression
 

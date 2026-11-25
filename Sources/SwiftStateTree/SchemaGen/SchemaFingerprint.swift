@@ -304,11 +304,20 @@ extension ReevaluationSchemaFingerprint {
     /// one (`checkRecord`, and the admin start routes against the land server's), so the
     /// replayable version gate lives here and no path can skip it.
     ///
-    /// - Throws: `ReevaluationRecordFingerprintError.missing` for a record older than 3.6 or one
+    /// - Throws: `ReevaluationRecordVersionError.incompatible` for a record whose version is
+    ///   missing, malformed or newer than this build reads (`ReevaluationRecordVersion.isReadable`);
+    ///   `ReevaluationRecordFingerprintError.missing` for a record older than 3.6 or one
     ///   without the field; `.payloadsNotReplayable` for a 3.6 record, which has a fingerprint
     ///   but holds its payloads as trees (#700 K1a): below
     ///   `ReevaluationRecordVersion.minimumReplayable`.
     public static func recordedFingerprint(of metadata: ReevaluationRecordMetadata) throws -> String {
+        // A version this build can't read is refused first: the checks below read it as
+        // "not before 3.x", so a missing, malformed or future version would pass them.
+        guard ReevaluationRecordVersion.isReadable(recorded: metadata.version) else {
+            throw ReevaluationRecordVersionError.incompatible(
+                recorded: metadata.version, required: ReevaluationRecordVersion.current
+            )
+        }
         guard !ReevaluationRecordVersion.isBefore3(
                 metadata.version, minor: ReevaluationRecordVersion.fingerprintMinor
               ),
@@ -317,7 +326,7 @@ extension ReevaluationSchemaFingerprint {
             throw ReevaluationRecordFingerprintError.missing(recordedVersion: metadata.version)
         }
         if ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.payloadBytesMinor) {
-            throw ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: metadata.version ?? "missing")
+            throw ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: metadata.version ?? "")
         }
         return recorded
     }
