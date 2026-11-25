@@ -1,6 +1,6 @@
 # K1b-4: `KeeperModel<State>` and `KeeperBehavior<State>`, with the census test (#700)
 
-**Status:** rev 1.1, plan only, a draft. Rev 1.1 settles D2, takes K1b-3's GO'd helper (rev 2.1, d7e41fcc) and the K2 survey's shape (1ebd7ddb); §9. Rev 1 It was read at #835's head 5baa1887 (K1a), without the LSP, and #834's head 636dd69e (P4-1) for `StateNodeProtocol: PlainData`.
+**Status:** rev 1.2, plan only, a draft. Rev 1.2 takes Appendix A's F5–F8 (#700 plan rev 5.8, 589d553b) into the census test, and K1b-3's implementation (PR #853); §10. Rev 1.1 settled D2, took K1b-3's GO'd helper (rev 2.1, d7e41fcc) and the K2 survey's shape (1ebd7ddb); §9. Rev 1 It was read at #835's head 5baa1887 (K1a), without the LSP, and #834's head 636dd69e (P4-1) for `StateNodeProtocol: PlainData`.
 - K1b-4 needs K1b-1 (the plain forms), K1b-2 (`FailureID` and the side tables) and K1b-3 (the RNG), and P4-1 (K1b-Q3). So this plan names their results by their planned shapes, and rev 2 re-checks them on K1b-4's base with the LSP.
 - The census is Appendix A of `2026-11-22-keeper-on-turncore.md` (draft 3 and A.7).
 
@@ -34,7 +34,7 @@ struct KeeperModel<State: StateNodeProtocol> {
 
 struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
     let definition: LandDefinition<State>
-    let config: LandConfig        // autoStartLoops, enableLoopPhaseOffset, … , serverInputMaxInFlight, landRandomSeed
+    let config: LandConfig        // autoStartLoops, enableLoopPhaseOffset, … , landRandomSeed (K1b-3)
     let services: LandServices    // outside-world services only, after K1b-3
     let resolverServices: any Sendable
     let payloadDecoders: RecordPayloadDecoders
@@ -74,7 +74,17 @@ struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
   - a stored name is missing from the table (a new field must be placed);
   - a table name is no longer stored (a stale row);
   - a name appears in two homes.
-- **The known exceptions,** each with the slice that ends it: F4's `Instant`s (K2), S3's sync-loop writer (K2), D1's collector (K2).
+- **The known exceptions,** each with the slice that ends it:
+  - F4's `Instant`s (K2);
+  - S3's sync-loop writer: `runSync` writes `foldedSyncs`, `overdueFoldedSyncs` and `inTurnSyncDue` outside a turn (F8; K2's `.syncDue` step);
+  - D1's collector (K2).
+- **F8's offsets are Outside, not Model.** `appliedTickPhaseOffset` and `appliedSyncPhaseOffset` go with `tickLoopConfiguredAt` and `tickLoopClock` in the loop driver's group. K1b-4 checks first, with `findReferences` on its base, that no turn reads them. If one does, that offset stays in Model and joins S3's exception.
+- **K1b-3's fields** (PR #853): `landRandom` is Model, so the RNG group moves in commit 2. `landRandomSeed` is Behavior (`config`). K1b-3 removed `withMutableStateSync`, so the test-hook row A.6 names for it goes; `landRandomForTesting` is a computed accessor, not a stored field.
+- **What the census test doesn't check: F6 and F7.**
+  - F6 lists the turn-shaped entries: §2's four, plus `applyShutdownTurnBetweenTicks`, `syncTurnNow`, `runInputDrain`'s turn end, and `performInitialization`'s output segment.
+  - F7 lists the async segments that write Model after an `await`.
+  - Both are K1b-5's, which turns each one into a body over `(inout KeeperModel, KeeperBehavior)`.
+  - K1b-4 only moves fields. It doesn't make the census test assert who writes, because `Mirror` sees fields, not writers. The writer list stays a plan table that K1b-5 checks off.
 - **The side tables.** S4's key-set assertion comes from K1b-2. The census test runs a job through admitted, resolved, abandoned and cancelled, and checks it.
 - **Must-not-compile pin** (CI runs it; the Mac doesn't): `scripts/must-not-compile/keeper-model-not-plain.swift` is a `@PlainData` struct shaped like `KeeperModel` that holds an `AnyCodable`. It expects the PlainData diagnostic for `AnyCodable`, with the text taken from P4-1's snippets.
 
@@ -122,3 +132,12 @@ None. All the new types are internal. `LandKeeper`'s public members keep their s
 | D2: non-optional with defaults; `replayPassObserver` stays off Behavior (Review's nit, declined and agreed), revisit at #612 | §3.3 |
 | K1b-3 rev 2.1's helper (`random:`), with the write-back in `defer` after the model access | §3.2 |
 | K2 survey: K1b-5's bodies as `mutating` methods on `KeeperModel` | §3.2 |
+
+## 10. Rev 1.1 → rev 1.2
+
+| Change | Where |
+|---|---|
+| F8: the loops' phase offsets are Outside (checked with `findReferences` first); `runSync`'s fold writes are S3's named exception until K2 | §3.4 |
+| K1b-3 landed as PR #853: `landRandom` is Model, `landRandomSeed` is Behavior, the `withMutableStateSync` test-hook row goes | §3.1, §3.4 |
+| F6 and F7 are K1b-5's writer lists; the census test checks homes, not writers | §3.4 |
+| F5 (K1-Q7 (d)) is K1b-1's: the held resolver output is plain bytes before K1b-4 moves `pendingItems` | (no change; K1b-4 needs K1b-1) |

@@ -72,7 +72,7 @@ case_ turns-doc-block-untested 1 'README.md: a Swift block in no tested file, st
 # The image pin runs on every push, and a .devcontainer-only digest drift fails it (Swift Build &
 # Test ignores .devcontainer/**, so the Image pin workflow and this check are what see it).
 case_ image-pin-runs 0 '^ok    image-pin' ':'
-case_ devcontainer-digest-drift 1 '^FAIL  image-pin' 'sed -i "1s/sha256:4ed5/sha256:0000/" .devcontainer/Dockerfile'
+case_ devcontainer-digest-drift 1 '^FAIL  image-pin' 'sed -i.bak "1s/sha256:4ed5/sha256:0000/" .devcontainer/Dockerfile && rm .devcontainer/Dockerfile.bak'
 # The variant test-selection check runs on every push, a TransportAdapter built without
 # transportEnvConfig in a test target the variant run leaves out (rule R1; #790 slipped it past
 # pre-push) fails it, and a host without Swift fails the topic instead of skipping it.
