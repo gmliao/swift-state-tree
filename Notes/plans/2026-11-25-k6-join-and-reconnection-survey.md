@@ -1,6 +1,6 @@
 # K6 survey: the join in one step, duplicate logins and reconnection (#700, #588, #852)
 
-**Status:** survey, not a plan, rev 1.1. Read-only, no code changes. Read at main 73f44915, without the LSP. Rev 1.1 takes Review's fact-check: §1's details, K6-Q2's options and their relation to the #852 note and the parent plan, and the prior art's versions (§7). It prepares K6's plan: what K6 changes, how #852's fix carries into it, what other servers do, and the questions the maintainer decides before the plan is written. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift` at that commit.
+**Status:** survey, not a plan, rev 1.2. Read-only, no code changes. Read at main 73f44915, without the LSP. Rev 1.2 records K6-Q1, decided (a), with #334 as its follow-up. Rev 1.1 took Review's fact-check: §1's details, K6-Q2's options and their relation to the #852 note and the parent plan, and the prior art's versions (§7). It prepares K6's plan: what K6 changes, how #852's fix carries into it, what other servers do, and the questions the maintainer decides before the plan is written. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift` at that commit.
 
 **Inputs:**
 - the parent plan `2026-11-22-keeper-on-turncore.md`: §3.4's join and leave rows, §5's K6 row, §6.2's K6 tests, §8's K6 row;
@@ -81,11 +81,11 @@ So the code doesn't carry over, but the rule does: **a player who holds a place 
 
 ## 5. Questions for the maintainer (one at a time, through Main)
 
-**K6-Q1. Does K6 add a reconnection window after a drop?**
+**K6-Q1. Does K6 add a reconnection window after a drop? Decided (a)** (maintainer, 2026-11-25): no window in K6. The follow-up is #334 (a grace period for a disconnected player), which carries this survey's points: held seats count toward the cap, the window ends by a #762 timer, and §4's prior art.
 
 | Option | What it means | For a land author | Cost |
 |---|---|---|---|
-| **(a) No window in K6 (recommended)** | K6 is #588's structural change. A drop still leaves at once. A window is a separate issue, decided on its own | nothing new | none beyond #588 |
+| **(a) No window in K6 (decided)** | K6 is #588's structural change. A drop still leaves at once. A window is a separate issue, decided on its own | nothing new | none beyond #588 |
 | (b) An opt-in window | a land declares a window (for example `Reconnection(within: .seconds(20))`). A drop holds the seat, counted by the cap; OnLeave runs at expiry; a return within the window resumes the entry | new hooks for a drop and a return, or OnLeave and OnJoin with a flag | public API; a core timer (#762); the adapter must keep the player's views and slot across the gap |
 | (c) A window by default | as (b), on for every land | every land's OnLeave runs later than today | as (b), and a behavior change for every land |
 
@@ -131,3 +131,4 @@ Why (a): it can't remove the new player by accident, it needs no guard in land c
 | The kick runs only when the old entry has a client ID; on a tick land it returns when OnLeave is enqueued; OnLeave applies first by sequence, possibly in the same tick; the cap exemption is the reporting join's only, and the legacy join has no cap | §1 |
 | K6-Q2: the #852 note's (c) and the parent agree that the old OnLeave runs unawaited, and differ only on the entry; the hazard applies when the old OnLeave has resolvers; option (a) is new and says what happens to the old session's in-flight actions; the parent's reading for an OnLeave without resolvers is part of the question | §5 |
 | Colyseus: the docs read are the current (0.18) ones; earlier versions used `allowReconnection` inside `onLeave(client, consented)`. Nakama: `single_socket`'s usage text from the source | §4 |
+| K6-Q1 decided (a), no window in K6; #334 is the follow-up (rev 1.2) | §5 |
