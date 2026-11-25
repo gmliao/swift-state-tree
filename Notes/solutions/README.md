@@ -199,3 +199,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-24 | [A depth limit checked after the tree is built bounds nothing](2026-11-24-a-depth-limit-checked-after-the-tree-is-built-bounds-nothing.md) | stack-overflow, depth-limit, recursion, anycodable, codable, debug-build, darwin |
 | 2026-11-25 | [A uniqueness check on a name the store doesn't key by](2026-11-25-a-uniqueness-check-on-a-name-the-store-does-not-key-by.md) | resolver, registration, uniqueness, storage-key, naming |
 | 2026-11-25 | [A derived configuration inherits the original's factory](2026-11-25-a-derived-configuration-inherits-the-originals-factory.md) | configuration, copy, services, replay, monitor |
+| 2026-11-25 | [A step that ended doesn't mean what runs after it has run](2026-11-25-a-step-that-ended-does-not-mean-what-runs-after-it-has-run.md) | testing, flaky, join, input-drain, lifecycle, reentrancy |
