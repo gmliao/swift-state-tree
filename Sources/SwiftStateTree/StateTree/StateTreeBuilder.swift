@@ -84,8 +84,9 @@ public macro StateNodeBuilder() = #externalMacro(
 ///
 /// The type is `PlainData`: the macro also writes the conformance and the checks `@PlainData`
 /// writes (every stored property needs a type annotation), so one attribute makes a state value
-/// type. It writes neither when `@PlainData` or `@StateNodeBuilder` is beside it, since those
-/// write the witness. See `docs/core/sync.md#what-registration-refuses`.
+/// type. Beside `@PlainData` or `@Payload` it writes neither, since those write both. Beside
+/// `@StateNodeBuilder`, whose member is the witness, it writes only an empty `PlainData`
+/// extension. See `docs/core/sync.md#what-registration-refuses`.
 @attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, AtomicSnapshotValue, SnapshotFieldListProvider, SnapshotConvertibleStoredFields, PlainData, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)), named(atomicLeafPaths), named(getFieldMetadata), named(snapshotFieldMetadata), named(_snapshotStoredFields), named(_plainDataCheck))
 public macro SnapshotConvertible(atomic: Bool = false) = #externalMacro(
     module: "SwiftStateTreeMacros",

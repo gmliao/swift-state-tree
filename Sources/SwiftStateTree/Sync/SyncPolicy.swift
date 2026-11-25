@@ -100,7 +100,7 @@ public extension SyncPolicy {
 
 /// Marks a StateNode field with a synchronization policy.
 ///
-/// **Type Requirements**: The `Value` type must conform to `Sendable`.
+/// **Type Requirements**: The `Value` type must conform to `PlainData` and `Sendable`.
 ///
 /// **Dirty Tracking**: Any assignment to `wrappedValue` will automatically mark the field as dirty.
 /// This is a simple and efficient approach that avoids the overhead of value comparison.
