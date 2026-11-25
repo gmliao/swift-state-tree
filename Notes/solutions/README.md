@@ -197,6 +197,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-24 | [The Windows CRT `signal()` resets to the default on delivery: re-arm in the handler](2026-11-24-windows-crt-signal-resets-to-the-default-on-delivery.md) | windows, signals, crt, shutdown, ctrl-c |
 | 2026-11-24 | [Compare instants by their order, never by the sign of a wrapped difference](2026-11-24-compare-instants-by-order-not-by-a-wrapped-difference.md) | clock, overflow, instant, wrapping-arithmetic, sleep |
 | 2026-11-24 | [A depth limit checked after the tree is built bounds nothing](2026-11-24-a-depth-limit-checked-after-the-tree-is-built-bounds-nothing.md) | stack-overflow, depth-limit, recursion, anycodable, codable, debug-build, darwin |
+| 2026-11-25 | [A stub ignoring TERM forks before it records and can be killed before the record](2026-11-25-a-stub-ignoring-term-forks-before-recording.md) | ci, apt, stub, shell, signal, builtins, flaky |
 | 2026-11-25 | [A uniqueness check on a name the store doesn't key by](2026-11-25-a-uniqueness-check-on-a-name-the-store-does-not-key-by.md) | resolver, registration, uniqueness, storage-key, naming |
 | 2026-11-25 | [A derived configuration inherits the original's factory](2026-11-25-a-derived-configuration-inherits-the-originals-factory.md) | configuration, copy, services, replay, monitor |
 | 2026-11-25 | [A reevaluation keeper drain runs destroy handlers](2026-11-25-a-reevaluation-keeper-drain-runs-destroy-handlers.md) | reevaluation, replay, drain, destroy-handlers, turns |
