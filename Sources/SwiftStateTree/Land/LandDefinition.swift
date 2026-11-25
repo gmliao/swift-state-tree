@@ -352,6 +352,9 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     public func canHandle(_ actionType: Any.Type) -> Bool {
         actionType == type
     }
+
+    /// The number of resolvers declared for this handler (0 when none).
+    public var resolverCount: Int { resolvers?.names.count ?? 0 }
     
     /// Get the action type that this handler can handle.
     ///

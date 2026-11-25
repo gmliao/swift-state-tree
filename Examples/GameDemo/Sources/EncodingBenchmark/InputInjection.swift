@@ -39,6 +39,8 @@ enum InputRun {
     nonisolated(unsafe) static var actionsPerPlayer = 0
     /// `--wide-response`: the actions are `SetMotionWideAction`s.
     nonisolated(unsafe) static var wideResponse = false
+    /// `--resolver-action`: the actions are `SetMotionResolvedAction`s (tickless only).
+    nonisolated(unsafe) static var resolverAction = false
 
     /// Why the inputs can't run as given, or nil. Only the serial multi-room runners submit them,
     /// one room at a time, and only Hero Defense (moves) and the visibility test (actions) have
@@ -61,6 +63,15 @@ enum InputRun {
         }
         if config.wideResponse, config.actionsPerPlayer == 0 {
             return "--wide-response needs --actions-per-player (it changes the action the runner sends)"
+        }
+        if config.resolverAction, config.actionsPerPlayer == 0 {
+            return "--resolver-action needs --actions-per-player (it changes the action the runner sends)"
+        }
+        if config.resolverAction, !config.gameType.isTickless {
+            return "--resolver-action is only valid with --game-type visibility-test-tickless"
+        }
+        if config.resolverAction, config.wideResponse {
+            return "--resolver-action and --wide-response both change the action sent; pass only one"
         }
         if config.gameType.isTickless, config.actionsPerPlayer == 0 {
             return "--game-type visibility-test-tickless needs --actions-per-player: with no tick, the actions are its only work"
@@ -139,11 +150,14 @@ struct WireInputs {
     let actionsPerPlayer: Int
     /// `--wide-response`: the visibility test's actions are `SetMotionWideAction`s.
     let wideResponse: Bool
+    /// `--resolver-action`: the visibility test's tickless actions are `SetMotionResolvedAction`s.
+    let resolverAction: Bool
 
-    init(roomCount: Int, playersPerRoom: Int, encoding: TransportEncoding, actionsPerPlayer: Int, wideResponse: Bool = false) {
+    init(roomCount: Int, playersPerRoom: Int, encoding: TransportEncoding, actionsPerPlayer: Int, wideResponse: Bool = false, resolverAction: Bool = false) {
         self.encoding = encoding
         self.actionsPerPlayer = actionsPerPlayer
         self.wideResponse = wideResponse
+        self.resolverAction = resolverAction
         sessions = (0 ..< roomCount).map { roomIndex in
             (0 ..< playersPerRoom).map { SessionID(fixed: "room\(roomIndex)-session-\($0)") }
         }
@@ -173,15 +187,18 @@ struct WireInputs {
 
     /// Visibility test: `actionsPerPlayer` `SetMotionAction(enabled: true)` frames per player for
     /// `iteration` in room `roomIndex`, with a request ID unique in the run (`SetMotionWideAction`
-    /// with `--wide-response`). Motion is on from the start, so they leave the state as it is.
+    /// with `--wide-response`, `SetMotionResolvedAction` with `--resolver-action`). Motion is on
+    /// from the start, so they leave the state as it is.
     func actionFrames(roomIndex: Int, iteration: Int) -> [(session: SessionID, frame: Data)] {
         do {
             let payload = try JSONDecoder().decode(
                 AnyCodable.self,
                 from: wideResponse
                     ? JSONEncoder().encode(SetMotionWideAction(enabled: true))
-                    : JSONEncoder().encode(SetMotionAction(enabled: true)))
-            let typeIdentifier = wideResponse ? "SetMotionWide" : "SetMotion"
+                    : resolverAction
+                        ? JSONEncoder().encode(SetMotionResolvedAction(enabled: true))
+                        : JSONEncoder().encode(SetMotionAction(enabled: true)))
+            let typeIdentifier = wideResponse ? "SetMotionWide" : resolverAction ? "SetMotionResolved" : "SetMotion"
             var frames: [(session: SessionID, frame: Data)] = []
             for (playerIndex, session) in sessions[roomIndex].enumerated() {
                 for k in 0 ..< actionsPerPlayer {
@@ -193,7 +210,8 @@ struct WireInputs {
             }
             return frames
         } catch {
-            fatalError("--inputs-from-wire: can't encode a \(wideResponse ? "SetMotionWide" : "SetMotion") frame: \(error)")
+            let name = wideResponse ? "SetMotionWide" : resolverAction ? "SetMotionResolved" : "SetMotion"
+            fatalError("--inputs-from-wire: can't encode a \(name) frame: \(error)")
         }
     }
 }
