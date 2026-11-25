@@ -232,9 +232,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         /// when replay builds the item. A recorded payload that doesn't decode is kept as its
         /// failure, thrown when the item is applied, where a decode at apply threw before.
         package let decoded: DecodedAction
-        /// The handler's action type: found by the recorded type identifier in replay, so it is
-        /// known even when the payload didn't decode.
-        public let actionType: any ActionPayload.Type
+        /// The handler's position in `definition.actionHandlers` (#700 K1b-1, F9): found at
+        /// intake, or by the recorded type identifier in replay, so it is known even when the
+        /// payload didn't decode. Nil on a hand-built item, whose handler is found by its value's
+        /// type when it is applied.
+        package let handlerIndex: ActionHandlerIndex?
         /// The bytes the record keeps (#700 K1a): set only when the land records inputs, and on
         /// an item from the public init, which computes them to decode its action.
         package let recorded: RecordedPayloadBytes?
@@ -260,7 +262,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             self.init(
                 sequence: sequence,
                 decoded: .value(try JSONDecoder().decode(A.self, from: recorded.bytes)),
-                actionType: A.self,
+                handlerIndex: nil,
                 recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
@@ -273,7 +275,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         package init(
             sequence: Int64,
             decoded: DecodedAction,
-            actionType: any ActionPayload.Type,
+            handlerIndex: ActionHandlerIndex?,
             recorded: RecordedPayloadBytes?,
             playerID: PlayerID,
             clientID: ClientID,
@@ -283,7 +285,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         ) {
             self.sequence = sequence
             self.decoded = decoded
-            self.actionType = actionType
+            self.handlerIndex = handlerIndex
             self.recorded = recorded
             self.playerID = playerID
             self.clientID = clientID
@@ -297,7 +299,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             PendingActionItem(
                 sequence: sequence,
                 decoded: decoded,
-                actionType: actionType,
+                handlerIndex: handlerIndex,
                 recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
@@ -3135,7 +3137,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         let typeIdentifier = envelope.typeIdentifier
 
-        guard let handler = definition.actionHandlers.first(where: { handler in
+        guard let handlerPosition = definition.actionHandlers.firstIndex(where: { handler in
             let actionType = handler.getActionType()
             let actionTypeName = String(describing: actionType)
 
@@ -3165,6 +3167,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }) else {
             throw LandError.actionNotRegistered
         }
+        let handler = definition.actionHandlers[handlerPosition]
 
         let actionType = handler.getActionType()
         guard let actionPayloadType = actionType as? any ActionPayload.Type else {
@@ -3227,7 +3230,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 PendingActionItem(
                     sequence: sequence,
                     decoded: .value(decodedAction),
-                    actionType: actionPayloadType,
+                    handlerIndex: ActionHandlerIndex(handlerPosition),
                     recorded: recorded,
                     playerID: playerID,
                     clientID: clientID,
@@ -3247,7 +3250,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             PendingActionItem(
                 sequence: sequence,
                 decoded: .value(decodedAction),
-                actionType: actionPayloadType,
+                handlerIndex: ActionHandlerIndex(handlerPosition),
                 recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
@@ -3743,6 +3746,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case skipped
     }
 
+    /// Tests: what `applyPendingItemForTesting` applied.
+    package struct AppliedItemForTesting {
+        package let isSkipped: Bool
+        package let recordedActions: [ReevaluationRecordedAction]
+    }
+
+    /// Tests: runs the real `applyPendingItem` on one item, outside a turn, into a fresh
+    /// `AppliedInputs` at the last committed tick.
+    package func applyPendingItemForTesting(_ item: PendingItem) throws -> AppliedItemForTesting {
+        var applied = AppliedInputs(executingTickId: max(lastCommittedTickId, 0))
+        let outcome = try applyPendingItem(item, executingTickId: applied.executingTickId, into: &applied)
+        if case .skipped = outcome {
+            return AppliedItemForTesting(isSkipped: true, recordedActions: applied.recordedActions)
+        }
+        return AppliedItemForTesting(isSkipped: false, recordedActions: applied.recordedActions)
+    }
+
     /// The tick a tickless drain (or a pending-items pass) records under: `nextTickId - 1`,
     /// advancing `nextTickId` first when no tick has been taken yet, so records never use -1.
     private func executingTickIdForPendingItems() -> Int64 {
@@ -3810,14 +3830,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if skipsAfterDestroy(item) { return .skipped }
         switch item {
         case let .action(actionItem):
-            // Find handler for this action type
-            guard let handler = definition.actionHandlers.first(where: { handler in
-                handler.canHandle(actionItem.actionType)
-            }) else {
-                logger.error("Handler not found for action type", metadata: [
-                    "actionType": .string(String(describing: actionItem.actionType)),
-                ])
-                return .skipped
+            // The handler at the item's position (#700 K1b-1, F9); a hand-built item's is found
+            // by its value's type.
+            let handler: AnyActionHandler<State>
+            if let index = actionItem.handlerIndex {
+                guard definition.actionHandlers.indices.contains(index.position) else {
+                    logger.error("Handler index out of range", metadata: [
+                        "sequence": .stringConvertible(actionItem.sequence),
+                        "position": .stringConvertible(index.position),
+                    ])
+                    return .skipped
+                }
+                handler = definition.actionHandlers[index.position]
+            } else {
+                let valueType = type(of: try actionItem.decoded.get())
+                guard let found = definition.actionHandlers.first(where: { $0.canHandle(valueType) }) else {
+                    logger.error("Handler not found for action type", metadata: [
+                        "actionType": .string(String(describing: valueType)),
+                    ])
+                    return .skipped
+                }
+                handler = found
             }
 
             // Decoded at intake (#521), or when replay built the item (#700 K1a). A recorded
@@ -3841,7 +3874,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 applied.recordedActions.append(ReevaluationRecordedAction(
                     kind: "action",
                     sequence: actionItem.sequence,
-                    typeIdentifier: String(describing: actionItem.actionType),
+                    typeIdentifier: String(describing: handler.getActionType()),
                     payload: try actionItem.recorded?.bytes ?? Self.fallbackRecordBytes(decodedAction),
                     payloadEncoding: actionItem.recorded?.encoding ?? .json,
                     playerID: actionItem.playerID.rawValue,
@@ -4581,7 +4614,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // Convert recorded actions to PendingItem
                 for recordedAction in recordedActions {
                     // Find the action type handler by matching type identifier
-                    guard let handler = definition.actionHandlers.first(where: { handler in
+                    guard let handlerPosition = definition.actionHandlers.firstIndex(where: { handler in
                         let actionType = handler.getActionType()
                         let actionTypeName = String(describing: actionType)
 
@@ -4603,6 +4636,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         continue
                     }
 
+                    let handler = definition.actionHandlers[handlerPosition]
                     // Get the action type from handler (we know it's ActionPayload.Type)
                     let actionTypeAny = handler.getActionType()
                     guard let actionType = actionTypeAny as? any ActionPayload.Type else {
@@ -4630,7 +4664,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         PendingActionItem(
                             sequence: recordedAction.sequence,
                             decoded: decoded,
-                            actionType: actionType,
+                            handlerIndex: ActionHandlerIndex(handlerPosition),
                             recorded: recorded,
                             playerID: PlayerID(recordedAction.playerID),
                             clientID: ClientID(recordedAction.clientID),

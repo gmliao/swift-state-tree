@@ -35,7 +35,8 @@ struct KeeperPlainFormsConformanceTests {
         // Commit 3: the decoded payloads.
         requirePlain(DecodedAction.self)
         requirePlain(DecodedServerInput.self)
-        // Commit 4: ActionHandlerIndex.
+        // Commit 4: the handler index.
+        requirePlain(ActionHandlerIndex.self)
         // Commit 8: the items and PendingItem.
     }
 }
