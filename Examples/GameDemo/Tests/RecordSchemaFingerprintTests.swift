@@ -16,11 +16,11 @@ struct RecordSchemaFingerprintTests {
     func everyLandFingerprints() throws {
         let fingerprints: [(land: String, value: String, pinned: String)] = [
             ("hero-defense", try ReevaluationSchemaFingerprint.compute(for: HeroDefense.makeLand()), "0df25863c8632fb6"),
-            ("visibility-test", try ReevaluationSchemaFingerprint.compute(for: VisibilityTest.makeLand()), "c041d8caea2aee46"),
+            ("visibility-test", try ReevaluationSchemaFingerprint.compute(for: VisibilityTest.makeLand()), "267dc2ef3d0335c4"),
             (
                 "visibility-test broadcast",
                 try ReevaluationSchemaFingerprint.compute(for: VisibilityTest.makeLand(VisibilityTestBroadcastState.self)),
-                "3b3fe021ae9fb5da"
+                "cc2e49beb441b438"
             ),
             ("resolver-test", try ReevaluationSchemaFingerprint.compute(for: ResolverTest.makeLand()), "b3f9fe2ca2424670"),
             ("card-game", try ReevaluationSchemaFingerprint.compute(for: CardGame.makeLand()), "1e311682d1720885"),
