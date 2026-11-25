@@ -1,6 +1,6 @@
 # PlainData P4-2: the registration walks become a debug-build guard
 
-**Status:** rev 1, plan only. This is slice P4-2 of `2026-11-24-plaindata-p4-state.md` (rev 3, §3.6 and §7), under P4-Q4 (b), which the maintainer decided on 2026-11-24. It builds on P4-1 (#834). Code pointers were re-checked at #834's round-1 head 41e7c7ee; round 1 moved none of them.
+**Status:** rev 1.1, plan only. Review ruled Q1 = (a) on 2026-11-25, provided the PR maps each removed group-A test to the kept test that covers its branch and shape. This is slice P4-2 of `2026-11-24-plaindata-p4-state.md` (rev 3, §3.6 and §7), under P4-Q4 (b), which the maintainer decided on 2026-11-24. It builds on P4-1 (#834). Code pointers were re-checked at #834's round-1 head 41e7c7ee; round 1 moved none of them.
 
 ## 1. Goal
 
@@ -37,7 +37,7 @@ These aren't value-semantics walks of the state, or they guard the payload path 
 
 In release, the `TypeWalker` still needs a default instance for `.unsupportedKey`, and `SyncPolicyNesting` needs one too. What release saves is `SyncValueSemantics`'s own `rootType.init()` and its Mirror walk.
 
-**Configuration boundary.** SwiftPM builds a package dependency in the root's configuration. A user's `swift build` (debug) gets the guard, and `swift build -c release` doesn't. A prebuilt binary distribution would freeze one choice, but none exists.
+**Configuration boundary.** SwiftPM builds a package dependency in the root's configuration. A user's `swift build` (debug) gets the guard, and `swift build -c release` doesn't. A prebuilt binary distribution would freeze one choice, but none exists. Xcode's Debug configuration also defines `DEBUG` for package dependencies, so an app built from Xcode in Debug gets the guard too, and an archive (Release) doesn't.
 
 ## 3. Tests
 
@@ -47,7 +47,7 @@ In release, the `TypeWalker` still needs a default instance for `.unsupportedKey
 - `debugRegistrationRefusesHandWrittenDecimal`: a hand-witnessed struct holding `Decimal` is refused with `.decimalField`.
 
 **The existing group-A tests** (#834 comment: `SyncValueSemanticsTests` ×9 markers, `SyncRegistrationTests` ×2, `DecimalRegistrationTests` ×1, `LandTypeRegistryTests` ×1, `NestedNodePolicyTests` ×1; 14 markers in all):
-- **(a) Fold to about 3 (recommended).** Keep the tests that pin a walk's coverage (enum payloads, optionals, dictionary keys, convertible holders) under `#if DEBUG` in their files. Fold the plain duplicates into the three guard tests. Lower `ALLOW_MARKERS` to what is left. The PR gives the exact counts.
+- **(a) Fold to about 3 (recommended; ruled by Review).** Keep the tests that pin a walk's coverage (enum payloads, optionals, dictionary keys, convertible holders) under `#if DEBUG` in their files. Fold the plain duplicates into the three guard tests. Lower `ALLOW_MARKERS` to what is left. The PR gives the exact counts, and a table that maps each removed test to the kept test covering its branch and shape.
 - **(b) Keep them all.** Keep every test under `#if DEBUG`, with their markers unchanged. This is the smaller change, but the list doesn't shrink.
 
 **Release: no walk.** `releaseRegistrationRunsNoValueWalk` (`#if !DEBUG`):
@@ -69,6 +69,7 @@ In release, the `TypeWalker` still needs a default instance for `.unsupportedKey
 - `docs/core/sync.md` § "At registration and conversion": say these two checks run in debug builds only, and what a release build does with a hand-written witness or a bare namesake macro's members. The conversion backstop and the first-send `Decimal` refusal still catch it, so the land ends at its first failing conversion.
 - The registration table's three rows: "debug builds only".
 - `docs/core/failure-handling.md` rows 41/44/46: the same.
+- The error types' own doc comments (`SyncValueSemanticsError`, `Problem.valueSemantics`, `.existentialField`, `.decimalField`) say "debug builds only": a release build never produces them.
 
 ## 5. Public API
 
