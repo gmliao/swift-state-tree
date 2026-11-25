@@ -158,7 +158,7 @@ private var playerServices: [PlayerID: (generation: Epoch, services: LandService
                                   _ body: (inout KeeperModel<State>, LandContext) throws -> R) rethrows -> R
   ```
   The body gets `&model` and calls the handler with `&m.state`. K1b-3's write-back becomes `defer { model.landRandom = service.generator }`: it runs after the body's access ends, so it doesn't overlap.
-- **The access audit (Review and Codex, at 2afb96fc), the evidence for the rule.** There are 11 `withHandlerStep` sites. No current modify access has a closure or callee that reads another model field:
+- **The access audit (two independent reviews, at 2afb96fc), the evidence for the rule.** There are 11 `withHandlerStep` sites. No current modify access has a closure or callee that reads another model field:
   - the queue predicates capture locals;
   - `sort` is nonmutating;
   - the subscript-default sites use constants;
