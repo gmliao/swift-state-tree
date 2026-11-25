@@ -440,9 +440,9 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
             return true
         }
         self.handler = { state, anyEvent, ctx in
-            // Decode the event from AnyClientEvent: one that reaches its handler undecoded. A live
-            // event is decoded at intake, and refused there when it doesn't decode (#537), so this
-            // is a replayed one, or one handed to `invoke` directly. A payload that doesn't decode
+            // Decode the event from AnyClientEvent, for a caller that hands one to `invoke`
+            // directly. The keeper decodes every event before apply (at intake live, when replay
+            // builds the item, #700 K1b-1) and runs `invokeDecoded`. A payload that doesn't decode
             // drops the event here, as before; one nested too deep is also logged and counted (#362).
             let event: E
             do {

@@ -192,9 +192,9 @@ package enum PayloadNesting {
     nonisolated(unsafe) private static var dropped = 0
 
     /// Client events dropped because their payload nested deeper than the limit, in this process.
-    /// A live client event whose payload doesn't decode is refused at intake (#537); one reaching
-    /// its handler undecoded (a replayed one) is dropped there, and one too deep is also logged
-    /// and counted here.
+    /// A live client event whose payload doesn't decode is refused at intake (#537), unless its
+    /// descriptor has no decode (the public descriptor init's): that one, and a replayed one, is
+    /// dropped at apply (#700 K1b-1). One too deep is also logged and counted here.
     package static var droppedClientEventCount: Int {
         droppedLock.withLock { dropped }
     }
