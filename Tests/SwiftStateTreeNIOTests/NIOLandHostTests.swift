@@ -371,17 +371,6 @@ private struct NestedPerPlayerUnderBroadcastState: StateNodeProtocol {
     init() {}
 }
 
-private final class HostClassBox: @unchecked Sendable {
-    var count = 0
-}
-
-@StateNodeBuilder
-private struct HostClassFieldState: StateNodeProtocol {
-    @Sync(.broadcast)
-    var box: HostClassBox = HostClassBox()
-    init() {}
-}
-
 /// A server event without `@Payload`: no positional writer (#521 EV1).
 @PlainData
 private struct HostHandWrittenEvent: ServerEventPayload {
@@ -397,24 +386,6 @@ private struct HostPayloadState: StateNodeProtocol {
 
 @Suite("NIOLandHost policy nesting rule")
 struct NIOLandHostPolicyNestingTests {
-    @Test("register rejects a state whose synced field holds a class, and registers nothing (#464)")
-    func rejectsClassField() async throws {
-        let logger = Logger(label: "test")
-        let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, logger: logger, adminAPIKey: nil))
-        let land = Land("class-field", using: HostClassFieldState.self) { Rules {} }
-        let error = try await #require(throws: LandRegistrationError.self) {
-            try await host.register(
-                landType: "class-field",
-                land: land,
-                initialState: HostClassFieldState(),
-                webSocketPath: "/game/class-field",
-                configuration: NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
-            )
-        }
-        #expect(error.sync?.problems.contains(where: { if case .valueSemantics = $0 { true } else { false } }) == true)
-        #expect(await host.realm.isRegistered(landType: "class-field") == false)
-    }
-
     @Test("register rejects a state with a per-player field under a broadcast field, and registers nothing")
     func rejectsPerPlayerUnderBroadcast() async throws {
         let logger = Logger(label: "test")

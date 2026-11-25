@@ -10,17 +10,20 @@ import Testing
 // MARK: - Fixtures
 
 /// A hashable key with no string form: the conversion throws `unsupportedKey` for it.
+@PlainData
 struct RegistrationOpaqueKey: Hashable, Sendable {
     var id: Int
 }
 
 /// A key the conversion turns into a string through `description`.
+@PlainData
 struct RegistrationNamedKey: Hashable, Sendable, CustomStringConvertible {
     var id: Int
     var description: String { "k\(id)" }
 }
 
 /// A plain struct with a dictionary keyed by the opaque key.
+@PlainData
 struct RegistrationKeyHolder: Sendable {
     var byKey: [RegistrationOpaqueKey: Int] = [:]
 }
@@ -59,6 +62,8 @@ struct RegistrationCleanRoot: StateNodeProtocol {
 
 /// A class in a synced field, and an opaque key: two rows in one result.
 final class RegistrationObject: @unchecked Sendable {}
+extension RegistrationObject: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class the runtime walk must refuse (#464)
+
 
 @StateNodeBuilder
 struct RegistrationMixedRoot: StateNodeProtocol {
@@ -74,14 +79,15 @@ struct RegistrationCacheRoot: StateNodeProtocol {
     init() {}
 }
 
-/// Open types a hand-written or nested type can bring in, where the macros can't see them: a
-/// plain struct's stored properties aren't read by `@StateNodeBuilder`.
+/// Open types a hand-written PlainData witness can bring in: the compiler refuses them under
+/// `@PlainData`, so only a witness outside this repository's lint reaches the registration walk.
 struct RegistrationOpenHolder: @unchecked Sendable {
     var bag: [String: Any] = [:]
     var hashed: [AnyHashable: Int] = [:]
     var boxed: AnyCodable? = nil
     var list: [AnyObject] = []
 }
+extension RegistrationOpenHolder: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: open types in state for the registration walk, which keeps guarding hand-written witnesses
 
 @StateNodeBuilder
 struct RegistrationOpenRoot: StateNodeProtocol {
@@ -90,17 +96,6 @@ struct RegistrationOpenRoot: StateNodeProtocol {
     init() {}
 }
 
-/// The documented gap: an existential behind a typealias isn't refused; a value that converts
-/// passes, and the land ends at the first conversion that throws.
-protocol RegistrationGapPayload: Sendable {}
-extension Int: RegistrationGapPayload {}
-typealias RegistrationAnyGapPayload = any RegistrationGapPayload
-
-@StateNodeBuilder
-struct RegistrationGapRoot: StateNodeProtocol {
-    @Sync(.broadcast) var payload: RegistrationAnyGapPayload = 0
-    init() {}
-}
 
 /// A state the backstop refuses, with a field OnInitialize would set.
 @StateNodeBuilder
@@ -155,6 +150,7 @@ private func isUnsupportedKey(_ problem: SyncRegistrationError.Problem) -> Bool 
 
 /// A key the generated decoder reads back (`SnapshotKeyDecodable`, so a var-only
 /// `@SnapshotConvertible` holding it compiles) but the sync can't write: no string form.
+@PlainData
 struct RegistrationDecodableKey: Hashable, Sendable, SnapshotKeyDecodable {
     var id: Int
     init(id: Int) { self.id = id }
@@ -175,12 +171,6 @@ struct RegistrationFrozenLoadout: Sendable {
     let byKey: [RegistrationOpaqueKey: Int]
 }
 
-/// A property without a type annotation: its value's type stands in.
-@SnapshotConvertible
-struct RegistrationUntypedLoadout: Sendable {
-    var byKey = [RegistrationDecodableKey: Int]()
-}
-
 /// A type that holds itself: the walk ends.
 @SnapshotConvertible
 struct RegistrationTree: Sendable {
@@ -190,33 +180,34 @@ struct RegistrationTree: Sendable {
 
 /// Only a full-state conversion of its own: the live conversion ignores it and reflects the
 /// fields, so they are checked.
+@PlainData
 struct RegistrationFullOnly: FullSnapshotValueConvertible, Sendable {
     var byKey: [RegistrationOpaqueKey: Int] = [:]
     func toFullSnapshotValue() throws -> SnapshotValue { .null }
 }
 
 /// A hand-written conversion: its storage is its own, and isn't checked (the documented gap).
+@PlainData
 struct RegistrationHandWritten: SnapshotValueConvertible, Sendable {
     var byKey: [RegistrationOpaqueKey: Int] = [:]
     func toSnapshotValue() throws -> SnapshotValue { .null }
 }
 
-/// A plain struct's own property declared `Any`: Mirror gives only the value, an `Int` here, so
-/// registration can't see the declaration (the documented gap).
+/// A plain struct's own property declared `Any`, behind a hand-written witness: Mirror gives
+/// only the value, an `Int` here, so registration can't see the declaration; conversion refuses
+/// a value it can't convert.
 struct RegistrationPlainAny: @unchecked Sendable {
     var value: Any = 0
 }
+extension RegistrationPlainAny: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: an Any in state for the conversion backstop, which keeps guarding hand-written witnesses
 
 @StateNodeBuilder
 struct RegistrationConvertibleRoot: StateNodeProtocol {
     @Sync(.broadcast) var loadout: RegistrationLoadout = RegistrationLoadout()
     @Sync(.broadcast) var frozen: RegistrationFrozenLoadout = RegistrationFrozenLoadout(byKey: [:])
-    @Sync(.broadcast) var untyped: RegistrationUntypedLoadout = RegistrationUntypedLoadout()
     @Sync(.broadcast) var tree: RegistrationTree = RegistrationTree()
     @Sync(.broadcast) var fullOnly: RegistrationFullOnly = RegistrationFullOnly()
     @Sync(.broadcast) var loadouts: [RegistrationLoadout] = []
-    /// Untyped, inside an empty collection: no value to take the type from, so not seen.
-    @Sync(.broadcast) var untypedLoadouts: [RegistrationUntypedLoadout] = []
     @Sync(.broadcast) var handWritten: RegistrationHandWritten = RegistrationHandWritten()
     @Sync(.broadcast) var plainAny: RegistrationPlainAny = RegistrationPlainAny()
     init() {}
@@ -292,11 +283,6 @@ struct SyncRegistrationTests {
         ], "\(problems)")
     }
 
-    @Test("An existential behind a typealias is the documented gap: registration passes it")
-    func typealiasGap() {
-        #expect(SyncRegistration.problems(RegistrationGapRoot.self).isEmpty)
-    }
-
     @Test("validateForRegistration reports the synced-state rows in LandRegistrationError.sync, whatever the context")
     func definitionEntryPoint() throws {
         let land = Land("registration-keys", using: RegistrationMixedRoot.self) { Rules {} }
@@ -352,21 +338,21 @@ struct SyncRegistrationTests {
         #expect(error.sync?.problems.count == 2)
     }
 
-    @Test("@SnapshotConvertible storage is checked through its declared types, also with no sample; a FullSnapshotValueConvertible-only type is reflected; a hand-written conversion and a plain struct's own Any aren't seen")
+    @Test("@SnapshotConvertible storage is checked through its declared types, also with no sample; a FullSnapshotValueConvertible-only type is reflected; a hand-written conversion and a hand-witnessed Any aren't seen")
     func convertibleStorage() throws {
         let problems = SyncRegistration.problems(RegistrationConvertibleRoot.self)
         let decodable = "RegistrationDecodableKey", opaque = "RegistrationOpaqueKey"
         #expect(problems == [
-            ("loadout.byKey", decodable), ("frozen.byKey", opaque), ("untyped.byKey", decodable), ("tree.byKey", decodable),
+            ("loadout.byKey", decodable), ("frozen.byKey", opaque), ("tree.byKey", decodable),
             ("fullOnly.byKey", opaque), ("loadouts[*].byKey", decodable),
-            // Not `untypedLoadouts[*].byKey`: the untyped property is seen only through a value.
         ].map { .unsupportedKey(path: "RegistrationConvertibleRoot.\($0.0)", keyType: $0.1) }, "\(problems)")
-        // The macro lists the stored properties with their declared types; untyped ones as Any.
+        // The macro lists the stored properties with their declared types. (An untyped property
+        // doesn't compile: @SnapshotConvertible's PlainData check needs the annotation,
+        // scripts/must-not-compile/snapshotconvertible-untyped.swift.)
         #expect(RegistrationLoadout._snapshotStoredFields.map(\.name) == ["byKey", "tag"])
         #expect(ObjectIdentifier(RegistrationLoadout._snapshotStoredFields[0].type) == ObjectIdentifier([RegistrationDecodableKey: Int].self))
-        #expect(ObjectIdentifier(RegistrationUntypedLoadout._snapshotStoredFields[0].type) == ObjectIdentifier(Any.self))
-        // What the gaps leave: the hand-written type converts itself; the plain Any holds an Int
-        // now, and a value it can't convert later ends the land (ExistentialGapTests).
+        // What the hand-written witness leaves: the plain Any holds an Int now, and a value it
+        // can't convert later ends the land at its conversion.
         var later = RegistrationPlainAny()
         later.value = [RegistrationOpaqueKey(id: 1): 1]
         #expect(throws: SyncError.self) { _ = try SnapshotValue.make(from: later) }

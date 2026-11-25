@@ -21,8 +21,9 @@ struct NestedContainerFieldState: StateNodeProtocol, StateFromSnapshotDecodable 
     @Sync(.broadcast) var grid: [String: [Int: Int]] = [:]
     @Sync(.broadcast) var buckets: [String: [[String: Int]]] = [:]
     @Sync(.broadcast) var nested: Dictionary<String, Dictionary<String, Int>> = [:]
-    @Sync(.serverOnly) var pairs: [(a: Int, b: Int)] = []
-    @Sync(.serverOnly) var labeled: [Int: (a: Int, b: Int)] = [:]
+    // A tuple can't be stored in state (it can't conform to PlainData): PlainPair stands in.
+    @Sync(.serverOnly) var pairs: [PlainPair<Int, Int>] = []
+    @Sync(.serverOnly) var labeled: [Int: PlainPair<Int, Int>] = [:]
 
     init() {}
 }
@@ -67,13 +68,13 @@ struct NestedContainerFieldTests {
         #expect(state.nested == ["n": ["y": 2]])
     }
 
-    @Test("Labeled tuple elements and values keep their labels, and each helper marks its field")
-    func labeledTupleHelpers() {
+    @Test("Generic element and value types (PlainPair, where a tuple would be) keep their arguments, and each helper marks its field")
+    func pairHelpers() {
         var state = NestedContainerFieldState()
-        expectMarksOnly("pairs", &state) { $0.appendPairs((a: 1, b: 2)) }
-        expectMarksOnly("labeled", &state) { $0.updateLabeled((a: 3, b: 4), forKey: 7) }
-        #expect(state.pairs.count == 1 && state.pairs[0].a == 1 && state.pairs[0].b == 2)
-        #expect(state.labeled[7]?.b == 4)
+        expectMarksOnly("pairs", &state) { $0.appendPairs(PlainPair(1, 2)) }
+        expectMarksOnly("labeled", &state) { $0.updateLabeled(PlainPair(3, 4), forKey: 7) }
+        #expect(state.pairs.count == 1 && state.pairs[0].first == 1 && state.pairs[0].second == 2)
+        #expect(state.labeled[7]?.second == 4)
     }
 
     @Test("snapshotForSync's broadcast part equals broadcastSnapshot, and clearDirty clears every field")
@@ -84,8 +85,8 @@ struct NestedContainerFieldTests {
         state.updateGrid([1: 10], forKey: "row")
         state.updateBuckets([["x": 1], [:]], forKey: "k")
         state.updateNested(["y": 2], forKey: "n")
-        state.appendPairs((a: 1, b: 2))
-        state.updateLabeled((a: 3, b: 4), forKey: 7)
+        state.appendPairs(PlainPair(1, 2))
+        state.updateLabeled(PlainPair(3, 4), forKey: 7)
 
         let sync = try state.snapshotForSync(playerIDs: [], dirtyFields: nil)
         let broadcast = try state.broadcastSnapshot()

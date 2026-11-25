@@ -77,6 +77,7 @@ private struct MaybeChildNode: StateNodeProtocol {
 
 /// A tree inside a convertible: one container for the box, then the tree. Hand-written, passing
 /// the budget on (`@SnapshotConvertible` can't decode a `SnapshotValue` property).
+@PlainData
 private struct TreeBox: SnapshotValueConvertible, Equatable, Sendable {
     var tree: SnapshotValue = .null
     func toSnapshotValue() throws -> SnapshotValue { try toSnapshotValue(budget: NestingBudget()) }

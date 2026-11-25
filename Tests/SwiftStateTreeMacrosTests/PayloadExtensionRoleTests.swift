@@ -173,5 +173,25 @@ struct PayloadExtensionRoleTests {
             }
             """, conforming: false)
         #expect(snapshot.contains { $0.hasPrefix("@Payload and @SnapshotConvertible both write getFieldMetadata()") }, "\(snapshot)")
+        // Qualified by a module that exports the macro: the same refusal. By another module: not
+        // the library's macro, so neither refusal names it.
+        let (_, qualified) = expand("""
+            @Payload
+            @SwiftStateTurns.PlainData
+            struct Qualified: ServerEventPayload {
+                let n: Int
+            }
+            """, conforming: false)
+        #expect(qualified.contains("@Payload already makes this type PlainData; remove @PlainData"), "\(qualified)")
+        let (_, foreign) = expand("""
+            @Payload
+            @Other.PlainData
+            @A.B.SnapshotConvertible
+            struct Foreign: ServerEventPayload {
+                let n: Int
+            }
+            """, conforming: false)
+        #expect(!foreign.contains("@Payload already makes this type PlainData; remove @PlainData"), "\(foreign)")
+        #expect(!foreign.contains { $0.hasPrefix("@Payload and @SnapshotConvertible both write getFieldMetadata()") }, "\(foreign)")
     }
 }

@@ -355,15 +355,13 @@ extension PayloadMacro: ExtensionMacro {
         var failed = false
         for attribute in structDecl.attributes {
             guard case .attribute(let other) = attribute else { continue }
-            switch other.attributeName.trimmedDescription.split(separator: ".").last.map(String.init) {
-            case "PlainData":
+            // Bare, or qualified by a module that exports the macro, as at every other site.
+            if PlainDataWalk.isProjectAttribute(other, named: "PlainData") {
                 context.diagnose(Diagnostic(node: other, message: PayloadDiagnostics.besidePlainData))
                 failed = true
-            case "SnapshotConvertible":
+            } else if PlainDataWalk.isProjectAttribute(other, named: "SnapshotConvertible") {
                 context.diagnose(Diagnostic(node: other, message: PayloadDiagnostics.besideSnapshotConvertible))
                 failed = true
-            default:
-                break
             }
         }
         let conformsThroughPayload = structDecl.inheritanceClause?.inheritedTypes.contains {

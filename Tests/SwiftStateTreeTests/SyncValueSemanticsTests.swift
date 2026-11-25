@@ -14,17 +14,22 @@ import Testing
 final class ValueCheckObject: @unchecked Sendable {
     var count = 0
 }
+extension ValueCheckObject: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class the runtime walk must refuse (#464)
 
-/// A plain struct that holds a class.
+
+/// A plain struct that holds a class, behind a hand-written witness.
 struct ValueCheckHolder: Sendable {
     var count = 0
     var object = ValueCheckObject()
 }
+extension ValueCheckHolder: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 
 /// A reference type that converts itself: still a class.
 final class ValueCheckConvertibleObject: SnapshotValueConvertible, @unchecked Sendable {
     func toSnapshotValue() throws -> SnapshotValue { .int(1) }
 }
+extension ValueCheckConvertibleObject: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class the runtime walk must refuse (#464)
+
 
 /// A reference type with a full-state conversion of its own: still a class.
 final class ValueCheckFullObject: FullSnapshotValueConvertible, @unchecked Sendable {
@@ -36,11 +41,14 @@ final class ValueCheckKey: Hashable, @unchecked Sendable {
     static func == (lhs: ValueCheckKey, rhs: ValueCheckKey) -> Bool { lhs === rhs }
     func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
 }
+extension ValueCheckKey: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class the runtime walk must refuse (#464)
+
 
 enum ValueCheckChoice: Sendable {
     case none
     case object(ValueCheckObject)
 }
+extension ValueCheckChoice: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 
 /// A plain struct whose tuple and enum payload hold a class.
 struct ValueCheckShapes: Sendable {
@@ -48,6 +56,7 @@ struct ValueCheckShapes: Sendable {
     var choice: ValueCheckChoice = .object(ValueCheckObject())
     var unset: ValueCheckChoice = .none
 }
+extension ValueCheckShapes: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 
 /// A struct that converts itself and holds a class: the conformance doesn't make it a value.
 struct ValueCheckConvertibleHolder: SnapshotValueConvertible, Sendable {
@@ -55,6 +64,7 @@ struct ValueCheckConvertibleHolder: SnapshotValueConvertible, Sendable {
     var object: ValueCheckObject = ValueCheckObject()
     func toSnapshotValue() throws -> SnapshotValue { .object(["count": .int(count)]) }
 }
+extension ValueCheckConvertibleHolder: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 
 @StateNodeBuilder
 struct ValueCheckClassFieldRoot: StateNodeProtocol {
@@ -94,7 +104,9 @@ struct ValueCheckNestedRoot: StateNodeProtocol {
     init() {}
 }
 
-/// An existential field type: only the value's dynamic type says whether it is a class.
+/// An existential type: only the value's dynamic type says whether it is a class. A
+/// state field can't be one (Sync requires PlainData, scripts/must-not-compile/
+/// state-existential-alias.swift), so it sits in a plain struct behind a hand-written witness.
 protocol ValueCheckPayload: Sendable {}
 extension Int: ValueCheckPayload {}
 extension ValueCheckObject: ValueCheckPayload {}
@@ -102,17 +114,27 @@ extension ValueCheckConvertibleObject: ValueCheckPayload {}
 extension ValueCheckFullObject: ValueCheckPayload {}
 typealias ValueCheckAnyPayload = any ValueCheckPayload
 
+struct ValueCheckExistentialBox: Sendable {
+    var anything: ValueCheckAnyPayload = ValueCheckObject()
+}
+extension ValueCheckExistentialBox: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
+
 @StateNodeBuilder
 struct ValueCheckExistentialRoot: StateNodeProtocol {
-    @Sync(.broadcast) var anything: ValueCheckAnyPayload = ValueCheckObject()
+    @Sync(.broadcast) var box: ValueCheckExistentialBox = ValueCheckExistentialBox()
     init() {}
 }
 
+struct ValueCheckRuntimeBox: Sendable {
+    var anything: ValueCheckAnyPayload = 0
+    /// `(any P)?`: conversion gets the class boxed in an `Optional`.
+    var maybe: ValueCheckAnyPayload? = nil
+}
+extension ValueCheckRuntimeBox: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
+
 @StateNodeBuilder
 struct ValueCheckRuntimeRoot: StateNodeProtocol {
-    @Sync(.broadcast) var anything: ValueCheckAnyPayload = 0
-    /// `(any P)?`: conversion gets the class boxed in an `Optional`.
-    @Sync(.broadcast) var maybe: ValueCheckAnyPayload? = nil
+    @Sync(.broadcast) var box: ValueCheckRuntimeBox = ValueCheckRuntimeBox()
     init() {}
 }
 
@@ -139,8 +161,9 @@ struct ValueCheckValuesNode: StateNodeProtocol {
     init() {}
 }
 
+@PlainData
 struct ValueCheckStats: Sendable {
-    var wins = 0
+    var wins: Int = 0
     var tags: [String] = []
 }
 
@@ -192,10 +215,10 @@ struct SyncValueSemanticsTests {
         ])
     }
 
-    @Test("An existential field whose default value is a class is refused")
+    @Test("An existential property whose default value is a class is refused")
     func existentialDefault() {
         #expect(valueViolations(ValueCheckExistentialRoot.self) == [
-            .init(path: "ValueCheckExistentialRoot.anything", typeName: "ValueCheckObject"),
+            .init(path: "ValueCheckExistentialRoot.box.anything", typeName: "ValueCheckObject"),
         ])
     }
 
@@ -211,7 +234,7 @@ struct SyncValueSemanticsTests {
         var root = ValueCheckRuntimeRoot()
         _ = try root.snapshot(for: nil, dirtyFields: nil)
         _ = try root.fullStateSnapshot()
-        root.anything = ValueCheckObject()
+        root.box.anything = ValueCheckObject()
         let sent = #expect(throws: SyncError.self) { _ = try root.snapshot(for: nil, dirtyFields: nil) }
         let full = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
         for error in [sent, full] {
@@ -219,7 +242,7 @@ struct SyncValueSemanticsTests {
         }
 
         // A class that converts itself is still refused, before its own conversion runs.
-        root.anything = ValueCheckConvertibleObject()
+        root.box.anything = ValueCheckConvertibleObject()
         let convertedSent = #expect(throws: SyncError.self) { _ = try root.snapshot(for: nil, dirtyFields: nil) }
         let convertedFull = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
         for error in [convertedSent, convertedFull] {
@@ -227,7 +250,7 @@ struct SyncValueSemanticsTests {
         }
 
         // A class with a full-state conversion, refused by the state hash's conversion.
-        root.anything = ValueCheckFullObject()
+        root.box.anything = ValueCheckFullObject()
         let fullConverted = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
         #expect(fullConverted.map { "\($0)" }?.contains("ValueCheckFullObject is a class") == true, "\(String(describing: fullConverted))")
     }
@@ -235,16 +258,16 @@ struct SyncValueSemanticsTests {
     @Test("A conforming class boxed in an Optional is refused when the state is converted")
     func runtimeClassInOptional() throws {
         var root = ValueCheckRuntimeRoot()
-        root.maybe = 1
+        root.box.maybe = 1
         _ = try root.snapshot(for: nil, dirtyFields: nil)
         _ = try root.fullStateSnapshot()
-        root.maybe = ValueCheckConvertibleObject()
+        root.box.maybe = ValueCheckConvertibleObject()
         let sent = #expect(throws: SyncError.self) { _ = try root.snapshot(for: nil, dirtyFields: nil) }
         let full = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
         for error in [sent, full] {
             #expect(error.map { "\($0)" }?.contains("ValueCheckConvertibleObject is a class") == true, "\(String(describing: error))")
         }
-        root.maybe = ValueCheckFullObject()
+        root.box.maybe = ValueCheckFullObject()
         let fullConverted = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
         #expect(fullConverted.map { "\($0)" }?.contains("ValueCheckFullObject is a class") == true, "\(String(describing: fullConverted))")
     }

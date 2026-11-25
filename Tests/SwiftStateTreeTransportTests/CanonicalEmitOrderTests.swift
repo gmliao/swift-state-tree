@@ -18,6 +18,7 @@ struct OrderItem: StateNodeProtocol {
 }
 
 /// A plain struct: a value, not a table.
+@PlainData
 struct OrderStats: Codable, Equatable, Sendable {
     var level: Int = 0
     var name: String = ""

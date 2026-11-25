@@ -13,11 +13,13 @@ import SwiftStateTreeDeterministicMath
 
 // MARK: - States
 
+@PlainData
 enum LeafKind: String, Equatable, Sendable, Codable {
     case a, b
 }
 
 /// A user's own convertible type: not in the writer set.
+@PlainData
 struct LeafCustom: Equatable, Sendable, SnapshotValueConvertible {
     var n: Int = 0
     func toSnapshotValue() throws -> SnapshotValue { .object(["n": .int(n)]) }
@@ -57,7 +59,7 @@ struct LeafFields: StateNodeProtocol {
 /// A generic holder: its field's static type is `T?`, so the macro converts it with
 /// `make(from: value as Any)` and the registration sees the real type at run time.
 @StateNodeBuilder
-struct LeafGenericBox<T: Equatable & Sendable>: StateNodeProtocol {
+struct LeafGenericBox<T: PlainData & Equatable & Sendable>: StateNodeProtocol {
     @Sync(.broadcast) var value: T? = nil
 }
 
@@ -77,6 +79,7 @@ struct LeafRoot: StateNodeProtocol {
 }
 
 /// A hand registration of an `Int` field that writes it as a string.
+@PlainData
 struct LeafMislabelled: StateNodeProtocol {
     var n: Int = 0
     init() {}
@@ -101,6 +104,7 @@ struct LeafMislabelled: StateNodeProtocol {
 
 /// A hand `.standard` registration of an `Int` field whose convert throws on 1 and writes the
 /// rest as strings: the first changed value it sees throws.
+@PlainData
 struct LeafThrowing: StateNodeProtocol {
     struct Refused: Error {}
     var n: Int = 0
@@ -129,6 +133,7 @@ struct LeafThrowing: StateNodeProtocol {
 
 /// A hand `.standard` registration of a `String` field whose convert writes "é" precomposed
 /// (NFC), whatever the field holds.
+@PlainData
 struct LeafNormalizing: StateNodeProtocol {
     var s: String = ""
     init() {}
@@ -154,8 +159,9 @@ struct LeafNormalizing: StateNodeProtocol {
 /// A hand-written node with no field metadata, so no layout node: its `Position2` field, though
 /// registered with the standard conversion, has no atomic node at its path, and today's diff
 /// patches it per component.
+@PlainData
 struct LeafNoLayout: StateNodeProtocol {
-    var at = Position2(x: 0, y: 0)
+    var at: Position2 = Position2(x: 0, y: 0)
     init() {}
     func getSyncFields() -> [SyncFieldInfo] { [] }
     static func getFieldMetadata() -> [FieldMetadata] { [] }

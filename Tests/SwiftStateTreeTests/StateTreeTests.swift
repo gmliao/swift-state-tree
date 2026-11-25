@@ -7,6 +7,7 @@ import Testing
 // MARK: - Nested Structure Definitions
 
 /// Test nested structure: Player state with multiple fields
+@PlainData
 struct TestPlayerState: StateProtocol {
     var name: String
     var hpCurrent: Int
@@ -14,12 +15,14 @@ struct TestPlayerState: StateProtocol {
 }
 
 /// Test nested structure: Hand state containing cards
+@PlainData
 struct TestHandState: StateProtocol {
     var ownerID: PlayerID
     var cards: [TestCard]
 }
 
 /// Test nested structure: Card with multiple properties
+@PlainData
 struct TestCard: StateProtocol {
     let id: Int
     let suit: Int
@@ -707,6 +710,7 @@ struct TestPlayerStateNode: StateNodeProtocol {
 }
 
 /// Vec2 helper struct for testing
+@PlainData
 struct Vec2: Codable, Sendable, Equatable {
     var x: Double
     var y: Double

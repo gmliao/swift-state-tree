@@ -27,6 +27,7 @@ final class StateNodeBuilderSnapshotDecodeTests {
             }
             """,
             expandedSource: """
+
             struct SimpleState: StateNodeProtocol, StateFromSnapshotDecodable {
                 @Sync(.broadcast)
                 var score: Int = 0
@@ -240,6 +241,19 @@ final class StateNodeBuilderSnapshotDecodeTests {
 
                 @available(*, deprecated, message: "'name' (String) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
                 private static func _syncCheck_name(_: _SyncFallbackField) {
+                }
+
+                /// Compiled, never called: each line fails to compile unless the value it reads is PlainData.
+                static func _plainDataCheck() {
+                    @available(*, deprecated, message: "the PlainData checks; never called")
+                    func check(_ value: inout Self) {
+                        SwiftStateTurns.PlainDataCheck.field(value._score)
+                        SwiftStateTurns.PlainDataCheck.field(value.score)
+                        SwiftStateTurns.PlainDataCheck.field(value._name)
+                        SwiftStateTurns.PlainDataCheck.field(value.name)
+                        SwiftStateTurns.PlainDataCheck.field(value._internal_counter)
+                        SwiftStateTurns.PlainDataCheck.field(value.internal_counter)
+                    }
                 }
 
                 private static let _syncPolicy_score: SyncPolicy<Int> = .broadcast

@@ -141,6 +141,8 @@ struct LandTypeRegistryNestedState: StateNodeProtocol {
 final class LandTypeRegistryClassBox: @unchecked Sendable {
     var count = 0
 }
+extension LandTypeRegistryClassBox: PlainData { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: a class the runtime walk must refuse (#464)
+
 
 @StateNodeBuilder
 struct LandTypeRegistryClassState: StateNodeProtocol {

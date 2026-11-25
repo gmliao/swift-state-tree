@@ -39,8 +39,9 @@
 # marker is accepted only under Tests/, with a reason of at least ten characters, and in a file
 # listed in ALLOW_MARKERS with no more markers than its count.
 #
-# Both lists may only shrink: a count below its listed value fails until the list is lowered in
-# the same change.
+# A list grows only in a change that adds the rule or runtime path its markers witness, with
+# each marker mapped to the code it guards; a marker goes when that code goes. A count below
+# its listed value fails until the list is lowered in the same change.
 #
 # Usage: scripts/lint-turns.sh [--self-test] [repo root]
 
@@ -56,6 +57,14 @@ Sources/SwiftStateTreeTransport/TransportAdapter.swift 3 the adapter submits syn
 # Test files that carry allow markers, with their counts.
 ALLOW_MARKERS='
 Tests/SwiftStateTurnsTests/Support/DemoActor.swift 6 the runtime stops (reentry, a replaced core, a class machine and its checks)
+Tests/SwiftStateTreeTests/DecimalRegistrationTests.swift 1 a Decimal in state for the registration walk (#597), which keeps guarding hand-written witnesses
+Tests/SwiftStateTreeTests/NestedNodePolicyTests.swift 1 a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
+Tests/SwiftStateTreeTests/SyncRegistrationTests.swift 3 a class, open types and an Any in state for the runtime walks (#464, #535), which keep guarding hand-written witnesses
+Tests/SwiftStateTreeTests/SyncTableDiffTests.swift 2 classes in state for the reference-type fallback of the sync tables (SyncTables.swift), which stays in every build
+Tests/SwiftStateTreeTests/SyncTableFallbackFieldsTests.swift 1 a class in state for the reference-type fallback of the sync tables (SyncTables.swift), which stays in every build
+Tests/SwiftStateTreeTests/SyncWrapperInPlaceTests.swift 1 a shared box that tells a copy of a synced value from an in-place change (the probe is a class holder on purpose)
+Tests/SwiftStateTreeTests/SyncValueSemanticsTests.swift 9 classes in state for the runtime walk (#464), which keeps guarding hand-written witnesses
+Tests/SwiftStateTreeTransportTests/LandTypeRegistryTests.swift 1 a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 '
 
 RULES='plain-data|let-core|machine-file|isolated'
@@ -478,6 +487,13 @@ EOF
     extra=$(( ${markers##* } - 4 ))
     for _ in $(seq "$extra"); do echo 'let a = 0 // lint-allow: turns-isolated: fills the listed marker count'; done
   } > "$dir/${markers%% *}"
+  # Every other listed file carries exactly its listed count.
+  local listed count
+  while read -r listed count _reason; do
+    [ -n "$listed" ] && [ "$listed" != "${markers%% *}" ] || continue
+    mkdir -p "$dir/$(dirname "$listed")"
+    for _ in $(seq "$count"); do echo 'let a = 0 // lint-allow: turns-plain-data: fills the listed marker count'; done > "$dir/$listed"
+  done <<<"$ALLOW_MARKERS"
   cat > "$dir/Sources/SwiftStateTurns/Core.swift" <<'EOF'
 extension Int: PlainData {}
 public final class WithdrawToken: @unchecked Sendable {}

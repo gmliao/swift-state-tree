@@ -1,8 +1,8 @@
 // Sources/SwiftStateTreeMacros/RefusedFieldDiagnostics.swift
 //
-// `@StateNodeBuilder`'s and `@Payload`'s field refusals today, over the shared classifier in
-// PlainDataMacroSupport: synced fields only for `@StateNodeBuilder` (a `@Sync(.serverOnly)` field
-// isn't checked for `Decimal`), `Decimal` only for `@Payload`.
+// `@StateNodeBuilder`'s and `@Payload`'s field refusals, over the shared classifier in
+// PlainDataMacroSupport: the open types in synced fields for `@StateNodeBuilder` (its PlainData
+// walk refuses `Decimal` in every field), `Decimal` only for `@Payload`.
 
 import PlainDataMacroSupport
 import SwiftDiagnostics
@@ -12,9 +12,8 @@ import SwiftSyntaxMacros
 /// Reports every stored property of `structDecl` whose declared type `refusedSpelling` refuses,
 /// and returns whether there was one. `onlySynced` limits the check to `@Sync` properties
 /// (`@StateNodeBuilder`: `@Internal` fields aren't synced, and the compiler holds them to
-/// `PlainData`), and a `@Sync(.serverOnly)` property isn't checked for `Decimal`, since it isn't
-/// sent. `kinds` limits what is refused (`@Payload` refuses only `Decimal`: a payload may hold
-/// an `AnyCodable`).
+/// `PlainData`). `kinds` limits what is refused (`@StateNodeBuilder` refuses only the open
+/// types: its PlainData walk refuses `Decimal` in every field).
 func diagnoseRefusedFieldTypes(
     in structDecl: StructDeclSyntax,
     onlySynced: Bool,
@@ -25,20 +24,16 @@ func diagnoseRefusedFieldTypes(
     for member in structDecl.memberBlock.members {
         guard let variable = member.decl.as(VariableDeclSyntax.self),
               !variable.modifiers.contains(where: { $0.name.text == "static" }),
-              !variable.bindings.contains(where: { $0.accessorBlock != nil })
+              !variable.bindings.contains(where: PlainDataWalk.isComputed)
         else { continue }
-        var fieldKinds = kinds
         if onlySynced {
-            let sync = variable.attributes.lazy.compactMap { $0.as(AttributeSyntax.self) }.first { attribute in
-                attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text == "Sync"
-            }
-            guard let sync else { continue }
-            if StateNodeBuilderMacro.isServerOnlySync(sync) { fieldKinds.remove(.decimal) }
+            let isSynced = PlainDataWalk.hasAttribute(named: "Sync", in: variable.attributes)
+            guard isSynced else { continue }
         }
         for binding in variable.bindings {
             guard let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text,
                   let type = binding.typeAnnotation?.type,
-                  let found = refusedSpelling(in: type, kinds: fieldKinds)
+                  let found = refusedSpelling(in: type, kinds: kinds)
             else { continue }
             refused = true
             let message: any DiagnosticMessage = switch found.kind {

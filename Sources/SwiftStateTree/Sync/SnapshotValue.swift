@@ -164,9 +164,9 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
 /// }
 /// ```
 ///
-/// A conformer promises value semantics: synced state is made of value types (#464). It must
-/// not share mutable storage between copies; registration refuses a conforming class and one
-/// whose default instance holds a class, and conversion refuses a conforming class.
+/// Synced state is made of value types (#464). A state field's type is `PlainData`, which the
+/// compiler checks; registration and conversion still refuse a conforming class, which a
+/// hand-written `PlainData` witness outside this repository could put in state.
 public protocol SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue
     /// `toSnapshotValue()` with the budget at this value (#716). `@SnapshotConvertible`
