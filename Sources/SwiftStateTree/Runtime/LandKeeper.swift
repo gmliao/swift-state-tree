@@ -2814,7 +2814,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             actionSlots[sequence]?.result = held(outcome)
         }
         checkActionTables(#function)
-        slotFilledWatchersForTesting.removeValue(forKey: sequence)?.forEach { $0.resume() }
+        resumeSlotWatchers(SlotWatchKey(waiter: false, sequence: sequence))
     }
 
     /// The outcome of the job `submitAction` returned `.pending(sequence)` for: the ACK, or the
@@ -2849,7 +2849,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
                 actionSlotWaiters[sequence] = continuation
                 checkActionTables(#function)
-                slotWaiterWatchersForTesting.removeValue(forKey: sequence)?.forEach { $0.resume() }
+                resumeSlotWatchers(SlotWatchKey(waiter: true, sequence: sequence))
             }
         } onCancel: {
             // Synchronous: once `cancel()` returns, a completion that hasn't run yet won't deliver.
@@ -2945,22 +2945,62 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         actionSlotWaiters[sequence] != nil
     }
 
-    /// Tests: callers of `waitUntilActionSlotFilledForTesting` and
-    /// `waitUntilActionResultHasWaiterForTesting`, by sequence.
-    private var slotFilledWatchersForTesting: [Int64: [CheckedContinuation<Void, Never>]] = [:]
-    private var slotWaiterWatchersForTesting: [Int64: [CheckedContinuation<Void, Never>]] = [:]
-
-    /// Test hook, observation only: returns once the slot of `sequence` holds its outcome
-    /// unread, or has been filled. A slot that is never filled keeps it waiting.
-    package func waitUntilActionSlotFilledForTesting(_ sequence: Int64) async {
-        guard actionSlots[sequence]?.result == nil else { return }
-        await withCheckedContinuation { slotFilledWatchersForTesting[sequence, default: []].append($0) }
+    /// Tests: what a slot watcher waits for, a fill or a waiter, and on which slot.
+    private struct SlotWatchKey: Hashable {
+        let waiter: Bool
+        let sequence: Int64
     }
 
-    /// Test hook, observation only: returns once a caller waits on the slot of `sequence`.
-    package func waitUntilActionResultHasWaiterForTesting(_ sequence: Int64) async {
-        guard actionSlotWaiters[sequence] == nil else { return }
-        await withCheckedContinuation { slotWaiterWatchersForTesting[sequence, default: []].append($0) }
+    /// Tests: callers of `waitUntilActionSlotFilledForTesting` and
+    /// `waitUntilActionResultHasWaiterForTesting`.
+    private var slotWatchersForTesting: [SlotWatchKey: [(id: UUID, continuation: CheckedContinuation<Void, Never>)]] = [:]
+
+    /// Test hook, observation only: returns once the slot of `sequence` is filled, or when the
+    /// waiting task is cancelled (so a bound ends it). True when the slot holds its outcome unread.
+    @discardableResult
+    package func waitUntilActionSlotFilledForTesting(_ sequence: Int64) async -> Bool {
+        if actionSlots[sequence]?.result == nil {
+            await watchSlotForTesting(SlotWatchKey(waiter: false, sequence: sequence))
+        }
+        return actionSlots[sequence]?.result != nil
+    }
+
+    /// Test hook, observation only: returns once a caller waits on the slot of `sequence`, or
+    /// when the waiting task is cancelled. True when a caller waits.
+    @discardableResult
+    package func waitUntilActionResultHasWaiterForTesting(_ sequence: Int64) async -> Bool {
+        if actionSlotWaiters[sequence] == nil {
+            await watchSlotForTesting(SlotWatchKey(waiter: true, sequence: sequence))
+        }
+        return actionSlotWaiters[sequence] != nil
+    }
+
+    private func watchSlotForTesting(_ key: SlotWatchKey) async {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                slotWatchersForTesting[key, default: []].append((id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelSlotWatcherForTesting(key, id: id) }
+        }
+    }
+
+    private func cancelSlotWatcherForTesting(_ key: SlotWatchKey, id: UUID) {
+        guard var watchers = slotWatchersForTesting[key],
+              let index = watchers.firstIndex(where: { $0.id == id }) else { return }
+        let watcher = watchers.remove(at: index)
+        slotWatchersForTesting[key] = watchers.isEmpty ? nil : watchers
+        watcher.continuation.resume()
+    }
+
+    private func resumeSlotWatchers(_ key: SlotWatchKey) {
+        guard !slotWatchersForTesting.isEmpty else { return }
+        slotWatchersForTesting.removeValue(forKey: key)?.forEach { $0.continuation.resume() }
     }
 
     /// Test hook, observation only: waits until every job registered so far has left the job

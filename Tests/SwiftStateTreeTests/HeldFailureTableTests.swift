@@ -49,7 +49,7 @@ struct HeldFailureTableTests {
         let key = HeldFailureGates.freshKey()
         let sequence = try await pending(keeper, HeldFailureResolverAction(key: key))
         HeldFailureGates.gate(key).release()
-        _ = try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(sequence) }
+        #expect(try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(sequence) } == true, "the slot is filled")
         let unread = await keeper.failureTableCountForTesting()
         let violations = await keeper.actionTableViolationsForTesting()
         #expect(unread == 1, "one entry, under the unread slot: \(violations)")
@@ -61,7 +61,7 @@ struct HeldFailureTableTests {
             let k2 = HeldFailureGates.freshKey()
             let s2 = try await pending(keeper, HeldFailureResolvedValidateAction(key: k2))
             HeldFailureGates.gate(k2).release()
-            _ = try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(s2) }
+            #expect(try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(s2) } == true, "the slot is filled")
             #expect(await keeper.failureTableCountForTesting() == 1)
             _ = try? await keeper.awaitActionResult(sequence: s2)
             #expect(await keeper.failureTableCountForTesting() == 0)
@@ -93,7 +93,7 @@ struct HeldFailureTableTests {
             try await pending(keeper, HeldFailureResolverAction(key: abandoned))
         }
         let waiter = Task { try? await keeper.awaitActionResult(sequence: b) }
-        _ = try await withinDeadline("the caller waits") { await keeper.waitUntilActionResultHasWaiterForTesting(b) }
+        #expect(try await withinDeadline("the caller waits") { await keeper.waitUntilActionResultHasWaiterForTesting(b) } == true, "the caller waits")
         waiter.cancel()
         _ = try await withinDeadline("the cancelled caller returns") { () async -> Void in _ = await waiter.value }
         await expectAligned(keeper, "abandoned")
