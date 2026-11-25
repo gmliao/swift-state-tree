@@ -2631,6 +2631,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Turns the alignment check at the call sites on or off (off by default).
     package func setActionTableAuditForTesting(_ enabled: Bool) { actionTableAuditForTesting = enabled }
     package func actionTableViolationsForTesting() -> [String] { actionTableViolations() }
+
+    /// The stored labels of the keeper and of each container it holds, by storage path, for the
+    /// census test (#700 K1b-4). Read inside the keeper's isolation: a `Mirror`'s children load
+    /// their fields lazily, so only the label arrays leave it. Present in release builds too, so
+    /// a release run checks that the debug-only fields are absent.
+    package func censusLabelsForTesting() -> [String: [String]] {
+        func labels(_ value: Any) -> [String] { Mirror(reflecting: value).children.map { $0.label ?? "?" } }
+        return [
+            "actor": labels(self),
+            "model": labels(model),
+        ]
+    }
     package func setInputTurnResultForTesting(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
         setInputTurnResult(sequence, result)
     }
