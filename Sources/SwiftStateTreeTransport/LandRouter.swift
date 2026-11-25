@@ -870,10 +870,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         // One join at a time: a join in progress answers a second one with its own code.
-        // A flipped attempt answers as joined (#867): its flip wait hasn't made the phase `.joined`
-        // yet, but the client already holds the JoinResponse.
-        if case .joining(let attempt) = sessionHandshakePhase[sessionID],
-           !(attempt.admitted != nil && attempt.end.isFlipped) {
+        // A flipped attempt answers as joined (#867): the adapter flipped the join and sent the
+        // JoinResponse, but the router's phase hasn't learned of it (before its admission is
+        // recorded, or before its flip wait resumes). The session is bound since the attempt began.
+        if case .joining(let attempt) = sessionHandshakePhase[sessionID], !attempt.end.isFlipped {
             logger.warning("Join request while a join is in progress: \(sessionID.rawValue)")
             await sendJoinError(
                 requestID: requestID,

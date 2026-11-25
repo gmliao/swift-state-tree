@@ -751,25 +751,54 @@ struct HandshakeFrameLimitTests {
         await joining.value
     }
 
-    @Test("A join before the router admitted the attempt still gets JOIN_IN_PROGRESS (#867)")
-    func joinBeforeAdmissionStillInProgress() async throws {
+    @Test("A join after the JoinResponse, before the router records the admission, is refused as already joined (#867)")
+    func joinAfterResponseBeforeAdmissionRecorded() async throws {
         let fixture = try LimitFixture(limit: 512)
         let session = SessionID("s-867-pre")
         let connection = await fixture.connect(session)
-        // After `admitJoin` returned (the adapter flipped), before the router records the admission.
+        // After `admitJoin` returned (the adapter flipped and sent the response), before the
+        // router records the admission.
         let gate = await fixture.hold(at: .afterAdmit)
         let transport = fixture.transport
         let first = try join(bytes: 400)
         let joining = Task { await transport.handleIncomingMessage(sessionID: session, data: first) }
         #expect(await gate.waitForArrivals(1))
+        await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await connection.kinds.contains(.joinResponse), "the client holds the JoinResponse")
 
         await transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "pre-0"))
         await connection.waitFor { $0.kinds.contains(.error) || !$0.closes.isEmpty }
-        #expect(await connection.errorCodes == [ErrorCode.joinInProgress.rawValue])
+        #expect(await connection.errorCodes == [ErrorCode.joinAlreadyJoined.rawValue])
 
         gate.open()
         await joining.value
+        #expect(await connection.closes.isEmpty)
+    }
+
+    @Test("A join admitted but not flipped (no JoinResponse yet) still gets JOIN_IN_PROGRESS (#867)")
+    func joinAdmittedUnflippedStillInProgress() async throws {
+        let fixture = try LimitFixture(limit: 512)
+        let transport = fixture.transport
+        // Warm the land with another session, so its adapter exists to hold the flip.
+        let warm = SessionID("s-867-warm")
+        let warmConnection = await fixture.connect(warm)
+        await transport.handleIncomingMessage(sessionID: warm, data: try join(bytes: 400, requestID: "warm", playerID: "p0"))
+        await warmConnection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        let container = try #require(await fixture.manager.getLand(landID: fixture.landID))
+        await container.transportAdapter.setJoinFlipHeldForTesting(true)
+
+        let session = SessionID("s-867-held")
+        let connection = await fixture.connect(session)
+        await transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "held-0", playerID: "p1"))
+        #expect(await connection.kinds.isEmpty, "admitted, no JoinResponse yet")
+
+        await transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "held-1", playerID: "p1"))
+        await connection.waitFor { $0.kinds.contains(.error) || !$0.closes.isEmpty }
+        #expect(await connection.errorCodes == [ErrorCode.joinInProgress.rawValue])
+
+        await container.transportAdapter.setJoinFlipHeldForTesting(false)
         await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await connection.kinds.contains(.joinResponse), "the join completes")
         #expect(await connection.closes.isEmpty)
     }
 
