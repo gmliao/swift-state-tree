@@ -911,7 +911,7 @@ func makeActionHandler<State: StateNodeProtocol, A: ActionPayload>(
             guard let action = anyAction as? A else {
                 throw LandError.invalidActionType
             }
-            return AnyCodable(try invoke(&state, action, ctx))
+            return try invoke(&state, action, ctx)
         },
         resolvers: resolvers
     )
