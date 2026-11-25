@@ -10,13 +10,16 @@ import Testing
 
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 
-private func keeper(tick: Bool) -> LandKeeper<HeldFailureState> {
-    LandKeeper<HeldFailureState>(
+/// A keeper with the alignment check on at its call sites (off in production).
+private func keeper(tick: Bool) async -> LandKeeper<HeldFailureState> {
+    let keeper = LandKeeper<HeldFailureState>(
         definition: heldFailureDefinitionForTables(tick: tick),
         initialState: HeldFailureState(),
         autoStartLoops: false,
         landID: "held-failure-tables:local"
     )
+    await keeper.setActionTableAuditForTesting(true)
+    return keeper
 }
 
 private func pending(_ keeper: LandKeeper<HeldFailureState>, _ action: some ActionPayload) async throws -> Int64 {
@@ -42,14 +45,16 @@ private func expectAligned(_ keeper: LandKeeper<HeldFailureState>, _ step: Strin
 struct HeldFailureTableTests {
     @Test("The table holds an unread failure until it is read, and nothing after", arguments: [true, false])
     func failureTableHoldsOnlyWhatIsUnread(tick: Bool) async throws {
-        let keeper = keeper(tick: tick)
+        let keeper = await keeper(tick: tick)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         #expect(await keeper.failureTableCountForTesting() == 0)
 
         let key = HeldFailureGates.freshKey()
+        defer { HeldFailureGates.gate(key).release() }
         let sequence = try await pending(keeper, HeldFailureResolverAction(key: key))
+        let filled = await keeper.watchActionSlotForTesting(sequence, waiter: false)
         HeldFailureGates.gate(key).release()
-        #expect(try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(sequence) } == true, "the slot is filled")
+        guard await withinCancellingDeadline("the slot is filled", { await yields(filled) }) == true else { return }
         let unread = await keeper.failureTableCountForTesting()
         let violations = await keeper.actionTableViolationsForTesting()
         #expect(unread == 1, "one entry, under the unread slot: \(violations)")
@@ -59,9 +64,11 @@ struct HeldFailureTableTests {
         if !tick {
             // A tickless job whose validate throws, with no waiter yet: one entry under the slot (S2).
             let k2 = HeldFailureGates.freshKey()
+            defer { HeldFailureGates.gate(k2).release() }
             let s2 = try await pending(keeper, HeldFailureResolvedValidateAction(key: k2))
+            let filled2 = await keeper.watchActionSlotForTesting(s2, waiter: false)
             HeldFailureGates.gate(k2).release()
-            #expect(try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(s2) } == true, "the slot is filled")
+            guard await withinCancellingDeadline("the slot is filled", { await yields(filled2) }) == true else { return }
             #expect(await keeper.failureTableCountForTesting() == 1)
             _ = try? await keeper.awaitActionResult(sequence: s2)
             #expect(await keeper.failureTableCountForTesting() == 0)
@@ -75,7 +82,7 @@ struct HeldFailureTableTests {
 
     @Test("The action tables line up after each step of a job's life")
     func actionTablesStayAlignedThroughAJobsLife() async throws {
-        let keeper = keeper(tick: true)
+        let keeper = await keeper(tick: true)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
 
         let resolved = HeldFailureGates.freshKey()
@@ -89,15 +96,29 @@ struct HeldFailureTableTests {
         // deadline races its resolvers, so a cancelled caller returns at once; with the suite's
         // deadlines off it would wait for the gate.
         let abandoned = HeldFailureGates.freshKey()
+        defer { HeldFailureGates.gate(abandoned).release() }
         let b = try await ResolverDeadline.$overrideForTesting.withValue(.seconds(30)) {
             try await pending(keeper, HeldFailureResolverAction(key: abandoned))
         }
-        let waiter = Task { try? await keeper.awaitActionResult(sequence: b) }
-        #expect(try await withinDeadline("the caller waits") { await keeper.waitUntilActionResultHasWaiterForTesting(b) } == true, "the caller waits")
+        guard await HeldFailureGates.gate(abandoned).waitUntilEntered("the resolver starts") else { return }
+        let waits = await keeper.watchActionSlotForTesting(b, waiter: true)
+        let waiter = Task { () -> (any Error)? in
+            do { _ = try await keeper.awaitActionResult(sequence: b); return nil } catch { return error }
+        }
+        guard await withinCancellingDeadline("the caller waits", { await yields(waits) }) == true else {
+            waiter.cancel()
+            return
+        }
         waiter.cancel()
-        _ = try await withinDeadline("the cancelled caller returns") { () async -> Void in _ = await waiter.value }
+        guard let cancelled = await withinCancellingDeadline("the cancelled caller returns", { await waiter.value }) else { return }
+        #expect(cancelled is CancellationError, "the caller gets CancellationError: \(String(describing: cancelled))")
         await expectAligned(keeper, "abandoned")
+        // The abandoned job keeps its place in the caps until its resolver ends.
+        #expect(await keeper.actionJobCountsForTesting().jobs == 1, "the abandoned job still counts")
         HeldFailureGates.gate(abandoned).release()
+        _ = try await withinDeadline("the abandoned job settles") { await keeper.waitForActionJobsForTesting() }
+        #expect(await keeper.actionJobCountsForTesting().jobs == 0, "the released job left the job table")
+        await expectAligned(keeper, "abandoned, released")
 
         // Cancelled by a leave, then by the drain.
         let byLeave = HeldFailureGates.freshKey()
@@ -123,7 +144,7 @@ struct HeldFailureTableTests {
 
     @Test("The input-turn result setter consumes the failure it displaces")
     func inputTurnResultSetterConsumesWhatItDisplaces() async throws {
-        let keeper = keeper(tick: true)
+        let keeper = await keeper(tick: true)
         await keeper.setInputTurnResultForTesting(900, .failure(HeldFailureError(token: 1)))
         #expect(await keeper.failureTableCountForTesting() == 1)
         await keeper.setInputTurnResultForTesting(900, .failure(HeldFailureError(token: 2)))

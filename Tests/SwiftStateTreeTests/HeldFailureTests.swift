@@ -195,19 +195,29 @@ struct HeldFailureTests {
         let keeper = makeKeeper(tick: tick)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
 
-        // Waiting: the caller reads before the resolver ends.
+        // Waiting: the caller reads before the resolver ends. Each watcher is registered before
+        // what it watches can happen, and each bound cancels its observer (#870 review).
         let waitingKey = HeldFailureGates.freshKey()
+        let lateKey = HeldFailureGates.freshKey()
+        defer {
+            HeldFailureGates.gate(waitingKey).release()
+            HeldFailureGates.gate(lateKey).release()
+        }
         let waitingSequence = try await submitPending(keeper, HeldFailureResolverAction(key: waitingKey))
+        let waits = await keeper.watchActionSlotForTesting(waitingSequence, waiter: true)
         let waiting = Task { await thrown { _ = try await keeper.awaitActionResult(sequence: waitingSequence) } }
-        #expect(try await withinDeadline("the caller waits") { await keeper.waitUntilActionResultHasWaiterForTesting(waitingSequence) } == true, "the caller waits")
+        guard await withinCancellingDeadline("the caller waits", { await yields(waits) }) == true else {
+            waiting.cancel()
+            return
+        }
         HeldFailureGates.gate(waitingKey).release()
         #expect(resolverError(await waiting.value) == HeldFailureError(token: waitingKey))
 
         // Late: the resolver ended and the slot was filled before the read.
-        let lateKey = HeldFailureGates.freshKey()
         let lateSequence = try await submitPending(keeper, HeldFailureResolverAction(key: lateKey))
+        let filled = await keeper.watchActionSlotForTesting(lateSequence, waiter: false)
         HeldFailureGates.gate(lateKey).release()
-        #expect(try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(lateSequence) } == true, "the slot is filled")
+        guard await withinCancellingDeadline("the slot is filled", { await yields(filled) }) == true else { return }
         let late = await thrown { _ = try await keeper.awaitActionResult(sequence: lateSequence) }
         #expect(resolverError(late) == HeldFailureError(token: lateKey))
     }
@@ -229,9 +239,11 @@ struct HeldFailureTests {
         // Late only: the turn answers through `inputTurnResults`, then the resume fills the slot
         // with nobody waiting (the path that stores a failure under the slot).
         let key = HeldFailureGates.freshKey()
+        defer { HeldFailureGates.gate(key).release() }
         let sequence = try await submitPending(keeper, HeldFailureResolvedValidateAction(key: key))
+        let filled = await keeper.watchActionSlotForTesting(sequence, waiter: false)
         HeldFailureGates.gate(key).release()
-        #expect(try await withinDeadline("the slot is filled") { await keeper.waitUntilActionSlotFilledForTesting(sequence) } == true, "the slot is filled")
+        guard await withinCancellingDeadline("the slot is filled", { await yields(filled) }) == true else { return }
         let error = await thrown { _ = try await keeper.awaitActionResult(sequence: sequence) }
         #expect(error as? HeldFailureError == HeldFailureError(token: key))
     }

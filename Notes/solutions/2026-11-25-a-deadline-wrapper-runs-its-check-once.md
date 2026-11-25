@@ -17,6 +17,7 @@ tags:
   - hang-bound
   - test-hooks
   - continuation
+  - registration-order
 related:
   - "#700"
 ---
@@ -33,12 +34,17 @@ K1b-2's tests waited for an action job's slot to be filled with `_ = try await w
 
 ## Fix
 
-The keeper gained two observation-only hooks, `waitUntilActionSlotFilledForTesting(_:)` and `waitUntilActionResultHasWaiterForTesting(_:)`. Each is resumed in the segment that fills the slot or registers the waiter. It returns early when its task is cancelled, so the deadline can end it (see the related entry), and it returns whether the condition holds. The tests write `#expect(try await withinDeadline("…") { await keeper.waitUntil…(sequence) } == true)`.
+The keeper gained an observation-only hook, `watchActionSlotForTesting(_:waiter:)`. The call registers a watcher before it returns, and gives back an `AsyncStream` that yields once, in the segment that fills the slot or registers the waiter (or at once, if that already happened).
+
+The test registers first, then releases what fills the slot, so the event can't come before the watcher. It then waits on the stream with `withinCancellingDeadline`. On a timeout, that bound records the failure, cancels the observer and waits for it to end. A cancelled stream ends its iteration, and its watcher is removed. The test returns on `nil`, with its gates released in a `defer`.
+
+`withinDeadline` alone isn't enough here. `raceDeadline` leaves its work task running on a timeout and never cancels it (`Sources/SwiftStateTree/Support/Deadline.swift`, `DeadlineOutcome.timedOut`). A hook that ends on cancellation is necessary, but the bound must also cancel it.
 
 A `while !(await check()) { await Task.yield() }` loop inside the wrapper also waits, but `lint-wall-clock-tests` refuses it as a yield poll.
 
 ## Prevention
 
 - Inside `withinDeadline` or `withinHangBound`, put a call that suspends until the event happens, never a check that returns a `Bool`. Don't discard the wrapper's result: assert it.
-- A new event hook must end when its task is cancelled. Otherwise the bound can't end it either: [A hang bound can't end a wait that ignores cancellation](2026-11-21-a-hang-bound-cannot-end-a-wait-that-ignores-cancellation.md).
+- Register the watcher before releasing the step it watches. Otherwise the step can win, the hook's first lookup returns at once, and a mutant that never resumes the watcher passes.
+- A new event hook must end when its task is cancelled, and the bound around it must cancel it: `withinCancellingDeadline`, not `withinDeadline`. See also [A hang bound can't end a wait that ignores cancellation](2026-11-21-a-hang-bound-cannot-end-a-wait-that-ignores-cancellation.md).
 - A mutant that removes the step being waited for must fail the test by name.

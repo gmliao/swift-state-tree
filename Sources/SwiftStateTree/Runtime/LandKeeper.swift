@@ -2501,6 +2501,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var failureTableMisses = 0
     /// Tests: alignment violations the call sites logged.
     private var alignmentViolations = 0
+    /// Tests: whether the call sites run the alignment check (`setActionTableAuditForTesting`).
+    /// Off in production: the check walks every slot, input-turn result and failure, so running
+    /// it at each completed pair would cost O(tables) per job event and per tickless input turn
+    /// (#870 review). Tests that pin the tables' alignment turn it on.
+    private var actionTableAuditForTesting = false
 
     /// Where a failure is read from, for the miss's log.
     private enum FailurePath: String {
@@ -2589,8 +2594,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return violations
     }
 
-    /// Runs the check after a completed pair, logging and counting what it found.
+    /// Runs the check after a completed pair, logging and counting what it found, when a test
+    /// turned it on. In production it reads one flag and returns.
     private func checkActionTables(_ site: StaticString) {
+        guard actionTableAuditForTesting else { return }
         let violations = actionTableViolations()
         guard !violations.isEmpty else { return }
         alignmentViolations += violations.count
@@ -2603,6 +2610,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func failureTableCountForTesting() -> Int { failures.count }
     package func failureTableMissesForTesting() -> Int { failureTableMisses }
     package func alignmentViolationsForTesting() -> Int { alignmentViolations }
+    /// Turns the alignment check at the call sites on or off (off by default).
+    package func setActionTableAuditForTesting(_ enabled: Bool) { actionTableAuditForTesting = enabled }
     package func actionTableViolationsForTesting() -> [String] { actionTableViolations() }
     package func setInputTurnResultForTesting(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
         setInputTurnResult(sequence, result)
@@ -2951,56 +2960,44 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let sequence: Int64
     }
 
-    /// Tests: callers of `waitUntilActionSlotFilledForTesting` and
-    /// `waitUntilActionResultHasWaiterForTesting`.
-    private var slotWatchersForTesting: [SlotWatchKey: [(id: UUID, continuation: CheckedContinuation<Void, Never>)]] = [:]
+    /// Tests: the watchers `watchActionSlotForTesting` registered, each the continuation of the
+    /// stream it returned.
+    private var slotWatchersForTesting: [SlotWatchKey: [(id: UUID, continuation: AsyncStream<Void>.Continuation)]] = [:]
 
-    /// Test hook, observation only: returns once the slot of `sequence` is filled, or when the
-    /// waiting task is cancelled (so a bound ends it). True when the slot holds its outcome unread.
-    @discardableResult
-    package func waitUntilActionSlotFilledForTesting(_ sequence: Int64) async -> Bool {
-        if actionSlots[sequence]?.result == nil {
-            await watchSlotForTesting(SlotWatchKey(waiter: false, sequence: sequence))
+    /// Test hook, observation only: registers a watcher on the slot of `sequence` in this call,
+    /// and returns its stream. The stream yields once and finishes when the slot is filled
+    /// (`waiter: false`) or a caller waits on it (`waiter: true`), or at once if that is already
+    /// so. A test registers before it releases what fills the slot, so the event can't come
+    /// first. A consumer that is cancelled ends its iteration, and the watcher is removed
+    /// (`onTermination`), so a bound that cancels the consumer can't leave it behind.
+    package func watchActionSlotForTesting(_ sequence: Int64, waiter: Bool) -> AsyncStream<Void> {
+        let key = SlotWatchKey(waiter: waiter, sequence: sequence)
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        let already = waiter ? actionSlotWaiters[sequence] != nil : actionSlots[sequence]?.result != nil
+        if already {
+            continuation.yield()
+            continuation.finish()
+            return stream
         }
-        return actionSlots[sequence]?.result != nil
-    }
-
-    /// Test hook, observation only: returns once a caller waits on the slot of `sequence`, or
-    /// when the waiting task is cancelled. True when a caller waits.
-    @discardableResult
-    package func waitUntilActionResultHasWaiterForTesting(_ sequence: Int64) async -> Bool {
-        if actionSlotWaiters[sequence] == nil {
-            await watchSlotForTesting(SlotWatchKey(waiter: true, sequence: sequence))
-        }
-        return actionSlotWaiters[sequence] != nil
-    }
-
-    private func watchSlotForTesting(_ key: SlotWatchKey) async {
         let id = UUID()
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                if Task.isCancelled {
-                    continuation.resume()
-                    return
-                }
-                slotWatchersForTesting[key, default: []].append((id: id, continuation: continuation))
-            }
-        } onCancel: {
-            Task { await self.cancelSlotWatcherForTesting(key, id: id) }
-        }
+        slotWatchersForTesting[key, default: []].append((id: id, continuation: continuation))
+        continuation.onTermination = { _ in Task { await self.removeSlotWatcherForTesting(key, id: id) } }
+        return stream
     }
 
-    private func cancelSlotWatcherForTesting(_ key: SlotWatchKey, id: UUID) {
+    private func removeSlotWatcherForTesting(_ key: SlotWatchKey, id: UUID) {
         guard var watchers = slotWatchersForTesting[key],
               let index = watchers.firstIndex(where: { $0.id == id }) else { return }
-        let watcher = watchers.remove(at: index)
+        watchers.remove(at: index)
         slotWatchersForTesting[key] = watchers.isEmpty ? nil : watchers
-        watcher.continuation.resume()
     }
 
     private func resumeSlotWatchers(_ key: SlotWatchKey) {
         guard !slotWatchersForTesting.isEmpty else { return }
-        slotWatchersForTesting.removeValue(forKey: key)?.forEach { $0.continuation.resume() }
+        slotWatchersForTesting.removeValue(forKey: key)?.forEach {
+            $0.continuation.yield()
+            $0.continuation.finish()
+        }
     }
 
     /// Test hook, observation only: waits until every job registered so far has left the job
