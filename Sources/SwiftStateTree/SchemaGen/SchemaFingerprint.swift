@@ -294,20 +294,20 @@ extension ReevaluationSchemaFingerprint {
         against definition: LandDefinition<State>
     ) throws {
         let recorded = try recordedFingerprint(of: metadata)
-        // A 3.6 record has a fingerprint, but its payloads are trees (#700 K1a).
-        if ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.payloadBytesMinor) {
-            throw ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: metadata.version ?? "missing")
-        }
         let current = try cached(for: definition)
         guard recorded == current else {
             throw ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current)
         }
     }
 
-    /// The record's schema fingerprint.
+    /// The schema fingerprint of a record replay can run. Every admission path compares this
+    /// one (`checkRecord`, and the admin start routes against the land server's), so the
+    /// replayable version gate lives here and no path can skip it.
     ///
-    /// - Throws: `ReevaluationRecordFingerprintError.missing` for a record older than
-    ///   `ReevaluationRecordVersion.minimumReplayable`, or one without the field.
+    /// - Throws: `ReevaluationRecordFingerprintError.missing` for a record older than 3.6 or one
+    ///   without the field; `.payloadsNotReplayable` for a 3.6 record, which has a fingerprint
+    ///   but holds its payloads as trees (#700 K1a): below
+    ///   `ReevaluationRecordVersion.minimumReplayable`.
     public static func recordedFingerprint(of metadata: ReevaluationRecordMetadata) throws -> String {
         guard !ReevaluationRecordVersion.isBefore3(
                 metadata.version, minor: ReevaluationRecordVersion.fingerprintMinor
@@ -315,6 +315,9 @@ extension ReevaluationSchemaFingerprint {
               let recorded = metadata.schemaFingerprint
         else {
             throw ReevaluationRecordFingerprintError.missing(recordedVersion: metadata.version)
+        }
+        if ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.payloadBytesMinor) {
+            throw ReevaluationRecordFingerprintError.payloadsNotReplayable(recordedVersion: metadata.version ?? "missing")
         }
         return recorded
     }

@@ -603,3 +603,27 @@ func goldenRecordsRoundTrip() throws {
     // At least a header, a turn and a footer each.
     #expect(records >= 3 * goldens.count)
 }
+
+/// Reads the keys in the order its container lists them.
+private struct KeyOrderProbe: Decodable {
+    struct AnyKey: CodingKey {
+        let stringValue: String
+        init?(stringValue: String) { self.stringValue = stringValue }
+        var intValue: Int? { nil }
+        init?(intValue: Int) { nil }
+    }
+
+    let keys: [String]
+
+    init(from decoder: Decoder) throws {
+        keys = try decoder.container(keyedBy: AnyKey.self).allKeys.map(\.stringValue)
+    }
+}
+
+@Test("A keyed container lists its keys in the encoder's order (by UTF-8 bytes) on every run")
+func keyedContainerListsKeysInByteOrder() throws {
+    let keys = ["b", "a", "é", "Z", "aa", "m", "~"]
+    let bytes = try CanonicalMessagePack.encode(AnyCodable(Dictionary(uniqueKeysWithValues: keys.map { ($0, 1) }) as [String: Any]))
+    let read = try CanonicalMessagePack.decode(KeyOrderProbe.self, from: bytes).keys
+    #expect(read == keys.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) })
+}

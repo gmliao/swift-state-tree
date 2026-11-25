@@ -34,6 +34,7 @@ extension ForwardingTestSource {
     func getInitializeRecord() async throws -> ReevaluationRecordedInitialize? { try await base.getInitializeRecord() }
     func getRecordCompleteness() async throws -> ReevaluationRecordCompleteness { try await base.getRecordCompleteness() }
     func getHoldsNonNFCText() async throws -> Bool { try await base.getHoldsNonNFCText() }
+    func getPayloadEncodings() async throws -> Set<RecordPayloadEncoding> { try await base.getPayloadEncodings() }
 }
 
 /// Answers `readsJSONRecord` with `flag`.

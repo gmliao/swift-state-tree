@@ -1463,12 +1463,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if mode == .reevaluation {
             // A record whose payloads this replay has no decoder for is refused before anything
             // is replayed (#700 K1a): `ReevaluationRecordPayloadError.noDecoder`.
-            if let source = reevaluationSource, let metadata = try? await source.getMetadata() {
-                replayHeaderPayloadEncoding = metadata.effectivePayloadEncoding
+            // A source whose metadata can't be read is refused too (fails closed).
+            if let source = reevaluationSource {
                 do {
+                    replayHeaderPayloadEncoding = try await source.getMetadata().effectivePayloadEncoding
                     try await payloadDecoders.check(source)
                 } catch {
-                    logger.error("❌ The record's payloads can't be decoded by this replay: the land is torn down", metadata: [
+                    logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
                         "error": .string(String(describing: error)),
                     ])
                     initializationFailure = LandInitializationError(underlying: error)

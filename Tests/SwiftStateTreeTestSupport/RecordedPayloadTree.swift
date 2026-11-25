@@ -13,6 +13,12 @@ package enum RecordedPayloadTree {
         try RecordPayloadDecoders.standard.makeSource(bytes, encoding ?? .json).decode(AnyCodable.self)
     }
 
+    /// A server input's bytes as a tree, read with the record codec as live and replay read them
+    /// (K1-Q4 (a)), whose nesting limit is a server input's, not a client payload's.
+    package static func serverInputTree(_ bytes: Data) throws -> AnyCodable {
+        try CanonicalMessagePack.decode(AnyCodable.self, from: Array(bytes))
+    }
+
     package static func tree(of action: ReevaluationRecordedAction) throws -> AnyCodable {
         try tree(action.payload, encoding: action.payloadEncoding)
     }
@@ -32,13 +38,13 @@ extension RecordedPayloadTree {
             guard let entries = frame[key] as? [[String: Any]] else { continue }
             frame[key] = try entries.map { entry -> [String: Any] in
                 guard let base64 = entry["payload"] as? String, let bytes = Data(base64Encoded: base64) else { return entry }
-                // A server input's bytes are MessagePack whatever the header says (K1-Q4 (a)).
-                let encoding = key == "serverInputs"
-                    ? .messagepack
-                    : (entry["payloadEncoding"] as? String).flatMap(RecordPayloadEncoding.init(rawValue:))
+                // A server input's bytes are canonical MessagePack whatever the header says (K1-Q4 (a)).
+                let payloadTree = key == "serverInputs"
+                    ? try serverInputTree(bytes)
+                    : try tree(bytes, encoding: (entry["payloadEncoding"] as? String).flatMap(RecordPayloadEncoding.init(rawValue:)))
                 var treeEntry = entry
                 treeEntry["payload"] = try JSONSerialization.jsonObject(
-                    with: JSONEncoder().encode(tree(bytes, encoding: encoding)), options: .fragmentsAllowed
+                    with: JSONEncoder().encode(payloadTree), options: .fragmentsAllowed
                 )
                 treeEntry.removeValue(forKey: "payloadEncoding")
                 return treeEntry

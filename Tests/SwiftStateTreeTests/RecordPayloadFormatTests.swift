@@ -73,6 +73,55 @@ private func jsonRecord(version: String, payloadEncoding: RecordPayloadEncoding?
     return path
 }
 
+/// The input kinds whose payload a 3.7 record holds as bytes.
+enum PayloadEntryKind: String, CaseIterable, Sendable, CustomTestStringConvertible {
+    case action
+    case clientEvent
+    case serverInput
+    var testDescription: String { rawValue }
+}
+
+/// A one-tick JSON record whose one entry, of `kind`, holds `payloadJSON` as its payload.
+private func jsonRecord(version: String, kind: PayloadEntryKind, payloadJSON: String) throws -> String {
+    guard kind != .action else { return try jsonRecord(version: version, payloadJSON: payloadJSON) }
+    let fingerprint = try ReevaluationSchemaFingerprint.compute(for: makePayloadFormatLand())
+    let entry: String
+    switch kind {
+    case .action:
+        entry = ""
+    case .clientEvent:
+        entry = #""actions":[],"clientEvents":[{"kind":"clientEvent","sequence":0,"typeIdentifier":"e","payload":\#(payloadJSON),"playerID":"p","clientID":"c","sessionID":"s","resolvedAtTick":0}]"#
+    case .serverInput:
+        entry = #""actions":[],"clientEvents":[],"serverInputs":[{"kind":"serverInput","sequence":0,"typeIdentifier":"i","payload":\#(payloadJSON),"resolvedAtTick":0}]"#
+    }
+    let text = #"{"recordMetadata":{"landID":"payload-format:1","landType":"payload-format","landDefinitionID":"payload-format","createdAt":"1970-01-01T00:00:00Z","metadata":{},"version":"\#(version)","schemaFingerprint":"\#(fingerprint)"},"tickFrames":[{"tickId":0,\#(entry),"lifecycleEvents":[]}]}"#
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent("payload-format-\(UUID().uuidString).json").path
+    try Data(text.utf8).write(to: URL(fileURLWithPath: path))
+    return path
+}
+
+/// A tick record whose one entry, of `kind`, holds a payload tree, as a record before 3.7 does.
+private func treeTickRecord(_ kind: PayloadEntryKind) -> ReevaluationTickRecord {
+    let tree = AnyCodable(["label": "x"] as [String: Any])
+    switch kind {
+    case .action:
+        return ReevaluationTickRecord(tickId: 0, actions: [ReevaluationRecordedAction(
+            kind: "action", sequence: 0, typeIdentifier: String(describing: PayloadFormatAction.self),
+            payload: Data(), payloadEncoding: nil, legacyPayload: tree,
+            playerID: "p", clientID: "c", sessionID: "s", resolverOutputs: [:], resolvedAtTick: 0
+        )])
+    case .clientEvent:
+        return ReevaluationTickRecord(tickId: 0, clientEvents: [ReevaluationRecordedClientEvent(
+            kind: "clientEvent", sequence: 0, typeIdentifier: "e", payload: Data(), payloadEncoding: nil,
+            legacyPayload: tree, playerID: "p", clientID: "c", sessionID: "s", resolvedAtTick: 0
+        )])
+    case .serverInput:
+        return ReevaluationTickRecord(tickId: 0, serverInputs: [ReevaluationRecordedServerInput(
+            sequence: 0, typeIdentifier: "i", payload: Data(), legacyPayload: tree, resolvedAtTick: 0
+        )])
+    }
+}
+
 @Suite("Recorded payload bytes and their encoding in the record (#700 K1a)")
 struct RecordPayloadFormatTests {
     @Test("An entry in the header's encoding is written without it, and each is read back with its own, across two headers")
@@ -124,35 +173,51 @@ struct RecordPayloadFormatTests {
         #expect(keeperResult.maxTickId == 0)
     }
 
-    @Test("A 3.7 JSON record whose payload isn't base64 is refused when it is read")
-    func record37WithTreePayloadIsRefused() throws {
-        let path = try jsonRecord(version: ReevaluationRecordVersion.current, payloadJSON: #""not base64!""#)
+    @Test("A 3.7 JSON record whose payload isn't base64 is refused when it is read, for each input kind",
+          arguments: PayloadEntryKind.allCases)
+    func record37WithTreePayloadIsRefused(kind: PayloadEntryKind) throws {
+        let path = try jsonRecord(version: ReevaluationRecordVersion.current, kind: kind, payloadJSON: #""not base64!""#)
         defer { try? FileManager.default.removeItem(atPath: path) }
         #expect(throws: ReevaluationRecordContentError.payloadNotBytes(tickId: 0, sequence: 0)) {
             _ = try ReevaluationRecordFile.openSource(filePath: path)
         }
         // The same entry in a 3.6 record is its tree, and is read.
-        let old = try jsonRecord(version: "3.6", payloadJSON: #""not base64!""#)
+        let old = try jsonRecord(version: "3.6", kind: kind, payloadJSON: #""not base64!""#)
         defer { try? FileManager.default.removeItem(atPath: old) }
         _ = try ReevaluationRecordFile.openSource(filePath: old)
     }
 
-    @Test("A 3.7 binary record holding a payload tree is refused when it is read")
-    func binaryRecord37WithTreePayloadIsRefused() async throws {
+    @Test("A 3.7 binary record holding a payload tree is refused when it is read, and has no JSON view, for each input kind",
+          arguments: PayloadEntryKind.allCases)
+    func binaryRecord37WithTreePayloadIsRefused(kind: PayloadEntryKind) async throws {
         let recorder = ReevaluationRecorder()
         await recorder.setMetadata(try formatMetadata(payloadEncoding: nil))
-        let tree = ReevaluationRecordedAction(
-            kind: "action", sequence: 0, typeIdentifier: String(describing: PayloadFormatAction.self),
-            payload: Data(), payloadEncoding: nil, legacyPayload: AnyCodable(["label": "x"] as [String: Any]),
-            playerID: "p", clientID: "c", sessionID: "s", resolverOutputs: [:], resolvedAtTick: 0
-        )
-        await recorder.record(tickId: 0, actions: [tree], clientEvents: [], lifecycleEvents: [])
+        await recorder.recordTick(treeTickRecord(kind))
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("payload-format-\(UUID().uuidString).sstr").path
         defer { try? FileManager.default.removeItem(atPath: path) }
         try await recorder.save(to: path)
         #expect(throws: ReevaluationRecordContentError.payloadNotBytes(tickId: 0, sequence: 0)) {
             _ = try ReevaluationRecordFile.openSource(filePath: path)
         }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        #expect(throws: ReevaluationRecordContentError.payloadNotBytes(tickId: 0, sequence: 0)) {
+            _ = try ReevaluationRecordFile.jsonView(ofRecordData: data)
+        }
+    }
+
+    @Test("The test upgrader turns a server input's tree into its canonical MessagePack bytes")
+    func upgraderConvertsServerInputs() async throws {
+        let recorder = ReevaluationRecorder()
+        await recorder.setMetadata(try formatMetadata(payloadEncoding: nil))
+        await recorder.recordTick(treeTickRecord(.serverInput))
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("payload-format-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try await recorder.save(to: path)
+        let upgraded = try LegacyRecordUpgrader.upgradedCopy(ofRecordAt: path)
+        defer { try? FileManager.default.removeItem(atPath: upgraded) }
+        let source = try ReevaluationRecordFile.openSource(filePath: upgraded)
+        let inputs = try await source.getServerInputs(for: 0)
+        #expect(inputs.map(\.payload) == [Data(try CanonicalMessagePack.encode(AnyCodable(["label": "x"] as [String: Any])))])
     }
 
     @Test("A MessagePack entry under a JSON header is refused by a JSON-only replay before any input")
@@ -227,6 +292,36 @@ struct RecordPayloadFormatTests {
         #expect(failure.underlying as? ReevaluationRecordPayloadError == refusal)
     }
 
+    @Test("A keeper built directly on a source whose metadata can't be read refuses at its initialization (fails closed)")
+    func unreadableMetadataFailsTheKeeper() async throws {
+        let path = try jsonRecord(version: ReevaluationRecordVersion.current, payloadJSON: "\"\(Data(#"{"label":"x"}"#.utf8).base64EncodedString())\"")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let keeper = LandKeeper<PayloadFormatState>(
+            definition: makePayloadFormatLand(),
+            initialState: PayloadFormatState(),
+            mode: .reevaluation,
+            reevaluationSource: MetadataFailingSource(base: try ReevaluationRecordFile.openSource(filePath: path)),
+            payloadDecoders: .standard,
+            autoStartLoops: false
+        )
+        let failure = try await #require(throws: LandInitializationError.self) {
+            try await keeper.leave(playerID: PlayerID("p"), clientID: ClientID("c"), sessionID: SessionID("s"))
+        }
+        #expect(failure.underlying is MetadataFailingSource.Unreadable)
+    }
+
+    @Test("A recorded server input equals another only with the same payload: different bytes differ, and a tree never equals bytes")
+    func serverInputEqualityComparesThePayload() {
+        func input(_ payload: Data, legacy: AnyCodable? = nil) -> ReevaluationRecordedServerInput {
+            ReevaluationRecordedServerInput(sequence: 1, typeIdentifier: "i", payload: payload, legacyPayload: legacy, resolvedAtTick: 0)
+        }
+        #expect(input(Data([1, 2])) == input(Data([1, 2])))
+        #expect(input(Data([1, 2])) != input(Data([1, 3])))
+        #expect(input(Data(), legacy: AnyCodable(["a": 1] as [String: Any])) != input(Data()))
+        #expect(input(Data(), legacy: AnyCodable(["a": 1] as [String: Any])) == input(Data(), legacy: AnyCodable(["a": 1] as [String: Any])))
+        #expect(input(Data(), legacy: AnyCodable(["a": 1] as [String: Any])) != input(Data(), legacy: AnyCodable(["a": 2] as [String: Any])))
+    }
+
     @Test("A replay with JSON decoders only refuses a record whose header says MessagePack, before any input; the standard decoders replay it")
     func jsonOnlyRefusesMessagePackHeader() async throws {
         let bytes = Data(try CanonicalMessagePack.encode(PayloadFormatAction(label: "x")))
@@ -240,4 +335,11 @@ struct RecordPayloadFormatTests {
         )
         #expect(result.maxTickId == 0)
     }
+}
+
+/// Forwards every read but the metadata, which throws.
+private struct MetadataFailingSource: ForwardingTestSource {
+    struct Unreadable: Error {}
+    let base: any ReevaluationSource
+    func getMetadata() async throws -> ReevaluationRecordMetadata { throw Unreadable() }
 }

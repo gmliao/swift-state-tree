@@ -693,24 +693,26 @@ final class DiffRun: @unchecked Sendable {
             guard case .object(var fields) = frame else { return frame }
             for key in ["actions", "clientEvents", "serverInputs"] {
                 guard case .array(let entries)? = fields[key] else { continue }
-                // A server input's bytes are MessagePack whatever the header says (K1-Q4 (a)).
-                let encoding: RecordPayloadEncoding? = key == "serverInputs" ? .messagepack : nil
-                fields[key] = .array(try entries.map { try payloadAsTree($0, encoding: encoding) })
+                // A server input's bytes are canonical MessagePack whatever the header says (K1-Q4 (a)).
+                fields[key] = .array(try entries.map { try payloadAsTree($0, isServerInput: key == "serverInputs") })
             }
             return .object(fields)
         })
         return .object(root)
     }
 
-    private static func payloadAsTree(_ entry: DiffValue, encoding fixed: RecordPayloadEncoding?) throws -> DiffValue {
+    private static func payloadAsTree(_ entry: DiffValue, isServerInput: Bool) throws -> DiffValue {
         guard case .object(var fields) = entry, case .string(let base64)? = fields["payload"] else { return entry }
         // A 3.7 payload is base64 in the view; anything else is a record this rule can't show.
         guard let bytes = Data(base64Encoded: base64) else {
             throw DiffRunFailure("a recorded payload in the record view isn't base64: \(base64.prefix(40))")
         }
-        var encoding = fixed
-        if encoding == nil, case .string(let name)? = fields["payloadEncoding"] { encoding = RecordPayloadEncoding(rawValue: name) }
-        let tree = try RecordedPayloadTree.tree(bytes, encoding: encoding)
+        var encoding: RecordPayloadEncoding?
+        if case .string(let name)? = fields["payloadEncoding"] { encoding = RecordPayloadEncoding(rawValue: name) }
+        // A server input reads with the record codec, as live and replay do, at its own depth.
+        let tree = isServerInput
+            ? try RecordedPayloadTree.serverInputTree(bytes)
+            : try RecordedPayloadTree.tree(bytes, encoding: encoding)
         fields["payload"] = try DiffValue.fromJSON(JSONEncoder().encode(tree))
         fields["payloadEncoding"] = nil
         return .object(fields)

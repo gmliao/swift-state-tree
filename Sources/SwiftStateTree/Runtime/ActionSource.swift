@@ -68,7 +68,8 @@ public protocol ReevaluationSource: Sendable {
 
     /// The encodings of the record's action and client event payloads (#700 K1a): the header's,
     /// and any an entry names. A replay checks each against its `RecordPayloadDecoders` before it
-    /// applies any input. A source that wraps another must forward it.
+    /// applies any input. It has no default: a source that wraps another forwards it, so a
+    /// per-entry encoding can't hide behind the header's.
     func getPayloadEncodings() async throws -> Set<RecordPayloadEncoding>
 
     /// True only when this source parsed its frames from JSON bytes — the two JSON-reading
@@ -128,11 +129,6 @@ extension ReevaluationSource {
 
     /// Default for conformers that hold canonical frames built in memory: no JSON was parsed.
     public nonisolated var readsJSONRecord: Bool { false }
-
-    /// Default: the header's encoding only.
-    public func getPayloadEncodings() async throws -> Set<RecordPayloadEncoding> {
-        [try await getMetadata().effectivePayloadEncoding]
-    }
 
     /// Whether the record carries a sync stream (see `ReevaluationSyncStreamPresence`).
     public func getSyncStreamPresence() async throws -> ReevaluationSyncStreamPresence {
@@ -597,6 +593,8 @@ public enum ReevaluationRecordFile {
     public static func jsonView(ofRecordData data: Data) throws -> Data {
         guard ReevaluationRecordLog.hasMagic(data) else { return data }
         let contents = try ReevaluationRecordLogReader.read(Array(data))
+        // A 3.7 record holding a tree is malformed: no view of it, as `openSource` refuses it.
+        try ReevaluationRecordContentCheck.checkPayloadsAreBytes(contents.frames, recordVersion: contents.metadata.version)
         return try jsonViewData(metadata: contents.metadata, frames: contents.frames)
     }
 

@@ -154,13 +154,13 @@ extension DifferentialHarness {
         @Test("A server input's bytes are shown as their MessagePack tree, under a JSON header too")
         func serverInputPayloadIsAMessagePackTreeInTheView() async throws {
             /// A saved record, with no header encoding (`json`), of one server input whose bytes
-            /// are `value`'s canonical MessagePack.
-            func view(_ value: String) async throws -> DiffValue {
+            /// are `payload`'s canonical MessagePack.
+            func view(_ payload: [String: Any]) async throws -> DiffValue {
                 let recorder = ReevaluationRecorder()
                 await recorder.setMetadata(ReevaluationRecordMetadata(
                     landID: "self-check:1", landType: "self-check", createdAt: Date(timeIntervalSince1970: 0), metadata: [:]
                 ))
-                let bytes = Data(try CanonicalMessagePack.encode(AnyCodable(["k": value] as [String: Any])))
+                let bytes = Data(try CanonicalMessagePack.encode(AnyCodable(payload)))
                 await recorder.record(
                     tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [],
                     serverInputs: [ReevaluationRecordedServerInput(sequence: 0, typeIdentifier: "SelfCheckInput", payload: bytes, resolvedAtTick: 0)]
@@ -171,7 +171,7 @@ extension DifferentialHarness {
                 let contents = try ReevaluationRecordLog.decodeForTesting(Array(try Data(contentsOf: URL(fileURLWithPath: path))))
                 return try DiffRun.decodedView(contents)
             }
-            let shown = try await view("v")
+            let shown = try await view(["k": "v"])
             guard case .object(let root) = shown, case .array(let frames)? = root["frames"],
                   case .object(let frame)? = frames.first, case .array(let inputs)? = frame["serverInputs"],
                   case .object(let input)? = inputs.first else {
@@ -180,8 +180,13 @@ extension DifferentialHarness {
             }
             #expect(input["payload"] == .object(["k": .string("v")]))
             var paths: [(String, String)] = []
-            DiffCompare.walk(shown, try await view("w"), path: "", into: &paths)
+            DiffCompare.walk(shown, try await view(["k": "w"]), path: "", into: &paths)
             #expect(paths.map(\.0) == ["frames[0].serverInputs[0].payload.k"])
+            // Nested past a client payload's limit (32) and within a server input's: the view reads
+            // it with the record codec, as replay does.
+            var deep: Any = 1
+            for _ in 0..<60 { deep = [deep] }
+            _ = try await view(["k": deep])
         }
 
         @Test("A golden whose decoded view isn't its bytes is corrupt")

@@ -285,6 +285,28 @@ struct NIOAdminRoutesReplayStartTests {
 
     private static let startURIs = ["/admin/reevaluation/replay/start", "/admin/reevaluation/start"]
 
+    @Test("Both start routes refuse a 3.6 record whose fingerprint matches: its payloads are trees, which replay no longer decodes (#700 K1a)")
+    func startRefusesA36RecordWithAMatchingFingerprint() async throws {
+        let recordFileURL = try writeRecordFile(landType: "hero-defense", landDefinitionID: "hero-defense", version: "3.6")
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+        let router = try await makeRouter()
+        let body = try JSONSerialization.data(withJSONObject: [
+            "landType": "hero-defense", "recordFilePath": recordFileURL.path,
+        ])
+        for uri in Self.startURIs {
+            let response = try await sendReplayStartRequest(body: body, on: router, uri: uri)
+            #expect(response.status == .conflict, "\(uri)")
+            let decoded = try decodeAdminResponse(from: response)
+            #expect(!decoded.success)
+            #expect(decoded.error?.code == "RECORD_PAYLOADS_NOT_REPLAYABLE", "\(uri)")
+            #expect(detailString(decoded.error?.details, key: "recordedRecordVersion") == "3.6", "\(uri)")
+            #expect(
+                detailString(decoded.error?.details, key: "minimumReplayableVersion") == ReevaluationRecordVersion.minimumReplayable,
+                "\(uri)"
+            )
+        }
+    }
+
     @Test("Both start routes refuse a record past the default run length limit, naming the last tick and the limit (#728)")
     func startRefusesARecordPastTheDefaultLimit() async throws {
         let limit = ReevaluationRecordFile.defaultMaxReplayTicks

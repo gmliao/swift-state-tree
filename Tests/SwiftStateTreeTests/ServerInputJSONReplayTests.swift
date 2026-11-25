@@ -154,16 +154,25 @@ struct ServerInputJSONReplayTests {
         }
     }
 
-    @Test("Replay from a saved record stays strict: a server input whose ratio the record holds as an integer is refused")
-    func savedRecordIntegerIsRefused() async throws {
+    @Test("Replay stays strict in each record form: a server input whose ratio the record holds as an integer is refused, the JSON view included (#818's allowance is gone from 3.7)",
+          arguments: SIJSONReplayForm.allCases)
+    func savedRecordIntegerIsRefused(form: SIJSONReplayForm) async throws {
         try await withTempDirectory { directory in
             let (path, live) = try await recordInputs([SIJSONRatio(ratio: 2.5, n: 3)], form: .saved, in: directory)
             #expect(live.seen == ["2.5/3"])
             try rewriteRatioAsInteger(atPath: path)
             // Control: the rewritten record is still a saved record, not the JSON view.
             #expect(try ReevaluationRecordFile.openSource(filePath: path) is ReevaluationRecordLogSource)
-            let replayed = try await replayState(path: path)
-            #expect(replayed.seen == [], "the integer is refused where the type declares Double")
+            var replayPath = path
+            if form == .jsonView {
+                // The view carries the bytes as base64, so the integer stays an integer in it.
+                replayPath = directory.appendingPathComponent("rewritten.json").path
+                try ReevaluationRecordFile.jsonView(ofRecordData: Data(contentsOf: URL(fileURLWithPath: path)))
+                    .write(to: URL(fileURLWithPath: replayPath))
+                #expect(try ReevaluationRecordFile.openSource(filePath: replayPath).readsJSONRecord)
+            }
+            let replayed = try await replayState(path: replayPath)
+            #expect(replayed.seen == [], "\(form): the integer is refused where the type declares Double")
         }
     }
 

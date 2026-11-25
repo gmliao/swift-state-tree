@@ -949,9 +949,21 @@ public struct ReevaluationRecordedServerInput: Codable, Sendable, Equatable {
         try c.encode(resolvedAtTick, forKey: .resolvedAtTick)
     }
 
+    /// Equal when every recorded field is: the payload's bytes too, and a payload read as a tree
+    /// (a record before 3.7) never equals one held as bytes.
     public static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.sequence == rhs.sequence && lhs.typeIdentifier == rhs.typeIdentifier
-            && lhs.resolvedAtTick == rhs.resolvedAtTick
+        lhs.kind == rhs.kind && lhs.sequence == rhs.sequence && lhs.typeIdentifier == rhs.typeIdentifier
+            && lhs.payload == rhs.payload && lhs.resolvedAtTick == rhs.resolvedAtTick
+            && legacyPayloadsEqual(lhs.legacyPayload, rhs.legacyPayload)
+    }
+
+    /// Two trees compare by their canonical bytes; a tree and no tree differ.
+    private static func legacyPayloadsEqual(_ lhs: AnyCodable?, _ rhs: AnyCodable?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): return true
+        case let (l?, r?): return (try? CanonicalMessagePack.encode(l)) == (try? CanonicalMessagePack.encode(r))
+        default: return false
+        }
     }
 }
 

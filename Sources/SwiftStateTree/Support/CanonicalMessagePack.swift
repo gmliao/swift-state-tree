@@ -1168,7 +1168,12 @@ private struct CanonicalKeyedDecoder<Key: CodingKey>: KeyedDecodingContainerProt
     let codingPath: [CodingKey]
     let integralFloats: Bool
 
-    var allKeys: [Key] { entries.keys.compactMap { Key(stringValue: $0.string) } }
+    /// In the encoder's order, by the keys' UTF-8 bytes, so a decoder that walks the keys sees
+    /// the same order on every run (the dictionary's own order follows the per-process seed).
+    var allKeys: [Key] {
+        entries.keys.sorted { $0.string.utf8.lexicographicallyPrecedes($1.string.utf8) }
+            .compactMap { Key(stringValue: $0.string) }
+    }
 
     func contains(_ key: Key) -> Bool { entries[CanonicalKey(key.stringValue)] != nil }
 

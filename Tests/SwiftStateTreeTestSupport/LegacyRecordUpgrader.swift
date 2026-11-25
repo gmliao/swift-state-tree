@@ -117,6 +117,15 @@ package enum LegacyRecordUpgrader {
                     resolvedAtTick: event.resolvedAtTick
                 )
             }
+            // A server input's tree becomes its canonical MessagePack bytes, what 3.7 records
+            // (K1-Q4 (a)), whatever the header says.
+            record.serverInputs = try record.serverInputs?.map { input in
+                guard let tree = input.legacyPayload else { return input }
+                return ReevaluationRecordedServerInput(
+                    sequence: input.sequence, typeIdentifier: input.typeIdentifier,
+                    payload: Data(try CanonicalMessagePack.encode(tree)), resolvedAtTick: input.resolvedAtTick
+                )
+            }
         case .footer:
             return
         }
