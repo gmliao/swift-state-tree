@@ -109,7 +109,7 @@ struct TableState: StateNodeProtocol {
 - generic node 的型別參數必須是 `PlainData`：`struct Box<T: PlainData & Sendable>: StateNodeProtocol`。
 - 不用 `@StateNodeBuilder`、手寫 conformance 的 state node 要加上 `@PlainData`。這只適用於 stored property 都沒有 property wrapper 的 node，因為 `@PlainData` 拒絕所有 wrapper。有 `@Sync` 或 `@Internal` 欄位的 node 請用 `@StateNodeBuilder`。
 - state 欄位上 `@Sync` 與 `@Internal` 以外的 property wrapper 會被拒絕：檢查讀不到其他 wrapper 的儲存內容。自己定義、名為 `Sync` 或 `Internal` 的 wrapper 會被讀穿，但它的儲存內容會被檢查，所以只有它是純資料時才能編譯。加上 module 名稱的寫法，只有在 module 匯出了 library 的 wrapper 時才會被讀穿，例如 `@SwiftStateTree.Sync`。
-- `#if` 裡的 `@Sync` 欄位會被拒絕：同步只讀型別最上層的欄位，所以它永遠不會被同步。請宣告在 `#if` 之外，或標記為 `@Internal`。
+- `#if` 裡的 `@Sync` 欄位會被拒絕：同步只讀型別最上層的欄位，所以它永遠不會被同步。請宣告在 `#if` 之外，或標記為 `@Internal`。若 node 同時是 `@SnapshotConvertible`，`#if` 裡的 `@Internal` 欄位也會被拒絕，因為轉換會漏掉它。
 - 有 observer（`willSet`、`didSet`）的 property 是 stored property，所以和其他欄位一樣需要標記。標記 `@Sync` 的會被拒絕：產生的 mutator 與 snapshot decode 直接寫入欄位的儲存內容，observer 只會在部分寫入時執行。標記 `@Internal` 的可以保留 observer。
 - 成員中的 freestanding macro 展開（`#someMacro()`）會被拒絕，因為它加入的儲存內容不在檢查所讀的語法裡。`#warning` 與 `#error` 是編譯器指令，可以使用。
 - state 型別與 `@SnapshotConvertible` 型別只能掛本專案的 macro（`@StateNodeBuilder`、`@SnapshotConvertible`、`@PlainData`、`@Payload`），以及不加入成員的內建 attribute（例如 `@available`）。其他 attached macro 會被拒絕，因為它可能加入檢查看不到的成員。
@@ -124,7 +124,7 @@ Land 需要但不同步的參照（例如快取或 service handle）放在 land 
 - **掛在成員上的 macro。** 允許清單只讀 state 型別本身的 attribute。掛在 method、initializer、computed property 或 static property 上的 peer macro 可以替型別加入 stored member，而沒有檢查會看到它們。由 #837 追蹤。
 - **巢狀的 `@PlainData` 或 `@Payload` 型別。** 允許清單只在 `@StateNodeBuilder` 與 `@SnapshotConvertible` 型別上執行。存放在 state 欄位裡的 `@PlainData` 或 `@Payload` 型別不會執行它，因此那個型別上的其他 attached macro 可以加入它的 witness 看不到的成員。由 #837 追蹤。
 
-對這四種情況，編譯器之後還留著兩道執行期檢查：
+編譯器之後還留著兩道執行期檢查。它們只看得到能找到的儲存值：state 型別欄位 metadata 裡的欄位，以及透過 reflection 找到、巢狀在其中的值。因此它們涵蓋手寫的 witness，以及巢狀 `@PlainData` 或 `@Payload` 型別的成員（註冊時從預設實例讀取，轉換時透過 reflection）。macro 直接加到 state 型別本身的成員（同名 macro 或成員上的 peer macro 加入的）不在任何欄位 metadata 裡，也不在產生的轉換程式裡，因此兩道檢查都看不到：
 - **註冊時。** `LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會拋出 `LandRegistrationError`，其 `sync` 含有 `.valueSemantics` 問題，也就是列出每個欄位與 class 的 `SyncValueSemanticsError`，例如 `GameState.inventory: Inventory is a class; synced state must be value types`。檢查會走訪每個同步欄位的型別（包含 `.serverOnly` 欄位），穿過 optional、array、set、dictionary 的 key 與 value，以及巢狀 state node，並透過預設實例檢查一般 struct、tuple、enum payload 與 existential property（`any P`）的內容。
 - **轉換狀態時。** 檢查看不到的 class（之後才存入 existential 欄位的、位於預設實例沒有採用的 enum case 裡的、或加進註冊時還是空的集合裡的）會讓轉換拋出 `SyncError.unsupportedValue`。Dictionary 的 key 是例外：key 是透過它的 description 轉換的，因此放在 value type key 內部的 class（例如含有 class 屬性的 `CustomStringConvertible` struct）只有在註冊時、且預設實例的第一個 key 含有 class 時才會被拒絕（檢查只取 dictionary 的第一個項目）。每次同步都會轉換，因此該 Land 的同步會失敗（`.serverOnly` 欄位只在錄製或計算狀態雜湊時才會轉換，因此失敗的是這些步驟）；若 class 位於事件 payload 中，sync-output verifier 無法將該事件正規化，會把 events 範圍回報為無法驗證。
 

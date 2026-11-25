@@ -190,8 +190,8 @@ struct StatePlainDataMacroTests {
         #expect(refusals.count == 2, "\(messages)")
     }
 
-    @Test("A wrapper or macro qualified by SwiftStateTreeNIO, which re-exports SwiftStateTree, is the library's")
-    func reexportingModule() {
+    @Test("SwiftStateTreeNIO-qualified wrappers are read through, and a SwiftStateTreeNIO-qualified sibling passes the type's allow list")
+    func reexportingModuleSpellings() {
         let (expanded, messages) = expand("""
             @StateNodeBuilder
             @SwiftStateTreeNIO.SnapshotConvertible
@@ -230,6 +230,20 @@ struct StatePlainDataMacroTests {
             }
             """)
         #expect(messages.contains { $0.contains("Stored property 'secret'") && $0.contains("must be marked with @Sync or @Internal") }, "\(messages)")
+    }
+
+    @Test("A property is stored only when every accessor is an observer: an unsafeAddress-only one is computed")
+    func accessorKinds() {
+        let (_, messages) = expand("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                var raw: Int {
+                    unsafeAddress { fatalError() }
+                }
+            }
+            """)
+        #expect(!messages.contains { $0.contains("must be marked with @Sync or @Internal") }, "\(messages)")
     }
 
     @Test("An observed @Sync field is refused: generated writes skip its observers; an observed @Internal is fine")

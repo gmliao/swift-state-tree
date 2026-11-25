@@ -291,8 +291,9 @@ public enum PlainDataWalk {
         return nil
     }
 
-    /// Whether a binding has no storage: a getter, or `get`/`set`/`_read`/`_modify` accessors.
-    /// Observers (`willSet`/`didSet`) keep it stored.
+    /// Whether a binding has no storage: a getter, or any accessor other than an observer
+    /// (`get`, `set`, `_read`, `_modify`, `unsafeAddress`, or one a newer Swift adds). Only
+    /// `willSet`/`didSet` keep it stored.
     public static func isComputed(_ binding: PatternBindingSyntax) -> Bool {
         guard let accessors = binding.accessorBlock?.accessors else { return false }
         switch accessors {
