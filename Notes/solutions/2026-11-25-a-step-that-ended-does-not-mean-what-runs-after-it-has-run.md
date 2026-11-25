@@ -1,4 +1,5 @@
 ---
+title: "A step that ended doesn't mean what runs after it has run"
 module: SwiftStateTreeNIO tests, Support/Lifecycle
 date: 2026-11-25
 problem_type: bug_class

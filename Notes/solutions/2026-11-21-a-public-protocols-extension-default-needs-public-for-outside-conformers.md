@@ -1,4 +1,5 @@
 ---
+title: "A default in a public protocol's extension satisfies outside conformers only when it is `public`"
 module: SwiftStateTree
 date: 2026-11-21
 problem_type: testing_practice

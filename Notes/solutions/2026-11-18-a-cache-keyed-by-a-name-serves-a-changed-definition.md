@@ -1,4 +1,5 @@
 ---
+title: "A cache keyed by a name serves a changed definition the old value"
 module: SwiftStateTree
 date: 2026-11-18
 problem_type: bug_class

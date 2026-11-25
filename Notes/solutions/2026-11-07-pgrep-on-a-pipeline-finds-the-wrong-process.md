@@ -1,4 +1,5 @@
 ---
+title: "`pgrep` on a pipeline finds the wrong process"
 module: manual checks, process control
 date: 2026-11-07
 problem_type: test_methodology

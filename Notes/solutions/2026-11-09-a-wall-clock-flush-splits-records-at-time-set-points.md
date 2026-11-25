@@ -1,4 +1,5 @@
 ---
+title: "A wall-clock flush that closes a record still being merged splits it at points set by time"
 module: SwiftStateTree
 date: 2026-11-09
 problem_type: bug_class

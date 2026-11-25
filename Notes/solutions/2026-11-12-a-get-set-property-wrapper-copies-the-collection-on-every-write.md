@@ -1,4 +1,5 @@
 ---
+title: "A get/set property wrapper copies the collection on every write"
 module: SwiftStateTree
 date: 2026-11-12
 problem_type: performance_collapse

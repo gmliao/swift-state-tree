@@ -1,4 +1,5 @@
 ---
+title: "An \"equivalent\" mutant needs the combined-failure case checked"
 module: SwiftStateTree
 date: 2026-11-24
 problem_type: testing_practice

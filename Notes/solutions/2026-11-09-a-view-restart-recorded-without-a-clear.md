@@ -1,4 +1,5 @@
 ---
+title: "A view restart on a live connection, recorded without a clear"
 module: SwiftStateTreeTransport
 date: 2026-11-09
 problem_type: bug_class

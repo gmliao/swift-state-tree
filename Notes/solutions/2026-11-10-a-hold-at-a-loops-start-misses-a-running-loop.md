@@ -1,4 +1,5 @@
 ---
+title: "A hold at a loop's start misses work a running loop picks up"
 module: SwiftStateTree
 date: 2026-11-10
 problem_type: testing_practice

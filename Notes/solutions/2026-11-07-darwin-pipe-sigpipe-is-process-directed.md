@@ -1,4 +1,5 @@
 ---
+title: "A Darwin pipe write's SIGPIPE is process-directed: the writer can exit before it lands"
 module: tests (exit tests), process signals
 date: 2026-11-07
 problem_type: test_methodology

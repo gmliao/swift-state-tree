@@ -1,4 +1,5 @@
 ---
+title: "Keeping a copy, then `removeAll(keepingCapacity:)`, allocates"
 module: SwiftStateTurns
 date: 2026-11-21
 problem_type: gotcha

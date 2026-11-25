@@ -1,4 +1,5 @@
 ---
+title: "An erased-array builder input reopens the type check"
 module: SwiftStateTree
 date: 2026-11-24
 problem_type: bug_class

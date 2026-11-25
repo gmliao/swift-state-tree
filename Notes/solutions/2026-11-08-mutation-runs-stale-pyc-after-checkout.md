@@ -1,4 +1,5 @@
 ---
+title: "Mutation runs: a stale `.pyc` after `git checkout` restores a same-size file within the same mtime second"
 module: deep-research
 date: 2026-11-08
 problem_type: testing_practice

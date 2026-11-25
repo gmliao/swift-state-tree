@@ -1,4 +1,5 @@
 ---
+title: "A hang guard in a task group waits for the hang"
 module: SwiftStateTreeNIO
 date: 2026-11-17
 problem_type: testing_practice
