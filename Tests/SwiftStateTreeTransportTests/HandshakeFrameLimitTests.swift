@@ -700,6 +700,79 @@ struct HandshakeFrameLimitTests {
         #expect(codes.suffix(5) == Array(repeating: ErrorCode.joinAlreadyJoined.rawValue, count: 5), "\(codes)")
     }
 
+    @Test("A join sent after the JoinResponse, before the router learns of the flip, is refused as already joined (#867)")
+    func joinAfterResponseBeforeRouterFlip() async throws {
+        let fixture = try LimitFixture(limit: 512)
+        let session = SessionID("s-867-join")
+        let connection = await fixture.connect(session)
+        let gate = await fixture.hold(at: .flipWaitResumed)
+        let transport = fixture.transport
+        let first = try join(bytes: 400)
+        let joining = Task { await transport.handleIncomingMessage(sessionID: session, data: first) }
+        #expect(await gate.waitForArrivals(1))
+        await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await connection.kinds.contains(.joinResponse), "the client holds the JoinResponse")
+
+        // The router's phase still lags the flip: the join check must read what the client saw.
+        await transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "again-0"))
+        await connection.waitFor { $0.kinds.contains(.error) || !$0.closes.isEmpty }
+        #expect(await connection.errorCodes == [ErrorCode.joinAlreadyJoined.rawValue])
+
+        gate.open()
+        await joining.value
+        #expect(await connection.closes.isEmpty)
+        #expect(await fixture.router.getBoundLandID(for: session) != nil)
+    }
+
+    @Test("An action sent in the same window runs (#867)")
+    func actionAfterResponseBeforeRouterFlip() async throws {
+        let fixture = try LimitFixture(limit: 512)
+        let session = SessionID("s-867-action")
+        let connection = await fixture.connect(session)
+        let gate = await fixture.hold(at: .flipWaitResumed)
+        let transport = fixture.transport
+        let first = try join(bytes: 400)
+        let joining = Task { await transport.handleIncomingMessage(sessionID: session, data: first) }
+        #expect(await gate.waitForArrivals(1))
+        await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+
+        let action = try JSONEncoder().encode(TransportMessage.action(
+            requestID: "a-867",
+            action: ActionEnvelope(typeIdentifier: "HandshakeLimitNoteAction", payload: AnyCodable(["text": "x"]))
+        ))
+        await transport.handleIncomingMessage(sessionID: session, data: action)
+        await connection.waitFor { $0.kinds.contains(.actionResponse) || !$0.closes.isEmpty }
+        let container = try #require(await fixture.manager.getLand(landID: fixture.landID))
+        #expect(await container.keeper.currentState().notes == 1, "the action ran")
+        #expect(await connection.errorCodes.isEmpty)
+        #expect(await connection.closes.isEmpty)
+
+        gate.open()
+        await joining.value
+    }
+
+    @Test("A join before the router admitted the attempt still gets JOIN_IN_PROGRESS (#867)")
+    func joinBeforeAdmissionStillInProgress() async throws {
+        let fixture = try LimitFixture(limit: 512)
+        let session = SessionID("s-867-pre")
+        let connection = await fixture.connect(session)
+        // After `admitJoin` returned (the adapter flipped), before the router records the admission.
+        let gate = await fixture.hold(at: .afterAdmit)
+        let transport = fixture.transport
+        let first = try join(bytes: 400)
+        let joining = Task { await transport.handleIncomingMessage(sessionID: session, data: first) }
+        #expect(await gate.waitForArrivals(1))
+
+        await transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "pre-0"))
+        await connection.waitFor { $0.kinds.contains(.error) || !$0.closes.isEmpty }
+        #expect(await connection.errorCodes == [ErrorCode.joinInProgress.rawValue])
+
+        gate.open()
+        await joining.value
+        await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await connection.closes.isEmpty)
+    }
+
     @Test("A session connected again under the same ID starts with a fresh budget")
     func reconnectGetsFreshBudget() async throws {
         let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 3)
