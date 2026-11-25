@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import SwiftStateTurns
 
 // MARK: - Helper for Replay Mode
 
@@ -116,6 +117,7 @@ private final class ActionJobCallerCancellation: @unchecked Sendable {
 
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Unified pending item for every input kind (`package`: nothing public takes or returns it).
+    @PlainData
     package enum PendingItem: Sendable {
         case action(PendingActionItem)
         case clientEvent(PendingClientEventItem)
@@ -129,6 +131,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// A transport-reported failure (#535), queued as a turn input so it is applied in a turn.
+    @PlainData
     package struct PendingLandFailureItem: Sendable {
         package let sequence: Int64
         package let resolvedAtTick: Int64
@@ -136,6 +139,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// A server input (#387), taken at submit: the system identity applies it.
+    @PlainData
     package struct PendingServerInputItem: Sendable {
         package let sequence: Int64
         package let typeIdentifier: String
@@ -145,13 +149,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         /// `payload` decoded as the handler's type, once: at submit live (where a failure is
         /// refused, so live holds a value), when the item is built in replay (where a failure is
         /// kept, and thrown when the item is applied).
-        package let decoded: Result<any ServerInputPayload, RecordedPayloadDecodeFailure>
+        package let decoded: DecodedServerInput
         package let resolvedAtTick: Int64
     }
 
     /// The forced shutdown's input (#382). Its turn clears the players without OnLeave, drops
     /// every input still queued and starts the drain, in one synchronous segment
     /// (`applyInputs`).
+    @PlainData
     package struct PendingShutdownItem: Sendable {
         package let sequence: Int64
         package let resolvedAtTick: Int64
@@ -160,12 +165,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The recorded lifecycle event kind of the shutdown turn (`PendingItem.shutdown`).
     static var shutdownLifecycleKind: String { "shutdown" }
 
+    @PlainData
     public enum LifecycleKind: String, Codable, Sendable {
         case initialize
         case join
         case leave
     }
 
+    @PlainData
     public struct PendingLifecycleItem: Sendable {
         public let sequence: Int64
         public let kind: LifecycleKind
@@ -224,28 +231,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
-    public struct PendingActionItem: Sendable {
-        public let sequence: Int64
+    @PlainData
+    package struct PendingActionItem: Sendable {
+        package let sequence: Int64
         /// The action as the apply step runs it (#521, #700 K1a): decoded at intake live, and
         /// when replay builds the item. A recorded payload that doesn't decode is kept as its
         /// failure, thrown when the item is applied, where a decode at apply threw before.
-        package let decoded: Result<any ActionPayload, RecordedPayloadDecodeFailure>
-        /// The handler's action type: found by the recorded type identifier in replay, so it is
-        /// known even when the payload didn't decode.
-        public let actionType: any ActionPayload.Type
+        package let decoded: DecodedAction
+        /// The handler's position in `definition.actionHandlers` (#700 K1b-1, F9): found at
+        /// intake, or by the recorded type identifier in replay, so it is known even when the
+        /// payload didn't decode. Nil on a hand-built item, whose handler is found by its value's
+        /// type when it is applied.
+        package let handlerIndex: ActionHandlerIndex?
         /// The bytes the record keeps (#700 K1a): set only when the land records inputs, and on
-        /// an item from the public init, which computes them to decode its action.
+        /// a hand-built item, whose init computes them to decode its action.
         package let recorded: RecordedPayloadBytes?
-        public let playerID: PlayerID
-        public let clientID: ClientID
-        public let sessionID: SessionID
+        package let playerID: PlayerID
+        package let clientID: ClientID
+        package let sessionID: SessionID
         /// The resolver outputs: produced live, or read from a record in replay.
         package let heldResolverOutputs: [String: HeldResolverOutput]
-        public let resolvedAtTick: Int64
+        package let resolvedAtTick: Int64
 
         /// A hand-built action (K1-Q8 (a)): it has no client bytes, so it is encoded once as
         /// canonical JSON, and the item holds the value those bytes decode to, recording or not.
-        public init<A: ActionPayload>(
+        package init<A: ActionPayload>(
             sequence: Int64,
             action: A,
             playerID: PlayerID,
@@ -257,8 +267,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let recorded = try RecordedPayloadBytes(typed: action)
             self.init(
                 sequence: sequence,
-                decoded: .success(try JSONDecoder().decode(A.self, from: recorded.bytes)),
-                actionType: A.self,
+                decoded: .value(try JSONDecoder().decode(A.self, from: recorded.bytes)),
+                handlerIndex: nil,
                 recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
@@ -270,8 +280,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         package init(
             sequence: Int64,
-            decoded: Result<any ActionPayload, RecordedPayloadDecodeFailure>,
-            actionType: any ActionPayload.Type,
+            decoded: DecodedAction,
+            handlerIndex: ActionHandlerIndex?,
             recorded: RecordedPayloadBytes?,
             playerID: PlayerID,
             clientID: ClientID,
@@ -281,7 +291,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         ) {
             self.sequence = sequence
             self.decoded = decoded
-            self.actionType = actionType
+            self.handlerIndex = handlerIndex
             self.recorded = recorded
             self.playerID = playerID
             self.clientID = clientID
@@ -295,7 +305,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             PendingActionItem(
                 sequence: sequence,
                 decoded: decoded,
-                actionType: actionType,
+                handlerIndex: handlerIndex,
                 recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
@@ -307,51 +317,29 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// A client event's payload as its item holds it.
+    @PlainData
     package enum PendingClientEventPayload: Sendable {
         /// Decoded at intake live, or when replay built the item (#521, #700 K1a).
         case decoded(any ClientEventPayload)
-        /// A recorded payload that didn't decode when replay built the item: the event is dropped
-        /// at apply, as its handler dropped it when it decoded there (a nesting refusal is also
-        /// logged and counted, #362).
+        /// A payload that didn't decode: a recorded one when replay built the item, or, live, one
+        /// whose descriptor has no decode (the public descriptor init's), decoded with the
+        /// descriptor's type at intake. The event is dropped at apply, as its handler dropped it
+        /// when it decoded there (a nesting refusal is also logged and counted, #362).
         case failed(RecordedPayloadDecodeFailure)
-        /// An event whose descriptor has no decode (one built with the public descriptor init):
-        /// its handler decodes it when applied, as before.
-        case undecoded(AnyClientEvent)
     }
 
-    public struct PendingClientEventItem: Sendable {
-        public let sequence: Int64
+    @PlainData
+    package struct PendingClientEventItem: Sendable {
+        package let sequence: Int64
         /// The event's wire type, its descriptor's name.
-        public let typeIdentifier: String
+        package let typeIdentifier: String
         package let payload: PendingClientEventPayload
-        /// The bytes the record keeps (#700 K1a): set only when the land records inputs, and on
-        /// an item from the public init.
+        /// The bytes the record keeps (#700 K1a): set only when the land records inputs.
         package let recorded: RecordedPayloadBytes?
-        public let playerID: PlayerID
-        public let clientID: ClientID
-        public let sessionID: SessionID
-        public let resolvedAtTick: Int64
-
-        /// A hand-built event: its handler decodes it when applied, as before.
-        public init(
-            sequence: Int64,
-            event: AnyClientEvent,
-            playerID: PlayerID,
-            clientID: ClientID,
-            sessionID: SessionID,
-            resolvedAtTick: Int64
-        ) throws {
-            self.init(
-                sequence: sequence,
-                typeIdentifier: event.type,
-                payload: .undecoded(event),
-                recorded: try RecordedPayloadBytes(of: event.source),
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: sessionID,
-                resolvedAtTick: resolvedAtTick
-            )
-        }
+        package let playerID: PlayerID
+        package let clientID: ClientID
+        package let sessionID: SessionID
+        package let resolvedAtTick: Int64
 
         package init(
             sequence: Int64,
@@ -416,6 +404,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var players: [PlayerID: InternalPlayerSession] = [:]
     /// Mints `InternalPlayerSession.generation`: every insert of a player entry gets a new one.
     private var entryGenerations = EpochCounter()
+
+    /// Places reserved for duplicate logins that are between their cap check and their insert
+    /// (#852): one reservation per pending attempt, not one per player. The kick of the old
+    /// session awaits and the player's entry is gone meanwhile; a reservation keeps its place, so a
+    /// newcomer can't take it. Overlapping logins of one player each hold their own, so the end of
+    /// one never frees the place another still waits for. Only `joinReportingAdmission` reserves
+    /// (the legacy `join(playerID:…)` has no kick and no cap check); teardown clears them all.
+    private var rejoinReservations: [PlayerID: Set<Epoch>] = [:]
+    private var rejoinReservationEpochs = EpochCounter()
     /// The land's services, without a `DeterministicRngService`: the land's generator is
     /// `landRandom`, and contexts get it per handler call (`withHandlerStep`).
     private let services: LandServices
@@ -520,10 +517,29 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try RecordPayloadEncoding.canonicalJSON(AnyCodable(action))
     }
 
+    /// A client event whose descriptor has no decode (the public descriptor init's), decoded with
+    /// the descriptor's type: the decode its handler ran when applied, before #700 K1b-1. A
+    /// failure is held, not thrown: apply drops the event, and counts one nested too deep (#362).
+    private static func decodeWithDescriptorType(
+        _ descriptor: AnyEventDescriptor,
+        _ source: any PayloadDecodingSource
+    ) -> PendingClientEventPayload {
+        guard let decode = AnyEventDescriptor.clientEventDecoder(for: descriptor.type) else {
+            // Not a `ClientEventPayload`: no handler can match it, so apply skips it at the
+            // handler lookup and never reads this.
+            return .failed(.undecodable("\(descriptor.type) isn't a ClientEventPayload"))
+        }
+        do {
+            try source.validateRecordable()
+            return .decoded(try decode(source))
+        } catch {
+            return .failed(RecordedPayloadDecodeFailure(error))
+        }
+    }
+
     private static func fallbackRecordBytes(_ payload: PendingClientEventPayload) throws -> Data {
         switch payload {
         case .decoded(let event): return try RecordPayloadEncoding.canonicalJSON(AnyCodable(event))
-        case .undecoded(let event): return try RecordedPayloadBytes(of: event.source).bytes
         case .failed: return Data()
         }
     }
@@ -535,7 +551,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var inTurnSyncTurnKind: ReevaluationRecordedSyncOutput.TurnKind = .tick
     /// The last recorded output's `observedTickId` and how many outputs were recorded after it
     /// (`ReevaluationRecordedSyncOutput.index`).
-    private var syncOutputIndexCursor: (observedTickId: Int64?, count: Int) = (nil, 0)
+    private var syncOutputIndexCursor = SyncOutputIndexCursor(observedTickId: nil, count: 0)
     /// The ordinal of a tickless land's last pass, 0 before its first (#563). Replay counts the
     /// same passes; a sync output records the value it read after (`afterPass`).
     private var passOrdinal: Int64 = 0
@@ -728,7 +744,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var initializationTask: Task<Void, Never>?
     /// Set when OnInitialize's resolvers timed out (#104): the land never initialized, every
     /// call that awaits the initialization throws it, and the drain skips the destroy handlers.
-    private var initializationFailure: LandInitializationError?
+    private var initializationFailure: FailureID?
+
+    /// Holds `error` as the initialization's failure, wrapped as every caller gets it (#700 K1b-2).
+    private func failInitialization(with error: any Error) {
+        initializationFailure = recordFailure(LandInitializationError(underlying: error))
+        checkActionTables(#function)
+    }
+
+    /// Throws the initialization's failure, if it failed. Every caller gets the same value: the
+    /// entry is read, never taken.
+    private func throwIfInitializationFailed() throws {
+        if let id = initializationFailure {
+            throw failure(for: id, path: .initialization, sequence: nil)
+        }
+    }
     private var didInitialize = false
     /// Re-evaluation: OnInitialize was replayed before tick 0 from the record's initialize
     /// record, so tick 0 skips its `initialize` lifecycle event.
@@ -849,7 +879,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// The fold waiting for its tick turn: the tick deadline it folded on and whether that
     /// deadline had passed. Set with `inTurnSyncDue` by a fold, taken when a tick turn starts.
-    private var pendingFold: (deadline: ContinuousClock.Instant, overdueAtFold: Bool)?
+    private var pendingFold: PendingFold?
 
     /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
     private(set) var inTurnDeferredTurns = 0
@@ -1288,12 +1318,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Runs the initialization once; every caller waits for it. Throws `LandInitializationError`
     /// if it failed (#104), to this caller and every later one.
     private func ensureInitialized() async throws {
-        if let initializationFailure { throw initializationFailure }
+        try throwIfInitializationFailed()
         if didInitialize { return }
         if let task = initializationTask {
             noteInitializationWait()
             await task.value
-            if let initializationFailure { throw initializationFailure }
+            try throwIfInitializationFailed()
             return
         }
 
@@ -1306,7 +1336,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         initializationTask = nil
         didInitialize = true
         resumeInitializationWaitWatchers { _ in true }
-        if let initializationFailure { throw initializationFailure }
+        try throwIfInitializationFailed()
     }
 
     /// Tests: how many calls have waited on a running initialization, and the tests waiting for
@@ -1368,12 +1398,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// Ends one attempt's reservation; idempotent, and it leaves the player's other attempts' ones.
+    private func endRejoinReservation(_ reservation: Epoch, of playerID: PlayerID) {
+        guard var epochs = rejoinReservations[playerID] else { return }
+        epochs.remove(reservation)
+        rejoinReservations[playerID] = epochs.isEmpty ? nil : epochs
+    }
+
     /// Tears the land down after its initialization failed (#104): the normal drain, without the
     /// destroy handlers (`initializationFailure` is set). Started from `performInitialization`,
     /// in a Task of its own: the drain's `forceShutdown` path would otherwise wait for the
     /// initialization it is part of.
     private func tearDownAfterFailedInitialization() async {
         players.removeAll()
+        rejoinReservations.removeAll()
         dropPendingInputs(reason: "initialization failed")
         await shutdownIfIdle(cause: .initializationFailed)
     }
@@ -1490,7 +1528,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
                 "error": .string(error.description),
             ])
-            initializationFailure = LandInitializationError(underlying: error)
+            failInitialization(with: error)
             Task { await self.tearDownAfterFailedInitialization() }
             return
         }
@@ -1506,7 +1544,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
                         "error": .string(String(describing: error)),
                     ])
-                    initializationFailure = LandInitializationError(underlying: error)
+                    failInitialization(with: error)
                     Task { await self.tearDownAfterFailedInitialization() }
                     return
                 }
@@ -1547,7 +1585,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
                             "error": .string(String(describing: error)),
                         ])
-                        initializationFailure = LandInitializationError(underlying: error)
+                        failInitialization(with: error)
                         Task { await self.tearDownAfterFailedInitialization() }
                         return
                     }
@@ -1561,7 +1599,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         logger.error("❌ OnInitialize resolvers failed: the land is torn down", metadata: [
                             "error": .string(String(describing: error)),
                         ])
-                        initializationFailure = LandInitializationError(underlying: error)
+                        failInitialization(with: error)
                         Task { await self.tearDownAfterFailedInitialization() }
                         return
                     }
@@ -1584,7 +1622,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
                     "error": .string(String(describing: error)),
                 ])
-                initializationFailure = LandInitializationError(underlying: error)
+                failInitialization(with: error)
                 Task { await self.tearDownAfterFailedInitialization() }
                 return
             }
@@ -2150,12 +2188,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return JoinOutcome(decision: decision, admitted: false, refusedStale: true)
         }
 
+        // A destroyed land refuses a late join as shutting down (retryable elsewhere), not as full.
+        guard !isDraining else { throw JoinError.landShuttingDown }
+
         // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
         // Skip check if player is already in the room (reconnection scenario)
-        let isReconnection = players[playerID] != nil
+        // A player whose old session is being kicked has no entry for a while, but still has a reservation.
+        let isReconnection = players[playerID] != nil || !(rejoinReservations[playerID]?.isEmpty ?? true)
 
         if let maxPlayers = definition.config.maxPlayers, !isReconnection {
-            let currentPlayerCount = players.count
+            // Reserved places count too: their owners are about to come back with a new connection.
+            let reservedPlaces = rejoinReservations.reduce(0) { $0 + ($1.value.isEmpty || players[$1.key] != nil ? 0 : 1) }
+            let currentPlayerCount = players.count + reservedPlaces
             guard currentPlayerCount < maxPlayers else {
                 logger.info("Join rejected: room is full", metadata: [
                     "currentPlayers": .stringConvertible(currentPlayerCount),
@@ -2164,6 +2208,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 throw JoinError.roomIsFull
             }
         }
+
+        // Reserve the returning player's place until its entry is back or this join fails. Each
+        // attempt ends only its own reservation, at the insert and on every other exit.
+        let reservation = isReconnection ? rejoinReservationEpochs.next() : nil
+        if let reservation { rejoinReservations[playerID, default: []].insert(reservation) }
+        defer { if let reservation { endRejoinReservation(reservation, of: playerID) } }
 
         await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
@@ -2200,6 +2250,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let entryGeneration = entryGenerations.next()
         playerSession.generation = entryGeneration
         players[playerID] = playerSession
+        if let reservation { endRejoinReservation(reservation, of: playerID) }
 
         destroyTask?.cancel()
         destroyTask = nil
@@ -2405,6 +2456,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// What an action captured at intake about its sender, checked when its resolvers' result
     /// is delivered (`deliverResolvedAction`).
+    @PlainData
     struct ActionTicket: Sendable {
         /// The sender's entry generation at intake; `nil` when the player had no entry (direct
         /// callers that send before or without a join) or the sender is exempt (the system
@@ -2463,35 +2515,173 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - Action jobs
 
-    /// An action whose resolvers run in their own task. Keyed by its sequence.
+    /// An action whose resolvers run in their own task, keyed by its sequence: the part the
+    /// model keeps (#700 K1b-2). The task, the abandonment and the caller's cancellation flag are
+    /// in `actionJobTasks`.
     private struct ActionJob {
         /// The action as taken in; its resolver outputs are filled in at delivery.
         let item: PendingActionItem
         let ticket: ActionTicket
         let input: String
-        var task: Task<Void, Never>?
-        /// Its resolvers' abandonment (the caller stopped waiting while they still run). The job
-        /// keeps its place in the caps until they end.
-        let abandonment: ResolverAbandonment
         /// The completion ran; the job stays registered only while its abandoned resolvers run.
         var completed = false
-        /// The caller was cancelled while waiting: the completion fails with `CancellationError`
-        /// instead of delivering, unless it ran first.
-        let callerCancelled = ActionJobCallerCancellation()
         /// Cancelled by the keeper (the sender's entry ended, or the land is draining): its slot
         /// already holds the delivery checks' rejection, and its completion only removes it.
         var cancelledByKeeper = false
     }
 
+    /// A job's references, beside the model until K5 (the task, the abandonment) and K2's
+    /// `JobCancellation` (the caller's flag). Keyed as `actionJobs`; the two are inserted and
+    /// removed together.
+    private struct ActionJobTask {
+        var task: Task<Void, Never>?
+        /// Its resolvers' abandonment (the caller stopped waiting while they still run). The job
+        /// keeps its place in the caps until they end.
+        let abandonment: ResolverAbandonment
+        /// The caller was cancelled while waiting: the completion fails with `CancellationError`
+        /// instead of delivering, unless it ran first.
+        let callerCancelled = ActionJobCallerCancellation()
+    }
+
     /// The outcome of a job, kept from `submitAction` until `awaitActionResult` reads it. It's
-    /// created in the intake's segment, so a reader that arrives after the completion still finds it.
+    /// created in the intake's segment, so a reader that arrives after the completion still finds
+    /// it. A failure is held by its ID in the failure table.
     private struct ActionSlot {
-        var result: Result<InputOutcome, any Error>?
-        var waiter: CheckedContinuation<InputOutcome, any Error>?
+        var result: InputResult?
     }
 
     private var actionJobs: [Int64: ActionJob] = [:]
+    private var actionJobTasks: [Int64: ActionJobTask] = [:]
     private var actionSlots: [Int64: ActionSlot] = [:]
+    /// The caller waiting on a slot, until K2's `InputID`. A slot holds at most one of a result
+    /// and a waiter.
+    private var actionSlotWaiters: [Int64: CheckedContinuation<InputOutcome, any Error>] = [:]
+
+    // MARK: - The failure table (#700 K1b-2). Outside the model: `any Error` isn't plain.
+
+    /// Errors held for callers that haven't read them, by the ID the model holds.
+    private var failures: [FailureID: any Error] = [:]
+    /// Mints failure IDs. Keeper-local: never reset, never restored from a record.
+    private var failureIDs = EpochCounter()
+    /// Tests: lookups that found no entry (`FailureTableMiss`).
+    private var failureTableMisses = 0
+    /// Tests: alignment violations the call sites logged.
+    private var alignmentViolations = 0
+    /// Tests: whether the call sites run the alignment check (`setActionTableAuditForTesting`).
+    /// Off in production: the check walks every slot, input-turn result and failure, so running
+    /// it at each completed pair would cost O(tables) per job event and per tickless input turn
+    /// (#870 review). Tests that pin the tables' alignment turn it on.
+    private var actionTableAuditForTesting = false
+
+    /// Where a failure is read from, for the miss's log.
+    private enum FailurePath: String {
+        case slot, inputTurn, initialization
+    }
+
+    private func recordFailure(_ error: any Error) -> FailureID {
+        let id = FailureID(failureIDs.next())
+        failures[id] = error
+        return id
+    }
+
+    /// Removes the entry and returns its error; a miss returns `FailureTableMiss`, logged and counted.
+    private func takeFailure(_ id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
+        if let error = failures.removeValue(forKey: id) { return error }
+        return noteFailureMiss(id, path: path, sequence: sequence)
+    }
+
+    /// Returns the entry's error and leaves it; a miss as `takeFailure`.
+    private func failure(for id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
+        if let error = failures[id] { return error }
+        return noteFailureMiss(id, path: path, sequence: sequence)
+    }
+
+    private func noteFailureMiss(_ id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
+        failureTableMisses += 1
+        // A miss changes what a client sees (a sentinel takes the generic error frame, where an
+        // event's `LandInputRejection` sends none) while the land keeps running: log it.
+        logger.error("The keeper's failure table has no entry for a held failure", metadata: [
+            "landID": .string(actualLandID ?? "-"),
+            "path": .string(path.rawValue),
+            "sequence": .string(sequence.map(String.init) ?? "-"),
+            "failureID": .string(id.description),
+        ])
+        return FailureTableMiss(id: id, path: path.rawValue, sequence: sequence)
+    }
+
+    /// The result to hold: a success as is, a failure recorded in the table.
+    private func held(_ result: Result<InputOutcome, any Error>) -> InputResult {
+        switch result {
+        case .success(let outcome): return .outcome(outcome)
+        case .failure(let error): return .failed(recordFailure(error))
+        }
+    }
+
+    /// The held result as its caller gets it, taking the failure out of the table.
+    private func taken(_ held: InputResult, path: FailurePath, sequence: Int64) -> Result<InputOutcome, any Error> {
+        switch held {
+        case .outcome(let outcome): return .success(outcome)
+        case .failed(let id): return .failure(takeFailure(id, path: path, sequence: sequence))
+        }
+    }
+
+    /// Sets `inputTurnResults[sequence]`, taking out of the table any failure the write displaces.
+    /// Live sequencing never displaces one; a manual replay step (`stepTickOnce` has no
+    /// single-flight) could, so the setter is safe anyway.
+    private func setInputTurnResult(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
+        if case .failed(let displaced)? = inputTurnResults[sequence] {
+            failures.removeValue(forKey: displaced)
+        }
+        inputTurnResults[sequence] = result.map(held)
+    }
+
+    // MARK: - The alignment check (returns its violations; never asserts)
+
+    /// What doesn't line up between the job table and its side table, the slots and their
+    /// waiters, and the failure table and the IDs the model holds. Each call site logs and counts
+    /// what this returns: an assertion inside a function a mutant changes would trap before a test
+    /// could observe it.
+    private func actionTableViolations() -> [String] {
+        var violations: [String] = []
+        if Set(actionJobTasks.keys) != Set(actionJobs.keys) {
+            violations.append("job tasks \(actionJobTasks.keys.sorted()) != jobs \(actionJobs.keys.sorted())")
+        }
+        for sequence in actionSlotWaiters.keys {
+            if actionSlots[sequence] == nil { violations.append("waiter \(sequence) without a slot") }
+            if actionSlots[sequence]?.result != nil { violations.append("slot \(sequence) holds a result and a waiter") }
+        }
+        var owners: [FailureID: Int] = [:]
+        if let id = initializationFailure { owners[id, default: 0] += 1 }
+        for slot in actionSlots.values { if case .failed(let id)? = slot.result { owners[id, default: 0] += 1 } }
+        for result in inputTurnResults.values { if case .failed(let id) = result { owners[id, default: 0] += 1 } }
+        for (id, count) in owners where count > 1 { violations.append("\(id) has \(count) owners") }
+        for id in owners.keys where failures[id] == nil { violations.append("\(id) has no table entry") }
+        for id in failures.keys where owners[id] == nil { violations.append("\(id) has no owner") }
+        return violations
+    }
+
+    /// Runs the check after a completed pair, logging and counting what it found, when a test
+    /// turned it on. In production it reads one flag and returns.
+    private func checkActionTables(_ site: StaticString) {
+        guard actionTableAuditForTesting else { return }
+        let violations = actionTableViolations()
+        guard !violations.isEmpty else { return }
+        alignmentViolations += violations.count
+        logger.error("The keeper's action tables don't line up", metadata: [
+            "site": .string("\(site)"),
+            "violations": .string(violations.joined(separator: "; ")),
+        ])
+    }
+
+    package func failureTableCountForTesting() -> Int { failures.count }
+    package func failureTableMissesForTesting() -> Int { failureTableMisses }
+    package func alignmentViolationsForTesting() -> Int { alignmentViolations }
+    /// Turns the alignment check at the call sites on or off (off by default).
+    package func setActionTableAuditForTesting(_ enabled: Bool) { actionTableAuditForTesting = enabled }
+    package func actionTableViolationsForTesting() -> [String] { actionTableViolations() }
+    package func setInputTurnResultForTesting(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
+        setInputTurnResult(sequence, result)
+    }
     /// This land's abandoned resolver groups still running, per kind (#364). Shared by its
     /// groups' abandonments, which update it inside their transitions; read at intake.
     package nonisolated let abandonmentCounter = LandAbandonmentCounter()
@@ -2536,7 +2726,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             Task { await self?.releaseCompletedActionJob(sequence) }
         }
         actionSlots[sequence] = ActionSlot()
-        actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input, abandonment: abandonment)
+        actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input)
+        actionJobTasks[sequence] = ActionJobTask(task: nil, abandonment: abandonment)
         actionJobsStarted += 1
         // A copy, so the task doesn't hop to the keeper for it: with no hook it returns at once.
         let holds = self.holds
@@ -2556,7 +2747,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             await self?.completeAction(sequence: sequence, resolved: resolved)
         }
-        actionJobs[sequence]?.task = task
+        actionJobTasks[sequence]?.task = task
+        checkActionTables(#function)
     }
 
     /// A job's resolvers finished (or failed, or were cancelled): one synchronous segment after
@@ -2568,19 +2760,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) async {
         await holds.at(.actionComplete)
         guard var job = actionJobs[sequence], !job.completed else { return }
+        // Read before `removeActionJob` removes it. The two tables are written together, so it
+        // is there; an optional read keeps the guard above the only early return.
+        let side = actionJobTasks[sequence]
         // The job's place in the caps lasts until its resolvers' task ends.
-        if job.abandonment.isRunning {
+        if side?.abandonment.isRunning == true {
             job.completed = true
             actionJobs[sequence] = job
         } else {
             removeActionJob(sequence)
         }
-        guard !job.cancelledByKeeper else { return }
+        guard !job.cancelledByKeeper else {
+            checkActionTables(#function)
+            return
+        }
         let outcome: Result<InputOutcome, any Error>
         switch resolved {
         case .failure(let error):
             outcome = .failure(error)
-        case .success where job.callerCancelled.isSet:
+        case .success where side?.callerCancelled.isSet == true:
             outcome = .failure(CancellationError())
         case .success(let outputs):
             let item = job.item
@@ -2595,6 +2793,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // Delivered, it is out of the job table's cancellations (`completed`).
                     ticklessJobTurns.insert(sequence)
                     scheduleInputDrain()
+                    checkActionTables(#function)
                     return
                 }
                 // Tick land: acknowledged now; the handler runs in a tick.
@@ -2609,7 +2808,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The job leaves the job table (and the caps); test waiters on it resume.
     private func removeActionJob(_ sequence: Int64) {
         actionJobs.removeValue(forKey: sequence)
+        actionJobTasks.removeValue(forKey: sequence)
         actionJobRemovalWaiters.removeValue(forKey: sequence)?.forEach { $0.resume() }
+        checkActionTables(#function)
     }
 
     /// Debug only: remembers a filled slot in the ring, forgetting the oldest once it's full.
@@ -2678,14 +2879,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             debugEndWork()
         }
         rememberFilledSlotForAssert(sequence)
-        guard var slot = actionSlots[sequence] else { return }
-        if let waiter = slot.waiter {
+        guard actionSlots[sequence] != nil else { return }
+        // The waiter leaves before the slot does: a slot holds at most one of a result and a
+        // waiter. A waiting caller gets the value itself; only an unread result is held.
+        if let waiter = actionSlotWaiters.removeValue(forKey: sequence) {
             actionSlots.removeValue(forKey: sequence)
             waiter.resume(with: outcome)
         } else {
-            slot.result = outcome
-            actionSlots[sequence] = slot
+            actionSlots[sequence]?.result = held(outcome)
         }
+        checkActionTables(#function)
+        resumeSlotWatchers(SlotWatchKey(waiter: false, sequence: sequence))
     }
 
     /// The outcome of the job `submitAction` returned `.pending(sequence)` for: the ACK, or the
@@ -2695,11 +2899,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Cancelling the caller cancels the job's task directly (no actor hop) and marks the job,
     /// so a completion that hasn't run yet fails with `CancellationError` instead of delivering.
     package func awaitActionResult(sequence: Int64) async throws -> InputOutcome {
-        let task = actionJobs[sequence]?.task
-        let callerCancelled = actionJobs[sequence]?.callerCancelled
+        let side = actionJobTasks[sequence]
+        let task = side?.task
+        let callerCancelled = side?.callerCancelled
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<InputOutcome, any Error>) in
-                guard var slot = actionSlots[sequence], slot.waiter == nil else {
+                guard let slot = actionSlots[sequence], actionSlotWaiters[sequence] == nil else {
                     continuation.resume(throwing: ActionResultUnavailable(sequence: sequence))
                     return
                 }
@@ -2711,11 +2916,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
                 if let result = slot.result {
                     actionSlots.removeValue(forKey: sequence)
-                    continuation.resume(with: result)
+                    let taken = taken(result, path: .slot, sequence: sequence)
+                    // After both the removal and the take.
+                    checkActionTables(#function)
+                    continuation.resume(with: taken)
                     return
                 }
-                slot.waiter = continuation
-                actionSlots[sequence] = slot
+                actionSlotWaiters[sequence] = continuation
+                checkActionTables(#function)
+                resumeSlotWatchers(SlotWatchKey(waiter: true, sequence: sequence))
             }
         } onCancel: {
             // Synchronous: once `cancel()` returns, a completion that hasn't run yet won't deliver.
@@ -2753,8 +2962,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } catch {
             outcome = .failure(error)
         }
+        let task = actionJobTasks[sequence]?.task
         fillActionSlot(sequence, with: outcome)
-        job.task?.cancel()
+        task?.cancel()
+        checkActionTables(#function)
     }
 
     /// Test hook: the jobs still running and the slots not yet read.
@@ -2806,7 +3017,53 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Test hook: whether a caller waits on the slot of `sequence`.
     package func actionResultHasWaiterForTesting(_ sequence: Int64) -> Bool {
-        actionSlots[sequence]?.waiter != nil
+        actionSlotWaiters[sequence] != nil
+    }
+
+    /// Tests: what a slot watcher waits for, a fill or a waiter, and on which slot.
+    private struct SlotWatchKey: Hashable {
+        let waiter: Bool
+        let sequence: Int64
+    }
+
+    /// Tests: the watchers `watchActionSlotForTesting` registered, each the continuation of the
+    /// stream it returned.
+    private var slotWatchersForTesting: [SlotWatchKey: [(id: UUID, continuation: AsyncStream<Void>.Continuation)]] = [:]
+
+    /// Test hook, observation only: registers a watcher on the slot of `sequence` in this call,
+    /// and returns its stream. The stream yields once and finishes when the slot is filled
+    /// (`waiter: false`) or a caller waits on it (`waiter: true`), or at once if that is already
+    /// so. A test registers before it releases what fills the slot, so the event can't come
+    /// first. A consumer that is cancelled ends its iteration, and the watcher is removed
+    /// (`onTermination`), so a bound that cancels the consumer can't leave it behind.
+    package func watchActionSlotForTesting(_ sequence: Int64, waiter: Bool) -> AsyncStream<Void> {
+        let key = SlotWatchKey(waiter: waiter, sequence: sequence)
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        let already = waiter ? actionSlotWaiters[sequence] != nil : actionSlots[sequence]?.result != nil
+        if already {
+            continuation.yield()
+            continuation.finish()
+            return stream
+        }
+        let id = UUID()
+        slotWatchersForTesting[key, default: []].append((id: id, continuation: continuation))
+        continuation.onTermination = { _ in Task { await self.removeSlotWatcherForTesting(key, id: id) } }
+        return stream
+    }
+
+    private func removeSlotWatcherForTesting(_ key: SlotWatchKey, id: UUID) {
+        guard var watchers = slotWatchersForTesting[key],
+              let index = watchers.firstIndex(where: { $0.id == id }) else { return }
+        watchers.remove(at: index)
+        slotWatchersForTesting[key] = watchers.isEmpty ? nil : watchers
+    }
+
+    private func resumeSlotWatchers(_ key: SlotWatchKey) {
+        guard !slotWatchersForTesting.isEmpty else { return }
+        slotWatchersForTesting.removeValue(forKey: key)?.forEach {
+            $0.continuation.yield()
+            $0.continuation.finish()
+        }
     }
 
     /// Test hook, observation only: waits until every job registered so far has left the job
@@ -2814,9 +3071,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// resolvers ended). It never releases a job itself; a job that is never released keeps it
     /// waiting, so callers bound it.
     package func waitForActionJobsForTesting() async {
-        for (sequence, job) in actionJobs {
-            await job.task?.value
-            await job.abandonment.waitUntilEnded()
+        // Captured before the first await: the tables change while this waits.
+        for (sequence, side) in actionJobTasks {
+            let task = side.task, abandonment = side.abandonment
+            await task?.value
+            await abandonment.waitUntilEnded()
             // The release is its own turn (`onEnded` hops to the keeper); wait for it without
             // spinning.
             guard actionJobs[sequence] != nil else { continue }
@@ -3012,6 +3271,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // is awaited.
         guard drainTask == nil, !isDraining, initializationFailure == nil, mode == .live else {
             players.removeAll()
+            rejoinReservations.removeAll()
             dropPendingInputs(reason: "forceShutdown")
             await shutdownIfIdle(cause: .forceShutdown)
             return
@@ -3169,7 +3429,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         let typeIdentifier = envelope.typeIdentifier
 
-        guard let handler = definition.actionHandlers.first(where: { handler in
+        guard let handlerPosition = definition.actionHandlers.firstIndex(where: { handler in
             let actionType = handler.getActionType()
             let actionTypeName = String(describing: actionType)
 
@@ -3199,6 +3459,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }) else {
             throw LandError.actionNotRegistered
         }
+        let handler = definition.actionHandlers[handlerPosition]
 
         let actionType = handler.getActionType()
         guard let actionPayloadType = actionType as? any ActionPayload.Type else {
@@ -3260,8 +3521,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             startActionJob(
                 PendingActionItem(
                     sequence: sequence,
-                    decoded: .success(decodedAction),
-                    actionType: actionPayloadType,
+                    decoded: .value(decodedAction),
+                    handlerIndex: ActionHandlerIndex(handlerPosition),
                     recorded: recorded,
                     playerID: playerID,
                     clientID: clientID,
@@ -3280,8 +3541,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try deliverResolvedAction(
             PendingActionItem(
                 sequence: sequence,
-                decoded: .success(decodedAction),
-                actionType: actionPayloadType,
+                decoded: .value(decodedAction),
+                handlerIndex: ActionHandlerIndex(handlerPosition),
                 recorded: recorded,
                 playerID: playerID,
                 clientID: clientID,
@@ -3378,11 +3639,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             throw LandError.eventNotRegistered
         }
 
-        // Decoded here, once (#521): a payload that doesn't decode, or that today's round trip
-        // refuses in its whole tree, is refused with an error to the client and never queued or
-        // recorded (#537). A descriptor without the decode (the public init's) keeps the decode
-        // in its handler, at apply.
+        //
+        // A descriptor with a decode keeps today's order: decode first, refusing a payload that
+        // doesn't decode (#521, #537), then the bytes the record keeps (#700 K1a).
+        // One without (the public descriptor init's) takes the bytes first, so their refusal of a
+        // payload the record can't hold (too deep, a non-finite number) stays ahead of the decode,
+        // as before. Then it decodes with the descriptor's type, as its handler did at apply, and
+        // holds a failure as `.failed`: the event is recorded and dropped at apply, with no error
+        // to the client, as before (#700 K1b-1, F11).
+        func recordedBytes() throws -> RecordedPayloadBytes? {
+            do {
+                return recordsInputs ? try RecordedPayloadBytes(of: event.source) : nil
+            } catch {
+                throw ClientEventPayloadError(eventType: event.type, underlying: error)
+            }
+        }
         let payload: PendingClientEventPayload
+        let recorded: RecordedPayloadBytes?
         if let decode = descriptor.decodeClientEvent {
             do {
                 try event.source.validateRecordable()
@@ -3390,16 +3663,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             } catch {
                 throw ClientEventPayloadError(eventType: event.type, underlying: error)
             }
+            recorded = try recordedBytes()
         } else {
-            payload = .undecoded(event)
-        }
-        // The bytes the record keeps (#700 K1a), only when something reads records: those of the
-        // decoder this event was decoded with (its handler's, for an undecoded one).
-        let recorded: RecordedPayloadBytes?
-        do {
-            recorded = recordsInputs ? try RecordedPayloadBytes(of: event.source) : nil
-        } catch {
-            throw ClientEventPayloadError(eventType: event.type, underlying: error)
+            recorded = try recordedBytes()
+            payload = Self.decodeWithDescriptorType(descriptor, event.source)
         }
 
         try rejectIfLandClosed()
@@ -3520,7 +3787,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             sequence: sequence,
             typeIdentifier: typeIdentifier,
             bytes: bytes,
-            decoded: .success(decoded),
+            decoded: .value(decoded),
             resolvedAtTick: lastCommittedTickId
         ))
         serverInputsInFlight += 1
@@ -3815,6 +4082,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case skipped
     }
 
+    /// Tests: what `applyPendingItemForTesting` applied.
+    package struct AppliedItemForTesting {
+        package let isSkipped: Bool
+        package let recordedActions: [ReevaluationRecordedAction]
+    }
+
+    /// Tests: runs the real `applyPendingItem` on one item, outside a turn, into a fresh
+    /// `AppliedInputs` at the last committed tick.
+    package func applyPendingItemForTesting(_ item: PendingItem) throws -> AppliedItemForTesting {
+        var applied = AppliedInputs(executingTickId: max(lastCommittedTickId, 0))
+        let outcome = try applyPendingItem(item, executingTickId: applied.executingTickId, into: &applied)
+        if case .skipped = outcome {
+            return AppliedItemForTesting(isSkipped: true, recordedActions: applied.recordedActions)
+        }
+        return AppliedItemForTesting(isSkipped: false, recordedActions: applied.recordedActions)
+    }
+
     /// The tick a tickless drain (or a pending-items pass) records under: `nextTickId - 1`,
     /// advancing `nextTickId` first when no tick has been taken yet, so records never use -1.
     private func executingTickIdForPendingItems() -> Int64 {
@@ -3882,23 +4166,32 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if skipsAfterDestroy(item) { return .skipped }
         switch item {
         case let .action(actionItem):
-            // Find handler for this action type
-            guard let handler = definition.actionHandlers.first(where: { handler in
-                handler.canHandle(actionItem.actionType)
-            }) else {
-                logger.error("Handler not found for action type", metadata: [
-                    "actionType": .string(String(describing: actionItem.actionType)),
-                ])
-                return .skipped
+            // The handler at the item's position (#700 K1b-1, F9); a hand-built item's is found
+            // by its value's type.
+            let handler: AnyActionHandler<State>
+            if let index = actionItem.handlerIndex {
+                guard definition.actionHandlers.indices.contains(index.position) else {
+                    logger.error("Handler index out of range", metadata: [
+                        "sequence": .stringConvertible(actionItem.sequence),
+                        "position": .stringConvertible(index.position),
+                    ])
+                    return .skipped
+                }
+                handler = definition.actionHandlers[index.position]
+            } else {
+                let valueType = type(of: try actionItem.decoded.get())
+                guard let found = definition.actionHandlers.first(where: { $0.canHandle(valueType) }) else {
+                    logger.error("Handler not found for action type", metadata: [
+                        "actionType": .string(String(describing: valueType)),
+                    ])
+                    return .skipped
+                }
+                handler = found
             }
 
             // Decoded at intake (#521), or when replay built the item (#700 K1a). A recorded
             // payload that didn't decode throws here, before the record, where its decode threw.
-            let decodedAction: any ActionPayload
-            switch actionItem.decoded {
-            case .success(let value): decodedAction = value
-            case .failure(let failure): throw failure.error
-            }
+            let decodedAction = try actionItem.decoded.get()
 
             // Create context with resolver outputs
             let ctx = makeContext(
@@ -3917,7 +4210,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 applied.recordedActions.append(ReevaluationRecordedAction(
                     kind: "action",
                     sequence: actionItem.sequence,
-                    typeIdentifier: String(describing: actionItem.actionType),
+                    typeIdentifier: String(describing: handler.getActionType()),
                     payload: try actionItem.recorded?.bytes ?? Self.fallbackRecordBytes(decodedAction),
                     payloadEncoding: actionItem.recorded?.encoding ?? .json,
                     playerID: actionItem.playerID.rawValue,
@@ -3980,24 +4273,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             applied.appliedOrder.append(eventItem.sequence)
 
-            // Throws only from `validate`, before anything is written (#586). An event runs the
-            // value decoded at intake (#521) or when replay built it (#700 K1a); one whose
-            // descriptor has no decode is decoded by its handler, as before. A recorded payload
-            // that didn't decode is dropped, as its handler dropped it (#362 counts a too-deep one).
+            // An event runs the value decoded at intake (#521) or when replay built it (#700 K1a).
+            // A payload that didn't decode is dropped, as its handler dropped it (#362 counts a
+            // too-deep one), without entering the state wrapper: only a handler call does
+            // (#700 K1b-1, S6).
+            let decoded: any ClientEventPayload
+            switch eventItem.payload {
+            case .decoded(let value):
+                decoded = value
+            case .failed(let failure):
+                if case .tooDeep(let limit) = failure {
+                    PayloadNesting.noteDroppedClientEvent(
+                        type: String(describing: handler.handledType), PayloadNesting.TooDeep(limit: limit)
+                    )
+                }
+                return .other
+            }
+            // Throws only from `validate`, before anything is written (#586).
             var ranHandler = true
             try withHandlerStep(ctx) { state, ctx in
-                switch eventItem.payload {
-                case .decoded(let decoded):
-                    ranHandler = try handler.invokeDecoded(&state, event: decoded, ctx: ctx)
-                case .undecoded(let event):
-                    try handler.invoke(&state, event: event, ctx: ctx)
-                case .failed(let failure):
-                    if case .tooDeep(let limit) = failure {
-                        PayloadNesting.noteDroppedClientEvent(
-                            type: String(describing: handler.handledType), PayloadNesting.TooDeep(limit: limit)
-                        )
-                    }
-                }
+                ranHandler = try handler.invokeDecoded(&state, event: decoded, ctx: ctx)
             }
             if !ranHandler {
                 // A hand-built handler whose type differs from its descriptor's: skipped, as when
@@ -4032,14 +4327,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             applied.recordedServerInputs.append(recorded)
             applied.appliedOrder.append(recorded.sequence)
-            // Throws only from the payload's decode (a recorded one that failed when replay built
-            // the item) or `validate`, before anything is written (#586).
+            // A recorded payload that failed to decode when replay built the item throws here,
+            // after its record append and before the state wrapper: only a handler call enters
+            // it (#700 K1b-1, S5).
+            let input = try inputItem.decoded.get()
+            // Throws only from `validate`, before anything is written (#586).
             try withHandlerStep(ctx) { state, ctx in
-                let input: any ServerInputPayload
-                switch inputItem.decoded {
-                case .success(let value): input = value
-                case .failure(let failure): throw failure.error
-                }
                 try handler.invoke(&state, input: input, ctx: ctx)
             }
 
@@ -4067,7 +4360,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recorded.sequence)
             // In re-evaluation `players` holds the replay's viewers: the shutdown only ends the
             // replay (`completeShutdownTurn`).
-            if mode == .live { players.removeAll() }
+            if mode == .live { players.removeAll(); rejoinReservations.removeAll() }
 
         case let .lifecycle(lifecycleItem):
             applyLifecycleItem(lifecycleItem, executingTickId: executingTickId, into: &applied)
@@ -4091,8 +4384,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// is noted for the initialize check (#593).
     private func applyLifecycleItem(_ lifecycleItem: PendingLifecycleItem, executingTickId: Int64, into applied: inout AppliedInputs) {
         if skipsAfterDestroy(.lifecycle(lifecycleItem)) { return }
-        // Recorded before the handler runs (see the action case).
-        let resolverOutputsDict = lifecycleItem.heldResolverOutputs.recordedEntries
+        // Recorded before the handler runs (see the action case). Its outputs are projected only
+        // when something reads records, as the action case's are.
+        let resolverOutputsDict = recordsInputs ? lifecycleItem.heldResolverOutputs.recordedEntries : [:]
         let recordedLifecycleEvent = ReevaluationRecordedLifecycleEvent(
             kind: lifecycleItem.kind.rawValue,
             sequence: lifecycleItem.sequence,
@@ -4456,7 +4750,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// (`LandFailurePosition.endsInputs`): the tick (a tick land's tick handler is skipped and
     /// its events dropped) or, tickless, the pass whose events are dropped. Replay doesn't end
     /// the land (`failLand` returns early), so it ends that work by this instead.
-    private var replayFailureEnd: (tickId: Int64, pass: Int64?)?
+    private var replayFailureEnd: ReplayFailureEnd?
 
     /// Re-evaluation: the record is 3.4 or later, so every tickless pass carries its ordinal.
     private var replayRecordsPassOrdinals = false
@@ -4512,7 +4806,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Installs `replayFailureEnd` (re-evaluation only).
     package func setReplayFailureEnd(tickId: Int64, pass: Int64?) {
-        replayFailureEnd = (tickId, pass)
+        replayFailureEnd = ReplayFailureEnd(tickId: tickId, pass: pass)
     }
 
     /// Re-evaluation only: whether a take found the sequence counter at `Int64.max` (#741). The run
@@ -4661,7 +4955,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // Convert recorded actions to PendingItem
                 for recordedAction in recordedActions {
                     // Find the action type handler by matching type identifier
-                    guard let handler = definition.actionHandlers.first(where: { handler in
+                    guard let handlerPosition = definition.actionHandlers.firstIndex(where: { handler in
                         let actionType = handler.getActionType()
                         let actionTypeName = String(describing: actionType)
 
@@ -4683,6 +4977,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         continue
                     }
 
+                    let handler = definition.actionHandlers[handlerPosition]
                     // Get the action type from handler (we know it's ActionPayload.Type)
                     let actionTypeAny = handler.getActionType()
                     guard let actionType = actionTypeAny as? any ActionPayload.Type else {
@@ -4701,16 +4996,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         bytes: recordedAction.payload,
                         encoding: recordedAction.payloadEncoding ?? replayHeaderPayloadEncoding
                     )
-                    let decoded = Result {
+                    let decoded = DecodedAction(catching: {
                         let source = try payloadDecoders.makeSource(recorded.bytes, recorded.encoding)
                         try source.validateRecordable()
                         return try source.decodeAction(actionType)
-                    }.mapError { RecordedPayloadDecodeFailure($0) }
+                    })
                     let pendingItem = PendingItem.action(
                         PendingActionItem(
                             sequence: recordedAction.sequence,
                             decoded: decoded,
-                            actionType: actionType,
+                            handlerIndex: ActionHandlerIndex(handlerPosition),
                             recorded: recorded,
                             playerID: PlayerID(recordedAction.playerID),
                             clientID: ClientID(recordedAction.clientID),
@@ -4723,7 +5018,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
 
                 // Convert recorded client events to PendingItem: decoded here, as an action is.
-                // A descriptor without the decode leaves it to the handler, from the bytes.
+                // A descriptor without the decode is decoded with its type, as at intake.
                 for recordedClientEvent in recordedClientEvents {
                     let recorded = RecordedPayloadBytes(
                         bytes: recordedClientEvent.payload,
@@ -4736,8 +5031,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         if let decode = descriptor?.decodeClientEvent {
                             try source.validateRecordable()
                             payload = .decoded(try decode(source))
+                        } else if let descriptor,
+                                  definition.eventHandlers.contains(where: { $0.canHandle(descriptor.type) }) {
+                            payload = Self.decodeWithDescriptorType(descriptor, source)
                         } else {
-                            payload = .undecoded(AnyClientEvent(type: recordedClientEvent.typeIdentifier, source: source))
+                            // No handler: apply skips the event at its lookup, so nothing decodes it.
+                            payload = .failed(.undecodable("no handler for \(recordedClientEvent.typeIdentifier)"))
                         }
                     } catch {
                         payload = .failed(RecordedPayloadDecodeFailure(error))
@@ -4772,8 +5071,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // Decoded once, here, from the recorded bytes (canonical MessagePack in every
                     // record, #700 K1a). A payload that doesn't decode is still queued: it fails
                     // alone when it is applied, with the error a decode there would throw.
-                    let decoded = Result { try handler.decode(recorded.payload) }
-                        .mapError { RecordedPayloadDecodeFailure($0) }
+                    let decoded = DecodedServerInput(catching: { try handler.decode(recorded.payload) })
                     pendingItems.append(.serverInput(PendingServerInputItem(
                         sequence: recorded.sequence,
                         typeIdentifier: recorded.typeIdentifier,
@@ -5531,7 +5829,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else {
             index = 0
         }
-        syncOutputIndexCursor = (observedTickId, index + 1)
+        syncOutputIndexCursor = SyncOutputIndexCursor(observedTickId: observedTickId, count: index + 1)
         let output = make(takeSyncStreamIndex(), index)
         enqueueRecorderSubmission(ReevaluationTickRecord(
             tickId: max(observedTickId ?? lastCommittedTickId, 0),
@@ -6190,6 +6488,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         releaseHeldInputsForDrain()
         resumeShutdownTurnWaiters()
         players.removeAll()
+        rejoinReservations.removeAll()
         // A keeper never attached reaches the adapter bound by its first sync request (#546 L2a).
         let transport = self.transport ?? boundSyncRequester
         // The output gate closes in the mark: no new state or event frame from here (§3.2 step 4).
@@ -6304,7 +6603,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The input-turn outcome of each waiting caller, kept until the turn's record is submitted.
-    private var inputTurnResults: [Int64: Result<InputOutcome, any Error>] = [:]
+    private var inputTurnResults: [Int64: InputResult] = [:]
 
     /// What an input turn did: its record and the inputs it applied (a failed one included).
     private struct InputTurnOutcome {
@@ -6366,10 +6665,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // promise effects the land never sends (#704, #716). The failure item has no caller.
         let endedInTurn = !failedBefore && failure != nil
         for item in consumedItems {
-            inputTurnResults[item.sequence] = endedInTurn
+            setInputTurnResult(item.sequence, endedInTurn
                 ? .failure(LandInputRejection.landClosed)
-                : application.outcomes[item.sequence]
+                : application.outcomes[item.sequence])
         }
+        checkActionTables(#function)
         var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: emitted)
         // A tickless land's turn is one pass (#325, #321).
         if !applied.appliedOrder.isEmpty {
@@ -6382,13 +6682,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// response never leaves before its input is recorded.
     private func resumeInputTurnWaiters(for batch: [PendingItem]) {
         for item in batch {
-            let result = inputTurnResults.removeValue(forKey: item.sequence) ?? .success(.none)
+            // The result, and its error, are taken before the branch.
+            let result: Result<InputOutcome, any Error> = inputTurnResults.removeValue(forKey: item.sequence)
+                .map { taken($0, path: .inputTurn, sequence: item.sequence) } ?? .success(.none)
             if ticklessJobTurns.remove(item.sequence) != nil {
+                // No waiter on the slot yet: held under a fresh ID.
                 fillActionSlot(item.sequence, with: result)
             } else {
                 inputTurnWaiters.removeValue(forKey: item.sequence)?.resume(with: result)
             }
         }
+        checkActionTables(#function)
     }
 
     private func configureSyncLoop(interval: Duration) async {
@@ -6475,7 +6779,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     foldedSyncs += 1
                     let overdue = deadline < now
                     if overdue { overdueFoldedSyncs += 1 }
-                    pendingFold = (deadline, overdue)
+                    pendingFold = PendingFold(deadline: deadline, overdueAtFold: overdue)
                 }
                 inTurnSyncDue = true
                 return
@@ -6800,4 +7104,27 @@ extension LandKeeper.PendingItem {
         case let .landFailure(item): return item.resolvedAtTick
         }
     }
+}
+
+// MARK: - Keeper fields as plain structs (#700 K1b-1, F3)
+
+/// The last recorded sync output's `observedTickId`, and how many outputs were recorded after it.
+@PlainData
+struct SyncOutputIndexCursor: Sendable {
+    var observedTickId: Int64?
+    var count: Int
+}
+
+/// Where a replayed record's land failure ended it: its tick, and on a tickless land its pass.
+@PlainData
+struct ReplayFailureEnd: Sendable {
+    let tickId: Int64
+    let pass: Int64?
+}
+
+/// A sync folded into the next tick: the deadline it had, and whether it was already overdue.
+/// Not plain: `ContinuousClock.Instant` (F4's exception, until K2 passes the time in).
+struct PendingFold: Sendable {
+    let deadline: ContinuousClock.Instant
+    let overdueAtFold: Bool
 }

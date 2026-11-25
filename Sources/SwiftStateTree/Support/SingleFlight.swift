@@ -5,6 +5,7 @@
 // reentrancy rule (CLAUDE.md, "Actor reentrancy").
 
 import Foundation
+import SwiftStateTurns
 
 /// In-flight work per key, owned by one actor (a stored `var` of that actor, never shared).
 ///
@@ -138,6 +139,7 @@ private final class FlightWaiter<Value: Sendable>: @unchecked Sendable {
 /// Capture the current epoch before an `await`; after it, compare in the same synchronous segment
 /// as the act (insert, remove, admit) and skip or compensate when it is no longer current.
 /// Implements the "capture a generation" half of the actor reentrancy rule.
+@PlainData
 public struct Epoch: Hashable, Comparable, Sendable, CustomStringConvertible {
     public let rawValue: UInt64
 
@@ -154,6 +156,7 @@ public struct Epoch: Hashable, Comparable, Sendable, CustomStringConvertible {
 
 /// Mints epochs. Every `next()` returns a value never handed out before by this counter, so an
 /// older owner can tell it has been replaced, also after its key was removed and started again.
+@PlainData
 public struct EpochCounter: Sendable {
     private var last: UInt64 = 0
 

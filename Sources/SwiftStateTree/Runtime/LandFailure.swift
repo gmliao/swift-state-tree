@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTurns
 
 /// Why a land was ended by a failure (#535).
 ///
@@ -7,7 +8,9 @@ import Foundation
 /// turn (`keeperReentry`) can't be brought back to a fully correct state, so the land ends: its
 /// sessions close with 4016 (`landFailed`), and its destroy handlers and save see
 /// `LandDestructionCause.failed`. The keeper keeps the first failure (`LandKeeper.failure`).
+@PlainData
 public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConvertible {
+    @PlainData
     public enum Kind: String, Sendable, Codable {
         /// A synced value didn't convert.
         case syncConversion
@@ -53,7 +56,9 @@ public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConv
 }
 
 /// Where in the land's input stream a failure stopped it (#535).
+@PlainData
 public struct LandFailurePosition: Sendable, Equatable, Codable, CustomStringConvertible {
+    @PlainData
     public enum Stage: String, Sendable, Codable {
         /// While applying the input `sequence`; later inputs weren't applied.
         case input

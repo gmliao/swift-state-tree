@@ -23,6 +23,34 @@ func withinDeadline<Value: Sendable>(
     }
 }
 
+/// Awaits `work` in a task of its own, but at most `deadline`. On timeout it records an issue
+/// naming `step`, cancels the task and waits for it to end, then returns `nil`. Unlike
+/// `withinDeadline`, nothing is left running, so `work` must end when cancelled: a watcher's
+/// stream (`watchActionSlotForTesting`) does.
+func withinCancellingDeadline<Value: Sendable>(
+    _ step: String,
+    deadline: Duration = .seconds(10),
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ work: @escaping @Sendable () async -> Value
+) async -> Value? {
+    let task = Task { await work() }
+    switch await raceDeadline(deadline, { await task.value }) {
+    case .finished(.success(let value)):
+        return value
+    case .finished(.failure), .timedOut:
+        task.cancel()
+        _ = await task.value
+        Issue.record("Timed out after \(deadline): \(step)", sourceLocation: sourceLocation)
+        return nil
+    }
+}
+
+/// Whether `stream` yields before it finishes: a slot watcher's event (`watchActionSlotForTesting`).
+func yields(_ stream: AsyncStream<Void>) async -> Bool {
+    for await _ in stream { return true }
+    return false
+}
+
 /// Waits until `keeper`'s abandonment count for `kind` reaches `count`, within a deadline:
 /// a missing transition fails the test instead of hanging it.
 func expectAbandoned<S: StateNodeProtocol>(

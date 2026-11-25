@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { StateTreeRuntime } from './runtime'
 import { ConnectionClosedError } from './errors'
-import { INVALID_ROW_ENTRY_CLOSE_CODE, pathIndexTableFor, rowPatchIndicesOf, truncatedCloseReason } from './protocol'
+import { INVALID_ROW_ENTRY_CLOSE_CODE, SUPERSEDED_CLOSE_CODE, pathIndexTableFor, rowPatchIndicesOf, truncatedCloseReason } from './protocol'
 import { registerWebSocketFactory, type WebSocketConnection, type WebSocketFactory } from './websocket'
 import { MessageEncodingValues, StateUpdateEncodingValues } from '../types/transport'
 import type { ProtocolSchema } from '../codegen/schema'
@@ -222,6 +222,33 @@ describe('the strict close (4013 invalidRowEntry)', () => {
     expect(socket.closes).toHaveLength(1)
     expect(socket.closes[0].code).toBe(INVALID_ROW_ENTRY_CLOSE_CODE)
     expect(new TextEncoder().encode(socket.closes[0].reason!).length).toBeLessThanOrEqual(123)
+  })
+})
+
+describe('the superseded close (4017)', () => {
+  beforeEach(() => {
+    sockets = []
+    registerWebSocketFactory(factory)
+  })
+
+  it('is 4017, and the app is told once without a reconnect (#861)', async () => {
+    expect(SUPERSEDED_CLOSE_CODE).toBe(4017)
+    const runtime = makeRuntime()
+    const onDisconnect = vi.fn()
+    runtime.onDisconnect(onDisconnect)
+    const socket = await connect(runtime)
+    const { view } = await join(runtime, socket)
+    const pending = view.sendAction('Noop', {}).catch((error: unknown) => error)
+    // The server closed this connection because the same player joined again elsewhere.
+    socket.serverClose(4017, 'logged in elsewhere')
+    expect(onDisconnect).toHaveBeenCalledTimes(1)
+    expect(onDisconnect).toHaveBeenCalledWith(SUPERSEDED_CLOSE_CODE, 'logged in elsewhere', true)
+    const error = await pending
+    expect(error).toBeInstanceOf(ConnectionClosedError)
+    expect((error as ConnectionClosedError).closeCode).toBe(SUPERSEDED_CLOSE_CODE)
+    await settle()
+    expect(sockets).toHaveLength(1)
+    expect(runtime.connected).toBe(false)
   })
 })
 

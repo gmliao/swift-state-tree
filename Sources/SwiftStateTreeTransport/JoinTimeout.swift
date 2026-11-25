@@ -109,15 +109,27 @@ public final class JoinTimeoutMetrics: @unchecked Sendable {
     }
 }
 
-/// Whether one router join attempt was ended before its admission ran (#242). The router
+/// What the adapter tells the router about one join attempt, as set-once flags under one lock.
+///
+/// `ended` (#242): the attempt was ended before its admission ran. The router
 /// creates one per attempt and hands it to the admission (`admitJoin`). It is marked when the
 /// budget's timeout ends the admission (by the adapter, in the segment of its decision,
 /// `endJoinBeforeAdmission`) and when the session disconnects (by the router). The admission
 /// reads it when it runs in the membership queue, before the keeper's join. Unlike the adapter's bounded `endedSessions`, it can't be evicted, and it
 /// lives exactly as long as the admission that reads it.
+///
+/// `flipped` (#867): an in-turn join flipped. The adapter marks it in the flip's segment, before
+/// the JoinResponse is enqueued; the router reads it, because its own phase learns of the flip
+/// later (its flip wait resumes in a Task of its own), while the client already holds the
+/// response and may send another join.
 final class JoinAttemptEnd: @unchecked Sendable {
     private let lock = NSLock()
     private var ended = false
+    private var flipped = false
+
+    var isFlipped: Bool { lock.withLock { flipped } }
+
+    func markFlipped() { lock.withLock { flipped = true } }
 
     var isEnded: Bool { lock.withLock { ended } }
 

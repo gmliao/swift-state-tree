@@ -268,26 +268,20 @@ Tick loop 與 sync loop 都是固定速率（fixed-rate）。下一個 deadline 
 
 ### Event Queue 機制 (PendingItems)
 
-`LandKeeper` 使用統一的 `pendingItems` 佇列來管理所有輸入：
+`LandKeeper` 把所有輸入放進同一個佇列。輸入在就緒時加入佇列：抵達時；若是 handler 宣告了 resolver 的 Action，則在 resolver 完成時。turn 依 `resolvedAtTick`、再依序號的順序套用佇列。佇列裡有：
 
-- **Action**：客戶端發送的 Action
-- **ClientEvent**：客戶端發送的 Event
-- **Lifecycle Event**：`OnJoin`、`OnLeave`、`OnInitialize`
+- 客戶端送來的 **Action**；
+- 客戶端送來的 **client event**；
+- **生命週期事件**：加入、離開，以及 land 的初始化；
+- 伺服器送入的 **server input**。
 
-```swift
-// 統一的 PendingItem 類型
-public enum PendingItem: Sendable {
-    case action(PendingActionItem)
-    case clientEvent(PendingClientEventItem)
-    case lifecycle(PendingLifecycleItem)
-}
-```
+每個排入佇列的輸入都帶有：
 
-每個 PendingItem 都會記錄：
+- 序號：在整個 land 的所有輸入之間遞增；
+- 完成解析時的 tick（`resolvedAtTick`）：resolver 完成的時刻；沒有 resolver 的輸入，則是抵達的時刻；
+- resolver 輸出：只有宣告了 resolver 的 Action 或生命週期事件才有。
 
-- `sequence`：全域遞增的序號（跨 Action/Event/Lifecycle 共用）
-- `resolvedAtTick`：Resolver 完成時的 tick ID
-- `resolverOutputs`：Resolver 輸出（Action 和 Lifecycle 有，ClientEvent 為空）
+佇列的型別只在套件內部使用，生命週期事件的型別（`LandKeeper.PendingLifecycleItem`）除外。land 只透過自己的 handler 與佇列互動。
 
 ### Tick 執行模型
 

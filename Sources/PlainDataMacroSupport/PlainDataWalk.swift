@@ -72,7 +72,7 @@ public enum PlainDataWalk {
                 continue
             }
             guard let variable = member.decl.as(VariableDeclSyntax.self) else { continue }
-            if variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) { continue }
+            if isStatic(variable) { continue }
             if let weak = variable.modifiers.first(where: {
                 $0.name.tokenKind == .keyword(.weak) || $0.name.tokenKind == .keyword(.unowned)
             }) {
@@ -289,6 +289,18 @@ public enum PlainDataWalk {
             if seen, other.initializer != nil { return nil }
         }
         return nil
+    }
+
+    /// Whether a property is `static` (a struct or enum can't declare a `class` one).
+    public static func isStatic(_ variable: VariableDeclSyntax) -> Bool {
+        variable.modifiers.contains { $0.name.tokenKind == .keyword(.static) }
+    }
+
+    /// Whether a property is an instance field with storage: not `static`, and no binding
+    /// computed (observers keep it stored). Every macro that lists a type's fields asks this, so
+    /// the field list, the PlainData witness and the member check agree (#837).
+    public static func isStoredInstance(_ variable: VariableDeclSyntax) -> Bool {
+        !isStatic(variable) && !variable.bindings.contains(where: isComputed)
     }
 
     /// Whether a binding has no storage: a getter, or any accessor other than an observer

@@ -578,6 +578,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// The join failed (its waiter got the reason); it never flips. The session stays
         /// excluded until its disconnect removes the record.
         var failed = false
+        /// The router attempt's mailbox, marked when the join flips (#867); nil for a join
+        /// admitted without a router attempt.
+        var attemptEnd: JoinAttemptEnd?
 
         var isReadyToFlip: Bool { consumed && transportRegistered && !failed }
         /// Ready, and asking for a sync turn of its own (`hasJoinsAwaitingSync`).
@@ -697,6 +700,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let joinDeadline: ContinuousClock.Instant?
         /// The router's join attempt, for the stale check by the resolved player (#234).
         let joinAttempt: UInt64?
+        /// The router attempt's mailbox, handed to the in-turn join for its flip (#867).
+        let attemptEnd: JoinAttemptEnd?
     }
 
     /// Admissions made by the keeper's in-turn callback (tests only).
@@ -1516,10 +1521,12 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Closes `sessionID` from a detached task, only while its connection is the one with
     /// `generation`; with nil, whatever connection has the ID. A transport that doesn't
     /// implement the generation-aware close (the `Transport` default) closes by ID (#531).
-    func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?) {
+    /// `close` is what the connection is closed with: a plain 1000 unless the caller says
+    /// otherwise (a supersede passes `.superseded`, #861).
+    func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose = .normal) {
         let transport = self.transport
         guard tracksDetachedClosesForTesting else {
-            Task { await transport.closeSession(sessionID, with: .normal, generation: generation) }
+            Task { await transport.closeSession(sessionID, with: close, generation: generation) }
             return
         }
         let id = nextDetachedCloseID
@@ -1527,7 +1534,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // The Task ends on this actor, after this segment, so the handle is stored before then.
         // Weak: a close that never returns doesn't keep the adapter.
         detachedCloses[id] = Task { [weak self] in
-            await transport.closeSession(sessionID, with: .normal, generation: generation)
+            await transport.closeSession(sessionID, with: close, generation: generation)
             await self?.detachedCloseEnded(id)
         }
     }
@@ -1730,7 +1737,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?,
-        inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?, joinDeadline: ContinuousClock.Instant?)? = nil
+        inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?, joinDeadline: ContinuousClock.Instant?, attemptEnd: JoinAttemptEnd?)? = nil
     ) -> Int32 {
         applySessionPerPlayerPolicy(to: playerID, keeping: sessionID)
         _ = membershipCoordinator.registerPlayer(
@@ -1748,7 +1755,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 joinSequence: inTurn.joinSequence,
                 order: nextInTurnJoinOrder,
                 joinResponse: response,
-                consumed: inTurn.joinSequence == nil
+                consumed: inTurn.joinSequence == nil,
+                attemptEnd: inTurn.attemptEnd
             )
             startJoinWaiter(sessionID: sessionID, ticket: ticket, joinDeadline: inTurn.joinDeadline)
         }
@@ -1918,7 +1926,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - each old session leaves the membership (it stops being a recipient and its inbound
     ///   finds no player), is ended (its frames are dropped) and its connection is closed; its
     ///   later disconnect callback finds no membership, so it clears nothing and doesn't leave
-    ///   the keeper again;
+    ///   the keeper again; the close is 4017 `superseded` (#861), so the client can tell it from
+    ///   a plain close;
     /// - an old session still joining loses its mark;
     /// - the player's per-player sync state (cache, firstSync mark, initial-sync mark) is
     ///   cleared, and the clear recorded, so the new session's firstSync starts from empty like
@@ -1950,7 +1959,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "newSessionID": .string(sessionID.rawValue),
                 "supersededTotal": .stringConvertible(supersededSessionCount),
             ])
-            closeSessionDetached(old, generation: generation)
+            closeSessionDetached(old, generation: generation, with: .superseded)
         }
         syncEngine.clearCacheForDisconnectedPlayer(playerID)
         perPlayerTables?.clear(playerID)
@@ -1978,7 +1987,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             sessionID: sessionID,
             playerID: playerID,
             authInfo: expected.authInfo,
-            inTurn: expected.joinResponse.map { (joinSequence: joinSequence, joinResponse: $0, joinDeadline: expected.joinDeadline) }
+            inTurn: expected.joinResponse.map { (joinSequence: joinSequence, joinResponse: $0, joinDeadline: expected.joinDeadline, attemptEnd: expected.attemptEnd) }
         )
         inTurnAdmissionCountForTesting += 1
         return joiningSessions[sessionID]?.inTurn != nil ? .admittedCompletesInTurn : .admitted
@@ -2246,7 +2255,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Attempt to join (updates keeper.players). On the in-turn path the keeper admits the
         // session inside the join, in the segment of its state change (`admitJoiningSession`);
         // otherwise it is admitted below, right after the join returns, before any await.
-        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse, joinDeadline: joinDeadline, joinAttempt: joinAttempt)
+        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse, joinDeadline: joinDeadline, joinAttempt: joinAttempt, attemptEnd: attemptEnd)
         defer { expectedAdmissions.removeValue(forKey: sessionID) }
         let outcome: LandKeeper<State>.JoinOutcome
         do {
@@ -4236,6 +4245,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             #if DEBUG
             noteJoinCommitForTesting(flip.sessionID, flipped: true)
             #endif
+            // Before the JoinResponse is enqueued below: once the client holds it, the router
+            // must already answer a second join as joined (#867).
+            joining.inTurn?.attemptEnd?.markFlipped()
             joinWaiters[flip.sessionID]?.resolve(.success(()))
         }
         pendingEventManager.removeConsumed(

@@ -1,7 +1,9 @@
 import Foundation
+import SwiftStateTurns
 
 /// The encoding of a recorded client payload's bytes (#700 K1a): the bytes the live decoder for
 /// that encoding read, so replay decodes them with the same decoder.
+@PlainData
 public enum RecordPayloadEncoding: String, Codable, Sendable, CaseIterable {
     /// JSON, decoded with `JSONDecoder`, as the JSON and opcode JSON transports decode a payload.
     case json
@@ -25,6 +27,7 @@ extension RecordPayloadEncoding {
 
 /// A client input's payload as a record keeps it (#700 K1a): the bytes, in the encoding of the
 /// decoder that reads them.
+@PlainData
 package struct RecordedPayloadBytes: Sendable, Equatable {
     package let bytes: Data
     package let encoding: RecordPayloadEncoding
