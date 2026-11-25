@@ -47,7 +47,7 @@ struct Position: Codable, Sendable {
 與其他 macro 並用時：
 - 與 `@PlainData` 或 `@Payload` 並用時，不寫自己的檢查。
 - 與 `@StateNodeBuilder` 並用時，只寫 conformance，因為 node 的成員就是 witness。
-- 型別上的其他 attached macro 會被拒絕，因為它可能加入檢查看不到的成員。不加入成員的內建 attribute（例如 `@available`）沒有問題。
+- 型別上的其他 attached macro 會被拒絕，因為它可能加入檢查看不到的成員。不加入成員的內建 attribute（例如 `@available`）沒有問題。可能加入宣告的成員（例如 method、computed property 或巢狀型別）只能掛不加入宣告的內建 attribute（例如 `@inlinable`）；巢狀型別另外可以掛本專案的 macro。
 
 `#if` 裡的 stored property 會被拒絕，因為轉換只讀型別最上層的成員。與 `@StateNodeBuilder` 並用時也一樣：在可轉換的 node 上，`#if` 裡的 `@Internal` 欄位會被拒絕，雖然單獨使用 `@StateNodeBuilder` 時可以接受。
 

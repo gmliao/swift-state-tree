@@ -510,7 +510,7 @@ struct PlainDataMacroTests {
         }
     }
 
-    @Test("A built-in attribute that leaves the storage alone isn't a wrapper; a computed property is skipped whatever its attributes")
+    @Test("A built-in attribute that leaves the storage alone isn't a wrapper; a computed property is skipped, and an attached macro on it is refused (#837)")
     func storageNeutralAttributes() {
         let (text, messages) = expand("""
             @PlainData
@@ -520,11 +520,21 @@ struct PlainDataMacroTests {
                 @available(*, deprecated) var old: Int
                 @inlinable
                 public var radians: Float { Float(degrees) }
-                @Clamped var shown: Int { 0 }
             }
             """)
         #expect(messages.isEmpty, "\(messages)")
         #expect(text.contains("PlainDataCheck.field(value.degrees) SwiftStateTurns.PlainDataCheck.field(value.old) }"))
+        // A macro attached to a computed property can add a stored peer the witness doesn't see.
+        let (_, attached) = expand("""
+            @PlainData
+            struct Angle {
+                var degrees: Int32
+                @Clamped var shown: Int { 0 }
+            }
+            """)
+        #expect(attached == [
+            "@Clamped on 'shown' can't be in a PlainData type: a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable",
+        ], "\(attached)")
     }
 
     @Test("Enum cases that share a base name are refused, naming the case, backticked or not; exclusive `#if` clauses may each declare it")
@@ -670,5 +680,84 @@ struct PlainDataMacroTests {
             }
             """)
         #expect(messages == ["a function type isn't plain data: it can call through to anything"])
+    }
+
+    @Test("An attribute a PlainData type doesn't list is refused: another macro could add members its witness doesn't see (#837)")
+    func unknownTypeAttribute() {
+        let rest = "can't be on a PlainData type: a macro there can add members the PlainData check doesn't see; this type takes only @PlainData, @SnapshotConvertible and attributes that add no members"
+        let (_, onStruct) = expand("""
+            @PlainData
+            @Memoized
+            @frozen
+            @Other.PlainData
+            struct Room {
+                var size: Int
+            }
+            """)
+        #expect(onStruct.filter { $0.contains("can't be on a PlainData type") } == ["@Memoized " + rest, "@Other.PlainData " + rest], "\(onStruct)")
+        let (_, onEnum) = expand("""
+            @PlainData
+            @Memoized
+            enum Phase {
+                case lobby
+            }
+            """)
+        #expect(onEnum.filter { $0.contains("can't be on a PlainData type") } == ["@Memoized " + rest], "\(onEnum)")
+        let (_, inIf) = expand("""
+            @PlainData
+            #if DEBUG
+            @Memoized
+            #endif
+            struct Room {
+                var size: Int
+            }
+            """)
+        #expect(inIf.contains("an attribute inside #if " + rest), "\(inIf)")
+    }
+
+    @Test("Beside another of the project's macros, @PlainData leaves the type's attributes to it: one report per type")
+    func typeAttributesCheckedOnce() {
+        for other in ["@StateNodeBuilder", "@SnapshotConvertible", "@Payload"] {
+            let (_, messages) = expand("""
+                \(other)
+                @PlainData
+                @Memoized
+                struct Room {
+                    var size: Int
+                }
+                """)
+            #expect(!messages.contains { $0.contains("can't be on a PlainData type") }, "\(other): \(messages)")
+        }
+    }
+
+    @Test("An attribute on a member that could add declarations is refused, on a struct and an enum; built-ins pass (#837)")
+    func memberAttributes() {
+        let rest = " can't be in a PlainData type: a macro attached to a member can add stored members the PlainData check doesn't see; members take only built-in attributes that add none, such as @available and @inlinable"
+        let refused: [(member: String, name: String)] = [
+            ("@Memoized func cost() -> Int { 0 }", "@Memoized on 'cost()'"),
+            ("@AddRef var view: Int { 0 }", "@AddRef on 'view'"),
+            ("@AddRef static var shared: Int = 0", "@AddRef on 'shared'"),
+            ("@Peer init(x: Int) { self.init() }", "@Peer on 'init(...)'"),
+            ("@Peer subscript(i: Int) -> Int { i }", "@Peer on 'subscript(...)'"),
+            ("@Peer struct Inner {}", "@Peer on 'Inner'"),
+            ("@Peer typealias Alias = Int", "@Peer on 'Alias'"),
+            ("#if DEBUG\n@Memoized func debugCost() -> Int { 0 }\n#endif", "@Memoized on 'debugCost()'"),
+        ]
+        for (member, name) in refused {
+            let (_, messages) = expand("@PlainData\nstruct Room {\nvar size: Int\ninit() { size = 0 }\n\(member)\n}")
+            #expect(messages.filter { $0.contains("a macro attached to a member") } == [name + rest], "\(member): \(messages)")
+        }
+        let (_, onCase) = expand("@PlainData\nenum Phase {\ncase lobby\n@Peer case playing\n}")
+        #expect(onCase.filter { $0.contains("a macro attached to a member") } == ["@Peer on 'case playing'" + rest], "\(onCase)")
+        let allowed = """
+            @inlinable func a() -> Int { 0 }
+            @available(*, deprecated) var b: Int { 0 }
+            @discardableResult mutating func c() -> Int { 0 }
+            @TaskLocal static var d: Int = 0
+            @_spi(Test) public init(e: Int) { self.init() }
+            @PlainData struct Inner { var f: Int }
+            """
+        let (_, messages) = expand("@PlainData\nstruct Room {\nvar size: Int\ninit() { size = 0 }\n\(allowed)\n}")
+        #expect(!messages.contains { $0.contains("a macro attached to a member") }, "\(messages)")
     }
 }

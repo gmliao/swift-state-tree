@@ -75,6 +75,15 @@ struct ValueCheckClassFieldRoot: StateNodeProtocol {
     init() {}
 }
 
+/// One ordinary class alone, not `SnapshotValueConvertible`: the conversion's class refusal for a
+/// plain value is the only path that throws for it. `ValueCheckClassFieldRoot`'s self-converting
+/// field throws through the convertible check, whether or not that refusal is there.
+@StateNodeBuilder
+struct ValueCheckPlainClassRoot: StateNodeProtocol {
+    @Sync(.broadcast) var inventory: ValueCheckObject = ValueCheckObject()
+    init() {}
+}
+
 @StateNodeBuilder
 struct ValueCheckShapesRoot: StateNodeProtocol {
     @Sync(.broadcast) var keyed: [ValueCheckKey: Int] = [:]
