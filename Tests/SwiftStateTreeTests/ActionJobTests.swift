@@ -14,7 +14,20 @@ struct ActionJobTestState: StateNodeProtocol {
     @Sync(.broadcast)
     var total: Int = 0
 
+    /// What the last `ActionJobMaybeAction` handler got: its output's value, or -1 for `nil`.
+    @Sync(.broadcast)
+    var maybeSeen: Int = 0
+
     public init() {}
+}
+
+/// Fetches through the gated resolver only when `fetch`; otherwise its closure builds nothing
+/// (a cache hit).
+@Payload
+struct ActionJobMaybeAction: ActionPayload {
+    typealias Response = ActionJobAck
+    let amount: Int
+    let fetch: Bool
 }
 
 @Payload
@@ -77,6 +90,13 @@ private func makeDefinition(tick: Bool) -> LandDefinition<ActionJobTestState> {
                     state.total += action.amount
                     return ActionJobAck(ok: true)
                 }
+                HandleAction(ActionJobMaybeAction.self, resolvers: { _, action, _ in
+                    action.fetch ? ActionJobGatedResolver(amount: action.amount) : nil
+                }) { state, action, output, _ in
+                    state.total += action.amount
+                    state.maybeSeen = output?.value ?? -1
+                    return ActionJobAck(ok: true)
+                }
             }
             Lifetime {
                 Tick(every: .seconds(3600)) { _, _ in }
@@ -116,6 +136,13 @@ private func plain(_ amount: Int) -> ActionEnvelope {
     ActionEnvelope(
         typeIdentifier: String(describing: ActionJobPlainAction.self),
         payload: AnyCodable(ActionJobPlainAction(amount: amount))
+    )
+}
+
+private func maybe(_ amount: Int, fetch: Bool) -> ActionEnvelope {
+    ActionEnvelope(
+        typeIdentifier: String(describing: ActionJobMaybeAction.self),
+        payload: AnyCodable(ActionJobMaybeAction(amount: amount, fetch: fetch))
     )
 }
 
@@ -523,6 +550,41 @@ struct ActionJobLimitTests {
         }
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().total == a + b + other + 7)
+        #expect(await counts(keeper) == [0, 0])
+    }
+
+    @Test("An action whose closure builds no value (a cache hit) is delivered inline, outside the job lane: it passes while the caps are full")
+    func cacheHitPassesFullCaps() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let metrics = ResolverDeadlineMetrics()
+        let held = ActionJobGates.freshKey(), refused = ActionJobGates.freshKey(), cached = ActionJobGates.freshKey()
+        let first: Int64 = try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
+            let first = try await submitPending(keeper, held)
+            // The cap is full: an action that builds a value is refused...
+            await expectLimit(.inFlightLimit(limit: 1)) {
+                try await keeper.submitAction(maybe(refused, fetch: true), playerID: p1, clientID: c1, sessionID: s1)
+            }
+            // ...and one whose closure builds none is delivered, with no job.
+            guard case .completed = try await keeper.submitAction(maybe(cached, fetch: false), playerID: p1, clientID: c1, sessionID: s1) else {
+                Issue.record("Expected the cache hit to be delivered inline")
+                return first
+            }
+            #expect(await keeper.actionJobCountsForTesting().jobs == 1)
+            return first
+        }
+        #expect(metrics.snapshot.inFlightLimitRejections == 1)
+
+        await keeper.stepTickOnce()
+        var state = await keeper.currentState()
+        #expect(state.total == cached)
+        #expect(state.maybeSeen == -1)
+
+        ActionJobGates.gate(held).release()
+        #expect(try await keeper.awaitActionResult(sequence: first).base is Void)
+        await keeper.stepTickOnce()
+        state = await keeper.currentState()
+        #expect(state.total == cached + held)
         #expect(await counts(keeper) == [0, 0])
     }
 
@@ -1023,5 +1085,69 @@ struct ResolverAbandonmentTests {
         try await settle(keeper)
         #expect(metrics.snapshot.abandoned == 0)
         #expect(metrics.snapshot.abandonedActions == 0)
+    }
+}
+
+@Suite("A cache-hit action in the record (#825)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
+struct CacheHitActionReplayTests {
+    @Test("A cache-hit action, delivered inline, records and replays the same as live")
+    func cacheHitReplaysAsLive() async throws {
+        let keeper = await makeKeeper(recording: true)
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        await keeper.awaitInitialization()
+        await recorder.setMetadata(ReevaluationRecordMetadata(
+            landID: "action-job-test:local",
+            landType: "action-job-test",
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            metadata: [:],
+            landDefinitionID: "action-job-test",
+            rngSeed: await keeper.getRngSeed()
+        ))
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let cached = ActionJobGates.freshKey(), fetched = ActionJobGates.freshKey()
+
+        // Tick 1: the cache hit alone; its handler gets nil.
+        guard case .completed = try await keeper.submitAction(maybe(cached, fetch: false), playerID: p1, clientID: c1, sessionID: s1) else {
+            Issue.record("Expected the cache hit to be delivered inline")
+            return
+        }
+        await keeper.stepTickOnce()
+        let liveFirst = await keeper.currentState()
+        #expect(liveFirst.total == cached)
+        #expect(liveFirst.maybeSeen == -1)
+
+        // Tick 2, the control: a fetched value, through a job; its handler gets the output.
+        let submission = try await keeper.submitAction(maybe(fetched, fetch: true), playerID: p1, clientID: c1, sessionID: s1)
+        guard case .pending(let sequence) = submission else {
+            Issue.record("Expected a job, got \(submission)")
+            return
+        }
+        ActionJobGates.gate(fetched).release()
+        #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        await keeper.stepTickOnce()
+        let liveSecond = await keeper.currentState()
+        #expect(liveSecond.maybeSeen == fetched)
+
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-hit-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try await recorder.save(to: path)
+
+        let replay = LandKeeper<ActionJobTestState>(
+            definition: makeDefinition(tick: true),
+            initialState: ActionJobTestState(),
+            mode: .reevaluation,
+            reevaluationSource: try ReevaluationRecordFile.openSource(filePath: path),
+            autoStartLoops: false
+        )
+        await replay.stepTickOnce()
+        let replayedFirst = await replay.currentState()
+        #expect(replayedFirst.total == liveFirst.total)
+        #expect(replayedFirst.maybeSeen == liveFirst.maybeSeen)
+        await replay.stepTickOnce()
+        let replayedSecond = await replay.currentState()
+        #expect(replayedSecond.total == liveSecond.total)
+        #expect(replayedSecond.maybeSeen == liveSecond.maybeSeen)
     }
 }

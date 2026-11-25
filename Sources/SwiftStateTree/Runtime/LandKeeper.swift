@@ -2434,22 +2434,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Registers the job and its slot, and starts its resolvers. Called in the intake segment.
     private func startActionJob(
         _ item: PendingActionItem,
-        decodedAction: any ActionPayload,
-        resolvers: ResolverDeclaration<(State, Any)>,
+        executors: [any AnyResolverExecutor],
+        ctx: LandContext,
         ticket: ActionTicket,
         input: String
     ) {
         let sequence = item.sequence
-        let ctx = makeContext(
-            playerID: item.playerID,
-            clientID: item.clientID,
-            sessionID: item.sessionID,
-            tickId: lastCommittedTickId
-        )
-        // The values are built here, in the intake segment, from the State the action is admitted
-        // against (#769 §3.2): the closure reads it and must not mutate it (a reference-backed State is not
-        // stopped from it).
-        let executors = resolvers.build((state, decodedAction), ValidateContext(ctx))
         let resolverContext = makeResolverContext(ctx)
         let abandonment = resolverAbandonment(.action) { [weak self] in
             Task { await self?.releaseCompletedActionJob(sequence) }
@@ -3132,7 +3122,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // validates the ticket against the current state and appends the input.
         try rejectIfLandClosed()
         try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
-        let becomesJob = handler.resolvers != nil
+        // The resolver values are built first, here in the intake segment, from the State the
+        // action is admitted against (#769 §3.2). The closure reads the State and must not mutate
+        // it (a reference-backed State is not stopped from it). It runs for every admitted action
+        // with resolvers, so also for one the job caps then refuse. An action whose closure built
+        // no value (a cache hit) has nothing to wait for: it is delivered here, as an action
+        // without resolvers, outside the job lane and its caps (#825).
+        var job: (executors: [any AnyResolverExecutor], ctx: LandContext)?
+        if let resolvers = handler.resolvers {
+            let ctx = makeContext(
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                tickId: lastCommittedTickId
+            )
+            let executors = resolvers.build((state, decodedAction), ValidateContext(ctx))
+            if !executors.isEmpty { job = (executors, ctx) }
+        }
+        let becomesJob = job != nil
         if becomesJob, enforcingLimits {
             try rejectIfOverActionJobLimits(sessionID: sessionID, input: typeIdentifier)
         }
@@ -3141,9 +3148,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let sequence = outputCollector.takeNextSequence()
         let ticket = actionTicket(for: playerID, clientID: clientID)
 
-        // An action with resolvers runs them in a job (`startActionJob`), off the caller's wait;
-        // one without is delivered here.
-        if becomesJob {
+        // An action with built resolver values runs them in a job (`startActionJob`), off the
+        // caller's wait; one without is delivered here.
+        if let job {
             // A cancelled caller's action is never delivered, as when its resolvers ran in the
             // caller's task: the job's task wouldn't inherit the cancellation.
             try Task.checkCancellation()
@@ -3163,8 +3170,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     heldResolverOutputs: [:],
                     resolvedAtTick: lastCommittedTickId
                 ),
-                decodedAction: decodedAction,
-                resolvers: handler.resolvers!,
+                executors: job.executors,
+                ctx: job.ctx,
                 ticket: ticket,
                 input: typeIdentifier
             )

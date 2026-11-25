@@ -118,7 +118,9 @@ The output parameter is optional. It is `nil` when the closure built no value (s
 
 The closure runs once, in the turn that admits the input: before the resolvers start, with the State as it is at that moment. A change to the State while the resolvers run doesn't reach the value. The closure reads; it can't write the State (it gets it as a constant), and its context has no random source.
 
-The closure may return `nil`. Then nothing is fetched, and the handler gets `nil` for that output. Use it to skip a load the State already answers:
+An action's closure runs before the [action caps](#actions-with-resolvers) are checked, so it also runs for an action the caps then refuse. This is safe because it reads and changes nothing.
+
+The closure may return `nil`. Then nothing is fetched, and the handler gets `nil` for that output. An action whose closure returns `nil` for every resolver has nothing to wait for: it is handled like an action without resolvers, and the action caps don't count it. Use `nil` to skip a load the State already answers:
 
 ```swift
 HandleAction(AddToCartAction.self, resolvers: { state, action, _ in
@@ -309,7 +311,7 @@ Three caps bound the actions in their resolvers. Over any of them, the action is
 | `RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND` | 32 | One land's abandoned actions still in their resolvers (#364). Only actions count: a land's abandoned CanJoin, OnJoin, OnLeave and OnInitialize groups are reported, not capped, so an outage behind the join resolvers doesn't stop the actions of players already in. Other lands' actions still run. Message: `action rejected: abandoned-resolver limit reached (… in this land)` |
 | `RESOLVER_ABANDONED_ACTIONS_MAX` | 256 | The process's abandoned actions still in their resolvers. Joins, leaves and OnInitialize don't count. Message: `action rejected: abandoned-resolver limit reached (…)` |
 
-0 removes a cap; a negative or non-integer value gives the default. Resolver-free actions and client events are never capped. `ResolverDeadlineMetrics` reports the caps: `abandonedActions` (a gauge), `inFlightLimitRejections`, `landAbandonedLimitRejections` and `abandonedLimitRejections`.
+0 removes a cap; a negative or non-integer value gives the default. Resolver-free actions, actions whose closure built no value, and client events are never capped. `ResolverDeadlineMetrics` reports the caps: `abandonedActions` (a gauge), `inFlightLimitRejections`, `landAbandonedLimitRejections` and `abandonedLimitRejections`.
 
 ### Error Handling Example
 

@@ -118,7 +118,9 @@ Rules {
 
 closure 只執行一次，在接收該 input 的 turn 中：在 resolver 啟動之前，使用當下的 State。resolver 執行期間 State 的變動不會影響這個值。closure 只讀；它不能寫入 State（拿到的是常數），它的 context 也沒有隨機來源。
 
-closure 可以回傳 `nil`。這時不會載入任何東西，handler 在該輸出得到 `nil`。State 已能回答時，用它來略過一次載入：
+Action 的 closure 在檢查 [action 上限](#帶-resolver-的-action)之前執行，所以上限之後拒絕的 action，它的 closure 也已執行過。這是安全的，因為它只讀、不改變任何東西。
+
+closure 可以回傳 `nil`。這時不會載入任何東西，handler 在該輸出得到 `nil`。若 action 的 closure 對每個 resolver 都回傳 `nil`，就沒有東西要等：它的處理方式與不帶 resolver 的 action 相同，action 上限也不計入它。State 已能回答時，用 `nil` 來略過一次載入：
 
 ```swift
 HandleAction(AddToCartAction.self, resolvers: { state, action, _ in
@@ -309,7 +311,7 @@ public enum ResolverExecutionError: Error, Sendable {
 | `RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND` | 32 | 單一 land 中被放棄但 resolver 仍在執行的 action（#364）。只計 action：land 被放棄的 CanJoin、OnJoin、OnLeave 與 OnInitialize resolver 組只回報、不受上限，因此 join resolver 背後的服務中斷時，已在 land 中的玩家仍能送 action。其他 land 的 action 不受影響。訊息：`action rejected: abandoned-resolver limit reached (… in this land)` |
 | `RESOLVER_ABANDONED_ACTIONS_MAX` | 256 | 整個 process 中被放棄但 resolver 仍在執行的 action。join、leave 與 OnInitialize 不計入。訊息：`action rejected: abandoned-resolver limit reached (…)` |
 
-0 表示不設上限；負數或非整數使用預設值。不帶 resolver 的 action 與 client event 不受上限限制。`ResolverDeadlineMetrics` 回報三個上限的狀況：`abandonedActions`（gauge）、`inFlightLimitRejections`、`landAbandonedLimitRejections` 與 `abandonedLimitRejections`。
+0 表示不設上限；負數或非整數使用預設值。不帶 resolver 的 action、closure 沒有建立任何值的 action，以及 client event，都不受上限限制。`ResolverDeadlineMetrics` 回報三個上限的狀況：`abandonedActions`（gauge）、`inFlightLimitRejections`、`landAbandonedLimitRejections` 與 `abandonedLimitRejections`。
 
 ### 錯誤處理範例
 
