@@ -1,11 +1,11 @@
 # K2: the keeper's cut-over onto the turn core (#700)
 
-**Status:** draft 1, prep only. **Not for Review until K1b lands:** K2 starts from K1b-5's end state, and its line numbers, segment names and type names are re-taken on K2's base. This draft puts K2's shape on paper early, as the main line's next large step. It was read at main 7baba4c4, without the LSP.
+**Status:** draft 2, prep only. **Not for Review until K1b lands:** K2 starts from K1b-5's end state, and its line numbers, segment names and type names are re-taken on K2's base. Draft 2 takes Review's pre-read of draft 1 (not a verdict): K2-Q2's split, agreed with four conditions, and its §4 notes. It also takes K1b-5 rev 2's shape (each segment returns its await's request) and the `KeeperTurnSide` interface agreed with K1b-5's author for rev 2.1 (§4.5). §10 lists the changes. Draft 1 was read at main 7baba4c4, without the LSP.
 
 **Inputs:**
 - the parent plan `2026-11-22-keeper-on-turncore.md` rev 5.8: §3.1–§3.10, §5's K2 row, §6.2's K2 tests, §7 and §8;
 - the K2 prep survey `2026-11-25-k2-prep-survey.md`;
-- the K1b slice plans: K1b-1 (plain forms), K1b-3 (the land's generator, PR #853), K1b-4 rev 1.2 (`KeeperModel`, `KeeperBehavior`), K1b-5 draft 1 (turn bodies and named segments);
+- the K1b slice plans: K1b-1 (plain forms), K1b-2 (failure IDs and the side tables), K1b-3 (the land's generator, PR #853), K1b-4 rev 2.1 (`KeeperModel`, `KeeperBehavior`, the `playerServices` table; Review GO), K1b-5 rev 2 (turn bodies, and segments that return their await's request);
 - the #852 options note `2026-11-25-852-duplicate-login-cap-options.md`.
 
 Nothing here changes a decision in the parent plan. Where this draft adds something, the section says so.
@@ -26,7 +26,7 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
 | From | What K2 uses |
 |---|---|
 | K1b-4 | `KeeperModel<State>` (`@PlainData`): the machine's state. `KeeperBehavior<State>`: the machine's `Behavior` (#768). One `inout` access of the model per step |
-| K1b-5 | The turn bodies as `mutating` methods on `KeeperModel` that take the behavior and return `TurnOutputs`. Every async flow as named synchronous segments (J1–J4, L1–L3, the action, intake and driver flows), with what crosses each await |
+| K1b-5 | The turn bodies as `mutating` methods on `KeeperModel` that take the behavior and `KeeperTurnSide`, and return `TurnOutputs`. Every async flow as named synchronous segments (J1–J4, L1–L3, the action, intake and driver flows). A segment never awaits: it returns its flow's request enum, one case per await, carrying the capture that crosses it, and a driver performs the await |
 | K1b-3 | `landRandom` in the model; `withHandlerStep` as a model method |
 | K1b-1 | The queued items' plain forms. K1b-Q5 (d): `PendingActionItem` and `PendingClientEventItem`, and their inits, are `package` |
 | K1a | Raw payload bytes in the record; `InputOutcome` carried to the adapter |
@@ -52,10 +52,10 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
 |---|---|---|
 | `Input` | `KeeperInput` | the entries that `send` or `sendAndWait`: actions (tickless, and the result wait), client events (tickless), join, leave, `.tickDue`, `.syncDue`, `.bind`, `.freeze`, `.resume`, `.shutdown`, `.awaitInitialized`, `.awaitResume`, `.syncStreamDraft`; and the results that come back from `run`: `.joinStepped`, `.leaveStepped`, `.actionResolved`, `.initializeResolved`, `.destroyHandlerResolved`, `.recordTaken`, `.drainFinished` |
 | `Query` / `Answer` | `KeeperQuery` / `KeeperAnswer` | the intakes answered at once: `.admitAction`, `.admitClientEvent`, `.admitServerInput`; the adapter's synchronous calls: `.syncTurnNow`, `.syncTurnTicket`, `.settle` |
-| `Effect` | `KeeperEffect` | one case per await K1b-5 named, carrying what crosses it (§4.3), plus `.awaitRecordTaken(ticket)` |
+| `Effect` | `KeeperEffect` | a case per flow that wraps K1b-5's request enum (`.join(JoinRequest)`, `.leave(LeaveRequest)`, …), for the request cases that are I/O (§4.3); plus `.awaitRecordTaken(ticket, results)` |
 | `Output` | `KeeperOutput` | record drafts (to the recorder's serial sink), the binding-token and services-table writes (to `LiveLandTurns`' two stored values) |
-| `Reply` | `KeeperReply` | each `sendAndWait` entry's answer: `JoinOutcome`, `InputOutcome`, `JoinError`/`LandInputRejection`, `Void` |
-| `Key` | `KeeperKey` | `.land`, `.initialization`, `.entry(PlayerID, EntryID)`, `.syncBinding(BindingID)`, `.freeze(FreezeID)` (parent §3.2) |
+| `Reply` | `KeeperReply` | each `sendAndWait` entry's answer: `JoinOutcome`, `InputOutcome`, `Void`, and its failure as `any Error`: not only `JoinError` and `LandInputRejection`, but every error a caller gets today (a handler's or `validate`'s throw, `ResolverExecutionError`, the rebuilt decode errors). `Reply` is only `Sendable` (Machine.swift), so it can carry them |
+| `Key` | `KeeperKey` | `.land`, `.initialization`, `.entry(PlayerID, EntryID)`, `.syncBinding(BindingID)`, `.freeze(FreezeID)` (parent §3.2). The ids come from today's types, so K2-1 mints no parallel ones: `EntryID` is the entry generation (the `Epoch` in `entryGenerations`, the same key as K1b-4's `playerServices`), and `BindingID` is the sync binding's `GenerationTable` ticket (`SyncTurnTicket`) |
 | `Mail` | `Never` in K2 | K4 makes it `LandReport` |
 | `FollowUpSlot` | `Never` in K2 | K3 adds the three slots |
 
@@ -66,11 +66,16 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
 Each row of parent §3.3's table becomes one forwarding method on the facade. The table is the contract, and §6.2's K2 tests pin each row. Three notes for the implementation:
 - **Queries can't wait.** A query is used only where today's caller gets its answer at intake (the tick ACK, the two-phase action's `.pending`, the server input's `.accepted`).
 - **Barriers, not holds** (parent §3.3.1). The initialization and freeze barriers read the model through `core.read` and wait on `sendAndWait(.awaitInitialized)` / `.awaitResume`. No intake is parked by a hold, so a query can't overtake a parked `sendAndWait`.
-- **The debug check:** a synchronous step entry (`query`, and the keeper's synchronous entries that step) called from inside a keeper step traps with the entry's name.
+- **The debug check:** a synchronous step entry (`query`, and the keeper's synchronous entries that step) called from inside a keeper step traps with the entry's name. A mutant aimed at it is killed by a crash, so it runs in the cloud, one test case per process (K1b-2's lesson); the check also bumps a count that a normal test reads.
 
 ### 4.3 Segments become steps; awaits become `run` (the core of K2)
 
-For each flow, K1b-5's segment before an await ends with `turn.run(.someEffect(captured))`. The effect's `perform` does the await, off the actor, and returns the result input. That input's handler calls the next segment, which re-reads the model and validates, as K1b-5's segment does by hand today.
+For each flow, K1b-5's segment returns its request. `handle` maps it, and the result input's handler calls the next segment with (capture, result). The segments don't change: K2-1's `handle` calls the very segment methods the keeper's driver calls, not copies.
+
+K1b-5's request cases are of three kinds, and K2 maps each kind differently:
+- **I/O** (`.runCanJoinResolvers`, `.kick`, `.runOnJoinResolvers`, `.runOnLeaveResolvers`, `.startJob`, and the initialization's and drain's resolvers): `turn.run(KeeperEffect.<flow>(request))`. The effect's `perform` does the await off the actor and returns the result input.
+- **Barriers** (`.awaitInitialization`, `.waitWhileFrozen`): the entry's `inputPolicy` waits for the barrier (§4.2, parent §3.3.1). Not effects.
+- **Reply waits** (`.awaitInputTurn`, `.done`): `.done` is the reply. `.awaitInputTurn` is the `sendAndWait` reply, answered in `.recordTaken`'s step.
 
 | Flow | Awaits that become `run` | The result input, and its check |
 |---|---|---|
@@ -78,11 +83,11 @@ For each flow, K1b-5's segment before an await ends with `turn.run(.someEffect(c
 | Leave (L1–L3) | OnLeave's resolvers | `.leaveStepped(ticket, result)`: `isDraining`, the drop metric |
 | Action jobs | the job's resolvers (one `run` per job; K5 makes it a keyed `request`) | `.actionResolved(seq, token, result)`: the job, the entry generation, the sealed token (parent §3.2) |
 | Initialization | OnInitialize's resolvers | `.initializeResolved`; K5 adds the key and the deadline |
-| Tickless turns | the record submit, then the waiters | `.recordTaken(ticket)`: the waiters' replies come from this step (parent §3.4) |
+| Tickless turns | the record submit, then the waiters | `.recordTaken(ticket, results)`: the turn's results, `[seq: Result<InputOutcome, any Error>]`, ride in `.awaitRecordTaken`'s effect and come back in this input, and the waiters' replies come from this step (parent §3.4). So K1b-2's failure table is used only when nobody waits (its S1: nothing is stored when a waiter exists), and its K2 holder note (keyed by `RequestID`) needs no extra table. No K1b-2 change |
 | The drain | the destroy handlers | `.destroyHandlerResolved`, one at a time; K7 keys them |
 
 **What crosses, and how** (K1b-5 §3's "not plain" marks):
-- `LandServices` (the per-player overrides): in the effect, read from `LiveLandTurns`' services table by the entry that names the player (parent §3.1).
+- `LandServices` (the per-player overrides): attached to the input by the entry or the driver that names the player (parent §3.1), and from there into the effect. Writes to the table are outputs (§4.5).
 - The resolver's `LandContext`: built in the step, carried by the effect. Only its outputs come back, as `[String: HeldResolverOutput]`, which is plain after K1b-1.
 - `State` for the resolver: a copy taken in the step (parent §3.1).
 
@@ -90,6 +95,7 @@ For each flow, K1b-5's segment before an await ends with `turn.run(.someEffect(c
 
 ### 4.4 Outputs (survey §3; parent §3.1, §3.6)
 
+**In its own PR, K2-E, between K2-1 and K2-2, on today's keeper** (Review's condition 2; §6). It is a per-handler-call scope, the same shape as K1b-3's step RNG service, bound in `withHandlerStep`. One type, `StepScope`, can hold both the RNG service and the emitter scope.
 - **The sequence counter** (`nextSequence`, `checksOverflow`, `sequenceExhausted`) and `syncRequestsByTick` move from `OutputCollector` into the model. This ends K1b-4's D1.
 - **The scoped emitter:** each handler call gets a per-step scope (a lock-protected open flag and the staged list). `LandContext`'s three output closures capture the scope, not the model. The step moves the staged events into `turn.emit` after the handler returns, and closes the scope. A call after that is dropped and counted, asserted in debug. That is a visible behavior change, stated in K2's PR (parent §8).
 - **Record drafts** are outputs. `flush` hands them to the recorder's serial sink in step order (TurnActor.swift:897's flush after each step).
@@ -98,9 +104,25 @@ For each flow, K1b-5's segment before an await ends with `turn.run(.someEffect(c
 ### 4.5 Ports, tokens and the services table (parent §3.1, §3.7)
 
 - **The binding token** (the port plus its `BindingID`) is attached by the entries that need the port. The step checks the `BindingID` against the model's, then calls the port's synchronous in-turn methods.
+- **`KeeperTurnSide` in a step.** A core step gets only the model (`self`), `turn` (the behavior, which holds no mutable reference, plus `emit` and `run`) and the input. So K2 can't hand a body the actor's `&turnSide`. K1b-5 rev 2.1 makes `KeeperTurnSide` an interface of methods: reads are methods, and every write is staged in `TurnOutputs`. K2-1's `handle` builds a step-local side from the input and a staging buffer, and calls the same bodies. Each method's route:
+
+| `KeeperTurnSide` method | K1b-5 (on the actor) | K2 (in a step) |
+|---|---|---|
+| `services(for:generation:)`; inserts and removals staged | the actor's `playerServices` | reads from the overrides on the input; writes are outputs that `flush` applies to `LiveLandTurns`' table |
+| `markFailedFirst(_:) -> Bool` | `drainFlag.setFailed` | a model flag decides; the atomic set is staged |
+| `closeOutputs(for:)` | the transport | **direct**, on the binding token: the in-turn sync phase sends frames during the step and emits flush after it, so a staged close would let a later frame of the same step out before the gate closes. A direct call closes it at its place in the turn, as `failLand` does today |
+| `syncNowInTurn(…)` | the transport | **direct**, on the binding token: it returns frames to the body mid-turn |
+| `takeEmittedEvents`, `takeSyncRequest`, `readPosition` | the collector | the scoped emitter (K2-E) |
+| `takePendingFold(now:)` | the actor's `pendingFold`; `now` read by the driver right before the body | the fold and `now` on `.tickDue`'s input |
+| `takePendingTransportFailure()` | the actor's field | as on the actor until K4's mail |
+| `requestFollowUpSyncTurn(reason:)`, staged | `pendingSyncTurnAfterTurn` | as staged until K3's slot |
+| `noteReplayRejected(sequence:)` | the replay group; nothing on a live keeper | the replay owner's side only |
+| `recordFailure(_:) -> FailureID` | the ID from the model's counter, the value staged | the same; the value rides in the effect and the reply (§4.3) |
+| `probe(_:)` | the test hook | the test hook; it must not call back into the keeper |
+
 - **The admission clear** takes a package path, `admitJoiningSessionInStep(…, recordsSyncStream:) -> (JoinAdmission, [SyncStreamDraft])`, so no port call reaches back into the keeper during a step.
-- **The callback audit**, before the cut-over commit: grep the adapter for every `keeper.assumeIsolated` and list each with the path that reaches it. One that a step can reach is a stop.
-- **The per-player services table** lives on `LiveLandTurns`, keyed by `(PlayerID, EntryID)`. `flush` writes it from the join step's output and removes it on the leave step's output.
+- **The callback audit, in K2-1 or before it** (Review's condition 3), not inside K2-2: grep the adapter for every `keeper.assumeIsolated` and list each with the path that reaches it. One that a step can reach is a stop, and it moves the plan before the big PR is written.
+- **The per-player services table** lives on `LiveLandTurns`, keyed by `(PlayerID, EntryID)`, the same key as K1b-4's `playerServices` (`EntryID` is the entry generation). `flush` writes it from the join step's output and removes it on the leave step's output. The queued OnLeave handler's lookup at apply time (K1b-4 §3.3) reads the current entry's overrides, which the tick driver attaches to `.tickDue`'s input.
 
 ### 4.6 Drivers and the result slot
 
@@ -128,17 +150,20 @@ A service whose answer changes between runs (a clock, a remote call) and that a 
 | (b) The kinds by type, reusing #586's marker | A handler's context fetches only services marked for steps: `ReadOnlyLandService` for constant reads (already the `validate` rule), plus a new sink marker for write-only services. Other services are reachable only from resolvers | Config services already conforming to `ReadOnlyLandService` need nothing more; a sink adopts the sink marker; a land that reads anything else in a handler moves the read to a resolver | A public break. Like `ReadOnlyLandService`, the markers state a trust contract the compiler can't check |
 | (c) No services in handlers | `ctx.services` is removed from `LandContext` in handlers. Constant config moves into the land's configuration (Behavior). Observation goes out as outputs: a handler stages a note, and `flush` delivers it to a sink registered on the keeper, after the step | Config becomes land configuration; sinks become output consumers; reads move to resolvers | A public break; the purest fit with the core (the Elm and Redux shape: no I/O in `update` or a reducer; effects outside). The flush adds a hop per note |
 
-**Recommendation:** (a) in K2, so the cut-over stays free of public changes. For the end state, (b) now looks the better candidate than (c): it extends a marker the repository already uses for `validate`, and it keeps the config reads that hero-defense depends on. I propose a separate before-release issue to decide between (b) and (c), with the three kinds as the worked cases. Prior art beyond the repository: for (a), Erlang's `gen_server` lets `handle_call` do side effects and relies on convention; for (c), Elm's `update` returns `Cmd`, and Redux keeps side effects in middleware.
+**Recommendation:** (a) in K2, so the cut-over stays free of public changes. For the end state, (b) now looks the better candidate than (c) (Review agrees, pre-read of draft 1): it extends a marker the repository already uses for `validate`, and it keeps the config reads that hero-defense depends on. I propose a separate before-release issue to decide between (b) and (c), with the three kinds as the worked cases. Prior art beyond the repository: for (a), Erlang's `gen_server` lets `handle_call` do side effects and relies on convention; for (c), Elm's `update` returns `Cmd`, and Redux keeps side effects in middleware.
 
-## 6. Slicing K2 into PRs (a proposal for Review)
+## 6. Slicing K2 into PRs (agreed by Review's pre-read, with four conditions)
 
-Parent §5 has K2 as one slice. It is the largest one, so this draft proposes three PRs, each building green and changing no behavior on its own:
+Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each building green:
 
-1. **K2-1, the types:** `KeeperInput`, `KeeperQuery`, `KeeperEffect` and the rest; `extension KeeperModel: TurnMachine`, with `handle` calling the K1b-5 bodies. It is compiled and unit-tested against a `TurnCore` in tests only; the keeper doesn't use it yet. The lint fixture for the facade.
-2. **K2-2, the cut-over:** the facade and `KeeperOwner`; every entry forwards to the core; the scoped emitter, the binding token, the services table, the package admission path, the drivers. This is the PR that runs the full host A/B and the harness.
-3. **K2-3, the leftovers:** the code paths K2-2 made unreachable on live keepers, each first proven unreachable. K9 still owns the deletions that need K3–K7.
+| PR | Content | Behavior change | Host A/B |
+|---|---|---|---|
+| **K2-1, the types** | `KeeperInput`, `KeeperQuery`, `KeeperEffect` and the rest; `extension KeeperModel: TurnMachine`. `handle` calls the very K1b-5 bodies and segments the keeper calls, not copies, so the two can't drift (condition 1). The callback audit (§4.5, condition 3). The lint fixture for the facade. Not wired: the keeper doesn't use it yet | none | none (not wired) |
+| **K2-E, the step scope** | `StepScope` (the RNG service and the emitter scope), bound in `withHandlerStep`; the sequence counter into the model (ends K1b-4's D1). On today's keeper (condition 2) | yes, the one in K2: an emit from a context kept past its step is dropped and counted (parent §8) | small: it touches the emit path |
+| **K2-2, the cut-over** | the facade and `KeeperOwner`; every entry forwards to the core; the binding token, the services table, the package admission path, the drivers. A pure cut-over | none | full, plus §8's three cells |
+| **K2-3, the leftovers** | the code paths K2-2 made unreachable, each proven unreachable on live keepers **and in the replay owner**: until #612, replay calls the same bodies without a core (§7.2), so a path dead on live keepers can still be live in replay (condition 4). K9 still owns the deletions that need K3–K7 | none | none, unless it touches a hot path |
 
-The risk of K2-1: a machine that isn't wired in can drift from the keeper's bodies before K2-2. So K2-2 follows K2-1 without other keeper PRs in between.
+**K2-1's tests are a unit-level differential.** Each §4.3 flow row is driven twice on the same inputs: through a test `TurnCore` running the machine, and through the keeper's direct path. The resulting model and outputs are compared.
 
 ## 7. Risks and ordering constraints
 
@@ -172,4 +197,16 @@ The risk of K2-1: a machine that isn't wired in can drift from the keeper's bodi
 | # | Question | For | Blocks |
 |---|---|---|---|
 | K2-Q1 | `ctx.services` in steps (§5): (a) recommended for K2; (b), reusing `ReadOnlyLandService`, the likelier end state | the maintainer | K2-2's docs |
-| K2-Q2 | Three PRs instead of one (§6) | Review | K2-1 |
+| K2-Q2 | Four PRs instead of one (§6) | Review: agreed in the pre-read, with four conditions, which §6 takes; confirmed in the review of this plan | K2-1 |
+
+## 10. Draft 1 → draft 2
+
+| Change | Source | Where |
+|---|---|---|
+| Four PRs: K2-1 calls the same bodies, with a unit differential; K2-E (the step scope) between K2-1 and K2-2; the callback audit in K2-1; K2-3 proves unreachability in replay too; A/B tiers per PR | Review's pre-read, K2-Q2's four conditions | §4.4, §4.5, §6, §9 |
+| K1b-5's request enums: I/O cases become effects, barriers become entry policies, reply waits become replies | K1b-5 rev 2 §4 | §2, §4.1, §4.3 |
+| `KeeperTurnSide` as methods, each with its K2 route; `closeOutputs` and `syncNowInTurn` direct on the binding token, the rest staged | agreed with K1b-5's author for its rev 2.1 | §4.5 |
+| `KeeperReply` carries any error; tickless results ride `.awaitRecordTaken` and its result input, so the failure table holds only unwaited failures | Review's pre-read | §4.1, §4.3 |
+| `EntryID` is the entry generation, `BindingID` the sync binding's ticket | Review's pre-read | §4.1, §4.5 |
+| The debug check's mutants: cloud, one case per process, plus a count | Review's pre-read | §4.2 |
+| Review agrees (b) beats (c) for K2-Q1's end state | Review's pre-read | §5 |
