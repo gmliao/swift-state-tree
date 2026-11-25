@@ -1,12 +1,24 @@
 # K1b-5a: turn bodies on the model, the turn side, and the staging rule (#700)
 
-**Status:** rev 2.1, plan only, for Review. Rev 2.1 corrects three §3.1 rows found by the LSP check of rev 2 (listed at the end of §3.1). This is the first half of K1b-5 (plan rev 2.1, `2026-11-25-k1b5-turn-bodies-and-segments.md`), split as that plan's §9 proposed and Main approved. K1b-5b, the segments, follows once this plan is GO, and its PR opens after this one merges.
+**Status:** rev 3, plan only, for Review. Rev 2.1 corrected three §3.1 rows found by the LSP check of rev 2 (listed at the end of §3.1). Rev 3 answers Review's NOT GO on rev 2.1 (3 must-fix, 6 should, 2 nits); the Swift-semantics points are settled by a probe (§2.1). This is the first half of K1b-5 (plan rev 2.1, `2026-11-25-k1b5-turn-bodies-and-segments.md`), split as that plan's §9 proposed and Main approved. K1b-5b, the segments, follows once this plan is GO, and its PR opens after this one merges.
 
 **Base:** #853's head 5d53571a (K1b-3, on #835's K1a). Its `LandKeeper.swift` has the same line numbers as a87e0278, which K1b-4's rev 2.1 names. K1b-5a needs K1b-4.
 
 **How the tables were checked.** Each table ends with a line saying what was checked against 5d53571a, and which rows weren't verified. Rev 1's rows were checked with the LSP (`findReferences`, `incomingCalls`, `goToDefinition`) and grep. **Rev 2's new rows were checked by grep** on 5d53571a's `LandKeeper.swift` and `TransportAdapter.swift`, each call site with its enclosing function, and **then with the LSP** on a fresh index of 5d53571a (rev 2.1). Each check line says which.
 
 `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift` and `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`, both at 5d53571a.
+
+**From rev 2.1 (Review's NOT GO: 3 must-fix, 6 should, 2 nits):**
+- MF1: the sentinel's failure is applied **inside the body, right after each port call returns**, before anything decides success (§3.6). `withModel`'s check stays only as a backstop.
+- MF2: `withModel` can't return a handle its flush creates. `withModelSubmitting` flushes explicitly and returns `(result, handle)` (§2, §2.1).
+- MF3: M3 runs on the settle, and M7 reads the gate inside the stub (§5).
+- S1: the bound on what `cancel()` runs synchronously (§3.5).
+- S2: the drain task's actor-isolated entry (§3.2).
+- S3: M2's wording, and the logger as a callout that doesn't flush (§3.2, §5).
+- S4: a monotonic submitted count and a synchronous trace (§5).
+- S5: `transport` and `boundSyncRequesterObject` stay outside the side (§3.1).
+- S6: `endRequestedSyncWork`, and replay's carried values (§3.1, §3.3, §4).
+- The nits: :5994; tick replay's range.
 
 **From rev 1 (Review's NOT GO: 6 must-fix, 4 should, 1 nit):**
 - MF1: one synchronous helper, `withModel`, owns each body call. Its `defer`s flush and lower the depth before any suspension (§2).
@@ -58,7 +70,7 @@ private func withModel<R>(_ step: (inout KeeperModel<State>, inout KeeperTurnSid
     defer {
         turnSide.flush(&outputs)                    // 2nd: consumes the outputs, so they flush once
         checkActionTables()                         // 3rd: K1b-2's alignment check (§3.4)
-        if reentryViolations != violationsBefore {  // 4th: the sentinel fired (§3.6)
+        if reentryViolations != violationsBefore {  // 4th: backstop only; the bodies apply it first (§3.6)
             withModel { m, side, out in m.applyPendingTransportFailure(side: &side, outputs: &out) }
         }
     }
@@ -68,11 +80,73 @@ private func withModel<R>(_ step: (inout KeeperModel<State>, inout KeeperTurnSid
 }
 ```
 
-- **The scope is the helper,** not the driver function. `runInputDrain` and `runTick` await after the body (`submitTurnRecord`, :5996 and :5141). A function-scoped `defer` there would flush after that await, and the ordinary draft would reach the recorder before the staged sync-stream drafts and the terminal entry. The flush and the check happen before `withModel` returns, so before the driver's next statement. (Review's lesson: a staging plan that flushes "in a `defer`" must name the scope.)
+- **The scope is the helper,** not the driver function. `runInputDrain` and `runTick` await after the body (`submitTurnRecord`, :5994 and :5141). A function-scoped `defer` there would flush after that await, and the ordinary draft would reach the recorder before the staged sync-stream drafts and the terminal entry. The flush and the check happen before `withModel` returns, so before the driver's next statement. (Review's lesson: a staging plan that flushes "in a `defer`" must name the scope.)
 - **The depth is lowered in a `defer`,** so a throwing step can't leave it raised. A raised depth would make the sentinel fail every later legitimate adapter entry. The steps of §2 don't throw today. K1b-5b's throwing segments use `withModel`'s throwing overload, which has the same `defer`s.
 - **The flush consumes the outputs,** so they flush exactly once, even when a step flushed part of them already (§3.2).
 - **`TurnOutputs`** is a non-plain struct: **one ordered list of effects**, in the order the body staged them. Every count, position, index or decision those effects depend on is already in the model when they are staged (§3.2). A turn with nothing staged leaves the list unallocated.
 - **The handler step.** K1b-4's `withHandlerStep(ctx) { m, ctx in … }` becomes a `mutating` method on the model. The body calls it on `self`, so the single access to the model is the body's own.
+- **The result is fixed before the `defer`s run.** `return step(…)` evaluates the step's result first, and then the `defer`s flush. So `withModel` can't return anything its flush creates, such as a submission's `Task` (§2.1, case 1).
+
+**`withModelSubmitting`** is for the one caller that needs a handle from the flush: `submitTurnRecord`. It runs the step in an inner scope that lowers the depth, flushes explicitly, and returns `(result, handle)`. The flush returns the handle of the last submission it made. A consuming `defer` covers the throw path, so a throw still flushes once:
+
+```swift
+private func withModelSubmitting<R>(_ step: (inout KeeperModel<State>, inout KeeperTurnSide, inout TurnOutputs) throws -> R) rethrows -> (R, Task<Void, Never>?) {
+    var outputs = TurnOutputs()
+    var flushed = false
+    defer { if !flushed { turnSide.flush(&outputs); checkActionTables() } }   // the throw path
+    let result: R
+    do {
+        bodyDepth += 1
+        defer { bodyDepth -= 1 }
+        result = try step(&model, &turnSide, &outputs)
+    }
+    let handle = turnSide.flush(&outputs)       // depth already 0
+    flushed = true
+    checkActionTables()
+    return (result, handle)
+}
+```
+
+`submitTurnRecord` keeps today's sequence (:5375–5379):
+1. the body's entries are already flushed, by the body's own `withModel`;
+2. `withModelSubmitting` enqueues the ordinary draft and returns that submission's handle;
+3. the hold `.turnRecord` is entered **even when the handle is nil** (no recorder);
+4. it awaits **that exact task**, never the tracker's tail looked up after the hold, which could be another turn's submission;
+5. then the driver resumes the consumed waiters.
+
+### 2.1 The probe
+
+A one-file probe pins these semantics with `swiftc -swift-version 6` (Apple Swift 6.4.2), with no package build: `2026-11-25-k1b5a-probe.swift`, next to this plan (Notes isn't a SwiftPM target, so the file is not compiled by `swift build`). Run it with `swiftc -swift-version 6 -parse-as-library 2026-11-25-k1b5a-probe.swift -o probe && ./probe`. Its keeper, model, side and outputs mirror §2's shapes, and the recorder Tasks append to a locked trace. 30 runs, the same trace each time:
+
+```
+== MF2 rev 2: return value vs defer
+  result fixed
+  submit draft
+  defer flushed, handle made after the result was fixed
+== MF2 rev 3: withModelSubmitting + .turnRecord
+  depth 0 before the flush
+  submit ordinary draft
+  .turnRecord hold (handle made)
+  recorded ordinary draft
+  awaited that exact task; resume consumed waiters
+== MF2 rev 3: throw path
+  submit staged before throw
+  throw path flushed
+  caught; depth 0
+== MF1 rev 2: failure applied in the defer
+  sentinel: mailbox posted, gate closed
+  submit sync-stream draft
+  submit endTurn
+  submit terminal entry keeperReentry (late)
+  returned committed
+== MF1 rev 3: failure applied after the port call
+  sentinel: mailbox posted, gate closed
+  submit terminal entry keeperReentry
+  submit endTurn
+  returned landFailed
+```
+
+The "recorded …" lines come from the recorder Tasks and interleave freely; they are left out above except where the case awaits them. The first version of the probe crashed in about half its runs. Its trace was an unlocked array appended from the recorder Tasks and from the actor, a data race in the probe itself. A lock fixed it, and the 30 runs above have no crash.
 
 ## 3. What a body reaches outside the model
 
@@ -90,6 +164,7 @@ private func withModel<R>(_ step: (inout KeeperModel<State>, inout KeeperTurnSid
 
   So a flush needs nothing but the side, and a body can flush in the middle (§3.2). K1b-5a updates K1b-4's census paths for these rows (`actor.X` → `turnSide.X`).
 - **In K2-1** a step builds it locally from snapshots and binding tokens, and its writes become the step's outputs (K2 draft 2 §4.5). The methods keep their signatures; the flush points change (§8).
+- **Also outside the side:** `transport` and `boundSyncRequesterObject` stay actor properties, outside the model and outside `turnSide`. The sentinel reads them while a body has `&turnSide` borrowed (§3.6).
 - **The shared references stay on the actor** as `nonisolated let`, and the side holds copies of the references: `drainFlag`, the `LandFailureMailbox`, the keeper's identity. Nonisolated code reads them today (`isDraining`, `destructionCause` and `failure` read `drainFlag`, :641–650; `notePendingFailure` writes the mailbox, :664), and moving them under an isolated `var` would cut that off.
 
 | Method | Kind | Today (LK) |
@@ -107,6 +182,7 @@ private func withModel<R>(_ step: (inout KeeperModel<State>, inout KeeperTurnSid
 | `pendingTransportFailure() -> LandFailure?` | **read only**: the mailbox is set-once and has no clear (LandFailureMailbox.swift:21–25). A clear would change which failure wins | `applyInputs` (:4289), `applyPendingTransportFailure` (:5403) |
 | `requestFollowUpSyncTurn(reason:)`, `scheduleJoinSyncTurn(…)`, `retryAfterWriterDrain(…)` | **the comparison, the slot and the count inline; only the Task launch staged.** Each writes its binding mark (`pendingSyncTurnAfterTurn`, `joinSyncTurnBinding`, `inTurnDrainRetryBinding`) and `beginRequestedSyncWork()` at the call, as today | `requestSyncTurnAfterThisTurn` (:5626), `scheduleJoinSyncTurn` (:5473), `retrySyncOnlyTurnAfterWriterDrain` (:5445), all reached from `applyInTurnSyncResult` (:4987, 4993, 5002) |
 | `noteReplayRejected(sequence:)` | turn-local, then staged | `applyInputs` writes it and `takeReplayRejected` (:4460) reads it in the same turn. The body keeps it in a local that the turn's record reads, as today, and the side hands the list to `replay` after. Nothing on a live keeper |
+| `endRequestedSyncWork()` | the count inline; the test waiters' removal inline, their resumes staged | `endRequestedSyncWork` (:5670–5678). Inside a body: `syncTurnNow`'s (:5615), flushed by the body's `withModel`. Outside a body: the `defer`s of `runRetriedSyncOnlyTurn` (:5461), `runJoinSyncTurn` (:5488) and `runPendingSyncTurnAfterTurn` (:5645). They run after the follow-up's sync-only body has returned, so each goes through its own `withModel` (§3.3) |
 | `recordFailure(_:) -> FailureID` | the ID from the model's counter; the error staged into the side's table | K1b-2's table |
 | `takeWaiter(…)`, `takeHeldInputs()`, `takeDrainWaiters()` | the removal and the outcome inline; the resume staged | §3.5 |
 | `cancelJob(_:)` | the mark, the outcome and the slot fill inline; then `task.cancel()`, a direct call | §3.5. `job.task?.cancel()` (:2736) is the only `cancel()` a K1b-5a body reaches. The joins' `destroyTask?.cancel()` (:1962, :2183) are in K1b-5b's segments, and are direct calls there |
@@ -133,6 +209,10 @@ private func withModel<R>(_ step: (inout KeeperModel<State>, inout KeeperTurnSid
 
 What moves is only the body's own model writes, relative to the effects. Nothing outside the actor reads the model while the body runs.
 
+**Reads don't flush.** A read of a shared reference (the mailbox, `drainFlag`) or of the collector is not an effect, so it doesn't flush.
+
+**The logger is a synchronous callout that doesn't flush.** It is injectable, so it is code outside the keeper. A log line can therefore come before a staged resume that precedes it today. For example, `dropPendingInputs` logs between the slot resumes and the input waiters' resumes. That order carries no meaning, and no test reads it.
+
 **The flush order is the call order.** `TurnOutputs` is one list, so the flush applies the effects in the order they were staged, which is today's order. Review's S2 order follows from it.
 
 For example, `failLand` (:5847–5907) today and in K1b-5a:
@@ -146,8 +226,10 @@ For example, `failLand` (:5847–5907) today and in K1b-5a:
 | 5 | `releaseHeldInputsForDrain`, `resumeShutdownTurnWaiters` (:5892–5893) | staged resumes |
 | 6 | `players.removeAll()` | model |
 | 7 | `closeOutputs` (:5898) | direct: 2–5 flush first, so the terminal entry is submitted and the dropped callers resumed before the gate closes, as today |
-| 8 | `drainTask = Task { … }` (:5899) | staged: the side installs the handle when it starts the Task |
+| 8 | `drainTask = Task { … }` (:5899) | staged: the side starts `Task { await keeper.runFailureDrain(failure, transport) }` and installs its handle. `runFailureDrain` is an actor-isolated method holding today's body in order: the hold `.landFailedTeardown`, `landDidFail`, then `drainAfterIdleCheck`. Today the Task is formed inside the keeper and inherits its isolation; a Task formed in the side's `flush`, a plain struct method, wouldn't, so the work moves into the isolated method |
 | 9 | the drain-start waiters, then the failure waiters (:5904–5907) | staged after 8, so no waiter wakes before `drainTask` is installed |
+
+**`shutdownIfIdle`** forms its drain Task outside a body (:6249) and installs it (:6250) before `resumeDrainStartedWaitersForTesting` (:6251). Wrapped in `withModel`, it keeps that order: the Task is staged before the resumes, and the flush installs the handle as it starts it.
 
 **Today's record order for a failing tick or pass,** kept by Rules 1 and 2:
 1. the sync-stream entries made earlier in the turn;
@@ -183,11 +265,12 @@ For example, `failLand` (:5847–5907) today and in K1b-5a:
 | `leave` (:2861) | `cancelActionJobs(ofEntryGeneration:)` → `cancelActionJob` → `fillActionSlot` → `debugEndWork` |
 | `submit` (:3146), `handleClientEvent` (:3419), `kickServerInputTurn` (:3532), `runTick` (:4548), the existing `debugEndWork` `defer`s included | `debugEndWork` |
 | `processPendingActions` (:4175), `replayRecordedPasses` (:4366) | `applyInputs` (replay's W1, §4) |
-| `submitTurnRecord` (:5376) | `enqueueRecorderSubmission`. `withModel` returns the submission's handle from the flush, and `submitTurnRecord` awaits it after the hold, as today |
+| `submitTurnRecord` (:5376) | `enqueueRecorderSubmission`, through `withModelSubmitting` (§2), which returns the submission's handle. `submitTurnRecord` awaits it after the hold, as today |
 | `runInputDrain` (:5996) | `enqueueTicklessTurnEnd` |
+| `runRetriedSyncOnlyTurn` (:5461), `runJoinSyncTurn` (:5488), `runPendingSyncTurnAfterTurn` (:5645), in their `defer`s | `endRequestedSyncWork` |
 | the adapter-facing `submitSyncStream` (:5277), outside a turn | the sync-stream helpers (§3.6) |
 
-**No driver-level submit bypasses staging.** `submitTurnRecord` and `runInputDrain`'s `endTurn` go through `withModel` like any other caller. They run after the body's `withModel` has returned, so their submissions come after the body's flushed ones.
+**No driver-level submit bypasses staging.** `submitTurnRecord` goes through `withModelSubmitting`, and `runInputDrain`'s `endTurn` through `withModel`. They run after the body's `withModel` has returned, so their submissions come after the body's flushed ones.
 
 **`withModel` from an outside caller raises `bodyDepth`** like a body does: it borrows the model, so a re-entry during it would trap the same way. None of these callers makes a port call that calls back (§3.6). `task.cancel()` runs only the two handlers of §3.5.
 
@@ -221,6 +304,8 @@ K1b-2's `actionTableViolations()` compares the IDs the model holds with the fail
 - **The cancellation handlers that `cancel()` can run synchronously:**
   - `awaitActionResult`'s `onCancel` sets the caller's flag and cancels the task. It touches no keeper state.
   - `ResolverExecutor`'s handler (ResolverExecutor.swift:191–205) settles its race, updates the abandonment's bookkeeping and cancels the resolver task. The keeper's cleanup comes later, through an async hop (`releaseCompletedActionJob`).
+  - **Transitively,** that handler calls `work.cancel()` on the task group running the application's resolvers (ResolverExecutor.swift:221–235). Those resolvers' own cancellation handlers then run synchronously on the cancelling stack, inside the borrow.
+- **The bound on that code.** Application resolvers get the state by value (`ResolverContext`) and hold no keeper reference, no model and no side. Their only way back into the keeper is an async hop, which waits for the actor. So nothing `cancel()` runs synchronously can read or write the borrowed model or `turnSide`. The same constraint applies to every callout of Rule 2: none may reach the model or `turnSide` synchronously. §3.6's audit covers the port calls, and this bound covers `cancel()`.
 - **The bound sync requester stays weak**, and the choice between the attached port and the bound port is still made at failure time (:5896).
 
 *Checked against 5d53571a with LSP (rev 1): `incomingCalls` on `fillActionSlot`, `debugEndWork` and `cancelActionJob` (:2710, 2717). By grep (rev 2): `cancelActionJob`'s body (:2723–2737). The handler by reading ResolverExecutor.swift. Not verified: none.*
@@ -263,9 +348,19 @@ A port call the keeper makes during a body can call back into it synchronously. 
   3. logs the violation and counts it in `reentryViolations`.
 
   It doesn't touch the model, so the draft is not recorded.
-- **The land ends in the same segment.** After the flush, `withModel` sees that `reentryViolations` grew. It then applies the mailbox's failure (`applyPendingTransportFailure` → `failLand`) in a nested `withModel`, before returning.
-  - That doesn't wait for a later step. The mailbox is otherwise read only before a turn's sync and settle phases (:1848, 4947, 5419), not after them. So on an idle tickless land, a violation inside a requested sync-only turn's port call would otherwise return `.committed` and never take another step.
-  - If an earlier failure already holds the mailbox, `failLand`'s first-cause rule keeps that one, and the violation is still counted and logged.
+- **The land ends inside the body, where success is decided.** The bodies already apply the mailbox's failure before each phase (:1848, 4947, 5419). Rev 3 adds the same check **right after each port call returns**:
+  - `runSyncPhaseInTurn` in `runTurnOutputs` (:4951) and in the sync-only turn (:5427);
+  - `runSettlePhaseInTurn` in the settle (:1868).
+
+  The check runs before `submitSyncStream`, before `applyInTurnSyncResult`, before the input turn's `endedInTurn` (:6069), and before the tickless `endTurn` comparison (:1889, :5432). If the mailbox holds a failure, the body applies it (`applyPendingTransportFailure` → `failLand`) and returns `.landFailed` (the sync-only turn and `syncTurnNow`) or `.failed` (the settle). The input turn's `endedInTurn` then reads the failure, so consumed callers get `landClosed`. The terminal entry is staged before the turn's `endTurn` (probe, §2.1, case 5).
+- **Why not later.** A check placed after the body has computed its result can't change that result (probe, §2.1, case 4). Rev 2 applied it in `withModel`'s `defer`. By then:
+  - `runSyncOnlyTurn` had returned `.committed`, and the adapter's `debugResumeInTurn` (TA:6403–6425) goes on to the join sync;
+  - the settle had returned `.settled`, and `debugSettle` (TA:6252–6288) publishes a settled snapshot of a failed land;
+  - the input turn's `endedInTurn` had read `failure == nil`, so consumed callers got `.success`;
+  - `applyInTurnSyncResult(.committed)` had cleared the dirty flags and staged follow-ups;
+  - the tickless `endTurn` had been staged before the terminal entry.
+- **`withModel`'s check stays as a backstop** for a re-entry reached on another path. If it ever fires, the result was already fixed, so the backstop also logs that the failure came late.
+- If an earlier failure already holds the mailbox, `failLand`'s first-cause rule keeps that one, and the violation is still counted and logged.
 - **The failure's kind** is `.keeperReentry` (approved by the maintainer; §7).
 
 ## 4. The drivers
@@ -275,8 +370,8 @@ A port call the keeper makes during a body can call back into it synchronously. 
 | **the input drain** (`runInputDrain`, :5986) | the mark; `withModel` { the input-turn body }; then `submitTurnRecord` (its enqueue in `withModel`) or `withModel` { `enqueueTicklessTurnEnd(since: mark)` }; then `withModel` { `resumeInputTurnWaiters` }; then `Task.yield()`. The record draft isn't plain: `ReevaluationRecordedResolverOutput.value` is `AnyCodable` (ActionRecorder.swift:10) |
 | **the live tick** (`runTick`'s turn branch, :4598) | `withModel` { the tick-turn body }; then `finishTickTurn`'s submit (:5140) |
 | **the sync loop** (`runSync`, :6133) | its fold decision writes the model outside a turn (K1b-4 §4.3's exception), then awaits the transport only on its replay branch. Unchanged until K2's `.syncDue` step |
-| **tick replay** (`runTick`'s non-turn branch, :4812–4890) | 1. `withModel` { W1's restore and `applyInputs` (:4175) }; 2. the suspensions: `.turnRecord` (:4179), the recorder's `record` and `flushIfNeeded`, the broadcast-only sync; 3. the rejected-divergence check; 4. the `replayFailureEnd` cutoff (:4839–4848): `withModel` { the commit, the event and sync-request drop }, then return; 5. `withModel` { W2's restore (:4859), then the handler step unless `shutdownTurnApplied` (:4866), then `lastCommittedTickId` }; 6. the state hash; 7. the legacy sink flush (`flushOutputs`, :4890); 8. the frame's record |
-| **tickless replay** (`replayRecordedPasses`, :4314) | 1. `withModel` { the initialize items' `applyInputs` (:4366) }; 2. per pass: `withModel` { the restore and the input-turn body with `removingFromQueue: false` (:4390), the rejected comparison, and the failure pass's event suppression (:4399–4401) }; 3. the record submit; 4. `withModel` { `resumeInputTurnWaiters` }; 5. the sink flush after each pass (:4413); 6. the pass observer |
+| **tick replay** (`runTick`'s non-turn branch, :4812–4903) | 1. `withModel` { W1's restore and `applyInputs` (:4175) }, returning `sequenceBeforeInputs`; 2. the suspensions: `.turnRecord` (:4179), the recorder's `record` and `flushIfNeeded`, the broadcast-only sync; 3. the rejected-divergence check; 4. the `replayFailureEnd` cutoff (:4839–4848): `withModel` { the commit, the event and sync-request drop }, then return; 5. `withModel` { W2's restore (:4859), `sequenceBeforeTickHandler`, then the handler step unless `shutdownTurnApplied` (:4866), then `lastCommittedTickId` }, returning `sequenceBeforeTickHandler`; 6. the state hash; 7. the legacy sink flush (`flushOutputs`, :4890); 8. the frame's record (:4894–4903), carrying both sequence values |
+| **tickless replay** (`replayRecordedPasses`, :4314) | 1. `withModel` { the initialize items' `applyInputs` (:4366) }; 2. per pass: `withModel` { the restore and the input-turn body with `removingFromQueue: false` (:4390), the rejected comparison, and the failure pass's event suppression (:4399–4401), then `ordinalAfter` and `stateAfter` (:4404–4405), returned for the pass observer }; 3. the record submit, after those are taken; 4. `withModel` { `resumeInputTurnWaiters` }; 5. the sink flush after each pass (:4413); 6. the pass observer |
 
 **The shared primitives** that replay calls, all synchronous model methods:
 - the input apply, `applyInputs`;
@@ -300,16 +395,24 @@ Each commit:
 - keeps every HoldPoints test green;
 - runs the touched suites, with the full debug `swift test` before the push.
 
-**A test recorder service** records an ordered trace of the keeper's submissions: each `recordTick` with its entry's kind and identity, and each `endTurn`. Several tests below use it.
+**Two test hooks on the recorder tracker** (`ReevaluationSubmissionTracker`, ReevaluationRecorderService.swift:17–58):
+- `submittedCountForTesting`: a monotonic count of `submit` calls. `pendingCount` (:41) falls as submissions finish, so it races and can't serve.
+- a synchronous submission trace: the flush passes each submission's label (the entry's kind and identity, or `endTurn`) to `submit`, which appends it under the tracker's lock **at submit**, before the Task runs. A trace kept by the recorder service would record in completion order instead.
+
+Several tests below use them.
 
 **Tests:**
 1. **The record order.** A tickless land and a stub port. In one sync phase the port returns two distinguishable sync-stream drafts together with a failure. The production adapter's failing plan returns `.landFailed` from its `catch` before it records anything (TA:2933–2948), which is why the stub is needed. The trace must read: draft 1, draft 2, the terminal entry, then `endTurn`. Teardown adds nothing to the trace and advances no stream index. A failure-only tickless batch's trace ends with its `endTurn`.
 2. **The waiters at `.turnRecord`.** A consumed caller stays parked at `.turnRecord` while a dropped-suffix caller gets `landClosed`. Each is resumed exactly once.
-3. **The sentinel, on an idle land.** An otherwise idle tickless land and a requested sync-only turn whose port calls the adapter-facing `submitSyncStream` during the turn. Without driving another turn, assert:
+3. **The sentinel, on an idle land.** An otherwise idle tickless land and a requested sync-only turn whose stub port calls the adapter-facing `submitSyncStream` during the turn. Without driving another turn, assert:
+   - the turn returned `.landFailed`;
    - the land has a terminal failure of kind `.keeperReentry`;
    - the gate is closed;
+   - in the submission trace, the terminal entry comes before the turn's `endTurn`;
    - `reentryViolations` is 1;
    - the model's stream index didn't move.
+
+   The same for the settle (it returns `.failed`) and for an input turn whose sync phase re-enters: its consumed callers get `landClosed`.
 4. **The three legitimate entries at depth zero** (S1), each recorded with no violation:
    - the standalone `.legacyCycle` commit (TA:3850);
    - the disconnect clear (`outsideTurn: true`);
@@ -321,16 +424,16 @@ Each commit:
    - an outer `catch` sees it applied;
    - `bodyDepth` is 0;
    - a following adapter `submitSyncStream` succeeds.
-6. **A probe sees today's state.** At the tickless sync-only turn's `turn-end` probe, with a hook installed, the probe reads the recorder tracker's submitted count and the gate. The count includes the turn's sync-stream submissions. After a failure in that turn, the gate is closed and the dropped callers have been resumed.
+6. **A probe sees today's state.** At the tickless sync-only turn's `turn-end` probe, with a hook installed, the probe reads `submittedCountForTesting` and the gate. The count includes the turn's sync-stream submissions. After a failure in that turn, the gate is closed and the dropped callers have been resumed.
 
 **Mutants (cloud).** Each names the observation that tells it apart from the correct code:
 1. **The flush applies the list in reverse.** Test 1's trace shows draft 2 before draft 1. A merged frame couldn't show this, because stream indices are assigned inline and `stream(of:)` sorts by them; the trace can.
-2. **A direct call doesn't flush first** (the probe's flush removed). Test 6's count is short by the turn's sync-stream submissions. A staged `closeOutputs` (rev 1's M2) is an equivalent mutant in K1b-5a: Rule 2 flushes it before any later direct call, a probe included. It is K2-1's mutant (§8).
-3. **`recorderSubmissionCount` incremented in the flush instead of inline.** Tickless, a recorder, no probe hook. In the sync-only turn, between `submitSyncStream` (:5428) and `enqueueTicklessTurnEnd(since: mark)` (:5432), there is no direct call on a committed result. So the count compare inside the body sees no change, and the turn's `endTurn` is missing from the trace before save or finalization.
+2. **A direct call doesn't flush first** (the probe's flush removed). Test 6's `submittedCountForTesting` is short by the turn's sync-stream submissions. This replaces rev 1's M2, a staged `closeOutputs`. That one is not killable by a deterministic test in K1b-5a: Rule 2 flushes it before the next direct call, so only an off-executor reader of the gate's lock could see the window between `failLand`'s close point and that flush. The production readers of the gate are adapter-isolated, and Rule 2's table carries the order. It becomes a live mutant in K2-1 (§8).
+3. **`recorderSubmissionCount` incremented in the flush instead of inline.** The fixture must have no direct call between the sync-stream submit and the count compare. The sync-only turn doesn't qualify: on a land without periodic sync, `applyInTurnSyncResult(.committed)` reads `transport.hasJoinsAwaitingSync` (:4986, through :2299–2302), a direct call that flushes. So M3 runs on **the settle**: a frozen tickless land with a recorder, no probe hook, and a stub settle port returning one sync-stream draft and `.committed`. Between `submitSyncStream` (:1873) and `enqueueTicklessTurnEnd(since: mark)` (:1889) there is only the switch over the settle's result, with no port call. Under the mutant the compare sees no change, and the settle's `endTurn` is missing from the submission trace.
 4. **The flush not in `withModel`'s `defer`.** Test 5: the counted effect is lost on the throw.
 5. **The depth not lowered in a `defer`.** Test 5's following `submitSyncStream` trips the sentinel.
 6. **A callback reads the model during a body.** Expected to trap, so cloud only, one case per process (K1b-4's M-4 pattern). Its positive pair is test 4's supersede clear.
-7. **The sentinel's guard kept, but its gate close or its mailbox post removed** (a non-trapping negative control). The sentinel test enters only through the guard. Test 3 fails: the gate stays open, or the land doesn't fail.
+7. **The sentinel's guard kept, but its gate close or its mailbox post removed** (a non-trapping negative control). The sentinel test enters only through the guard. `failLand` closes the gate anyway, so an assertion after the turn can't see a missing close. The stub port reads the gate **inside its port call, right after the guarded `submitSyncStream` returns**, and test 3 asserts it was closed then. A missing mailbox post fails test 3's `.landFailed`.
 
 ## 6. Measurement
 
