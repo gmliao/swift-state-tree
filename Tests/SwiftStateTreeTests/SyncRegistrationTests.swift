@@ -251,21 +251,15 @@ struct SyncRegistrationTests {
     func rows() {
         #expect(SyncRegistration.problems(RegistrationCleanRoot.self).isEmpty)
         let problems = SyncRegistration.problems(RegistrationMixedRoot.self)
-        #expect(problems.last == .unsupportedKey(path: "RegistrationMixedRoot.keyed", keyType: "RegistrationOpaqueKey"))
-        let description = SyncRegistrationError(problems: problems).description
-        #expect(description.contains("RegistrationMixedRoot.keyed"))
-        #if DEBUG
-        // The value walk runs in debug builds only (RegistrationDebugGuardTests).
         #expect(problems.count == 2)
         guard case .valueSemantics(let error) = problems.first else {
             Issue.record("expected the value-semantics row first: \(problems)")
             return
         }
         #expect(error.violations.map(\.path) == ["RegistrationMixedRoot.object"])
-        #expect(description.contains("value types"))
-        #else
-        #expect(problems.count == 1)
-        #endif
+        #expect(problems.last == .unsupportedKey(path: "RegistrationMixedRoot.keyed", keyType: "RegistrationOpaqueKey"))
+        let description = SyncRegistrationError(problems: problems).description
+        #expect(description.contains("value types") && description.contains("RegistrationMixedRoot.keyed"))
     }
 
     @Test("The cached result, failures included, is the walk's, and is kept per type")
@@ -330,11 +324,7 @@ struct SyncRegistrationTests {
                 definition: land, initialState: RegistrationMixedRoot(), recordFilePath: "/nonexistent/record.json"
             )
         }
-        #if DEBUG
         #expect(error.sync?.problems.count == 2)
-        #else
-        #expect(error.sync?.problems.count == 1)
-        #endif
     }
 
     @Test("@SnapshotConvertible storage is checked through its declared types, also with no sample; a FullSnapshotValueConvertible-only type is reflected; a hand-written conversion and a hand-witnessed Any aren't seen")

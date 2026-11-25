@@ -8,11 +8,10 @@ import Foundation
 /// isn't. `@Payload` refuses a `Decimal` its declared syntax shows. Registration refuses what
 /// the metadata shows past the syntax (a typealias in a payload) and what a hand-written
 /// `PlainData` witness lets into state: a synced field is a
-/// `SyncRegistrationError.Problem.decimalField` (debug builds only; in a release build the state's
-/// conversion throws at the first sync), a payload field is in `LandRegistrationError.decimalFields`
-/// (every build). Both walks follow only the fields that reach the wire, so a `.serverOnly` field
-/// behind such a witness isn't reported. What neither sees fails at the first send: the JSON
-/// encodings and the MessagePack encoders refuse a `Decimal`. A resolver
+/// `SyncRegistrationError.Problem.decimalField`, a payload field is in
+/// `LandRegistrationError.decimalFields`. Both walks follow only the fields that reach the wire,
+/// so a `.serverOnly` field behind such a witness isn't reported. What neither sees fails at the
+/// first send: the JSON encodings and the MessagePack encoders refuse a `Decimal`. A resolver
 /// output, which never reaches the wire, may hold one.
 enum DecimalFields {
     /// What to use instead, in every refusal.

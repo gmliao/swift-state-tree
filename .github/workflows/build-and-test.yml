@@ -252,10 +252,10 @@ jobs:
       run: swift test -c release --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests"
       timeout-minutes: 40
 
-    # Catches tests that read DEBUG-only probes (#748), and runs registration's release path,
-    # which skips the value walks (RegistrationDebugGuardTests, SyncRegistrationTests).
+    # Catches tests that read DEBUG-only probes (#748), and shows that release registration
+    # runs the value walks (RegistrationValueWalkTests, SyncRegistrationTests).
     - name: Run the keeper, transport and registration tests in release
-      run: swift test -c release --filter "LandKeeper|Transport|RegistrationDebugGuard|SyncRegistration"
+      run: swift test -c release --filter "LandKeeper|Transport|RegistrationValueWalk|SyncRegistration"
       timeout-minutes: 40
 
     # Nightly only: the same tests in release with the turn core's runtime exclusivity checks

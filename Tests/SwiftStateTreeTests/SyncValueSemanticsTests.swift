@@ -1,9 +1,9 @@
 // Tests/SwiftStateTreeTests/SyncValueSemanticsTests.swift
 //
-// #464: synced state is made of value types. The walk (`SyncValueSemantics`) finds a synced field
-// that holds a class, at any depth; registration runs it in debug builds only
-// (RegistrationDebugGuardTests). `SnapshotValue` refuses one that only appears at runtime, in every
-// build.
+// #464: synced state is made of value types. Registration refuses a synced field that holds a
+// class, at any depth (RegistrationValueWalkTests through registration); `SnapshotValue` refuses
+// one that only appears at runtime. `@Internal`
+// fields may hold a class.
 
 import Foundation
 import Testing
@@ -264,8 +264,7 @@ struct SyncValueSemanticsTests {
         #expect(fullConverted.map { "\($0)" }?.contains("ValueCheckFullObject is a class") == true, "\(String(describing: fullConverted))")
     }
 
-    #if DEBUG
-    @Test("Schema extraction and SchemaGen refuse the land, with the class in LandRegistrationError.sync (#535); debug builds only")
+    @Test("Schema extraction and SchemaGen refuse the land, with the class in LandRegistrationError.sync (#535)")
     func schemaEntryPoints() throws {
         let land = Land("value-check", using: ValueCheckClassFieldRoot.self) { Rules {} }
         var error = try #require(throws: LandRegistrationError.self) { _ = try SchemaExtractor.extract(from: land) }
@@ -275,5 +274,4 @@ struct SyncValueSemanticsTests {
         }
         #expect(error.sync?.problems.contains(where: { if case .valueSemantics = $0 { true } else { false } }) == true)
     }
-    #endif
 }

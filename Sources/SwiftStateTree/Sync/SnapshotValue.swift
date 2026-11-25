@@ -190,8 +190,8 @@ public extension SnapshotValueConvertible {
 }
 
 extension SnapshotValue {
-    /// The error for a class in synced state (#464): registration refuses one it can see in debug
-    /// builds, and conversion refuses the rest, and in a release build all of them.
+    /// The error for a class in synced state (#464): registration refuses one it can see, and
+    /// conversion refuses the rest.
     static func classRefusal(_ value: Any) -> SyncError {
         .unsupportedValue("\(type(of: value)) is a class; synced state must be value types (#464)")
     }
@@ -487,9 +487,8 @@ public extension SnapshotValue {
             }
             return .object(object)
         case .class:
-            // Registration refuses a class field in debug builds (`SyncValueSemantics`); this is
-            // the backstop for one only known at runtime, in an `Any` or `any P` field, and for
-            // every one in a release build.
+            // Registration refuses a class field (`SyncValueSemantics`); this is the backstop for
+            // one only known at runtime, in an `Any` or `any P` field.
             throw classRefusal(value)
         case .struct:
             let inner = try budget.enteringContainer()

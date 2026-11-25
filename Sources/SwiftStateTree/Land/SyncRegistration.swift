@@ -10,8 +10,7 @@ import Foundation
 /// the land.
 public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, Equatable {
     public enum Problem: Sendable, Equatable, CustomStringConvertible {
-        /// A synced field holds a class (#464). Debug builds only: a release build doesn't run
-        /// this walk (`SyncValueSemantics`).
+        /// A synced field holds a class (#464).
         case valueSemantics(SyncValueSemanticsError)
         /// A player-dependent field under a `.broadcast` field (#179).
         case policyNesting(SyncPolicyNestingError)
@@ -27,13 +26,12 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
         /// hand-written state node's field metadata, brings in. Not seen by either: an `any P`
         /// reached through a typealias, and a plain struct's own property declared `Any` or
         /// `any P`, which is seen only as its default value's type. The land ends at the first
-        /// conversion that throws. Debug builds only, like `.valueSemantics`.
+        /// conversion that throws.
         case existentialField(path: String, typeName: String)
         /// A synced `Decimal` (#597): it has no sync form, so the conversion would read its private
         /// stored fields and throw at the land's first sync. `path` is the field, from the root
         /// type (`Root.prices[*]`). A `.serverOnly` field isn't synced and may hold one; an
-        /// `@Internal` field can't, since `Decimal` isn't `PlainData`. Debug builds only, like
-        /// `.valueSemantics`: in a release build the conversion throws at the first sync.
+        /// `@Internal` field can't, since `Decimal` isn't `PlainData`.
         case decimalField(path: String)
         /// Two distinct types in the state share a name (#602), such as `A.Item` and `B.Item`.
         /// The schema and the atomic layout key each type by its name, so one would stand for
@@ -87,10 +85,6 @@ package enum SyncRegistration {
     /// Every synced-state problem of `rootType`. Walks the type and a default instance each call.
     package static func problems(_ rootType: any StateNodeProtocol.Type) -> [SyncRegistrationError.Problem] {
         var problems: [SyncRegistrationError.Problem] = []
-        // The value walks guard a hand-written PlainData witness, the one way a class, an open
-        // type or a Decimal reaches state past the compiler: debug builds only (P4-Q4 (b)).
-        #if DEBUG
-        walkProbe?.record()
         do {
             try SyncValueSemantics.validate(rootType)
         } catch let error as SyncValueSemanticsError {
@@ -98,7 +92,6 @@ package enum SyncRegistration {
         } catch {
             preconditionFailure("SyncValueSemantics.validate threw \(error)")
         }
-        #endif
         do {
             try SyncPolicyNesting.validate(rootType)
         } catch let error as SyncPolicyNestingError {
@@ -171,12 +164,6 @@ package enum SyncRegistration {
 
     private static let cache = RegistrationLock<[ObjectIdentifier: [SyncRegistrationError.Problem]]>([:])
 
-    /// Counts the debug-only value walks this task runs (tests): one per call of
-    /// `SyncValueSemantics.validate`, and one per value the `Decimal` and open-type checks look
-    /// at. Unbound (nil) everywhere else. A release build compiles the walks out, so it never
-    /// counts.
-    @TaskLocal package static var walkProbe: RegistrationWalkProbe?
-
     /// Whether the conversion turns a key of `type` into a string (`SnapshotValue.makeKeyString`).
     package static func isSupportedKeyType(_ type: Any.Type) -> Bool {
         type == String.self || type == PlayerID.self || type is any CustomStringConvertible.Type
@@ -225,35 +212,22 @@ package enum SyncRegistration {
         }
 
         mutating func visitValue(_ type: Any.Type, sample: Any?, path: String) {
-            #if DEBUG
-            SyncRegistration.walkProbe?.record()
             if type == Decimal.self {
                 problems.append(.decimalField(path: path))
-                return
-            }
-            if isOpenType(type) {
+            } else if isOpenType(type) {
                 problems.append(.existentialField(path: path, typeName: String(describing: type)))
-                return
-            }
-            #endif
-            if let node = type as? any StateNodeProtocol.Type {
+            } else if let node = type as? any StateNodeProtocol.Type {
                 visitNode(node, sample: sample ?? node.init(), path: path)
             } else if let wrapped = NestingOptionalHelper.wrappedType(of: type) {
                 let inner = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
                 visitValue(wrapped, sample: inner, path: path)
             } else if let value = SchemaHelper.dictionaryValueType(from: type) {
                 if let key = SchemaHelper.dictionaryKeyType(from: type) {
-                    #if DEBUG
                     if isOpenType(key) {
                         problems.append(.existentialField(path: "\(path)[key]", typeName: String(describing: key)))
                     } else if !isSupportedKeyType(key) {
                         problems.append(.unsupportedKey(path: path, keyType: String(describing: key)))
                     }
-                    #else
-                    if !isSupportedKeyType(key) {
-                        problems.append(.unsupportedKey(path: path, keyType: String(describing: key)))
-                    }
-                    #endif
                 }
                 let first = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
                     .flatMap { Mirror(reflecting: $0).children.dropFirst().first?.value }
@@ -291,20 +265,6 @@ package enum SyncRegistration {
                 }
             }
         }
-    }
-}
-
-/// Counts the registration's debug-only value walks (tests; `SyncRegistration.walkProbe`).
-package final class RegistrationWalkProbe: Sendable {
-    private let count = RegistrationLock(0)
-
-    package init() {}
-
-    /// How many walks and checked values were counted.
-    package var walks: Int { count.withLock { $0 } }
-
-    func record() {
-        count.withLock { $0 += 1 }
     }
 }
 

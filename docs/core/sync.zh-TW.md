@@ -125,10 +125,10 @@ Land 需要但不同步的參照（例如快取或 service handle）放在 land 
 - **巢狀的 `@PlainData` 或 `@Payload` 型別。** 允許清單只在 `@StateNodeBuilder` 與 `@SnapshotConvertible` 型別上執行。存放在 state 欄位裡的 `@PlainData` 或 `@Payload` 型別不會執行它，因此那個型別上的其他 attached macro 可以加入它的 witness 看不到的成員。由 #837 追蹤。
 
 編譯器之後還留著兩道執行期檢查。它們只看得到能找到的儲存值：state 型別欄位 metadata 裡的欄位，以及透過 reflection 找到、巢狀在其中的值。因此它們涵蓋手寫的 witness，以及巢狀 `@PlainData` 或 `@Payload` 型別的成員（註冊時從預設實例讀取，轉換時透過 reflection）。macro 直接加到 state 型別本身的成員（同名 macro 或成員上的 peer macro 加入的）不在任何欄位 metadata 裡，也不在產生的轉換程式裡，因此兩道檢查都看不到：
-- **註冊時，僅限 debug build。** `LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會拋出 `LandRegistrationError`，其 `sync` 含有 `.valueSemantics` 問題，也就是列出每個欄位與 class 的 `SyncValueSemanticsError`，例如 `GameState.inventory: Inventory is a class; synced state must be value types`。檢查會走訪每個同步欄位的型別（包含 `.serverOnly` 欄位），穿過 optional、array、set、dictionary 的 key 與 value，以及巢狀 state node，並透過預設實例檢查一般 struct、tuple、enum payload 與 existential property（`any P`）的內容。release build 會略過這次走訪：在編譯器檢查過的程式碼中它找不到任何東西，所以正式環境的註冊不必付出這個成本。此時手寫 witness 後面的 class 能完成註冊，由下方的轉換在 land 第一次同步時拒絕。SwiftPM 會以根 package 的組態建置相依套件，Xcode 的 Debug 組態也會為 package 定義 `DEBUG`，因此 `swift build` 與 Xcode Debug build 會跑這次走訪，`swift build -c release` 與 archive 則不會。
+- **註冊時。** `LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會拋出 `LandRegistrationError`，其 `sync` 含有 `.valueSemantics` 問題，也就是列出每個欄位與 class 的 `SyncValueSemanticsError`，例如 `GameState.inventory: Inventory is a class; synced state must be value types`。檢查會走訪每個同步欄位的型別（包含 `.serverOnly` 欄位），穿過 optional、array、set、dictionary 的 key 與 value，以及巢狀 state node，並透過預設實例檢查一般 struct、tuple、enum payload 與 existential property（`any P`）的內容。
 - **轉換狀態時。** 檢查看不到的 class（之後才存入 existential 欄位的、位於預設實例沒有採用的 enum case 裡的、或加進註冊時還是空的集合裡的）會讓轉換拋出 `SyncError.unsupportedValue`。Dictionary 的 key 是例外：key 是透過它的 description 轉換的，因此放在 value type key 內部的 class（例如含有 class 屬性的 `CustomStringConvertible` struct）只有在註冊時、且預設實例的第一個 key 含有 class 時才會被拒絕（檢查只取 dictionary 的第一個項目）。每次同步都會轉換，因此該 Land 的同步會失敗（`.serverOnly` 欄位只在錄製或計算狀態雜湊時才會轉換，因此失敗的是這些步驟）；若 class 位於事件 payload 中，sync-output verifier 無法將該事件正規化，會把 events 範圍回報為無法驗證。
 
-DeterministicMath 的值型別（`IVec2`、`Position2` 等）都是 `PlainData`，所以任何 state 欄位都可以存放它們。`SnapshotValueConvertible` 型別由它自己的 `toSnapshotValue()` 轉換，但它的型別仍必須是 `PlainData`，遵循此 protocol 的 class 仍會被拒絕：debug build 在註冊時，任何 build 都會在轉換時。
+DeterministicMath 的值型別（`IVec2`、`Position2` 等）都是 `PlainData`，所以任何 state 欄位都可以存放它們。`SnapshotValueConvertible` 型別由它自己的 `toSnapshotValue()` 轉換，但它的型別仍必須是 `PlainData`，註冊時也仍會拒絕遵循此 protocol 的 class。
 
 **破壞性變更（2026-11-10）。** #464 之前，同步狀態中的 class 會依其 stored property 編碼，只有參照回自己的物件圖會被拒絕。現在狀態含有 class 的 Land 會註冊失敗。
 
@@ -140,11 +140,11 @@ DeterministicMath 的值型別（`IVec2`、`Position2` 等）都是 `PlainData`�
 
 | 問題 | 意義 |
 |---|---|
-| `.valueSemantics(SyncValueSemanticsError)` | 同步欄位含有 class，藏在手寫的 `PlainData` witness 後面（見上文）；僅限 debug build |
+| `.valueSemantics(SyncValueSemanticsError)` | 同步欄位含有 class，藏在手寫的 `PlainData` witness 後面（見上文） |
 | `.policyNesting(SyncPolicyNestingError)` | broadcast 欄位下有依玩家而變的欄位（見上文） |
 | `.unsupportedKey(path:keyType:)` | 同步無法轉成字串的 dictionary key 型別：不是 `String`、`PlayerID` 或 `CustomStringConvertible` |
-| `.existentialField(path:typeName:)` | 能容納任何型別值的同步型別：`Any`、`AnyObject`、`AnyHashable` 或 `AnyCodable`，出現在集合的元素、key 或 value，或 optional 包住的型別，藏在手寫的 `PlainData` witness 後面；僅限 debug build |
-| `.decimalField(path:)` | 藏在手寫的 `PlainData` witness 後面的同步 `Decimal`，不論單獨出現，或位於 optional、集合或巢狀型別中（#597）；僅限 debug build；見下文 |
+| `.existentialField(path:typeName:)` | 能容納任何型別值的同步型別：`Any`、`AnyObject`、`AnyHashable` 或 `AnyCodable`，出現在集合的元素、key 或 value，或 optional 包住的型別，藏在手寫的 `PlainData` witness 後面 |
+| `.decimalField(path:)` | 藏在手寫的 `PlainData` witness 後面的同步 `Decimal`，不論單獨出現，或位於 optional、集合或巢狀型別中（#597）；見下文 |
 | `.typeNameCollision(SchemaTypeNameCollision)` | state 中兩個不同的型別同名，例如 `A.Item` 與 `B.Item`（#602）；只在上面各列都通過時才檢查；見下文 |
 
 class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會送出的欄位；`@SnapshotConvertible` 型別透過其宣告的 stored property 檢查（由 macro 列出，因此 property 即使位於空集合中也會檢查），其他一般 struct 則同樣透過預設實例檢查其內容。手寫 `toSnapshotValue()` 的型別自行轉換其儲存內容，不會被檢查；只遵循 `FullSnapshotValueConvertible` 不算，因為同步會忽略它。結果依 state 型別快取，因此 **state 型別的預設 `init()` 必須是確定性的**：每次呼叫都產生相同的值，不讀時鐘、亂數來源或全域狀態。
@@ -154,7 +154,7 @@ class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會
 **Decimal。** `Decimal` 沒有 wire 形式（#597）。它的 `Codable` 形式是平台內部的欄位，同步無法轉換它。JavaScript client 會把 JSON 數字讀成 double 而失去位數。JSON 編碼會把 Decimal NaN 寫成裸 `NaN`，那不是合法的 JSON。金額請存成最小單位（分）的整數，或 `String`。`Decimal` 在三個地方被拒絕，依序如下：
 
 - **編譯期。** 在 state 中是每個欄位：`Decimal` 不是 `PlainData`，所以不論怎麼寫（包括 typealias），編譯器都會拒絕，錯誤訊息會指出改存什麼。`@Payload` 在宣告的型別寫出 `Decimal` 或 `Foundation.Decimal` 時檢查每個欄位，不論位於哪一層，例如 `[String: Decimal]`。
-- **註冊時，** typealias 讓語法看不到、但欄位清單看得到時，以及藏在手寫的 `PlainData` witness 後面時。同步欄位回報為 `.decimalField`，僅限 debug build；release build 中它的轉換會在 land 第一次同步時失敗。event、action、其 response 或 server input 的欄位在 `LandRegistrationError.decimalFields` 中回報，每個欄位一條路徑，例如 `server event PriceEvent.amount`。
+- **註冊時，** typealias 讓語法看不到、但欄位清單看得到時，以及藏在手寫的 `PlainData` witness 後面時。同步欄位回報為 `.decimalField`。event、action、其 response 或 server input 的欄位在 `LandRegistrationError.decimalFields` 中回報，每個欄位一條路徑，例如 `server event PriceEvent.amount`。
 - **第一次送出時，** 前兩者都看不到的：未註冊就送出的 event、執行時放進 `Decimal` 的 `AnyCodable`，以及一般 `Codable` 型別（不列出欄位）裡的 `Decimal`。JSON 編碼與 MessagePack encoder 都拒絕它，land 結束（`.eventEncode` 或 `.responseEncode`）。限制：在 JSON 編碼中，這個拒絕是編碼前另外走的一遍，所以手寫的 `encode(to:)` 若攔下這個錯誤、改寫成別的形式，就會通過檢查，之後實際編碼寫出的是那個替代形式。
 
 任何 state 欄位都不能放 `Decimal`，`.serverOnly` 與 `@Internal` 也一樣。resolver output 可以，因為它不會上 wire；replay 時以錄製檔自己的 codec 讀回（[Replay 中的 resolver output](reevaluation.zh-TW.md#replay-中的-resolver-output)）。

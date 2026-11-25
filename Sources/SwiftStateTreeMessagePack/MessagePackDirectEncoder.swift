@@ -3,9 +3,9 @@ import SwiftStateTree
 
 enum MessagePackDirectEncodingError: Error, CustomStringConvertible {
     case unsupportedAnyCodable(String)
-    /// A `Decimal` has no wire form (#597); registration refuses one in a payload field, and in a
-    /// synced field in debug builds, so this is a value registration couldn't see (an
-    /// `AnyCodable`, or a field a hand-written decoder hides).
+    /// A `Decimal` has no wire form (#597); registration refuses one in a payload or synced
+    /// field, so this is a value registration couldn't see (an `AnyCodable`, or a field a
+    /// hand-written decoder hides).
     case decimal
 
     var description: String {

@@ -3,8 +3,8 @@
 // #597: `Decimal` has no wire form. A state field's value is PlainData, so a synced,
 // server-only or internal `Decimal` doesn't compile under any spelling, a typealias included
 // (scripts/must-not-compile/state-decimal-alias.swift, state-serveronly-decimal.swift). The
-// registration walk stays, in debug builds, as the guard for a hand-written PlainData witness,
-// which only a project outside this repository's lint can write (RegistrationDebugGuardTests). A payload can't hold one either
+// registration walk stays as the guard for a hand-written PlainData witness, which only a project
+// outside this repository's lint can write (RegistrationValueWalkTests). A payload can't hold one either
 // (scripts/must-not-compile/decimal-alias-*.swift).
 
 import Foundation
