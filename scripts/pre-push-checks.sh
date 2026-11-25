@@ -50,6 +50,11 @@
 # Usage: scripts/pre-push-checks.sh [base]   (default origin/main; run `git fetch` first)
 # Tests: scripts/test-pre-push-checks.sh
 set -uo pipefail
+# git exports GIT_DIR to a hook run from a linked worktree. Drop git's repository variables, so
+# neither these commands nor a test's own `git init` or `git commit` in a temporary directory
+# reach that repository (a deep-research test once set core.bare on the clone that way).
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
 # Python's own text I/O in UTF-8 whatever the host's locale (belt and braces: the lint below keeps
 # deep-research/ and scripts/ explicit).
 export PYTHONUTF8=1
