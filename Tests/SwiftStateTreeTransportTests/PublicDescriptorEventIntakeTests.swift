@@ -98,11 +98,11 @@ private func makeKeeper(recording: Bool) async throws -> LandKeeper<PublicDescri
     return keeper
 }
 
-/// The sequences of the client events the keeper's recorder holds.
-private func recordedEventSequences(_ keeper: LandKeeper<PublicDescriptorState>) async throws -> [Int64] {
+/// The client events the keeper's recorder holds.
+private func recordedEvents(_ keeper: LandKeeper<PublicDescriptorState>) async throws -> [ReevaluationRecordedClientEvent] {
     await keeper.waitForRecorderSubmissionsForTesting()
     let recorder = try #require(await keeper.getReevaluationRecorder())
-    return await recorder.getAllFrames().flatMap { $0.clientEvents.map(\.sequence) }
+    return await recorder.getAllFrames().flatMap(\.clientEvents)
 }
 
 @Suite("A client event registered with the public descriptor init (#700 K1b-1, F11)", .timeLimit(.minutes(1)))
@@ -118,7 +118,12 @@ struct PublicDescriptorEventIntakeTests {
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().applied.isEmpty, "the handler didn't run")
         if recording {
-            #expect(try await recordedEventSequences(keeper).contains(queued), "recorded")
+            // Recorded with the bytes and encoding of the payload as it arrived.
+            let entry = try #require(try await recordedEvents(keeper).first { $0.sequence == queued }, "recorded")
+            let expected = try RecordedPayloadBytes(of: malformed.source)
+            #expect(entry.payload == expected.bytes)
+            #expect(entry.payloadEncoding == expected.encoding)
+            #expect(expected.encoding == (form == .json ? .json : .messagepack), "control: the form's own encoding")
         }
 
         // Control: a payload that decodes runs the handler with its value.
@@ -165,6 +170,8 @@ struct PublicDescriptorEventIntakeTests {
         let counter = PayloadNesting.WalkCounter()
         try await PayloadNesting.$droppedForTesting.withValue(counter) {
             try await keeper.handleClientEvent(event, playerID: player, clientID: client, sessionID: session)
+            // Counted at apply, not at intake.
+            #expect(counter.count == 0, "not counted at intake")
             await keeper.stepTickOnce()
         }
         #expect(counter.count == 1, "counted once")

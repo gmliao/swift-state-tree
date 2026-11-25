@@ -39,8 +39,8 @@ struct ActionHandlerIndexTests {
         #expect(HandlerIndexCodableControl.self is any Decodable.Type)
     }
 
-    @Test("An index outside the land's action handlers is skipped at apply, and nothing is recorded")
-    func outOfRangeIndexIsSkipped() async throws {
+    /// The land, and a recording keeper on it.
+    private func makeKeeper() async -> (LandDefinition<HandlerIndexState>, LandKeeper<HandlerIndexState>) {
         let definition = Land("handler-index", using: HandlerIndexState.self) {
             Lifetime { Tick(every: .seconds(3600)) { _, _ in } }
             Rules {
@@ -58,16 +58,54 @@ struct ActionHandlerIndexTests {
             landID: "handler-index:local"
         )
         await keeper.awaitInitialization()
+        return (definition, keeper)
+    }
+
+    @Test("An index outside the land's action handlers is skipped at apply, and nothing is recorded",
+          arguments: [HandlerIndexOutOfRange.pastTheEnd, .negative])
+    func outOfRangeIndexIsSkipped(_ position: HandlerIndexOutOfRange) async throws {
+        let (definition, keeper) = await makeKeeper()
         let item = PendingActionItemForTesting.make(
             sequence: 1,
             action: HandlerIndexCodableControl(n: 7),
-            handlerIndex: ActionHandlerIndex(definition.actionHandlers.count)
+            handlerIndex: ActionHandlerIndex(position.position(handlers: definition.actionHandlers.count))
         )
         let applied = try await keeper.applyPendingItemForTesting(.action(item))
         #expect(applied.isSkipped)
         #expect(applied.recordedActions.isEmpty)
         #expect(await keeper.currentState().applied.isEmpty)
         await keeper.forceShutdown()
+    }
+
+    @Test("A hand-built item with no index runs the handler its value's type names, and is recorded")
+    func itemWithoutAnIndexRunsTheValueTypesHandler() async throws {
+        let (_, keeper) = await makeKeeper()
+        let item = PendingActionItemForTesting.make(sequence: 1, action: HandlerIndexCodableControl(n: 7), handlerIndex: nil)
+        let applied = try await keeper.applyPendingItemForTesting(.action(item))
+        #expect(!applied.isSkipped)
+        #expect(applied.recordedActions.map(\.typeIdentifier) == [String(describing: HandlerIndexCodableControl.self)])
+        #expect(await keeper.currentState().applied == [7])
+        await keeper.forceShutdown()
+    }
+}
+
+/// An index outside the handlers, on either side.
+enum HandlerIndexOutOfRange: Sendable, CustomTestStringConvertible {
+    case pastTheEnd
+    case negative
+
+    func position(handlers count: Int) -> Int {
+        switch self {
+        case .pastTheEnd: count
+        case .negative: -1
+        }
+    }
+
+    var testDescription: String {
+        switch self {
+        case .pastTheEnd: "past the end"
+        case .negative: "negative"
+        }
     }
 }
 

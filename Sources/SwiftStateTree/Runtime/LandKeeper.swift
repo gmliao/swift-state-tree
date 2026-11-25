@@ -3946,21 +3946,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             applied.appliedOrder.append(eventItem.sequence)
 
-            // Throws only from `validate`, before anything is written (#586). An event runs the
-            // value decoded at intake (#521) or when replay built it (#700 K1a). A payload that
-            // didn't decode is dropped, as its handler dropped it (#362 counts a too-deep one).
+            // An event runs the value decoded at intake (#521) or when replay built it (#700 K1a).
+            // A payload that didn't decode is dropped, as its handler dropped it (#362 counts a
+            // too-deep one), without entering the state wrapper: only a handler call does
+            // (#700 K1b-1, S6).
+            let decoded: any ClientEventPayload
+            switch eventItem.payload {
+            case .decoded(let value):
+                decoded = value
+            case .failed(let failure):
+                if case .tooDeep(let limit) = failure {
+                    PayloadNesting.noteDroppedClientEvent(
+                        type: String(describing: handler.handledType), PayloadNesting.TooDeep(limit: limit)
+                    )
+                }
+                return .other
+            }
+            // Throws only from `validate`, before anything is written (#586).
             var ranHandler = true
             try withMutableStateSync { state in
-                switch eventItem.payload {
-                case .decoded(let decoded):
-                    ranHandler = try handler.invokeDecoded(&state, event: decoded, ctx: ctx)
-                case .failed(let failure):
-                    if case .tooDeep(let limit) = failure {
-                        PayloadNesting.noteDroppedClientEvent(
-                            type: String(describing: handler.handledType), PayloadNesting.TooDeep(limit: limit)
-                        )
-                    }
-                }
+                ranHandler = try handler.invokeDecoded(&state, event: decoded, ctx: ctx)
             }
             if !ranHandler {
                 // A hand-built handler whose type differs from its descriptor's: skipped, as when
@@ -3995,10 +4000,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             applied.recordedServerInputs.append(recorded)
             applied.appliedOrder.append(recorded.sequence)
-            // Throws only from the payload's decode (a recorded one that failed when replay built
-            // the item) or `validate`, before anything is written (#586).
+            // A recorded payload that failed to decode when replay built the item throws here,
+            // after its record append and before the state wrapper: only a handler call enters
+            // it (#700 K1b-1, S5).
+            let input = try inputItem.decoded.get()
+            // Throws only from `validate`, before anything is written (#586).
             try withMutableStateSync { state in
-                let input = try inputItem.decoded.get()
                 try handler.invoke(&state, input: input, ctx: ctx)
             }
 
@@ -4050,8 +4057,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// is noted for the initialize check (#593).
     private func applyLifecycleItem(_ lifecycleItem: PendingLifecycleItem, executingTickId: Int64, into applied: inout AppliedInputs) {
         if skipsAfterDestroy(.lifecycle(lifecycleItem)) { return }
-        // Recorded before the handler runs (see the action case).
-        let resolverOutputsDict = lifecycleItem.heldResolverOutputs.recordedEntries
+        // Recorded before the handler runs (see the action case). Its outputs are projected only
+        // when something reads records, as the action case's are.
+        let resolverOutputsDict = recordsInputs ? lifecycleItem.heldResolverOutputs.recordedEntries : [:]
         let recordedLifecycleEvent = ReevaluationRecordedLifecycleEvent(
             kind: lifecycleItem.kind.rawValue,
             sequence: lifecycleItem.sequence,

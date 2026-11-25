@@ -15,7 +15,7 @@ public struct AnyEventDescriptor: Sendable {
 
     /// Decodes a client event's payload into `type`, at intake (#521). Set for a client event
     /// whose type is a `ClientEventPayload`; nil otherwise, and for a descriptor built with the
-    /// public init, whose events are decoded by their handler when applied, as before.
+    /// public init, whose events the keeper decodes at intake with `type` instead (#700 K1b-1).
     package let decodeClientEvent: (@Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload)?
 
     /// Decodes a recorded server event's payload into `type`, for the replay re-emit (#521 PR 1b).
