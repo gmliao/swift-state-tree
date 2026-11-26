@@ -90,6 +90,7 @@ enum KeeperCensus {
             "actor.lateReentriesApplied": .outside(.reentrySentinel),
             "actor.lateStepOutputAssertsForTesting": .testHook,
             "actor.lateStepOutputs": .outside(.stepScope),
+            "actor.destroyHandlerOutputsDropped": .outside(.stepScope),
             "actor.reentriesAppliedInCall": .outside(.reentrySentinel),
             "actor.model": .container,
             "actor.nextDrainStartedWaiterForTesting": .replaced(by: "K2"),

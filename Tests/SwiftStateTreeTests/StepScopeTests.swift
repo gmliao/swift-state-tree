@@ -143,17 +143,38 @@ struct StepScopeTests {
         #expect(await keeper.syncRequestTicksForTesting() == syncsInCall)
     }
 
-    @Test("AfterFinalize's context passes an emit after an internal await, and drops one after the keeper's close")
-    func afterFinalizeContextIsScoped() async throws {
+    /// The destroy handlers have no outputs (#893): the land is ending, and no tick, sync or
+    /// input turn takes an event or a sync request after the drain began. Each handler's emits
+    /// and sync requests are dropped and counted, AfterFinalize's after its internal await too;
+    /// `ctx.random` still draws. A context kept past its call is a late output, as in any scope.
+    @Test("The destroy handlers' outputs are dropped and counted; their random service still draws")
+    func destroyHandlersHaveNoOutputs() async throws {
         let kept = KeptContexts()
         let transport = SentEvents()
+        let draws = Mutex<[Int]>([])
         let definition = Land("step-scope-finalize", using: StepScopeState.self) {
             ServerEvents { Register(StepScopeNotice.self) }
             Lifetime {
+                DestroyWhenEmpty(after: .seconds(3600)) { _, ctx in
+                    ctx.emitEvent(StepScopeNotice(n: 1), to: .all)
+                    ctx.requestSyncNow()
+                    let n = ctx.random.nextInt(in: 0...1_000_000)
+                    draws.withLock { $0.append(n) }
+                }
+                OnFinalize { _, ctx in
+                    ctx.emitEvent(StepScopeNotice(n: 2), to: .all)
+                    ctx.requestSyncBroadcastOnly()
+                    let n = ctx.random.nextInt(in: 0...1_000_000)
+                    draws.withLock { $0.append(n) }
+                }
                 AfterFinalize { _, ctx in
                     kept.keep(ctx)
+                    ctx.emitEvent(StepScopeNotice(n: 3), to: .all)
                     await Task.yield()
-                    ctx.emitEvent(StepScopeNotice(n: 1), to: .all)
+                    ctx.emitEvent(StepScopeNotice(n: 4), to: .all)
+                    ctx.requestSyncNow()
+                    let n = ctx.random.nextInt(in: 0...1_000_000)
+                    draws.withLock { $0.append(n) }
                 }
             }
         }
@@ -161,15 +182,23 @@ struct StepScopeTests {
         await keeper.awaitInitialization()
         await keeper.setLateStepOutputAssertsForTesting(false)
         let eventsBefore = await keeper.emittedEventTicksForTesting()
+        let syncsBefore = await keeper.syncRequestTicksForTesting()
         await keeper.forceShutdown()
-        #expect(keeper.lateStepOutputs.count == 0, "the emit after the handler's await came before the keeper's close")
-        let eventsAfter = await keeper.emittedEventTicksForTesting()
-        #expect(eventsAfter.count + transport.values.count == eventsBefore.count + 1, "the emit landed: queued or sent")
 
+        #expect(keeper.destroyHandlerOutputsDropped.count == 7, "2 + 2 + 3 outputs")
+        #expect(keeper.lateStepOutputs.count == 0)
+        #expect(await keeper.emittedEventTicksForTesting() == eventsBefore)
+        #expect(await keeper.syncRequestTicksForTesting() == syncsBefore)
+        #expect(transport.values.isEmpty)
+        let drawn = draws.withLock { $0 }
+        #expect(drawn.count == 3, "each handler drew from its context's random service")
+        #expect(Set(drawn).count == 3, "the three handlers continue one sequence: \(drawn)")
+
+        // A context kept past its call: a late output, as in any scope.
         let ctx = try #require(kept.last)
         ctx.emitEvent(StepScopeNotice(n: -1), to: .all)
-        #expect(keeper.lateStepOutputs.count == 1, "AfterFinalize's scope closed when the keeper's defer ran")
-        #expect(await keeper.emittedEventTicksForTesting() == eventsAfter)
-        #expect(!transport.values.contains(-1))
+        #expect(keeper.lateStepOutputs.count == 1)
+        #expect(keeper.destroyHandlerOutputsDropped.count == 7)
+        #expect(await keeper.emittedEventTicksForTesting() == eventsBefore)
     }
 }
