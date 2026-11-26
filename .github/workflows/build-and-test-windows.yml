@@ -69,6 +69,26 @@ jobs:
     - name: Show toolchain
       run: swift --version
 
+    # Build cache (#878, option 1): the root package's .build only, which holds its dependency
+    # checkouts and the compiled dependencies (swift-syntax and the rest); the repository's own
+    # modules rebuild because the checkout gives their sources new mtimes. Examples/Demo/.build is NOT
+    # cached: it depends on the library by path, and an incremental build of such a package can run
+    # objects compiled against two struct layouts (Notes/solutions/2026-11-19-a-stale-example-build-
+    # crashes-after-a-library-layout-change.md; CI builds each package fresh so far). Keyed by exact
+    # key only (no restore-keys): the runner image (its MSVC and SDK), the toolchain, and the two named
+    # package files; never a '**' glob, which the post step would evaluate again over .build.
+    # actions/cache saves in its post step, only when the job succeeded and the key was not an exact hit.
+    - name: Build cache key
+      id: buildcache
+      shell: bash
+      run: echo "image=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+    - name: Build cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .build
+        key: swiftbuild-${{ runner.os }}-${{ steps.buildcache.outputs.image }}-6.4.3-${{ hashFiles('Package.swift', 'Package.resolved') }}
+
     # Same single debug build that every test run reuses, as on Linux.
     # Not built on Windows: SwiftStateTreeNIOProvisioning (left out of the manifest there).
     - name: Build
