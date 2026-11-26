@@ -3913,7 +3913,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// What a call out of the keeper returned: its answer, or, when the callee re-entered the
     /// keeper and was refused, only the failure. A refused call's answer is never readable.
-    fileprivate enum CallOutcome<Answer> {
+    enum CallOutcome<Answer> {
         case answered(Answer)
         case refused(LandFailure)
     }
@@ -4125,82 +4125,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // join-sync turn that runs after the failure returns here.
         guard failure == nil else { return .skipped }
         return withTurn { m, side, outputs in
-            // A failure a transport noted outside a turn ends the land first (#704), inside the
-            // turn, so a callback from its gate close is refused: no phase runs. The mark comes
-            // first, so a tickless land's turn end sees the failure's own submissions.
-            let markBeforeNote = m.recorderSubmissionCount
-            if m.applyPendingTransportFailure(behavior, &side, &outputs), let failure {
-                m.enqueueTicklessTurnEnd(behavior, side, since: markBeforeNote)
-                return .landFailed(failure)
-            }
-            side.probe?("turn-begin")
-            m.inTurnSyncTurnKind = .syncOnly
-            defer { m.inTurnSyncTurnKind = .tick }
-            let mark = m.recorderSubmissionCount
-            // The sync phase, and the recording it gets, each through `callOut`: a refused
-            // re-entry in either ends the land in that call, and the phase's answer is never read.
-            var reentry: LandFailure?
-            var result = InTurnSyncResult.skipped
-            switch m.callOut(behavior, &side, &outputs, { m, side in m.inTurnSyncRecording(behavior, side) }) {
-            case .refused(let refused):
-                reentry = refused
-            case .answered(let recording):
-                switch m.callOut(behavior, &side, &outputs, { m, side in
-                    transport.runSyncPhaseInTurn(state: m.state, events: [], includeSync: true, recording: recording)
-                }) {
-                case .refused(let refused):
-                    reentry = refused
-                case .answered(let output):
-                    // The transport's draft factories run here, in the body and outside any call
-                    // out: a factory that re-entered ends the land before the commit is applied.
-                    // The batch is recorded whole first, as a failing phase's is.
-                    let beforeRecording = sentinel.reentryViolations
-                    m.recordSyncStream(behavior, side, output.syncStream)
-                    guard sentinel.reentryViolations == beforeRecording else {
-                        reentry = m.applyReentryFailure(behavior, &side, &outputs)
-                        break
-                    }
-                    result = output.result
-                    m.applyInTurnSyncResult(
-                        behavior,
-                        &side,
-                        &outputs,
-                        output.result,
-                        transport: transport,
-                        joinSyncOnly: joinSyncOnly,
-                        keepsEvents: output.keepsEvents,
-                        joinsAwaitingSync: { m, side, outputs in
-                            // `transportHasJoinsAwaitingSync`, one check per witness: whether the
-                            // transport runs this keeper's phase, then whether joins wait.
-                            switch m.callOut(behavior, &side, &outputs, { _, side in side.syncsInTurn(behavior) }) {
-                            case .refused(let refused):
-                                reentry = refused
-                                return nil
-                            case .answered(let runsPhase):
-                                guard runsPhase, behavior.config.mode == .live, let attached = side.attachedTransport else { return false }
-                                switch m.callOut(behavior, &side, &outputs, { _, _ in attached.hasJoinsAwaitingSync }) {
-                                case .answered(let awaiting):
-                                    return awaiting
-                                case .refused(let refused):
-                                    reentry = refused
-                                    return nil
-                                }
-                            }
-                        }
-                    )
-                }
-            }
-            // A refused call leaves the turn as a failed phase does: no sync is due any more.
-            // Nothing of a refused phase is recorded or applied. A factory's re-entry keeps the
-            // whole batch recorded, the drafts after the trip included, as a failing phase's
-            // drafts are; it applies nothing.
-            if reentry != nil { m.inTurnSyncDue = false }
-            // The common tail, on every path. A tickless land's sync-only turn is its own turn
-            // record (#327); a tick land's sync outputs stay with the current tick's.
-            m.enqueueTicklessTurnEnd(behavior, side, since: mark)
-            side.probe?("turn-end")
-            if let reentry { return .landFailed(failure ?? reentry) }
-            return result
+            KeeperModel<State>.syncOnlyTurnBody(&m, behavior, &side, &outputs, transport: transport, joinSyncOnly: joinSyncOnly)
         }
     }
 
@@ -4628,19 +4553,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Execute optional read-only callback if provided
         // This callback is read-only and should NOT modify state
         if let handler = definition.lifetimeHandlers.syncHandler {
-            let ctx = model.makeContext(behavior, turnSide,
-                playerID: behavior.config.systemPlayerID,
-                clientID: behavior.config.systemClientID,
-                sessionID: behavior.config.systemSessionID,
-                servicesOverride: LandServices(),
-                tickId: model.lastCommittedTickId
-            )
-            // The sync handler isn't repeated from the record, so it draws from a copy of the
-            // land's generator, never written back.
-            let (scoped, scope) = openStepScope(ctx, random: detachedRandom(), droppingInto: readOnlyHandlerOutputsDropped)
-            defer { scope.close() }
-            // Pass state as value (read-only) to emphasize that it should not be modified
-            handler(model.state, scoped)
+            model.runSyncHandler(behavior, turnSide, handler)
         }
 
         // In-turn sync: a sync-only turn at the sync loop's own interval, unless a tick is due
@@ -4658,13 +4571,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // The transport hears of it when that tick turn starts (`takePendingFold`).
                 // Keyed on the pending fold, not on `inTurnSyncDue`: a freeze drops the
                 // pending fold but keeps the due sync, and the fold after the resume counts.
-                if pendingFold == nil {
-                    model.foldedSyncs += 1
-                    let overdue = deadline < now
-                    if overdue { model.overdueFoldedSyncs += 1 }
-                    pendingFold = PendingFold(deadline: deadline, overdueAtFold: overdue)
+                if let fold = model.foldSyncIntoTick(now: now, deadline: deadline, foldPending: pendingFold != nil) {
+                    pendingFold = fold
                 }
-                model.inTurnSyncDue = true
                 return
             }
             runSyncOnlyTurn(transport: transport)
@@ -5007,7 +4916,7 @@ extension KeeperModel {
     fileprivate typealias AppliedItem = LandKeeper<State>.AppliedItem
     fileprivate typealias InputApplication = LandKeeper<State>.InputApplication
     typealias HandlerRandom = LandKeeper<State>.HandlerRandom
-    fileprivate typealias CallOutcome<Answer> = LandKeeper<State>.CallOutcome<Answer>
+    typealias CallOutcome<Answer> = LandKeeper<State>.CallOutcome<Answer>
     fileprivate typealias JoinCall = LandKeeper<State>.JoinCall
     fileprivate typealias AppliedInputs = LandKeeper<State>.AppliedInputs
     typealias FailurePath = LandKeeper<State>.FailurePath
@@ -6743,7 +6652,7 @@ extension KeeperModel {
     /// actions re-entered the keeper and were refused (`noteReentry`), the land ends there and
     /// the call isn't made. If the callee re-entered, the land ends after the call, before the
     /// body could read the answer. Either way the outcome is `.refused`.
-    fileprivate mutating func callOut<Answer>(
+    mutating func callOut<Answer>(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -6776,13 +6685,13 @@ extension KeeperModel {
 
     /// What the sync stream records of the current turn's sync phase, nil when it isn't
     /// recorded: the turn's kind (`tick` or `syncOnly`) and where the phase reads the state.
-    fileprivate func inTurnSyncRecording(_ behavior: KeeperBehavior<State>, _ side: KeeperTurnSide) -> InTurnSyncRecording? {
+    func inTurnSyncRecording(_ behavior: KeeperBehavior<State>, _ side: KeeperTurnSide) -> InTurnSyncRecording? {
         guard side.recordsSyncStream(behavior) else { return nil } // lint-allow: bare-port: every caller calls this inside callOut
         return InTurnSyncRecording(turnKind: inTurnSyncTurnKind, position: syncReadPosition(behavior, side))
     }
 
     /// `submitSyncStream`'s work, for the keeper's own turns.
-    fileprivate mutating func recordSyncStream(_ behavior: KeeperBehavior<State>, _ side: KeeperTurnSide, _ drafts: [SyncStreamDraft], outsideTurn: Bool = false) {
+    mutating func recordSyncStream(_ behavior: KeeperBehavior<State>, _ side: KeeperTurnSide, _ drafts: [SyncStreamDraft], outsideTurn: Bool = false) {
         guard behavior.reevaluationRecorder != nil, side.failure == nil else { return }
         for draft in drafts {
             switch draft.entry {
