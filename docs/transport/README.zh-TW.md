@@ -55,8 +55,11 @@ Client ↔ WebSocketTransport ↔ TransportAdapter ↔ LandKeeper
 - **被停止的 land**（`LandServerProtocol.stopLand`，即 admin DELETE，#102）會在每個 session 的 leave 執行完後，以 **4014**（land stopped）關閉它們，附 500 ms 的關閉寬限。與 1001 不同，它表示是這個 land 不在了，而不是 server：client 不會自行重試同一個 join。之後以該 land ID join 會在被停止的 instance 銷毀後得到新的 instance（有 auto-create 時）。仍在 join 該 land 的 session 會被拒絕（`JOIN_DENIED`，可重試）。4013 保留不用。
 - **被取代的 session**（同一玩家的較新 join，#92 與 #531）以 **4017**（superseded）關閉，reason 為 "logged in elsewhere"，close grace 500 ms；以前是普通的 1000。只有該連線被關閉。client 不應在此 code 上重連（#861）。
   - 已經為該 session 排隊的 frame（例如最後一次狀態更新）會在關閉之前寫到連線，最多等 `FINAL_FRAME_CLOSE_TIMEOUT_MS`（#909）。較新的 join 接手之後才產生的 frame 不會送給它。自訂的 `Transport` 必須實作 `closeSessionAfterQueuedFrames(_:generation:with:)` 才能保持這個順序；沒有實作時，4017 會立即送出，可能丟掉那些 frame。
-  - 已經在一個錯誤 frame 之後等待關閉的 session（例如在套用先前 frame 時收到 `INBOUND_OVERFLOW`）不會收到 4017：它會收到那個錯誤，接著是那次關閉，也就是普通的 1000。
+  - 已經在一個錯誤 frame 之後等待關閉的 session（例如在套用先前 frame 時收到 `INBOUND_OVERFLOW`）不會收到 4017：它會收到那個錯誤，接著是那次關閉，也就是普通的 1000。這就是下面的「每條連線一次關閉」規則。
 - **失敗的 land**（#535：目前是 in-turn sync plan 拋出錯誤）會以 **4016**（land failed）關閉它持有的每個 session，包括已 join 與仍在 join 的，附 500 ms 的關閉寬限，且不執行 OnLeave。client 不會自行重試；之後以該 land ID join 會得到新的 instance（有 auto-create 時）。見[失敗處理](../core/failure-handling.zh-TW.md)。
+- **每條連線一次關閉**（#911）。依 RFC 6455，一條連線只會收到一個 Close frame。伺服器對同一條連線決定了兩次關閉時，client 收到的是第一個被決定的那一次。
+  - *有序*關閉會排在已為該 session 排隊的 frame 之後：最後一個錯誤 frame 的關閉，或 supersede 的 4017。在它之後才決定的關閉，不會改變它的 code 或位置。
+  - *立即*關閉不等待，會搶在所有排隊內容之前送出，因此可能早於一個先決定的有序關閉。這些是失敗 land 的 4016、sync-lag 的關閉，以及 outbound frame 被丟棄後的關閉。它們各有不等待的理由：那些 frame 反正會被丟掉，或 client 已經落後太多、用不到它們。
 
 PlayerSession 欄位優先序：
 
