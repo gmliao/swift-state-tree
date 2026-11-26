@@ -1,6 +1,6 @@
 # #911: one close per session, and an ended session's final frame doesn't overtake it
 
-**Status:** rev 1, for Review (2026-11-26). Q1 and Q2 have the maintainer's default (the recommended answers); Review checks them. It builds on #913 (#909), which adds `closeSessionBehindQueuedFrames` and the close-only writer element. The code waits for #913 to merge.
+**Status:** rev 2 (2026-11-26): Review's rev 1 GO with two shoulds and a nit, folded (see Changelog). Q1 and Q2 agreed: the first decided close wins, and #912's test is folded in. It builds on #913 (#909), which adds `closeSessionBehindQueuedFrames` and the close-only writer element. The code waits for #913 to merge.
 
 ## Problem
 
@@ -8,7 +8,7 @@ Three related gaps in the path that sends a session's last frame and closes it.
 
 1. **An ended session's final frame closes at once.** `sendFinalFrameAndClose` (TransportAdapter+Outbound.swift:94) checks `endedSessions` first. For an ended session it drops the frame and calls `closeSessionDetached`, a `closeSession` from a task. That close retires the transport's per-session queue at once. If an ordered close is still pending behind frames (after #913, a superseded session's 4017), the plain 1000 overtakes it and those frames. P-911-2 (a) shows it on #913's head: A's 4017 waits behind a held frame, and A's connection gets `closed 1000` while the frame is still held.
 2. **Which close wins is unwritten.** When a session has an ordered close pending and a second close is decided, the transport keeps the first: `closeMarkerYielded` makes a second `closeSessionAfterQueuedFrames` return (WebSocketTransport.swift:642). P-911-2 (b): a pending `sendFinalFrameAndClose` (1000), then a supersede: the client gets its frame, the error, then 1000, and no 4017. #913's docs state that case. Nothing states the rule.
-3. **#912's test waits on a wall clock.** `pendingJoinOverflowsFirst` (WebSocketSessionHandlerInboundBacklogTests.swift:593) reads outbound frames for at most 5 s, looking for `JOIN_INBOUND_OVERFLOW`. On a slow macOS runner it saw 9 `JOIN_SESSION_NOT_CONNECTED` errors and not the overflow. That error is sent by `sendFinalFrameAndClose` through the path above, so a test that can't tell a slow frame from a lost one is a weak check of that path.
+3. **#912's test waits on a wall clock.** `pendingJoinOverflowsFirst` (WebSocketSessionHandlerInboundBacklogTests.swift:593) reads outbound frames for at most 5 s, looking for `JOIN_INBOUND_OVERFLOW`. On a slow macOS runner it saw 9 `JOIN_SESSION_NOT_CONNECTED` errors and not the overflow. That error is sent by `sendFinalFrameAndClose`: the same function, not its ended branch. The test has no supersede, so its session isn't ended. A test that can't tell a slow frame from a lost one is a weak check of that function.
 
 Consulted:
 - `Notes/solutions/2026-11-18-a-server-close-goes-around-the-send-queue.md` (the bug class, at a third site);
@@ -48,7 +48,9 @@ Why the writer, and not "skip the close when ended": P-911-1 found that every si
 
 ## Design
 
-1. `sendFinalFrameAndClose`'s ended branch calls `closeSessionBehindQueuedFrames(sessionID, generation: generation, with: .normal)` instead of `closeSessionDetached`. Generation and fallback are as #913 has them, and the function stays synchronous.
+1. `sendFinalFrameAndClose`'s ended branch calls `closeSessionBehindQueuedFrames(sessionID, generation: generation, with: .normal)` instead of `closeSessionDetached`. The fallback is as #913 has it, and the function stays synchronous.
+   - **The generation comes from the router.** The ended branch's only caller is the router's flip failure (LandRouter.swift:1427), and it passes no generation. The supersede that ended the session removed `connectionGenerations[old]`, so today the close acts by ID. `endedSessions[id]` clears only when a new registration of the ID starts (TA:1643). Consider a reconnect under the same ID that the transport has accepted but the adapter hasn't registered yet. An ordered close by ID would put its marker on the new connection's queue and close it (#531's class). The closes before this change had the same hole; this change rewrites the branch, so it closes the hole too.
+   - **The fix:** `awaitFlip` reads `sessionToConnectionGeneration[sessionID]` in the segment of its `isCurrent` check, before `endAttempt`. It passes it as `sendFinalFrameAndClose(…, generation:)`. The transport's `closeSessionAfterQueuedFrames` then returns for a queue of another generation (WebSocketTransport.swift:639).
 2. **Docs.**
    - `docs/transport/README.md` and `.zh-TW.md`: the rule, in one bullet next to the close codes. The first close decided is the one the client gets. An ordered close keeps the frames ahead of it. The at-once closes listed above don't wait. #913's 4017 sub-bullet becomes a case of the rule.
    - The doc comments of `Transport.closeSessionAfterQueuedFrames(_:generation:with:)` and of the adapter's `closeSessionBehindQueuedFrames` say that a second ordered close for the same connection is ignored.
@@ -71,7 +73,12 @@ Why the writer, and not "skip the close when ended": P-911-1 found that every si
 In `SupersedeCloseOrderTests` (from #913), with `WebSocketTransport`, a held connection send and the bound held:
 - **F1.** P-911-2 (a) as a test: A's last frame is held, A2 supersedes A, then `sendFinalFrameAndClose` for A. While the frame is held, A has no close. After the release, A gets the frame, then 4017, and nothing after it. Fails today: `closed 1000` while held.
 - **F2.** P-911-2 (b), which pins the rule's other side: a pending final frame's close (1000), then the supersede. A gets its frame, the error, then 1000, and no 4017. Passes today; it fixes the rule against a later change.
-- **F3.** An at-once close after a pending ordered one still goes out at once: A's frame is held and the supersede's 4017 is pending, then a sync-lag close (`endAndCloseSession`). A's connection gets the sync-lag code while the frame is held. Passes today, and pins the "at-once preempts" row.
+- **F1b, a reused ID.** A is superseded, its client goes, and a new connection takes the ID "a": the transport accepted it, and the adapter hasn't registered it. Then comes the router's `sendFinalFrameAndClose` for "a", with the old connection's generation. The new connection isn't closed: no marker goes on its queue, so a frame sent to it afterwards is not counted in `framesDroppedAfterCloseMarker`. Without the generation (today's call), the ordered close would put the marker on the new queue.
+- **F3, a pair production can produce.** At-once preempts: a member with an ordered close pending gets the land failure's 4016 at once.
+  - **The first decision**, staged as the post-flip inbound overflow makes it (TA:2456): `sendFinalFrameAndClose` on a session that is still a member, whose earlier frame is held. That path ends the session but leaves it in the membership.
+  - **The second**, `closeSessionsForLandFailure`: it closes every session the adapter holds (`connectedSessions ∪ joinedSessions`), so it still selects A after the first decision's bookkeeping. P-911-1 adds that check.
+  - **Expected:** A's connection gets 4016 while its frame is held, and the error frame and the 1000 never go out. This passes today, and pins the "at-once preempts" row.
+  - **What it replaces:** rev 1's F3 (a sync-lag close after a supersede) can't happen. The supersede unregisters the old member and removes `syncLag[old]` in the same segment, so `endAndCloseSession`'s only caller (TA:3706) never selects a superseded session.
 - **#912.** The rewritten `pendingJoinOverflowsFirst`, the same expectations without a wall clock.
 
 Mutant (cloud): the ended branch back on `closeSessionDetached`. F1 fails.
@@ -95,7 +102,16 @@ Mutant (cloud): the ended branch back on `closeSessionDetached`. F1 fails.
 - writer ceiling drop (Outbound:79): at once;
 - final frame (Outbound:103): ordered.
 
-Each decides a close, or the client is gone. The only caller that can reach the ended branch is the router's flip failure, through a supersede between the router's decision and its hop into the adapter. Not run.
+Each decides a close, or the client is gone. The only caller that can reach the ended branch is the router's flip failure, through a supersede between the router's decision and its hop into the adapter.
+
+Which at-once close can still select a session after each ordered close's bookkeeping (rev 2, for F3):
+- **After a supersede:** none.
+  - The sync-lag close reads `syncLag`, which the supersede cleared.
+  - The land failure iterates the membership, which the supersede left.
+  - The ceiling drop addresses only frames enqueued for the session, and `endedSessions` drops those first.
+- **After a final frame on a member** (the post-flip overflow): the land failure's 4016 and a sync-lag close, since the member keeps its membership and its `syncLag` entry until its disconnect.
+
+Not run.
 
 **P-911-2, run: two closes for one session, on #913's head (`030d2353`).** A temporary test (`2026-11-26-911-probe.swift`, next to this plan) with `WebSocketTransport`, the bound held, and a connection whose sends are held. Apple Swift 6.4.2, macOS, debug:
 ```text
@@ -110,3 +126,8 @@ probe-911 b: while held=[] final=["sent A-last-frame", "sent A-error-frame", "cl
 - The handler writes the `connectionClose` frame in `closeOnLoop` (WebSocketSessionHandler.swift:960) before it closes the channel, and the marker's close calls it.
 
 So the close frame is the event after the final frame. Not run: it is run as the rewritten test in the PR.
+
+## Changelog
+
+- rev 2: Review's should 1: rev 1's F3 was unreachable (no at-once close can select a superseded session). F3 now stages a pending final frame on a member, then the land failure's 4016, and P-911-1 lists which at-once close can follow which ordered one. Should 2: the ended branch's close takes the router's connection generation, with a reused-ID test (F1b). The nit: #912's test uses the same function, not the ended branch. The PR adds the lesson: a precedence test must stage a pair production can produce.
+- rev 1: P-911-2 (on #913's head): (a) an ended session's final frame closes with 1000 ahead of a pending 4017; (b) a pending 1000 keeps its place ahead of a later supersede.
