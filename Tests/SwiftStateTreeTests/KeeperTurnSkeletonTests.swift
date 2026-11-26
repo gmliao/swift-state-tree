@@ -206,6 +206,43 @@ final class TurnSkeletonFailingPhaseTransport: LandKeeperTransport, @unchecked S
     func waitForWriterDrainForInTurnSync() async {}
 }
 
+/// A port the keeper is bound to (never attached) whose sync phase trips the sentinel and then
+/// attaches another transport synchronously, as a misbehaving callback could: the gate the
+/// sentinel closed is no longer the one `failLand` reaches.
+final class TurnSkeletonAttachingTransport: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var keeper: LandKeeper<TurnSkeletonState>?
+    private var closes = 0
+    let replacement = TurnSkeletonReenteringTransport(reenter: .nowhere)
+
+    func bind(_ keeper: LandKeeper<TurnSkeletonState>) { lock.withLock { self.keeper = keeper } }
+    var closeCount: Int { lock.withLock { closes } }
+
+    var hasJoinsAwaitingSync: Bool { false }
+    nonisolated func closeOutputs(for failure: LandFailure) { lock.withLock { closes += 1 } }
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
+    func syncNowFromTransport() async {}
+    func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async {}
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        if let keeper = lock.withLock({ self.keeper }) {
+            let replacement = self.replacement
+            keeper.assumeIsolated { keeper in // lint-allow: turns-isolated: a re-entry that then attaches another transport
+                keeper.submitSyncStream([outputDraft(7)])
+                keeper.setTransport(replacement)
+            }
+        }
+        return InTurnSyncOutput(.committed(clearDirtyFlags: false), syncStream: [], keepsEvents: false)
+    }
+    func waitForWriterDrainForInTurnSync() async {}
+}
+
 private final class Counter: @unchecked Sendable {
     private let lock = NSLock()
     private var n = 0
@@ -317,6 +354,26 @@ struct KeeperTurnSkeletonTests {
         #expect(await keeper.bodyDepthForTesting == 0)
         // Applied in the turn: the backstop, whose guard skips a draining land, had nothing.
         #expect(await keeper.lateReentriesAppliedForTesting == 0)
+    }
+
+    @Test("A transport attached after the sentinel closed the bound requester still gets its close; each gate closes once")
+    func transportAttachedAfterTheTripGetsItsClose() async throws {
+        let keeper = makeKeeper(recording: false)
+        let port = TurnSkeletonAttachingTransport()
+        port.bind(keeper)
+
+        // Never attached: the request binds `port`, which the sentinel then closes.
+        let result = await keeper.syncTurnNow(via: port, reason: .syncNow)
+
+        guard case let .landFailed(reported) = result else {
+            Issue.record("the turn returned \(result), not .landFailed")
+            return
+        }
+        #expect(reported.kind == .keeperReentry)
+        #expect(port.closeCount == 1)
+        // `failLand` reached the transport attached during the body: a different gate, closed.
+        #expect(port.replacement.closeCount == 1)
+        #expect(await keeper.reentryViolationsForTesting == 1)
     }
 
     @Test("A failing sync phase's drafts are recorded in order, then the terminal entry, then the turn's end; teardown adds nothing")

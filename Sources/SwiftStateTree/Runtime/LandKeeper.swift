@@ -863,10 +863,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var closingGateForReentry = false
     /// Whether the sentinel closed a gate (none is attached on a land without a transport).
     private var reentryGateClosed = false
-    /// The gate the sentinel closed, when it is a class instance (`gateIdentity`), so `failLand`
-    /// skips only that gate's second close: a transport attached after the sentinel closed the
-    /// bound requester still gets its close.
-    private var reentryClosedGate: ObjectIdentifier?
+    /// The gate the sentinel closed, when it is a class instance (`gateObject`), held weakly, so
+    /// `failLand` skips only that gate's second close: a transport attached after the sentinel
+    /// closed the bound requester still gets its close, and a freed gate's address reused by a
+    /// new transport can't match it.
+    private weak var reentryClosedGate: AnyObject?
     /// Refused re-entries the backstop applied (tests).
     private var lateReentriesApplied = 0
 
@@ -5578,15 +5579,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             defer { closingGateForReentry = false }
             gate.closeOutputs(for: reported)
             reentryGateClosed = true
-            reentryClosedGate = Self.gateIdentity(gate)
+            reentryClosedGate = Self.gateObject(gate)
         }
     }
 
-    /// A gate's identity when it is a class instance. A value-type gate has none, so it is
-    /// closed again by `failLand`, as before the skip.
-    private static func gateIdentity(_ gate: any LandKeeperTransport) -> ObjectIdentifier? {
+    /// A gate as an object when it is a class instance. A value-type gate has no identity, so it
+    /// is closed again by `failLand`, as before the skip.
+    private static func gateObject(_ gate: any LandKeeperTransport) -> AnyObject? {
         guard type(of: gate) is AnyObject.Type else { return nil }
-        return ObjectIdentifier(gate as AnyObject)
+        return gate as AnyObject
     }
 
     /// Ends the land on a refused re-entry: the mailbox's first failure (the sentinel's, unless
@@ -6371,7 +6372,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // The output gate closes in the mark: no new state or event frame from here (§3.2 step 4).
         // The sentinel already closed it for a re-entry when it is the same gate; a second close
         // outside the sentinel's guard could nest a re-entry through a misbehaving port.
-        if let transport, reentryClosedGate == nil || Self.gateIdentity(transport) != reentryClosedGate {
+        if let transport, !(Self.gateObject(transport).map { $0 === reentryClosedGate } ?? false) {
             transport.closeOutputs(for: failure)
         }
         drainTask = Task {
