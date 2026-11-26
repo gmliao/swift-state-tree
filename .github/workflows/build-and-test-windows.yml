@@ -90,13 +90,40 @@ jobs:
     - name: Build cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        # The debug and release links are left out: the build makes its own, and a restored one made
-        # SwiftPM warn that the link already exists (and left .build/debug pointing at the cached tree).
-        path: |
-          .build
-          !.build/debug
-          !.build/release
+        path: .build
         key: swiftbuild-${{ runner.os }}-${{ steps.buildcache.outputs.image }}-${{ env.SWIFT_VERSION }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+
+    # The cache holds the debug and release links of the run that saved it (excluding them from the
+    # path with `!.build/debug` did not keep them out of the archive). A restored link made SwiftPM warn
+    # "unable to create symbolic link ... already exists" in the Build and Tests steps, and left
+    # .build/debug as the cache's link, not the build's own. `rmdir` without /s removes only a link or
+    # an empty directory (a link's target is left alone) and fails on a real non-empty directory, which
+    # is then kept and reported.
+    - name: Remove the restored build links
+      shell: bash
+      run: |
+        # The tool follows the link's type (the tag `dir /AL` prints), never "rmdir failed": `del` on a
+        # <SYMLINKD> or <JUNCTION> deletes the top-level files inside its target.
+        for link in debug release; do
+          path=".build/$link"
+          win="$(cygpath -w "$path")"
+          entry="$(cmd //c "dir /AL .build" 2>/dev/null | tr -d '\015' | grep -E "<SYMLINK> +$link( |$)" || true)"
+          if [ -n "$entry" ]; then
+            # A file-type symlink: rmdir refuses it, del removes just the link.
+            if cmd //c del //q "$win" >/dev/null 2>&1; then
+              echo "removed $path (file-type link): $entry"
+            else
+              echo "::warning::$path is a file-type link that del could not remove: $entry"
+            fi
+          elif [ ! -e "$path" ] && [ ! -L "$path" ]; then
+            echo "$path: absent"
+          elif cmd //c rmdir //q "$win" >/dev/null 2>&1; then
+            echo "removed $path"
+          else
+            echo "::warning::$path exists and is not a link or an empty directory; kept, SwiftPM may warn about it"
+            cmd //c "dir /A .build" 2>&1 | tr -d '\015' | grep -E "debug|release" || true
+          fi
+        done
 
     # Same single debug build that every test run reuses, as on Linux.
     # Not built on Windows: SwiftStateTreeNIOProvisioning (left out of the manifest there).
