@@ -1,16 +1,16 @@
 # This workflow builds and tests the Swift package on Windows.
 #
-# Windows is in testing: the job is non-blocking (`continue-on-error: true`) and must NOT be added
-# to the required checks until it has been green for a while (issue #845).
+# Windows is in testing. The job's check shows red when it fails, but it is non-blocking only as long
+# as it is NOT a required check: do not add it to the required checks until it has been green for a
+# while (issue #845).
 #
 # Written from what passes on one Windows 11 host (Swift 6.4.3, VS2022 build tools, default SwiftPM
-# backend). The first run on a GitHub runner is the test of the lines marked CHECK.
+# backend), and confirmed on a hosted runner (run 45722997857: windows-2022, green).
 #
 # SwiftBuild backend and C targets: the default backend failed on any C target (`stdlib.h` not found)
 # ONLY under VS 2019 BuildTools 14.29; under VS 2022 (MSVC 14.42) the default backend and
-# `--build-system native` both pass, so no `--build-system` flag is used. The runner needs a VS 2022
-# C++ toolset with a Windows 10/11 SDK. CHECK that windows-2022 has both and that `swift build` finds
-# them without a vcvars step.
+# `--build-system native` both pass, so no `--build-system` flag is used. The windows-2022 image has a
+# VS 2022 C++ toolset and a Windows SDK, and `swift build` finds them without a vcvars step.
 # SwiftStateTreeNIOProvisioning is not built on Windows (the manifest leaves it out: AsyncHTTPClient's
 # C target needs strptime); that is a separate cause from the one above.
 
@@ -18,7 +18,8 @@ name: Swift Build & Test (Windows)
 
 on:
   push:
-    branches: [ "main" ]
+    # Experiment branches (exp/**) get the same CI as in the Linux workflow.
+    branches: [ "main", "exp/**" ]
     paths-ignore:
       - '*.md'
       - 'docs/**'
@@ -26,13 +27,17 @@ on:
       - '.devcontainer/**'
       - 'README*'
   pull_request:
-    branches: [ "main" ]
+    # Experiment branches (exp/**) get the same CI as in the Linux workflow.
+    branches: [ "main", "exp/**" ]
     paths-ignore:
       - '*.md'
       - 'docs/**'
       - 'Notes/**'
       - '.devcontainer/**'
       - 'README*'
+
+permissions:
+  contents: read
 
 concurrency:
   group: build-and-test-windows-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
@@ -41,16 +46,18 @@ concurrency:
 jobs:
   windows:
     name: build and test (Windows)
-    runs-on: windows-2022   # CHECK: has Visual Studio 2022; windows-latest may move to a newer image
-    # Non-blocking while Windows is in testing: a red run here never fails the pull request.
+    runs-on: windows-2022   # has Visual Studio 2022; windows-latest may move to a newer image
+    # The workflow run stays green when this job fails, but the job's own check still shows red.
+    # Non-blocking only because the check is not required; keep it out of the required checks.
     continue-on-error: true
     timeout-minutes: 60
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-    # CHECK: whether the action can install release 6.4.3 on a hosted runner.
-    # Pinned by full commit SHA, as the Linux jobs pin their image by digest.
+    # The action installs release 6.4.3 on a hosted runner. It is pinned by full commit SHA, but the
+    # Linux jobs also pin the image by digest; this action downloads the installer without a pinned
+    # digest, so the parity is partial.
     - name: Install Swift 6.4.3
       uses: compnerd/gha-setup-swift@9ff1ee4c44888c5817fc14d1b257ac8cabb4935f # v0.5.1
       with:
@@ -74,6 +81,15 @@ jobs:
         swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \
           || { echo "::error title=Tests::the tests failed"; exit 1; }
       timeout-minutes: 30
+
+    - name: Keep the test log
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: windows-tests-log
+        path: ${{ runner.temp }}/tests.log
+        retention-days: 3
+        if-no-files-found: ignore
 
     # The Demo server must build. The E2E scenarios (Tools/CLI, npm) are not part of this job: on the
     # host they run against DemoServer.exe started by a script specific to that machine.
