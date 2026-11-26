@@ -429,7 +429,7 @@ struct KeeperActionSlot: Sendable {
 
 /// The keeper's sequence counter: one number per input and per emitted event, in order.
 @PlainData
-struct KeeperSequenceCounter: Sendable {
+struct KeeperSequenceCounter: Sendable, Equatable {
     var next: Int64 = 0
     /// Re-evaluation only: a take past `Int64.max` stops the replay instead of the process (#741).
     /// A live counter starts at 0 and traps first, so the live path keeps the plain increment.

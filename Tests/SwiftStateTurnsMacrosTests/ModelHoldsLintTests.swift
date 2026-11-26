@@ -274,6 +274,9 @@ struct KeeperMember {
     let givesSide: [(label: String, index: Int)]
     /// The parameters of type `KeeperTurnSide`: the names the side goes by in this member.
     let sideParameters: Set<String>
+    /// Every parameter in order, by argument label, with the index of the `KeeperTurnSide`
+    /// parameter of a function-typed one (nil otherwise): a closure argument binds by position.
+    let parameterSides: [(label: String, isFunction: Bool, side: Int?)]
     /// A stored or computed property of a port type.
     let isPort: Bool
     /// The declaration, for the names bound in it (parameters, locals).
@@ -303,6 +306,11 @@ struct KeeperMember {
             return (parameter.firstName.text, index)
         }
         sideParameters = Set(parameters.filter { isKeeperTurnSide($0.type) }.map { ($0.secondName ?? $0.firstName).text })
+        parameterSides = parameters.map { parameter in
+            let function = unwrap(parameter.type).as(FunctionTypeSyntax.self)
+            return (parameter.firstName.text, function != nil,
+                    function.flatMap { Array($0.parameters).firstIndex(where: { isKeeperTurnSide($0.type) }) })
+        }
     }
 
     init(property: String, body: Syntax?, isPort: Bool, scope: Syntax, path: String, converter: SourceLocationConverter,
@@ -317,6 +325,7 @@ struct KeeperMember {
         givesHold = []
         givesSide = []
         sideParameters = []
+        parameterSides = []
     }
 }
 
@@ -499,9 +508,9 @@ final class MemberGraph {
 
     /// The closure parameters a member gives the model to, by argument label; nil when it gives
     /// none.
-    func givesSide(_ name: String) -> [(label: String, index: Int)]? {
-        let given = byName[name]?.flatMap(\.givesSide) ?? []
-        return given.isEmpty ? nil : given
+    /// The parameter lists of the members named `name` that give a closure the side.
+    func sideGivers(_ name: String) -> [[(label: String, isFunction: Bool, side: Int?)]] {
+        (byName[name] ?? []).filter { !$0.givesSide.isEmpty }.map(\.parameterSides)
     }
 
     /// The names the turn side goes by in a member, found by type, not by spelling (#914
@@ -654,13 +663,59 @@ private final class SideClosureFinder: SyntaxVisitor {
     override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
         let name = calleeName(node.calledExpression)
             ?? node.calledExpression.as(MemberAccessExprSyntax.self)?.declName.baseName.text
-        if let name, let given = graph.givesSide(name) {
-            for (label, closure) in labelledClosures(of: node) {
-                let parameter = given.last { $0.label == label } ?? (label == nil ? given.last : nil)
-                if let parameter { names.insert(closureParameterName(closure, at: parameter.index)) }
+        if let name {
+            for parameters in graph.sideGivers(name) {
+                for (closure, index) in Self.bind(node, to: parameters) {
+                    names.insert(closureParameterName(closure, at: index))
+                }
             }
         }
         return .visitChildren
+    }
+
+    /// A closure's own parameter declared as `KeeperTurnSide` (`{ (s: KeeperTurnSide) in … }`),
+    /// passed anywhere or nowhere.
+    override func visit(_ node: ClosureExprSyntax) -> SyntaxVisitorContinueKind {
+        if case .parameterClause(let clause)? = node.signature?.parameterClause {
+            for parameter in clause.parameters {
+                if let type = parameter.type, isKeeperTurnSide(type) {
+                    names.insert((parameter.secondName ?? parameter.firstName).text)
+                }
+            }
+        }
+        return .visitChildren
+    }
+
+    /// The closure arguments of `call` that a declaration with `parameters` gives the side, with
+    /// the side's index among each closure's parameters. Arguments bind in order: a labelled one
+    /// to the next parameter of its label, an unlabelled one to the next `_` parameter, the first
+    /// trailing closure to the next function-typed parameter after them (Swift's forward scan),
+    /// and a labelled trailing closure to the next parameter of its label.
+    static func bind(_ call: FunctionCallExprSyntax,
+                     to parameters: [(label: String, isFunction: Bool, side: Int?)]) -> [(ClosureExprSyntax, Int)] {
+        var out: [(ClosureExprSyntax, Int)] = []
+        var cursor = 0
+        func next(_ matches: ((label: String, isFunction: Bool, side: Int?)) -> Bool) -> Int? {
+            guard let found = parameters[min(cursor, parameters.count)...].firstIndex(where: matches) else { return nil }
+            cursor = found + 1
+            return found
+        }
+        for argument in call.arguments {
+            let label = argument.label?.text ?? "_"
+            guard let index = next({ $0.label == label }) else { return out }
+            if let closure = argument.expression.as(ClosureExprSyntax.self), let side = parameters[index].side {
+                out.append((closure, side))
+            }
+        }
+        if let trailing = call.trailingClosure, let index = next({ $0.isFunction }), let side = parameters[index].side {
+            out.append((trailing, side))
+        }
+        for extra in call.additionalTrailingClosures {
+            if let index = next({ $0.label == extra.label.text }), let side = parameters[index].side {
+                out.append((extra.closure, side))
+            }
+        }
+        return out
     }
 }
 
@@ -1366,12 +1421,18 @@ struct ModelHoldsLintTests {
         ("step { _, t in t.notes() }", 2),
         ("_ = callOut { _, t in t.notes() }", 0),
         ("let other = 0\n_ = other", 0),
+        // A closure's own parameter typed as the side, given by no known member.
+        ("_ = { (q: inout KeeperTurnSide) in _ = q.attachedTransport?.count }", 1),
+        // An unlabelled trailing closure binds to the first closure parameter, not the last
+        // one that gives the side (there at index 0, which would bind `_`).
+        ("pair { _, t in _ = t.attachedTransport?.count } then: { _ in }", 2),
     ])
     func sideByType(body: String, expected: Int) {
         let model = """
         extension KeeperModel {
             mutating func callOut<A>(_ call: (KeeperModel<State>, KeeperTurnSide) -> A) -> A { fatalError() }
             mutating func step(_ body: (inout KeeperModel<State>, inout KeeperTurnSide) -> Void) {}
+            mutating func pair(_ first: (inout KeeperModel<State>, inout KeeperTurnSide) -> Void, then: (KeeperTurnSide) -> Void) {}
             mutating func body(_ s: inout KeeperTurnSide) {
         \(body)
             }

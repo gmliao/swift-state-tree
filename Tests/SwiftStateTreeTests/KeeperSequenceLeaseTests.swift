@@ -13,6 +13,11 @@ struct SequenceLeaseNotice: ServerEventPayload {
     let n: Int
 }
 
+@StateNodeBuilder
+struct SequenceLeaseState: StateNodeProtocol {
+    @Sync(.broadcast) var n: Int = 0
+}
+
 @Suite("The sequence lease: the step's counter and staged sync requests (#700 K1b-5 D15.3)")
 struct KeeperSequenceLeaseTests {
     @Test("Events take numbers from the lent counter in emit order, and the counter comes back with the takes")
@@ -46,6 +51,14 @@ struct KeeperSequenceLeaseTests {
         lease.lend(KeeperSequenceCounter())
         #expect(lease.end().requests.isEmpty)
         #expect(lease.unlentCount == 0)
+    }
+
+    @Test("A take from the model's own counter while it is lent is counted (the assert turned off)")
+    func takeWhileLentIsCounted() async {
+        let land = Land("sequence-lease", using: SequenceLeaseState.self) { Rules {} }
+        let keeper = LandKeeper<SequenceLeaseState>(definition: land, initialState: SequenceLeaseState(), autoStartLoops: false)
+        await keeper.awaitInitialization()
+        #expect(await keeper.takeFromSequenceWhileLentForTesting() == 1)
     }
 
     @Test("A re-evaluation counter keeps its overflow check through the lend")

@@ -2924,7 +2924,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// keyed on `lastCommittedTickId`, it was taken by no turn and stayed in the tables (#66).
     package nonisolated let readOnlyHandlerOutputsDropped: LateStepOutputCounter
 
-    /// Whether a late output stops a debug build. Tests that pin the drop turn it off.
+    /// Tests only: runs one handler step whose body takes from the model's own sequence counter
+    /// while the counter is lent, with the assert off, and returns how many such takes the lease
+    /// counted (#914 review).
+    package func takeFromSequenceWhileLentForTesting() -> Int {
+        turnSide.sharedSequenceLease.setAssertsOnTakeWhileLentForTesting(false)
+        defer { turnSide.sharedSequenceLease.setAssertsOnTakeWhileLentForTesting(true) }
+        let ctx = model.makeContext(behavior, turnSide,
+            playerID: behavior.config.systemPlayerID,
+            clientID: behavior.config.systemClientID,
+            sessionID: behavior.config.systemSessionID
+        )
+        model.withHandlerStep(behavior, turnSide, ctx) { m, _ in
+            _ = m.sequence.take()
+        }
+        return turnSide.sharedSequenceLease.takenWhileLentCount
+    }
 
     /// Tests only: lets a late output be dropped and counted without stopping a debug build.
     func setLateStepOutputAssertsForTesting(_ asserts: Bool) {
@@ -7124,7 +7139,7 @@ extension KeeperModel {
         switch random {
         case .detached(let service):
             let (bound, scope) = side.openStepScope(ctx, random: service, droppingInto: dropsOutputs ? side.sharedDestroyHandlerOutputsDropped : nil)
-            let lentAt = sequence.next
+            let lentAt = sequence
             lease?.lend(sequence)
             defer {
                 scope.close()
@@ -7134,7 +7149,7 @@ extension KeeperModel {
         case .step:
             let service = DeterministicRngService(continuing: landRandom, seed: behavior.config.landRandomSeed)
             let (bound, scope) = side.openStepScope(ctx, random: service, droppingInto: dropsOutputs ? side.sharedDestroyHandlerOutputsDropped : nil)
-            let lentAt = sequence.next
+            let lentAt = sequence
             lease?.lend(sequence)
             // After the body's access to the model ends: it doesn't overlap. The scope closes
             // first, so no output runs after the counter is back.
@@ -7150,10 +7165,14 @@ extension KeeperModel {
     /// Takes the counter back from a step's lease and ORs the step's staged sync requests into
     /// the table, before the body reads them (`takeSyncRequest`). `lentAt` is the model's
     /// counter when it was lent: a take from the model's own copy while lent would be lost when
-    /// the lease's counter replaces it, so it is asserted against (#914 review).
-    private mutating func endLease(_ lease: KeeperSequenceLease?, lentAt: Int64) {
+    /// the lease's counter replaces it, so it is counted and asserted against (#914 review). The
+    /// whole counter is compared: a re-evaluation take at `Int64.max` sets `exhausted` without
+    /// moving `next`.
+    private mutating func endLease(_ lease: KeeperSequenceLease?, lentAt: KeeperSequenceCounter) {
         guard let lease else { return }
-        assert(sequence.next == lentAt, "the model's sequence counter was taken from while lent to a handler step")
+        if sequence != lentAt, lease.noteTakenWhileLent() {
+            assertionFailure("the model's sequence counter was taken from while lent to a handler step")
+        }
         let (counter, requests) = lease.end()
         sequence = counter
         for (tickId, staged) in requests {

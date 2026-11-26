@@ -347,6 +347,8 @@ final class KeeperSequenceLease: @unchecked Sendable {
     private var counter: KeeperSequenceCounter?
     private var requests: [Int64: KeeperSyncRequests] = [:]
     private var unlent = 0
+    private var takenWhileLent = 0
+    private var assertsOnTakeWhileLent = true
 
     /// Lends the counter for one step.
     func lend(_ lent: KeeperSequenceCounter) {
@@ -399,6 +401,20 @@ final class KeeperSequenceLease: @unchecked Sendable {
 
     /// The outputs that found nothing lent.
     var unlentCount: Int { lock.withLock { unlent } }
+
+    /// Counts a take from the model's own counter while it was lent (its value then is lost
+    /// when the lease's counter replaces it). Returns whether to assert: debug builds stop
+    /// unless a test turned that off.
+    func noteTakenWhileLent() -> Bool {
+        lock.withLock {
+            takenWhileLent += 1
+            return assertsOnTakeWhileLent
+        }
+    }
+    /// How many takes from the model's counter happened while it was lent.
+    var takenWhileLentCount: Int { lock.withLock { takenWhileLent } }
+    /// Tests only: count a take while lent without stopping a debug build.
+    func setAssertsOnTakeWhileLentForTesting(_ asserts: Bool) { lock.withLock { assertsOnTakeWhileLent = asserts } }
 }
 
 /// The keeper's drain in progress (single-flight). A box the keeper and its side share, used

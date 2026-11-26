@@ -798,6 +798,8 @@ struct KeeperTurnSkeletonTests {
     /// A failure in the batch stages the drain, and the join report's call-out flushes it while the
     /// turn goes on. The teardown's first step runs on the keeper, so the transport hears
     /// `landDidFail` after the failing turn's last port call, as before the move (#914 review).
+    /// Limit: a keeper whose teardown runs off the keeper fails this test only if that task
+    /// reaches `landDidFail` within the report's 500 ms wait.
     @Test("A failed land's teardown starts after the failing turn's join report")
     func teardownWaitsForTheFailingTurn() async throws {
         let (keeper, transport, _) = await attachedKeeper(.nowhere, onJoin: true)
