@@ -10,6 +10,36 @@ import SwiftStateTurns
 /// it as `model`; field names are the ones the keeper's stored properties had.
 @PlainData
 struct KeeperModel<State: StateNodeProtocol> {
+    // Queues, jobs and results.
+    var pendingItems: [LandKeeper<State>.PendingItem] = []
+    /// Server inputs accepted during a debug freeze, in submission order: queued at the resume
+    /// (`releaseServerInputsHeldWhileFrozen`), dropped if the land drains first.
+    var serverInputsHeldWhileFrozen: [LandKeeper<State>.PendingItem] = []
+    /// Queue elements visited by whole-queue scans (removals, replay's frame reads): the work a
+    /// frame's replay does on the queue, for a bound on it in tests.
+    var pendingItemScans: Int = 0
+    /// The input-turn outcome of each waiting caller, kept until the turn's record is submitted.
+    var inputTurnResults: [Int64: InputResult] = [:]
+    /// Set when OnInitialize's resolvers timed out (#104): the land never initialized, every
+    /// call that awaits the initialization throws it, and the drain skips the destroy handlers.
+    var initializationFailure: FailureID?
+    /// Mints failure IDs. Keeper-local: never reset, never restored from a record.
+    var failureIDs: EpochCounter = EpochCounter()
+    var actionJobs: [Int64: KeeperActionJob<State>] = [:]
+    var actionSlots: [Int64: KeeperActionSlot] = [:]
+    /// Tickless jobs whose in-flight work (`debugBeginWork` at intake) ends when their slot is
+    /// filled, on whichever path fills it: so `debugFreeze` waits for their responses.
+    var ticklessJobWork: Set<Int64> = []
+    /// Tickless jobs delivered (appended) and not yet applied: the input turn that applies one
+    /// fills its slot with the handler's outcome, after the turn's record is in.
+    var ticklessJobTurns: Set<Int64> = []
+    /// Jobs started so far (tests).
+    var actionJobsStarted: Int = 0
+    /// Tests: lookups that found no entry (`FailureTableMiss`).
+    var failureTableMisses: Int = 0
+    /// Tests: alignment violations the call sites logged.
+    var alignmentViolations: Int = 0
+
     // Counters and flags.
     var stateHashUnavailableTotal: Int = 0
     /// Server inputs submitted and not yet applied (`SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND`).
