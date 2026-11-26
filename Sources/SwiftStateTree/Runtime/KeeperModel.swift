@@ -11,6 +11,8 @@ import SwiftStateTurns
 /// it as `model`; field names are the ones the keeper's stored properties had.
 @PlainData
 struct KeeperModel<State: StateNodeProtocol> {
+    /// Server inputs in flight a land accepts (#387), from the environment at init; tests set it.
+    var serverInputMaxInFlight: Int = ServerInputLimits.maxInFlightPerLand()
     /// The land's generator: keeper state, advanced by the handlers that replay repeats from the
     /// record (#700 K1b-3, #765).
     var landRandom: DeterministicRng
@@ -226,6 +228,36 @@ struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
     let reentrySentinel: KeeperReentrySentinel
 }
 
+/// What the behavior's fixed fields decide (#700 K1b-5 move, step 1): the reads a turn body made
+/// through the actor, now on the behavior it is lent.
+extension KeeperBehavior {
+    /// A land without a tick handler: every turn records under one tick id.
+    var isTickless: Bool { definition.lifetimeHandlers.tickHandler == nil }
+    /// Live keepers' inputs, ticks and initialization run as turns (#546 L2d).
+    var routesThroughTurn: Bool { config.mode == .live }
+    /// Something reads input records: a recorder, or a replay.
+    var recordsInputs: Bool { reevaluationRecorder != nil || config.mode != .live }
+    /// Whether passes are numbered: a tickless land that records (live, with a recorder) or
+    /// replays.
+    var countsPasses: Bool { isTickless && (reevaluationRecorder != nil || config.mode == .reevaluation) }
+    /// Whether the land syncs on its own (a tick loop or a sync loop); mirrors the loop setup in
+    /// `performInitialization`.
+    var hasPeriodicSync: Bool {
+        guard config.autoStartLoops else { return false }
+        let handlers = definition.lifetimeHandlers
+        let tickLoop = handlers.tickInterval != nil && handlers.tickHandler != nil
+        let syncLoop = handlers.syncInterval != nil || handlers.tickInterval != nil
+        return tickLoop || syncLoop
+    }
+    /// The coincident-sync window: min(5 ms, tick / 4, sync / 4).
+    var coincidentSyncWindow: Duration {
+        var window = Duration.milliseconds(5)
+        if let tick = definition.lifetimeHandlers.tickInterval { window = min(window, tick / 4) }
+        if let sync = definition.lifetimeHandlers.syncInterval { window = min(window, sync / 4) }
+        return window
+    }
+}
+
 /// The re-entry sentinel's state (#865): the body depth the guarded entries read, the refusals
 /// they counted and the gate the first refusal closed. Used on the keeper's executor only.
 final class KeeperReentrySentinel: @unchecked Sendable {
@@ -282,7 +314,7 @@ struct KeeperConfig: Sendable {
 /// (`ReevaluationEngine`, `ReevaluationRunnerImpl`); a live keeper keeps the defaults. Not plain:
 /// it holds the source, the sink and an observer closure. #612 removes the group with the replay
 /// land's owner.
-struct ReplayFields<State: StateNodeProtocol> {
+struct ReplayFields {
     /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
     var reevaluationSource: (any ReevaluationSource)?
     /// Optional sink for emitting recorded outputs during re-evaluation.
@@ -297,9 +329,6 @@ struct ReplayFields<State: StateNodeProtocol> {
     /// `validate` passed, so the replay contradicts it: `ReevaluationEngine.verifyInitialize`
     /// reports `.failed`. Nothing was written, as live.
     var replayedInitializeRefusal: String?
-    /// Re-evaluation: called after each replayed tickless pass with its ordinal and the state after
-    /// it (#563), so the sync-output check locates what the record read after that pass.
-    var replayPassObserver: (@Sendable (Int64, State) async -> Void)?
     /// Re-evaluation: where the recorded failure ended its turn among its inputs
     /// (`LandFailurePosition.endsInputs`): the tick (a tick land's tick handler is skipped and
     /// its events dropped) or, tickless, the pass whose events are dropped. Replay doesn't end

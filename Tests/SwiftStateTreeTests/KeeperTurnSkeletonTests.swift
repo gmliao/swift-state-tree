@@ -147,6 +147,9 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
         /// `submitSyncStream` from the nth port call made during a turn body, armed by
         /// `armNthCallInBody(_:)`: any call of this port, wherever the body makes it.
         case nthCallInBody
+        /// `submitSyncStream` from the first `closeOutputs(for:)`: the gate close a land
+        /// failure performs.
+        case closeOutputs
     }
 
     private let lock = NSLock()
@@ -222,7 +225,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
                 keeper.markDrainingForTesting(cause: .forceShutdown)
                 keeper.submitSyncStream([outputDraft(99)])
             case .phase, .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .settleCheck, .settlePhase,
-                 .settleDraftFactory, .nthCallInBody, .nowhere:
+                 .settleDraftFactory, .nthCallInBody, .closeOutputs, .nowhere:
                 keeper.submitSyncStream([outputDraft(99)])
             }
         }
@@ -233,7 +236,11 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     }
 
     nonisolated func closeOutputs(for failure: LandFailure) {
-        lock.withLock { closes += 1 }
+        let first = lock.withLock { () -> Bool in
+            closes += 1
+            return closes == 1
+        }
+        if reenter == .closeOutputs, first { reenterNow() }
     }
 
     /// Answers true when it re-enters, so a follow-up would be scheduled if the refused answer
@@ -272,7 +279,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
         switch reenter {
         case .phase, .phaseRequestingSyncTurn, .phaseOnDrainingLand: reenterNow()
         case .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .settleCheck, .settlePhase, .nestedSettle,
-             .settleDraftFactory, .nthCallInBody, .nowhere: break
+             .settleDraftFactory, .nthCallInBody, .closeOutputs, .nowhere: break
         }
         defer { lock.withLock { phaseReturned = true } }
         // Otherwise a success, so only the re-entry can fail the turn. Kept events would ask
@@ -822,6 +829,31 @@ struct KeeperTurnSkeletonTests {
         // The recording's witness, the phase, and the joins read after the committed phase (its
         // witness, then the read).
         #expect(reentered == Array(1...4), "calls that re-entered: \(reentered)")
+    }
+
+    /// A failure applied outside a turn body would close the gate at depth zero, where a
+    /// callback from the close isn't refused and reaches the model the failure holds (an
+    /// exclusivity trap). Both paths apply it in a turn now (#700 K1b-5 plan §6, C1 and C2).
+    @Test("A failure's gate close that calls back is refused: the noted failure's sync-only turn and the test hook", arguments: [false, true])
+    func failureCloseReentryIsRefused(viaTestHook: Bool) async throws {
+        let (keeper, transport, _) = await attachedKeeper(.closeOutputs)
+        await keeper.awaitInitialization()
+        let noted = LandFailure(kind: .eventEncode, detail: "noted outside a turn", position: LandFailurePosition(stage: .eventFlush))
+        if viaTestHook {
+            await keeper.failLandForTesting(noted)
+        } else {
+            keeper.notePendingFailure(noted)
+            let result = await keeper.syncTurnNow(via: transport, reason: .syncNow)
+            #expect(result == .landFailed(noted))
+        }
+        // Refused, and the land failed once, with the failure it applied: a re-entry that ended
+        // it instead would be `keeperReentry`.
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(keeper.failure == noted)
+        // The failure's close, and the refusing entry's own close nested inside it (the
+        // same-gate skip covers only a refusal that closed first). A close is idempotent.
+        #expect(transport.closeCount == 2)
+        #expect(await keeper.bodyDepthForTesting == 0)
     }
 
     /// Every port call the settle makes goes through `callOut`, as the input turn's do; the

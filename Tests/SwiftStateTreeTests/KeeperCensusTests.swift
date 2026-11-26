@@ -54,7 +54,7 @@ struct KeeperCensusException {
 enum KeeperCensus {
     /// The groups `censusLabelsForTesting()` reflects.
     static let groups: Set<String> = [
-        "actor", "model", "behavior", "behavior.config", "replay", "turnSide", "turnSide.actions", "behavior.reentrySentinel",
+        "actor", "model", "behavior", "behavior.config", "turnSide", "turnSide.actions", "turnSide.replay", "behavior.reentrySentinel",
     ]
 
     /// Every stored property, by storage path, with its home.
@@ -64,13 +64,9 @@ enum KeeperCensus {
             "actor.appliedSyncPhaseOffset": .outside(.loopDriver),
             "actor.appliedTickPhaseOffset": .outside(.loopDriver),
             "actor.behavior": .container,
-            "actor.boundSyncRequesterObject": .outside(.bindingToken),
-            "actor.debugHeldInputs": .replaced(by: "K7"),
-            "actor.destroyTicket": .replaced(by: "K7"),
+            "actor.boundRequester": .outside(.bindingToken),
             "actor.drainFlag": .outside(.drainFlag),
-            "actor.drainStartedWaitersForTesting": .replaced(by: "K2"),
-            "actor.drainTask": .replaced(by: "K7"),
-            "actor.failureWaitersForTesting": .replaced(by: "K2"),
+            "actor.drainHandle": .replaced(by: "K7"),
             "actor.forceShutdownFlight": .replaced(by: "K7"),
             "actor.freezeWaitWatchersForTesting": .replaced(by: "K2"),
             "actor.holds": .testHook,
@@ -79,8 +75,6 @@ enum KeeperCensus {
             "actor.initializationWaitWatchers": .replaced(by: "K2"),
             "actor.initializationWaits": .replaced(by: "K2"),
             "actor.inputDrainIdleWaitersForTesting": .replaced(by: "K2"),
-            "actor.inputTurnWaiters": .replaced(by: "K2"),
-            "actor.lateStepOutputAssertsForTesting": .testHook,
             "actor.lateStepOutputs": .outside(.stepScope),
             "actor.destroyHandlerOutputsDropped": .outside(.stepScope),
             "actor.readOnlyHandlerOutputsDropped": .outside(.stepScope),
@@ -91,15 +85,11 @@ enum KeeperCensus {
             "actor.nextTickDeadline": .outside(.loopDriver),
             "actor.outputCollector": .replaced(by: "K2"),
             "actor.pendingFold": .outside(.loopDriver),
-            "actor.pendingSyncTurnAfterTurn": .outside(.bindingToken),
+            "actor.replayPassObserver": .replaced(by: "#612"),
             "actor.pendingTransportFailure": .replaced(by: "K4"),
-            "actor.playerServices": .outside(.playerServices),
             "actor.recorderSubmissions": .outside(.recorder),
             "actor.releasedTransport": .outside(.bindingToken),
-            "actor.replay": .container,
             "actor.requestedSyncWorkWaitersForTesting": .replaced(by: "K2"),
-            "actor.serverInputMaxInFlight": .outside(.serverInputCap),
-            "actor.shutdownTurnWaiters": .replaced(by: "K2"),
             "actor.syncClockForTesting": .testHook,
             "actor.syncTask": .replaced(by: "K2"),
             "actor.tickClockForTesting": .testHook,
@@ -143,6 +133,31 @@ enum KeeperCensus {
             "turnSide.failures": .outside(.failureTable),
             "turnSide.debugDrainWaiters": .replaced(by: "K7"),
             "turnSide.probe": .testHook,
+            "turnSide.holdPoints": .testHook,
+            // Copies of the keeper's references, for the bodies (#700 K1b-5 move): the homes of
+            // the members they copy.
+            "turnSide.sharedCollector": .replaced(by: "K2"),
+            "turnSide.sharedDrainFlag": .outside(.drainFlag),
+            "turnSide.sharedTransportFailure": .replaced(by: "K4"),
+            "turnSide.attachedTransport": .outside(.bindingToken),
+            "turnSide.sharedBoundRequester": .outside(.bindingToken),
+            "turnSide.keeperReference": .replaced(by: "K2"),
+            "turnSide.destroyTicket": .replaced(by: "K7"),
+            "turnSide.replay": .container,
+            "turnSide.lateStepOutputAssertsForTesting": .testHook,
+            "turnSide.sharedLateStepOutputs": .outside(.stepScope),
+            "turnSide.sharedDestroyHandlerOutputsDropped": .outside(.stepScope),
+            "turnSide.sharedReadOnlyHandlerOutputsDropped": .outside(.stepScope),
+            "turnSide.pendingSyncTurnAfterTurn": .outside(.bindingToken),
+            "turnSide.drainStartedWaitersForTesting": .replaced(by: "K2"),
+            "turnSide.failureWaitersForTesting": .replaced(by: "K2"),
+            "turnSide.sharedDrainHandle": .replaced(by: "K7"),
+            "turnSide.debugHeldInputs": .replaced(by: "K7"),
+            "turnSide.inputTurnWaiters": .replaced(by: "K2"),
+            "turnSide.shutdownTurnWaiters": .replaced(by: "K2"),
+            "turnSide.sharedAbandonmentCounter": .outside(.resolverAbandonment),
+            "turnSide.serverInputs": .replaced(by: "K2"),
+            "turnSide.playerServices": .outside(.playerServices),
             "turnSide.actions.jobTasks": .replaced(by: "K5"),
             "turnSide.actions.removalWaiters": .replaced(by: "K2"),
             "turnSide.actions.slotWaiters": .replaced(by: "K2"),
@@ -195,6 +210,7 @@ enum KeeperCensus {
             "model.rejoinReservations": .model,
             "model.requestedSyncTurnsForTesting": .model,
             "model.requestedSyncWork": .model,
+            "model.serverInputMaxInFlight": .model,
             "model.serverInputCapRejections": .model,
             "model.serverInputsHeldWhileFrozen": .model,
             "model.serverInputsInFlight": .model,
@@ -210,17 +226,16 @@ enum KeeperCensus {
             "model.ticklessJobWork": .model,
             "model.ticksInFlight": .model,
             "model.transportRecordsFolds": .model,
-            "replay.recordedPassMismatches": .replay,
-            "replay.reevaluationSink": .replay,
-            "replay.reevaluationSource": .replay,
-            "replay.replayFailureEnd": .replay,
-            "replay.replayHeaderPayloadEncoding": .replay,
-            "replay.replayPassObserver": .replay,
-            "replay.replayRecordsPassOrdinals": .replay,
-            "replay.replayRecordsRejected": .replay,
-            "replay.replayRejected": .replay,
-            "replay.replayedInitializeBeforeTickZero": .replay,
-            "replay.replayedInitializeRefusal": .replay,
+            "turnSide.replay.recordedPassMismatches": .replay,
+            "turnSide.replay.reevaluationSink": .replay,
+            "turnSide.replay.reevaluationSource": .replay,
+            "turnSide.replay.replayFailureEnd": .replay,
+            "turnSide.replay.replayHeaderPayloadEncoding": .replay,
+            "turnSide.replay.replayRecordsPassOrdinals": .replay,
+            "turnSide.replay.replayRecordsRejected": .replay,
+            "turnSide.replay.replayRejected": .replay,
+            "turnSide.replay.replayedInitializeBeforeTickZero": .replay,
+            "turnSide.replay.replayedInitializeRefusal": .replay,
         ]
         // The filled-slot ring exists in debug builds only; a release run expects it absent.
         #if DEBUG
@@ -300,11 +315,11 @@ struct KeeperCensusTests {
             let container = KeeperCensus.groups.filter { path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
                 ?? String(path.prefix { $0 != "." })
             switch (container, home) {
-            case ("model", .model), ("behavior", .behavior), ("behavior.config", .behavior), ("replay", .replay):
+            case ("model", .model), ("behavior", .behavior), ("behavior.config", .behavior), ("turnSide.replay", .replay):
                 continue
             case ("behavior", .container) where path == "behavior.config":
                 continue
-            case ("turnSide", .container) where path == "turnSide.actions":
+            case ("turnSide", .container) where path == "turnSide.actions" || path == "turnSide.replay":
                 continue
             // The side's rows keep the homes they had on the actor: outside, replaced or a hook.
             case ("turnSide", .outside), ("turnSide", .replaced), ("turnSide", .testHook),

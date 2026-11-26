@@ -131,3 +131,54 @@ struct KeeperActionJobBoxTests {
         await task.value
     }
 }
+
+/// The destroy's ticket has the job box's shape (D16): the same order, a cancel the body makes
+/// before the flush runs the staged start, must cancel the timer the start installs.
+@Suite("The destroy's ticket: the timer and an early cancel under one lock (#700 K1b-5 D16)")
+struct DestroyTicketTests {
+    @Test("A cancel before the install is kept, and the install cancels the timer it installs")
+    func cancelBeforeInstall() async {
+        let ticket = DestroyTicket()
+        let wait = CancellableWait()
+        // The cancel a body makes after staging the timer's start: it finds no handle.
+        ticket.cancel()
+        let task = Task { await wait.run() }
+        ticket.install(task)
+        #expect(task.isCancelled)
+        #expect(ticket.installedTask != nil)
+        // Cancel here too, so a ticket that lost the cancel fails the expect instead of hanging.
+        task.cancel()
+        await task.value
+    }
+
+    @Test("A cancel after the install cancels the installed timer")
+    func cancelAfterInstall() async {
+        let ticket = DestroyTicket()
+        let wait = CancellableWait()
+        let task = Task { await wait.run() }
+        ticket.install(task)
+        #expect(!task.isCancelled)
+        ticket.cancel()
+        #expect(task.isCancelled)
+        task.cancel()
+        await task.value
+    }
+
+    @Test("A cancellation handler that reads the ticket runs inside the install's forwarded cancel without finding it locked")
+    func handlerReadsTheTicketDuringTheForwardedCancel() async {
+        let ticket = DestroyTicket()
+        let wait = CancellableWait()
+        let read = ActionJobCallerCancellation()
+        wait.onCancel = {
+            _ = ticket.installedTask
+            read.set()
+        }
+        let task = Task { await wait.run() }
+        await wait.waitUntilEntered()
+        ticket.cancel()
+        ticket.install(task)
+        #expect(read.isSet)
+        task.cancel()
+        await task.value
+    }
+}
