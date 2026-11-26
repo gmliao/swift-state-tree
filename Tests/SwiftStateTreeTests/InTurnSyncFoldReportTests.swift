@@ -79,6 +79,8 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
         case joinSyncTickNote
         /// The nth port call made during a turn body, whichever it is (`armNthCallInBody`).
         case nthCallInBody
+        /// `refusesResolvedJoin`, a reporting join's stale-join refusal (#700 K1b-5b J2).
+        case staleRefusal
     }
 
     private let lock = NSLock()
@@ -159,6 +161,11 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
         reenter(at: .joinSyncTickNote)
     }
     func noteJoinInputsConsumed(_ results: [JoinInputResult]) { noteCall() }
+    func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool {
+        noteCall()
+        reenter(at: .staleRefusal)
+        return false
+    }
     /// What each sync phase the keeper ran returned.
     var syncResults: [InTurnSyncResult] { lock.withLock { syncPhases } }
 
@@ -423,6 +430,54 @@ struct InTurnSyncFoldReportTests {
         // entry precedes them).
         #expect(tracker.traceForTesting == ["terminal", "turn-record"], "\(tracker.traceForTesting)")
 
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        try await recorder.save(to: path)
+        await keeper.forceShutdown()
+        let result = try await ReevaluationEngine.run(
+            definition: foldReportLandEmitting(),
+            initialState: FoldReportState(),
+            recordFilePath: path
+        )
+        #expect(result.serverEventMismatches.isEmpty, "\(result.serverEventMismatches.map(\.tickId))")
+        #expect(result.serverEventVerification == .passed)
+    }
+
+    /// A reporting join's stale-join refusal (J2) that re-enters ends the land outside any tick.
+    /// Before the first tick, its terminal entry goes into frame 0, whose handler never ran, so
+    /// the failure must end that tick's inputs; after a committed tick, the frame's handler ran.
+    /// Either way the record replays with the server events verified (#896 round 1).
+    @Test("a recorded stale-join refusal that re-enters replays as it ran, before and after the first tick", arguments: [false, true])
+    func recordedStaleRefusalReplays(afterFirstTick: Bool) async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("stale-refusal-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let transport = FoldRecordingTransport(records: true)
+        let keeper = try await makeKeeper(transport, definition: foldReportLandEmitting(), recording: true)
+        if afterFirstTick {
+            await keeper.stepTickOnceForTesting(at: ContinuousClock.now)
+        }
+        transport.arm(.staleRefusal, keeper: keeper, joinsWait: false)
+
+        var refusal: JoinError?
+        do {
+            _ = try await keeper.joinReportingAdmission(
+                session: PlayerSession(playerID: "p2"),
+                clientID: ClientID("c2"),
+                sessionID: SessionID("s2"),
+                services: LandServices(),
+                admitThroughTransport: true
+            )
+        } catch let error as JoinError {
+            refusal = error
+        }
+        guard case .landShuttingDown = refusal else {
+            Issue.record("the join's outcome: \(String(describing: refusal))")
+            return
+        }
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect(keeper.failure?.position.endsInputs == (afterFirstTick ? nil : true))
+        #expect(await keeper.currentState().ticks == (afterFirstTick ? 1 : 0))
+
+        await keeper.waitForRecorderSubmissionsForTesting()
         let recorder = try #require(await keeper.getReevaluationRecorder())
         try await recorder.save(to: path)
         await keeper.forceShutdown()

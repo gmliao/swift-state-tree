@@ -28,7 +28,7 @@ private let leaveReplayLandID = "leave-replay:local"
 /// sync. A leave does too: it changes `total` and the staying players' scores, emits an event
 /// and asks for a sync, so its turn records outputs a clear placed too early would precede.
 /// With `tick`, a tick advances `ticks`, emits an event and asks for a sync.
-private func makeLeaveReplayLand(tick: Bool) -> LandDefinition<TurnBoundaryState> {
+private func makeLeaveReplayLand(tick: Bool, onJoin: Bool = false) -> LandDefinition<TurnBoundaryState> {
     let rule = HandleAction(TurnBoundaryAction.self) { (state: inout TurnBoundaryState, action: TurnBoundaryAction, ctx: LandContext) in
         state.total += action.value
         state.scores[ctx.playerID] = action.value
@@ -44,15 +44,26 @@ private func makeLeaveReplayLand(tick: Bool) -> LandDefinition<TurnBoundaryState
         ctx.emitEvent(SyncStreamTestEvent(message: "left-\(ctx.playerID.rawValue)"), to: .all)
         ctx.requestSyncNow()
     }
+    // With `onJoin`, a superseding join kicks the old entry and appends an OnJoin input, so its
+    // admission runs after the append (#700 K1b-5b J4) instead of after the insert.
+    let join = OnJoin { (state: inout TurnBoundaryState, ctx: LandContext) in
+        state.scores[ctx.playerID] = state.scores[ctx.playerID] ?? 0
+    }
     guard tick else {
         return Land("leave-replay", using: TurnBoundaryState.self) {
             ServerEvents { Register(SyncStreamTestEvent.self) }
-            Rules { rule; leave }
+            Rules {
+                rule; leave
+                if onJoin { join }
+            }
         }
     }
     return Land("leave-replay", using: TurnBoundaryState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
-        Rules { rule; leave }
+        Rules {
+            rule; leave
+            if onJoin { join }
+        }
         Lifetime {
             Tick(every: .seconds(3600)) { state, ctx in
                 state.ticks += 1
@@ -71,13 +82,18 @@ private struct LeaveCaseRecord {
     let outputs: [ReevaluationRecordedSyncOutput]
     /// The last stream index recorded before p2's first disconnect, nil when there is none.
     let lastIndexBeforeLeave: UInt64?
+    /// The keeper's refused synchronous re-entries, and its failure, at the end of the script.
+    let reentryViolations: Int
+    let failure: LandFailure?
+    /// p2's recorded OnJoin inputs.
+    let p2JoinInputs: Int
 }
 
 /// Plays the case's script live with in-turn sync and the sync stream recorded, saves the
 /// record to `path`, and returns what its sync stream holds.
-private func recordLeaveCase(_ leaveCase: LeaveReplayCase, tick: Bool, path: String) async throws -> LeaveCaseRecord {
+private func recordLeaveCase(_ leaveCase: LeaveReplayCase, tick: Bool, path: String, onJoin: Bool = false) async throws -> LeaveCaseRecord {
     let keeper = LandKeeper<TurnBoundaryState>(
-        definition: makeLeaveReplayLand(tick: tick),
+        definition: makeLeaveReplayLand(tick: tick, onJoin: onJoin),
         initialState: TurnBoundaryState(),
         enableLiveStateHashRecording: true,
         autoStartLoops: false,
@@ -185,10 +201,40 @@ private func recordLeaveCase(_ leaveCase: LeaveReplayCase, tick: Bool, path: Str
     let outputs = stream.compactMap { entry -> ReevaluationRecordedSyncOutput? in
         if case .output(let output) = entry { return output } else { return nil }
     }
-    return LeaveCaseRecord(markers: markers, outputs: outputs, lastIndexBeforeLeave: lastIndexBeforeLeave)
+    return LeaveCaseRecord(
+        markers: markers, outputs: outputs, lastIndexBeforeLeave: lastIndexBeforeLeave,
+        reentryViolations: await keeper.reentryViolationsForTesting, failure: keeper.failure,
+        p2JoinInputs: await recorder.getAllFrames().flatMap(\.lifecycleEvents).filter { $0.kind == "join" && $0.playerID == "p2" }.count
+    )
 }
 
 struct SyncStreamLeaveReplayTests {
+    /// A superseding join on a land with OnJoin: it kicks the old entry, inserts a first entry
+    /// and appends its OnJoin input, then the transport admits it, recording the old session's
+    /// clear through the keeper. The admission runs after the append, between two segments,
+    /// with no turn body holding the model (#700 K1b-5b §3.5): the sentinel refuses nothing,
+    /// and the record replays.
+    @Test("A superseding join with an OnJoin input records its clear with no refused re-entry", arguments: [true, false])
+    func supersedingJoinWithOnJoinRecordsItsClear(tick: Bool) async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("leave-replay-onjoin-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let record = try await recordLeaveCase(.otherSessionRemains, tick: tick, path: path, onJoin: true)
+
+        #expect(record.reentryViolations == 0)
+        #expect(record.failure == nil, "\(String(describing: record.failure))")
+        #expect(record.markers.contains { $0.kind == .clear }, "\(record.markers.map(\.kind))")
+        // Both of p2's joins appended an OnJoin input: the superseding one went through J4.
+        #expect(record.p2JoinInputs == 2)
+
+        let result = try await ReevaluationEngine.run(
+            definition: makeLeaveReplayLand(tick: tick, onJoin: true),
+            initialState: TurnBoundaryState(),
+            recordFilePath: path
+        )
+        #expect(result.recordCompleteness == .complete)
+        #expect(result.serverEventVerification == .passed, "\(result.serverEventMismatches.map(\.tickId))")
+    }
+
     @Test(
         "A leave's clear stays after the leave, for the last session only; the live record replays with every check passed (#553)",
         arguments: [true, false], LeaveReplayCase.allCases
@@ -198,6 +244,11 @@ struct SyncStreamLeaveReplayTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         let record = try await recordLeaveCase(leaveCase, tick: tick, path: path)
         let markers = record.markers
+        // The superseding join's admission records the old session's clear through the
+        // keeper (`submitSyncStream`). The join runs it between two segments, with no turn body
+        // holding the model (#700 K1b-5b §3.5), so the sentinel refuses nothing.
+        #expect(record.reentryViolations == 0)
+        #expect(record.failure == nil, "\(String(describing: record.failure))")
 
         // p2's markers in stream order: the clear sits between the views it ends and starts.
         let kinds = markers.map { "\($0.kind.rawValue)\($0.rejoin == true ? "-rejoin" : "")" }

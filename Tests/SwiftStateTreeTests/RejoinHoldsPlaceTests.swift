@@ -143,6 +143,25 @@ struct RejoinHoldsPlaceTests {
         #expect(await keeper.currentState().log == ["join:p1:p1-a", "join:p2:p2-a", "join:p1:p1-b"])
     }
 
+    /// The legacy join's kick is its own segment boundary (#700 K1b-5b §4.2): the insert (G2)
+    /// runs after the kick returns, never during it.
+    @Test("a legacy join inserts only after its kick of the old session returns")
+    func legacyJoinInsertsAfterItsKick() async throws {
+        let (keeper, box) = try await makeFullKeeper()
+        defer { box.gate.open() }
+        let rejoin = Task {
+            try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("p1-b"), sessionID: SessionID("p1-b"))
+        }
+        #expect(await box.gate.waitForArrivals(1), "the kick is held in OnLeave's resolver")
+        // The old entry is gone, and the legacy join hasn't inserted yet.
+        #expect(await keeper.playerCount() == 1)
+        box.gate.open()
+        try await rejoin.value
+        #expect(await keeper.playerCount() == 2)
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().log == ["join:p1:p1-a", "join:p2:p2-a", "join:p1:p1-b"])
+    }
+
     @Test("control: without an OnLeave resolver the kick doesn't suspend, the newcomer is refused and the count stays 2")
     func noResolverNoSuspension() async throws {
         let (keeper, _) = try await makeFullKeeper(withLeaveResolver: false)

@@ -66,7 +66,7 @@ enum KeeperCensus {
             "actor.behavior": .container,
             "actor.boundSyncRequesterObject": .outside(.bindingToken),
             "actor.debugHeldInputs": .replaced(by: "K7"),
-            "actor.destroyTask": .replaced(by: "K7"),
+            "actor.destroyTicket": .replaced(by: "K7"),
             "actor.drainFlag": .outside(.drainFlag),
             "actor.drainStartedWaitersForTesting": .replaced(by: "K2"),
             "actor.drainTask": .replaced(by: "K7"),
