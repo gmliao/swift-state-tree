@@ -2991,14 +2991,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let clock = tickLoopClock
         appliedTickPhaseOffset = phaseOffset
         tickLoopConfiguredAt = clock.now()
+        // The loop holds the keeper only for each iteration's work, never across its sleep: a
+        // keeper dropped without a drain then ends its loop and is released, with its recorder
+        // and the recorder's spool file (#910). The deinit's cancel can't run while a strong
+        // reference waits in the loop.
         tickTask = Task { [weak self] in
             if phaseOffset > .zero {
                 await clock.sleepFor(phaseOffset)
             }
-            guard let self = self else { return }
 
             var nextTickTime = clock.now() + interval
-            await self.noteNextTickDeadline(nextTickTime)
+            // `if let`, not `guard let`: a guard's binding would hold the keeper for the whole loop.
+            if let keeper = self { await keeper.noteNextTickDeadline(nextTickTime) } else { return }
 
             while !Task.isCancelled {
                 // If we're already past the scheduled time, execute immediately
@@ -3006,8 +3010,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 if clock.now() < nextTickTime {
                     await clock.sleepUntil(nextTickTime)
                 }
+                guard let keeper = self else { return }
 
-                await self.runTick(allowWhenNoTickTask: false)
+                await keeper.runTick(allowWhenNoTickTask: false)
 
                 // Fixed-rate scheduling: calculate next time from the scheduled time, not from now
                 // This maintains a consistent tick rate even if execution takes longer than interval
@@ -3019,7 +3024,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 while nextTickTime <= clock.now() {
                     nextTickTime = nextTickTime + interval
                 }
-                await self.noteNextTickDeadline(nextTickTime)
+                await keeper.noteNextTickDeadline(nextTickTime)
             }
         }
     }
@@ -4606,11 +4611,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         syncTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
         appliedSyncPhaseOffset = phaseOffset
+        // Weak across the sleep, as the tick loop (#910).
         syncTask = Task { [weak self] in
             if phaseOffset > .zero {
                 try? await safeTaskSleep(for: phaseOffset)
             }
-            guard let self = self else { return }
 
             var nextSyncTime = ContinuousClock.now + interval
 
@@ -4623,7 +4628,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     try? await Task.sleep(until: nextSyncTime, clock: .continuous)
                 }
 
-                await self.runSync()
+                guard let keeper = self else { return }
+                await keeper.runSync()
 
                 // Fixed-rate scheduling: calculate next time from the scheduled time, not from now
                 // This maintains a consistent sync rate even if execution takes longer than interval
