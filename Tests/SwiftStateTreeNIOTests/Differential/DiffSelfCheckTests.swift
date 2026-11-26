@@ -10,7 +10,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 @testable import SwiftStateTreeNIO
 
 extension DifferentialHarness {
@@ -206,6 +206,88 @@ extension DifferentialHarness {
             #expect(DiffGolden.corruption(of: record) != nil, "an edited record view")
         }
 
+        @Test(
+            "The harness waits for the writer's sync-cycle drain before the step's sync and tick (#917)",
+            arguments: [DiffLandKind.tick, DiffLandKind.tickless]
+        )
+        func harnessSyncWaitsForTheWriter(land: DiffLandKind) async throws {
+            // The writer can't be held from here: the transport's `send` hands each frame to its
+            // connection in a task, so the writer's element retires before any connection-level
+            // gate. The harness's own seam is the drain hook, called by the drain it waits for.
+            let seen = DrainObservation()
+            let scenario = DiffScenario(
+                name: "self-check-writer-drain",
+                cells: .all,
+                steps: [
+                    .connect("A", session: "s-a"),
+                    .join("A", player: "pa"),
+                    .bumpUnsynced("A", requestID: "bump-a", amount: 1),
+                    .tickUnsynced,
+                    .check("the next drain is observed") { run in
+                        let connection = try run.attempt("A").connection
+                        let deferred = await run.adapter.syncSkipCounts().outboundBacklog
+                        let frames = await connection.frames.count
+                        run.drainWaitHookForTesting = { run in
+                            // Nothing of the next step has run yet: no phase was deferred, and the
+                            // bump's diff hasn't reached A.
+                            seen.record(
+                                deferredSince: await run.adapter.syncSkipCounts().outboundBacklog - deferred,
+                                framesSince: await connection.frames.count - frames
+                            )
+                        }
+                    },
+                    // The step that runs a sync (and on a tick land, a tick first).
+                    land == .tick ? .tick : .settleJobs,
+                    .liveCheckpoint,
+                ],
+                outcomes: [:],
+                lifecycle: ["pa": [.join, .leave]]
+            )
+            let cell = DiffCell(sync: .inTurn, encoding: .json, land: land)
+            let result = try await DiffRun.make(scenario, cell: cell).execute()
+            let observed = try #require(seen.value, "the step ran no writer drain")
+            #expect(observed.deferredSince == 0 && observed.framesSince == 0, "the step's phase ran before the drain: \(observed)")
+            // And the step's sync did deliver the bump afterwards.
+            let frames = try #require(result.live.connections["A"]?.frames.count)
+            #expect(frames > 0)
+            #expect(result.diagnostics.syncPhasesDeferredByBackPressure == 0, "\(result.diagnostics.summary)")
+        }
+
+        @Test("The sweep flags a deferral outside the forcing scenario, and a forcing scenario without one (#917)")
+        func sweepChecksDeferrals() async throws {
+            let base = try await baseRun()
+            let forcing = try #require(diffScenarios.first { $0.name == "join-during-writer-backlog" })
+            let other = try #require(diffScenarios.first { $0.name == "two-players" })
+            #expect(DiffSweep.scenariosForcingBackPressure == [forcing.name])
+            func sweep(forcing forcingCount: Int, other otherCount: Int) async -> DiffSweep.Report {
+                await DiffSweep.run(
+                    scenarios: [forcing, other], retired: [], expected: [], toolchain: "self-check",
+                    execute: { scenario, _ in
+                        var result = base
+                        result.diagnostics.syncPhasesDeferredByBackPressure = scenario.name == forcing.name ? forcingCount : otherCount
+                        return result
+                    },
+                    readGolden: { name in
+                        DiffGoldenFile(
+                            scenario: name, cell: "",
+                            recordedWith: DiffRecordedWith(commit: "self-check", toolchain: "self-check"),
+                            result: base
+                        )
+                    }
+                )
+            }
+            let clean = await sweep(forcing: 1, other: 0)
+            #expect(clean.issues.isEmpty, "\(clean.issues)")
+
+            let flagged = await sweep(forcing: 0, other: 1)
+            let forcingCells = forcing.cells.cells.count, otherCells = other.cells.cells.count
+            let stopped = flagged.issues.filter { $0.contains("no sync phase was deferred, in a scenario that forces") }
+            let stray = flagged.issues.filter { $0.contains("in a scenario that doesn't force the writer's back-pressure") }
+            #expect(stopped.count == forcingCells && stopped.allSatisfy { $0.hasPrefix(forcing.name) }, "\(flagged.issues)")
+            #expect(stray.count == otherCells && stray.allSatisfy { $0.hasPrefix(other.name) }, "\(flagged.issues)")
+            #expect(flagged.issues.count == forcingCells + otherCells, "\(flagged.issues)")
+        }
+
         @Test("A cell that throws is reported, and the sweep still compares and reports every later cell")
         func sweepGoesOnAfterAThrow() async throws {
             let base = try await baseRun()
@@ -323,6 +405,53 @@ extension DifferentialHarness {
             }
             #expect(Set(lifecycles) == ["teardown-during-keeper-join pa #548"], "recorded lifecycles: \(Set(lifecycles).sorted())")
         }
+
+        @Test("A run reports the sync phases the writer's back-pressure deferred, outside the comparison (#908)")
+        func runReportsBackPressureDeferrals() async throws {
+            let scenario = try #require(diffScenarios.first { $0.name == "second-session" })
+            let cell = DiffCell(sync: .inTurn, encoding: .json, land: .tickless)
+            let quiet = try await DiffRun.make(scenario, cell: cell).execute()
+            #expect(quiet.diagnostics.syncPhasesDeferredByBackPressure == 0)
+            #expect(quiet.diagnostics.summary.isEmpty)
+
+            // One deferral: the first join's sync turn finds the writer busy once.
+            let run = try await DiffRun.make(scenario, cell: cell)
+            let busy = OneBusyRead()
+            _ = run.holds.adapter.on(.joinSyncRequested, arrival: 1) { busy.arm() }
+            await run.adapter.setWriterBackPressureOverrideForTesting { busy.take() }
+            let deferred = try await run.execute()
+            #expect(deferred.diagnostics.syncPhasesDeferredByBackPressure == 1)
+            #expect(deferred.diagnostics.summary == "sync phases deferred by the writer's back-pressure: 1")
+            // Not part of the result's identity, and not in its encoding.
+            var copy = quiet
+            copy.diagnostics = deferred.diagnostics
+            #expect(copy == quiet)
+            let encoded = String(decoding: try JSONEncoder().encode(copy), as: UTF8.self)
+            #expect(!encoded.contains("diagnostics"))
+        }
     }
+}
+
+/// What the harness's drain hook saw, once.
+private final class DrainObservation: @unchecked Sendable {
+    struct Value: CustomStringConvertible {
+        let deferredSince: Int
+        let framesSince: Int
+        var description: String { "deferred since \(deferredSince), frames to A since \(framesSince)" }
+    }
+    private let lock = NSLock()
+    private var stored: Value?
+    var value: Value? { lock.withLock { stored } }
+    func record(deferredSince: Int, framesSince: Int) {
+        lock.withLock { stored = Value(deferredSince: deferredSince, framesSince: framesSince) }
+    }
+}
+
+/// A writer that reads busy once after `arm()`.
+private final class OneBusyRead: @unchecked Sendable {
+    private let lock = NSLock()
+    private var armed = false
+    func arm() { lock.withLock { armed = true } }
+    func take() -> Bool { lock.withLock { defer { armed = false }; return armed } }
 }
 #endif

@@ -30,6 +30,10 @@ func runChecked(_ scenario: DiffScenario, _ cell: DiffCell) async throws -> Diff
 /// the pass. A cell that throws is recorded and the pass goes on: every later cell is still
 /// compared and reported, and the summary says how many threw.
 enum DiffSweep {
+    /// The scenarios that hold the writer with the back-pressure override: the only ones whose
+    /// runs may defer a sync phase, and each of them must.
+    static let scenariosForcingBackPressure: Set<String> = ["join-during-writer-backlog"]
+
     struct Report {
         /// Cells run (not replaced), whether or not they threw.
         var ran = 0
@@ -95,7 +99,21 @@ enum DiffSweep {
                 let entries = expected.filter { $0.scenario == scenario.name && $0.cell == cell }
                 let (unexpected, stale) = DiffBranchLists.judge(differences, entries: entries, checkBytes: checkBytes)
                 if !unexpected.isEmpty {
-                    report.issues.append("\(name):\n\(unexpected.map(\.description).joined(separator: "\n"))")
+                    // Timing-dependent counters of the run, beside its differences (#908).
+                    let diagnostics = actual.diagnostics.summary
+                    report.issues.append("\(name):\n\(unexpected.map(\.description).joined(separator: "\n"))"
+                        + (diagnostics.isEmpty ? "" : "\n(\(diagnostics))"))
+                }
+                // The harness drains the writer before and after each sync it runs, so no phase
+                // finds it busy unless a scenario forces the back-pressure itself (#917); a
+                // scenario that forces it must still see a deferral, or it stopped forcing.
+                let deferred = actual.diagnostics.syncPhasesDeferredByBackPressure
+                if scenariosForcingBackPressure.contains(scenario.name) {
+                    if deferred == 0 {
+                        report.issues.append("\(name): no sync phase was deferred, in a scenario that forces the writer's back-pressure")
+                    }
+                } else if deferred > 0 {
+                    report.issues.append("\(name): \(actual.diagnostics.summary), in a scenario that doesn't force the writer's back-pressure")
                 }
                 if !stale.isEmpty {
                     report.issues.append("\(name): stale expected difference(s): \(stale.map { "\($0.checkpoint) \($0.channel.rawValue) \($0.place) (\($0.reason))" })")

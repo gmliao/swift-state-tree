@@ -118,6 +118,31 @@ struct DiffRunResult: Codable, Equatable, Sendable {
     var live: DiffCapture
     var terminal: DiffCapture
     var record: DiffRecordCapture
+    /// What the run went through, for a failure's report: not compared, and not in a golden.
+    var diagnostics = DiffRunDiagnostics()
+
+    private enum CodingKeys: String, CodingKey { case live, terminal, record }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.live == rhs.live && lhs.terminal == rhs.terminal && lhs.record == rhs.record
+    }
+}
+
+/// A run's counters that depend on timing, reported beside a cell's differences (#908).
+struct DiffRunDiagnostics: Equatable, Sendable {
+    /// In-turn sync phases the writer's back-pressure deferred (`syncSkipCounts().outboundBacklog`).
+    /// A deferred phase builds no output; the writer-drain retry's sync-only turn does instead.
+    /// One deferral turns a tick output into a sync-only one; two in a row share one retry, so
+    /// the record has one output fewer and every later stream index and sync sequence is one
+    /// lower (#908, #917). The harness drains the writer around its syncs, so only a scenario
+    /// that forces the back-pressure sees one.
+    var syncPhasesDeferredByBackPressure = 0
+
+    /// Empty when nothing timing-dependent happened.
+    var summary: String {
+        syncPhasesDeferredByBackPressure == 0 ? ""
+            : "sync phases deferred by the writer's back-pressure: \(syncPhasesDeferredByBackPressure)"
+    }
 }
 
 // MARK: - The run
@@ -230,6 +255,10 @@ final class DiffRun: @unchecked Sendable {
         return run
     }
 
+    /// Called once, by the next writer drain the harness waits for, before it waits (a
+    /// self-check's seam: it sees what ran before the drain, then lets the writer drain).
+    var drainWaitHookForTesting: (@Sendable (DiffRun) async -> Void)?
+
     /// Runs the scenario: its steps, then the stop (unless a step stopped the land), the
     /// terminal capture and the record. Cleans up whatever happens.
     func execute() async throws -> DiffRunResult {
@@ -246,8 +275,17 @@ final class DiffRun: @unchecked Sendable {
             try await barrier()
             let terminal = try await capture()
             let record = try await saveRecord()
+            let deferred = await adapter.syncSkipCounts().outboundBacklog
             await cleanUp()
-            return DiffRunResult(live: live, terminal: terminal, record: record)
+            var result = DiffRunResult(live: live, terminal: terminal, record: record)
+            result.diagnostics.syncPhasesDeferredByBackPressure = deferred
+            return result
+        } catch let failure as DiffRunFailure {
+            // A run that fails names the deferrals it went through too, so a red cell shows
+            // them without a rerun (#908).
+            let diagnostics = DiffRunDiagnostics(syncPhasesDeferredByBackPressure: await adapter.syncSkipCounts().outboundBacklog)
+            await cleanUp()
+            throw diagnostics.summary.isEmpty ? failure : DiffRunFailure("\(failure) (\(diagnostics.summary))")
         } catch {
             await cleanUp()
             throw error
@@ -562,6 +600,7 @@ final class DiffRun: @unchecked Sendable {
 
     /// One tick and the sync cycle after it: the tick loop and the sync loop, once each.
     private func stepTick() async throws {
+        try await drainWriter()
         await keeper.stepTickOnce()
         try await sync()
     }
@@ -569,8 +608,22 @@ final class DiffRun: @unchecked Sendable {
     /// One sync cycle, and the retry a skipped one schedules in the background (a cycle in
     /// flight, or the writer's backlog): with the loops off nothing else would order it.
     private func sync() async throws {
+        try await drainWriter()
         await adapter.syncNow()
         try await bounded("the background syncs") { [adapter] in await adapter.waitForBackgroundSyncsForTesting() }
+        try await drainWriter()
+    }
+
+    /// The writer holds no sync cycle element: a sync phase run next can't find it busy, so no
+    /// run's phases depend on how fast the connections took the frames (#908, #917).
+    private func drainWriter() async throws {
+        if let hook = drainWaitHookForTesting {
+            drainWaitHookForTesting = nil
+            await hook(self)
+        }
+        try await bounded("the writer's sync cycle drain") { [writer = adapter.outboundWriter] in
+            await writer.waitForSyncCycleDrain()
+        }
     }
 
     // MARK: Checkpoints
