@@ -103,10 +103,13 @@ jobs:
       shell: bash
       run: |
         for link in debug release; do
-          if cmd //c rmdir //q "$(cygpath -w ".build/$link")" >/dev/null 2>&1; then
-            echo "removed .build/$link"
+          path=".build/$link"
+          if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+            echo "$path: absent"
+          elif cmd //c rmdir //q "$(cygpath -w "$path")" >/dev/null 2>&1; then
+            echo "removed $path"
           else
-            echo ".build/$link: nothing removed (absent, or not a link or an empty directory)"
+            echo "::warning::$path exists and is not a link or an empty directory; kept, SwiftPM may warn about it"
           fi
         done
 
