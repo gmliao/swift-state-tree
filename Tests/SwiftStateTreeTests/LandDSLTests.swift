@@ -1058,7 +1058,9 @@ func testDestroyWhenEmptyStaleTimerDoesNotDrain() async throws {
 
     holds.first.open()
     await stale.value
-    #expect(!keeper.isDraining, "the stale timer drained the land")
+    // Required: after a stale drain the control's timer is cancelled and never arrives, so a
+    // failure here must end the test instead of waiting out the hang bound below.
+    try #require(!keeper.isDraining, "the stale timer drained the land")
 
     // Control: the current timer drains.
     #expect(await holds.later.waitForArrivals(1))
