@@ -9,6 +9,7 @@
 - 2026-11-26: K2-E keeps the sequence counter and `syncRequestsByTick` in the collector; K1b-5's move commit moves them into the model (§4.4, K1b-5 plan D15.3 rev 2.6).
 - 2026-11-26: K2-E2, a new PR: CanJoin's and the sync handler's scopes stop stranding their outputs, which lets K2-2 keep the emitted-events list in the step (§4.4, §6); P-K2-2a, the tickless before-picture. K2-Q4 decided (a) (maintainer): they drop and count their outputs, so K2-E2 goes before K1b-5's move, with #899's drop; the move's tests shrink to the handler step, against K2-E2's after-picture. K6 later makes CanJoin's drop a compile-time property.
 - 2026-11-26: §4.4 retaken after K2-E (#892) and #899: emit-time numbering, the K2 invariant and its third leg, the lend's scopes and the staged sync requests (K1b-5 plan D15.3 rev 2.10), the move's tests and P-K2E-1.
+- 2026-11-26: K2-0, split out of K2-1: the facade lint lands first, inert until K2-2; the core's `isStepping` already landed in #883 (§6, P-K2-0).
 
 §17 lists the changes. Draft 6 answered Review's NOT GO on draft 5 (3 must-fix, 3 should, 3 nits):
 - K2-Q3's recommended option now has a mechanism and a probe (§4.2, P5).
@@ -101,7 +102,7 @@ Each row of parent §3.3's table becomes one forwarding method on the facade. Th
   Recommended: (a), since the parent plan promises no public change (§8).
 
   **(a)'s mechanism** (new in draft 6; probe P5):
-  1. **Where the predicate comes from.** The core gets a package accessor, `isStepping` (`borrows < 0`). This is a SwiftStateTurns change, additive and package-only, in K2-1. A counter in the facade can't be the predicate: the core also starts steps the facade never sees (timers, deferred sends, mail after K4). `borrows` is `@usableFromInline internal` today (TurnCore.swift:129), and only `borrowStateForTesting` is `package`.
+  1. **Where the predicate comes from.** The core gets a package accessor, `isStepping` (`borrows < 0`). This is a SwiftStateTurns change, additive and package-only. It landed ahead of K2-1, in #883, with `IsSteppingTests`. A counter in the facade can't be the predicate: the core also starts steps the facade never sees (timers, deferred sends, mail after K4). `borrows` is `@usableFromInline internal` today (TurnCore.swift:129), and only `borrowStateForTesting` is `package`.
   2. **How the refusing entry records the trip.** A guarded facade entry reads `live.core.isStepping` on the shared executor before it forwards. When the core is stepping:
      - it changes nothing in the model;
      - it adds 1 to a violation count;
@@ -321,11 +322,18 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 
 | PR | Content | Behavior change | Host A/B |
 |---|---|---|---|
-| **K2-1, the types** | `KeeperInput`, `KeeperQuery`, `KeeperEffect` and the rest; `extension KeeperModel: TurnMachine`. `handle` calls the very K1b-5 bodies and segments the keeper calls, not copies, so the two can't drift (condition 1). The callback audit (§4.5, condition 3). The lint fixture for the facade. Not wired: the keeper doesn't use it yet | none | none (not wired) |
+| **K2-1, the types** | `KeeperInput`, `KeeperQuery`, `KeeperEffect` and the rest; `extension KeeperModel: TurnMachine`. `handle` calls the very K1b-5 bodies and segments the keeper calls, not copies, so the two can't drift (condition 1). The callback audit (§4.5, condition 3). Not wired: the keeper doesn't use it yet | none | none (not wired) |
 | **K2-E, the step scope** | `StepScope` (the RNG service and the emitter scope), bound in `withHandlerStep`; the counter and `syncRequestsByTick` stay in the collector (they move into the model in K1b-5's move commit, ending K1b-4's D1). On today's keeper (condition 2) | yes, the one in K2: an emit from a context kept past its step is dropped and counted (parent §8) | small: it touches the emit path |
 | **K2-E2, CanJoin's and the sync handler's outputs** | their scopes drop and count their outputs (#899's drop), instead of leaving them in the tick-keyed tables (§4.4). On today's keeper, before K1b-5's move | yes: nothing a client receives changes; in a new record their sequence gaps go and later sequences are lower; old records replay unchanged | none: record bytes change only for lands whose CanJoin or sync handler emits |
 | **K2-2, the cut-over** | the facade and `KeeperOwner`; every entry forwards to the core; the binding token, the services table, the package admission path, the drivers. A pure cut-over. The K2-Q1 docs (§5) | none | full, plus §8's three cells |
 | **K2-3, the leftovers** | the code paths K2-2 made unreachable, each proven unreachable on live keepers **and in the replay owner**: until #612, replay calls the same bodies without a core (§7.2), so a path dead on live keepers can still be live in replay (condition 4). K9 still owns the deletions that need K3–K7 | none | none, unless it touches a hot path |
+
+**K2-0, split out of K2-1 (2026-11-26).** The facade lint, `facade` in `scripts/lint-turns.sh` (§3's three clauses), lands first, as its own PR with its `--self-test` fixture.
+- It touches no keeper file, and none of the move's.
+- It applies to the file that declares `enum KeeperOwner`. No file declares it until K2-2, so on today's tree the rule finds nothing.
+- K2-1's text doesn't depend on it: K2-1 doesn't build the facade.
+- The core's `isStepping` (§4.2 point 1), the other piece that doesn't wait for the move, is already on main: #883.
+- K2-1 keeps the types, the machine, the callback audit and the differential.
 
 **K2-1's tests are a unit-level differential.** Each §4.3 flow row is driven twice on the same inputs: through a test `TurnCore` running the machine, and through the keeper's direct path. The resulting model and outputs are compared. Draft 6 adds one ordered trace per run, compared entry by entry: the staged actions, the recorder hand-offs, the port calls, and the frames enqueued, with their contents.
 - The trace runs on an eventful path (a tick that emits events and syncs) and on a refusal path (a port callback refused mid-step).
@@ -407,6 +415,7 @@ Each point below rests on Swift semantics, so it is checked by a probe, not argu
 | P-K2E-1 (2026-11-26) | the move's golden: the numbering and the sync requests of every scope that passes outputs, before the move (§4.4) | `2026-11-26-k2-probe-k2e1.swift`, a recorded tick land, run on main at fb1457e6 | CanJoin's and the sync handler's outputs stay under `lastCommittedTickId` keys (sequences 0, 2, 7, 8); the rest are taken |
 | P-K2-2a (2026-11-26) | on a tickless land too, CanJoin's and the sync handler's outputs are stranded, and every other event is taken in the turn that emitted it, so K2-2 can keep the events list in the step once K2-E2 is in (§4.4) | `2026-11-26-k2-probe-k22a.swift`, a recorded tickless land, run on main at 2f2d2439 | CanJoin's sequences 0, 3, 7 and the sync handler's 6 stay under key -1, with the requests; OnJoin's and the actions' events are taken |
 | P-K2-2b (2026-11-26) | the record place of a superseding join's sync-stream clear, before K2-2 moves the admission into a step (§4.5) | `2026-11-26-k2-probe-k22b.swift`, appended to `SyncStreamLeaveReplayTests`, run at #896's head c0ae1b62 | on all four lands the clear follows the superseded session's last output and precedes the new seed; 0 refusals, no failure |
+| P-K2-0 (2026-11-26) | K2-0 is separable: the facade lint is inert on today's tree, `isStepping` is already in, and the in-flight PRs don't touch the lint's rules (§6) | on main at 369dce8d: `git grep -n "enum KeeperOwner\|LiveLandTurns" -- Sources Tests Examples`; `git log -S"isStepping: Bool" -- Sources/SwiftStateTurns/TurnCore.swift`; the `@@` hunks of `scripts/lint-turns.sh` in #902's, #906's and #896's diffs against main | no match. `isStepping` is fdd0ccb9 (#883), with `Tests/SwiftStateTurnsTests/IsSteppingTests.swift`. #902 and #906 change one hunk, at line 60, the `ALLOW_MARKERS` list; #896 doesn't change the lint |
 
 
 What the probes don't cover:
