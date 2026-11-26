@@ -352,6 +352,7 @@ struct InTurnSyncFoldReportTests {
             #expect(keeper.failure?.kind == .keeperReentry, "call \(n)")
             #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
             #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
+            #expect(await keeper.reentriesAppliedInCallForTesting == 1, "call \(n): not applied by its call's callOut")
             #expect(await keeper.bodyDepthForTesting == 0, "call \(n)")
         }
         // Folded: the fold report and the phase. Join sync: the in-turn check and the joins read,
