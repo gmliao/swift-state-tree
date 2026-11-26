@@ -823,8 +823,8 @@ struct ReplaySequenceWatermarkTests {
     /// change to where an event takes its number (#700 K1b-5 plan D15.3, K2 plan §4.4) shows up
     /// as a byte difference, not only as a replay mismatch. Each frame's watermarks sit between
     /// the input handlers' events and the tick handler's.
-    @Test("A recorded tick with events from its inputs and its tick handler keeps its bytes")
-    func recordedTickBytesArePinned() async throws {
+    @Test("A recorded tick with events from its inputs and its tick handler keeps its frames")
+    func recordedTickFramesArePinned() async throws {
         let keeper = await makeLiveKeeper(definition: makeWatermarkTestDefinition())
         try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
         for amount in [1, 2] {
@@ -842,6 +842,10 @@ struct ReplaySequenceWatermarkTests {
         await keeper.stepTickOnce()
 
         let recorder = try #require(await keeper.getReevaluationRecorder())
+        // Close the last tick's pending record, so every frame is a written one: the pending
+        // copy encodes differently (it keeps `payloadEncoding`), and pinning it would also pin
+        // when the last tick is handed off.
+        await recorder.endTurn()
         let frames = await recorder.getAllFrames()
         for frame in frames {
             let before = try #require(frame.sequenceBeforeInputs)
@@ -857,12 +861,12 @@ struct ReplaySequenceWatermarkTests {
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let bytes = String(decoding: try encoder.encode(frames), as: UTF8.self)
-        #expect(bytes == Self.pinnedTickBytes)
+        let encoded = String(decoding: try encoder.encode(frames), as: UTF8.self)
+        #expect(encoded == Self.pinnedTickFrames)
     }
 
-    /// Captured on the keeper before the move (#700 K1b-5); the move must not change it.
-    private static let pinnedTickBytes = #"[{"actions":[{"clientID":"c1","kind":"action","payload":"eyJhbW91bnQiOjF9","playerID":"p1","resolvedAtTick":-1,"resolverOutputs":{},"sequence":2,"sessionID":"s1","typeIdentifier":"WatermarkEmitAction"},{"clientID":"c1","kind":"action","payload":"eyJhbW91bnQiOjJ9","playerID":"p1","resolvedAtTick":-1,"resolverOutputs":{},"sequence":3,"sessionID":"s1","typeIdentifier":"WatermarkEmitAction"}],"clientEvents":[],"initialize":{"sequence":0,"serverEvents":[],"stateHash":"5eae8310dd50693b"},"lifecycleEvents":[{"kind":"initialize","metadata":{},"resolvedAtTick":-1,"resolverOutputs":{},"sequence":0,"tickId":0},{"clientID":"c1","isGuest":false,"kind":"join","metadata":{},"playerID":"p1","resolvedAtTick":-1,"resolverOutputs":{},"sequence":1,"sessionID":"s1","tickId":0}],"sequenceBeforeInputs":4,"sequenceBeforeTickHandler":7,"serverEvents":[{"kind":"serverEvent","payload":{"player":"p1"},"sequence":4,"target":{"ids":[],"kind":"all"},"tickId":0,"typeIdentifier":"WatermarkJoin"},{"kind":"serverEvent","payload":{"amount":1},"sequence":5,"target":{"ids":[],"kind":"all"},"tickId":0,"typeIdentifier":"WatermarkAction"},{"kind":"serverEvent","payload":{"amount":2},"sequence":6,"target":{"ids":[],"kind":"all"},"tickId":0,"typeIdentifier":"WatermarkAction"},{"kind":"serverEvent","payload":{"tick":1},"sequence":7,"target":{"ids":[],"kind":"all"},"tickId":0,"typeIdentifier":"WatermarkTick"}],"stateHash":"d3af454a0793c679","tickId":0},{"actions":[{"clientID":"c2","kind":"action","payload":"eyJhbW91bnQiOjN9","payloadEncoding":"json","playerID":"p2","resolvedAtTick":0,"resolverOutputs":{},"sequence":9,"sessionID":"s2","typeIdentifier":"WatermarkEmitAction"}],"clientEvents":[],"lifecycleEvents":[{"clientID":"c2","isGuest":false,"kind":"join","metadata":{},"playerID":"p2","resolvedAtTick":0,"resolverOutputs":{},"sequence":8,"sessionID":"s2","tickId":1}],"sequenceBeforeInputs":10,"sequenceBeforeTickHandler":12,"serverEvents":[{"kind":"serverEvent","payload":{"player":"p2"},"sequence":10,"target":{"ids":[],"kind":"all"},"tickId":1,"typeIdentifier":"WatermarkJoin"},{"kind":"serverEvent","payload":{"amount":3},"sequence":11,"target":{"ids":[],"kind":"all"},"tickId":1,"typeIdentifier":"WatermarkAction"},{"kind":"serverEvent","payload":{"tick":2},"sequence":12,"target":{"ids":[],"kind":"all"},"tickId":1,"typeIdentifier":"WatermarkTick"}],"stateHash":"0ecb0f3237a043a2","tickId":1}]"#
+    /// Captured after the record ends, before K1b-5's move (#700); the move must not change it.
+    private static let pinnedTickFrames = #"[{"actions":[{"clientID":"c1","kind":"action","payload":"eyJhbW91bnQiOjF9","playerID":"p1","resolvedAtTick":-1,"resolverOutputs":{},"sequence":2,"sessionID":"s1","typeIdentifier":"WatermarkEmitAction"},{"clientID":"c1","kind":"action","payload":"eyJhbW91bnQiOjJ9","playerID":"p1","resolvedAtTick":-1,"resolverOutputs":{},"sequence":3,"sessionID":"s1","typeIdentifier":"WatermarkEmitAction"}],"clientEvents":[],"initialize":{"sequence":0,"serverEvents":[],"stateHash":"5eae8310dd50693b"},"lifecycleEvents":[{"kind":"initialize","metadata":{},"resolvedAtTick":-1,"resolverOutputs":{},"sequence":0,"tickId":0},{"clientID":"c1","isGuest":false,"kind":"join","metadata":{},"playerID":"p1","resolvedAtTick":-1,"resolverOutputs":{},"sequence":1,"sessionID":"s1","tickId":0}],"sequenceBeforeInputs":4,"sequenceBeforeTickHandler":7,"serverEvents":[{"kind":"serverEvent","payload":{"player":"p1"},"sequence":4,"target":{"ids":[],"kind":"all"},"tickId":0,"typeIdentifier":"WatermarkJoin"},{"kind":"serverEvent","payload":{"amount":1},"sequence":5,"target":{"ids":[],"kind":"all"},"tickId":0,"typeIdentifier":"WatermarkAction"},{"kind":"serverEvent","payload":{"amount":2},"sequence":6,"target":{"ids":[],"kind":"all"},"tickId":0,"typeIdentifier":"WatermarkAction"},{"kind":"serverEvent","payload":{"tick":1},"sequence":7,"target":{"ids":[],"kind":"all"},"tickId":0,"typeIdentifier":"WatermarkTick"}],"stateHash":"d3af454a0793c679","tickId":0},{"actions":[{"clientID":"c2","kind":"action","payload":"eyJhbW91bnQiOjN9","playerID":"p2","resolvedAtTick":0,"resolverOutputs":{},"sequence":9,"sessionID":"s2","typeIdentifier":"WatermarkEmitAction"}],"clientEvents":[],"lifecycleEvents":[{"clientID":"c2","isGuest":false,"kind":"join","metadata":{},"playerID":"p2","resolvedAtTick":0,"resolverOutputs":{},"sequence":8,"sessionID":"s2","tickId":1}],"sequenceBeforeInputs":10,"sequenceBeforeTickHandler":12,"serverEvents":[{"kind":"serverEvent","payload":{"player":"p2"},"sequence":10,"target":{"ids":[],"kind":"all"},"tickId":1,"typeIdentifier":"WatermarkJoin"},{"kind":"serverEvent","payload":{"amount":3},"sequence":11,"target":{"ids":[],"kind":"all"},"tickId":1,"typeIdentifier":"WatermarkAction"},{"kind":"serverEvent","payload":{"tick":2},"sequence":12,"target":{"ids":[],"kind":"all"},"tickId":1,"typeIdentifier":"WatermarkTick"}],"stateHash":"0ecb0f3237a043a2","tickId":1}]"#
 
     // Test 9b
     @Test("An input that arrives while a live tick's record is held, after its watermarks: replay still matches")

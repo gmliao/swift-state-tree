@@ -2681,6 +2681,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             "behavior": labels(behavior),
             "behavior.config": labels(behavior.config),
             "replay": labels(replay),
+            "turnSide": labels(turnSide),
+            "turnSide.actions": labels(turnSide.actions),
+            "behavior.reentrySentinel": labels(behavior.reentrySentinel),
         ]
     }
     package func setInputTurnResultForTesting(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {

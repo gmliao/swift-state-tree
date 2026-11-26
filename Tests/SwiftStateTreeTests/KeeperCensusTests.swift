@@ -27,7 +27,7 @@ enum KeeperFieldHome: Hashable, CustomStringConvertible {
     case container
 
     enum OutsideGroup: String {
-        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, turnSide, stepScope
+        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable, reentrySentinel, stepScope
     }
 
     var description: String {
@@ -53,7 +53,9 @@ struct KeeperCensusException {
 
 enum KeeperCensus {
     /// The groups `censusLabelsForTesting()` reflects.
-    static let groups: Set<String> = ["actor", "model", "behavior", "behavior.config", "replay"]
+    static let groups: Set<String> = [
+        "actor", "model", "behavior", "behavior.config", "replay", "turnSide", "turnSide.actions", "behavior.reentrySentinel",
+    ]
 
     /// Every stored property, by storage path, with its home.
     static let homes: [String: KeeperFieldHome] = {
@@ -105,7 +107,7 @@ enum KeeperCensus {
             "actor.tickLoopConfiguredAt": .outside(.loopDriver),
             "actor.tickTask": .replaced(by: "K2"),
             "actor.transport": .outside(.bindingToken),
-            "actor.turnSide": .outside(.turnSide),
+            "actor.turnSide": .container,
             "behavior.config": .container,
             "behavior.config.actualLandID": .behavior,
             "behavior.config.autoStartLoops": .behavior,
@@ -122,8 +124,29 @@ enum KeeperCensus {
             "behavior.payloadDecoders": .behavior,
             "behavior.resolverServices": .behavior,
             "behavior.services": .behavior,
-            // The sentinel's fields live in the class it references (#700 K1b-5 rev 2.3 D13).
+            // The sentinel is a class the behavior holds (#700 K1b-5 rev 2.3 D13, a listed
+            // exception below); its fields are rows under its own path.
             "behavior.reentrySentinel": .behavior,
+            "behavior.reentrySentinel.bodyDepth": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.closingGateForReentry": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.lateReentriesApplied": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentriesAppliedInCall": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentryClosedGate": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentryFailure": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentryGateClosed": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentryViolations": .outside(.reentrySentinel),
+            // The turn side and its action tables (#700 K1b-5 rev 2.3 D11): moved paths, homes
+            // unchanged.
+            "turnSide.submissions": .outside(.recorder),
+            "turnSide.actions": .container,
+            "turnSide.failures": .outside(.failureTable),
+            "turnSide.debugDrainWaiters": .replaced(by: "K7"),
+            "turnSide.probe": .testHook,
+            "turnSide.actions.jobTasks": .replaced(by: "K5"),
+            "turnSide.actions.removalWaiters": .replaced(by: "K2"),
+            "turnSide.actions.slotWaiters": .replaced(by: "K2"),
+            "turnSide.actions.slotWatchers": .replaced(by: "K2"),
+            "turnSide.actions.auditOn": .testHook,
             "behavior.reevaluationRecorder": .behavior,
             "model.actionJobs": .model,
             "model.actionJobsStarted": .model,
@@ -272,11 +295,17 @@ struct KeeperCensusTests {
     @Test("Each row's home matches the container its path names")
     func homesMatchPaths() {
         for (path, home) in KeeperCensus.homes {
-            let container = path.hasPrefix("behavior.config.") ? "behavior.config" : String(path.prefix { $0 != "." })
+            // The longest group that prefixes the path names its container.
+            let container = KeeperCensus.groups.filter { path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
+                ?? String(path.prefix { $0 != "." })
             switch (container, home) {
             case ("model", .model), ("behavior", .behavior), ("behavior.config", .behavior), ("replay", .replay):
                 continue
             case ("behavior", .container) where path == "behavior.config":
+                continue
+            case ("turnSide", .container) where path == "turnSide.actions":
+                continue
+            case ("turnSide", _), ("turnSide.actions", _), ("behavior.reentrySentinel", .outside(.reentrySentinel)):
                 continue
             case ("actor", .model), ("actor", .behavior), ("actor", .replay):
                 Issue.record("\(path): a \(home) field still on the actor")

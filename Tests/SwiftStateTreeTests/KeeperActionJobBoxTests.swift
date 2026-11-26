@@ -71,6 +71,9 @@ struct KeeperActionJobBoxTests {
         box.install(task)
         #expect(task.isCancelled)
         #expect(box.installedTask != nil)
+        // The task ends only on the cancel under test: cancel it here too, so a box that lost
+        // the cancel fails the expect above instead of hanging the await.
+        task.cancel()
         await task.value
     }
 
@@ -83,6 +86,7 @@ struct KeeperActionJobBoxTests {
         #expect(!task.isCancelled)
         box.cancel()
         #expect(task.isCancelled)
+        task.cancel()
         await task.value
     }
 
@@ -102,6 +106,28 @@ struct KeeperActionJobBoxTests {
         box.cancel()
         // The handler ran inside `cancel()`, before it returned.
         #expect(read.isSet)
+        task.cancel()
+        await task.value
+    }
+
+    @Test("A cancellation handler that reads the box runs inside the install's forwarded cancel without finding it locked")
+    func handlerReadsTheBoxDuringTheForwardedCancel() async {
+        let box = box()
+        let wait = CancellableWait()
+        let read = ActionJobCallerCancellation()
+        wait.onCancel = {
+            // Runs synchronously inside the `cancel()` that `install` forwards: the box's lock
+            // must be released by then.
+            _ = box.installedTask
+            read.set()
+        }
+        // A task already inside the handler's scope, so its handler runs inside `cancel()`.
+        let task = Task { await wait.run() }
+        await wait.waitUntilEntered()
+        box.cancel()
+        box.install(task)
+        #expect(read.isSet)
+        task.cancel()
         await task.value
     }
 }
