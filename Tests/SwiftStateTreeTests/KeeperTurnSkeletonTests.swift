@@ -309,6 +309,10 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
         }))
     }
     func noteJoinInputsConsumed(_ results: [JoinInputResult]) { noteCall() }
+    func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool {
+        noteCall()
+        return false
+    }
     func waitForWriterDrainForInTurnSync() async {}
 }
 
@@ -694,6 +698,41 @@ struct KeeperTurnSkeletonTests {
         #expect(await keeper.reentryViolationsForTesting == 1)
         #expect(await keeper.lateReentriesAppliedForTesting == 0, "applied by the backstop, not in the body")
         #expect(transport.closeCount == 1)
+    }
+
+    /// J2's stale-join refusal (#234) goes through `callOut` (#700 K1b-5b): a re-entry at either
+    /// of its port calls ends the land in that call, and the drain check refuses the join as
+    /// shutting down before the player limit and the insert.
+    @Test("A re-entry at the stale-join refusal ends the land and refuses the join", arguments: [1, 2])
+    func staleRefusalReentryRefusesTheJoin(at call: Int) async throws {
+        let (keeper, transport, _) = await attachedKeeper(.nthCallInBody, onJoin: true)
+        await keeper.awaitInitialization()
+        // The in-turn check (`runsSyncPhaseInTurn`), then the refusal.
+        transport.armNthCallInBody(call)
+
+        var refusal: JoinError?
+        do {
+            _ = try await keeper.joinReportingAdmission(
+                session: PlayerSession(playerID: "p1"),
+                clientID: ClientID("c1"),
+                sessionID: SessionID("s1"),
+                services: LandServices(),
+                admitThroughTransport: true
+            )
+        } catch let error as JoinError {
+            refusal = error
+        }
+
+        #expect(transport.reenteredAtNth)
+        guard case .landShuttingDown = refusal else {
+            Issue.record("the join's outcome: \(String(describing: refusal))")
+            return
+        }
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(await keeper.reentriesAppliedInCallForTesting == 1)
+        #expect(await keeper.lateReentriesAppliedForTesting == 0)
+        #expect(await keeper.currentState().value == 0, "no OnJoin applied")
     }
 
     /// A batch's queued failure is applied before its join report (#884's second track), so a

@@ -14,7 +14,8 @@ import SwiftStateTurns
 /// `assumeIsolated` on a captured keeper, say): the handler's state borrows the keeper's whole
 /// model, so the keeper can't read it until the handler returns, and Swift's run-time
 /// exclusivity check stops the process, in release builds too. Work that needs the keeper goes
-/// through the context: emit an event, request a sync, submit a server input.
+/// through the context: emit an event, request a sync, submit a server input. CanJoin is under
+/// the same rule: it gets the state by value, but the keeper holds its model while it runs.
 public struct LandContext: Sendable {
     // MARK: - System IDs
     

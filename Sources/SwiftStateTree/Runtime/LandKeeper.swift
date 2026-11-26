@@ -101,6 +101,37 @@ package struct ActionResultUnavailable: Error, Equatable {
     package let sequence: Int64
 }
 
+/// The empty-land destroy timer's handle (D16). A start staged in a turn body installs its task
+/// here at the flush; a cancel before that marks the ticket, and the install then cancels the
+/// task. Decided under the lock, cancelled after it: `cancel()` can run cancellation handlers
+/// synchronously, and the lock isn't recursive.
+private final class DestroyTicket: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    private var cancelled = false
+
+    func install(_ newTask: Task<Void, Never>) {
+        let cancelNow = lock.withLock { () -> Bool in
+            task = newTask
+            return cancelled
+        }
+        if cancelNow { newTask.cancel() }
+    }
+
+    func cancel() {
+        let installed = lock.withLock { () -> Task<Void, Never>? in
+            if let task { return task }
+            cancelled = true
+            return nil
+        }
+        installed?.cancel()
+    }
+
+    var installedTask: Task<Void, Never>? {
+        lock.withLock { task }
+    }
+}
+
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Unified pending item for every input kind (`package`: nothing public takes or returns it).
     @PlainData
@@ -634,7 +665,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private var tickTask: Task<Void, Never>?
     private var syncTask: Task<Void, Never>?
-    private var destroyTask: Task<Void, Never>?
+    /// The empty-land destroy timer's box (D16): a start staged in a turn body installs its task
+    /// into the ticket it captured, so a cancel before the flush still stops it.
+    private var destroyTicket: DestroyTicket?
     /// The destruction in progress (single-flight): `shutdownIfIdle` runs it once.
     private var drainTask: Task<Void, Never>?
     private let drainFlag = DrainFlag()
@@ -921,7 +954,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The empty-room destroy timer, if one is armed (tests only): awaiting its value waits for
     /// the timer and the destruction it starts, or returns at once once it was cancelled.
     func destroyTimerForTesting() -> Task<Void, Never>? {
-        destroyTask
+        destroyTicket?.installedTask
     }
 
     /// Whether the tick loop has been started (tests only).
@@ -1317,10 +1350,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Ends one attempt's reservation; idempotent, and it leaves the player's other attempts' ones.
-    private func endRejoinReservation(_ reservation: Epoch, of playerID: PlayerID) {
-        guard var epochs = model.rejoinReservations[playerID] else { return }
+    private func endRejoinReservation(_ m: inout KeeperModel<State>, _ reservation: Epoch, of playerID: PlayerID) {
+        guard var epochs = m.rejoinReservations[playerID] else { return }
         epochs.remove(reservation)
-        model.rejoinReservations[playerID] = epochs.isEmpty ? nil : epochs
+        m.rejoinReservations[playerID] = epochs.isEmpty ? nil : epochs
     }
 
     /// Tears the land down after its initialization failed (#104): the normal drain, without the
@@ -1680,7 +1713,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     deinit {
         tickTask?.cancel()
         syncTask?.cancel()
-        destroyTask?.cancel()
+        destroyTicket?.cancel()
     }
 
     // MARK: - Debug Freeze
@@ -1964,98 +1997,251 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) async throws {
         try await ensureInitializedForJoin()
         await holds.at(.join)
-        // Check for duplicate playerID login (Kick Old strategy)
-        if let existingSession = model.players[playerID], let oldClientID = existingSession.clientID {
-            behavior.logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
-            // Kick old connection by calling leave
-            // This will call OnLeave handler and clean up state
-            try await leave(playerID: playerID, clientID: oldClientID, sessionID: existingSession.lastSessionID)
+        let call = LegacyJoinCall(playerID: playerID, clientID: clientID, sessionID: sessionID, services: services)
+        var request = try withTurn { m, side, outputs in try legacyJoinBegin(&m, &side, &outputs, call) }
+        while true {
+            switch request {
+            case let .kick(oldClientID, oldSessionID):
+                // Kick old connection by calling leave
+                // This will call OnLeave handler and clean up state
+                try await leave(playerID: playerID, clientID: oldClientID, sessionID: oldSessionID)
+                request = try withTurn { m, side, outputs in try legacyJoinInsert(&m, &side, &outputs, call) }
+            case let .runOnJoinResolvers(capture, resolverContext, landContext):
+                let resolverOutputs = try await runOnJoinResolvers(capture, resolverContext, landContext)
+                request = try withTurn { m, side, outputs in
+                    // Bind to the tick that was current when resolvers completed
+                    try legacyJoinAppend(&m, &side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: m.lastCommittedTickId)
+                }
+            case let .awaitInputTurn(sequence):
+                // Registered in the same segment as the append's: no suspension since it.
+                _ = try await awaitInputTurn(sequence: sequence)
+                return
+            case .done:
+                return
+            }
         }
+    }
 
-        var session = model.players[playerID] ?? KeeperPlayerEntry()
+    /// The legacy join's requests (#700 K1b-5b §4.2): no CanJoin, no cap, no admission.
+    private enum LegacyJoinRequest {
+        /// The old session's leave (§4.3's flow); G2 follows it.
+        case kick(oldClientID: ClientID, oldSessionID: SessionID?)
+        case runOnJoinResolvers(OnJoinCapture, ResolverContext, LandContext)
+        case awaitInputTurn(sequence: Int64)
+        case done
+    }
+
+    /// The legacy join's call.
+    private struct LegacyJoinCall {
+        let playerID: PlayerID
+        let clientID: ClientID
+        let sessionID: SessionID
+        let services: LandServices
+    }
+
+    /// G1: the kick target, after the hold. Without one it goes on to G2 in this segment.
+    private func legacyJoinBegin(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ call: LegacyJoinCall
+    ) throws -> LegacyJoinRequest {
+        // Check for duplicate playerID login (Kick Old strategy)
+        if let existingSession = m.players[call.playerID], let oldClientID = existingSession.clientID {
+            behavior.logger.info("Duplicate playerID login detected: \(call.playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
+            return .kick(oldClientID: oldClientID, oldSessionID: existingSession.lastSessionID)
+        }
+        return try legacyJoinInsert(&m, &side, &outputs, call)
+    }
+
+    /// G2: the insert, after the kick if there was one, and the OnJoin request.
+    private func legacyJoinInsert(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ call: LegacyJoinCall
+    ) throws -> LegacyJoinRequest {
+        let playerID = call.playerID
+        var session = m.players[playerID] ?? KeeperPlayerEntry()
         let isFirst = session.clientID == nil
 
-        session.clientID = clientID
-        session.lastSessionID = sessionID
+        session.clientID = call.clientID
+        session.lastSessionID = call.sessionID
         // Checked in the same synchronous segment as the insert: a destruction that started
         // during this join's awaits must not get a player after it stopped the loops.
         guard !isDraining else { throw JoinError.landShuttingDown }
-        let entryGeneration = model.entryGenerations.next()
+        let entryGeneration = m.entryGenerations.next()
         session.generation = entryGeneration
-        model.players[playerID] = session
-        playerServices[playerID] = (generation: entryGeneration, services: services)
+        m.players[playerID] = session
+        playerServices[playerID] = (generation: entryGeneration, services: call.services)
 
-        destroyTask?.cancel()
-        destroyTask = nil
+        cancelDestroy(&m, &side)
 
         // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
         // so they are not added to game state (which would create an extra player in the replay).
-        guard isFirst, definition.lifetimeHandlers.onJoin != nil, behavior.config.mode != .reevaluation else { return }
+        guard isFirst, definition.lifetimeHandlers.onJoin != nil, behavior.config.mode != .reevaluation else { return .done }
 
-        // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
-        let sequence = outputCollector.takeNextSequence()
-
-        // Snapshot tick at request time; update after resolver completion for async determinism.
-        var resolvedAtTick = model.lastCommittedTickId
-        var resolverOutputs: [String: HeldResolverOutput] = [:]
-
+        let capture = OnJoinCapture(
+            playerID: playerID,
+            clientID: call.clientID,
+            sessionID: call.sessionID,
+            services: call.services,
+            deviceID: session.deviceID,
+            isGuest: session.isGuest,
+            metadata: session.metadata,
+            contextCarriesIdentity: false,
+            entryGeneration: entryGeneration,
+            // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
+            sequence: outputCollector.takeNextSequence(),
+            // Snapshot tick at request time; update after resolver completion for async determinism.
+            resolvedAtTick: m.lastCommittedTickId
+        )
         // Execute resolvers in parallel if any are declared
-        if !definition.lifetimeHandlers.onJoinResolverExecutors.isEmpty {
-            var ctx = makeContext(&model,
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: sessionID,
-                servicesOverride: services
-            )
-            let resolverContext = ResolverContext(
-                landContext: ctx,
-                actionPayload: nil,
-                eventPayload: nil,
-                currentState: model.state
-            )
-            ctx = try await executeOnJoinResolvers(
-                resolverContext: resolverContext,
-                landContext: ctx,
-                playerID: playerID,
-                entryGeneration: entryGeneration
-            )
-            resolverOutputs = ctx.getAllResolverOutputs()
-            // Bind to the tick that was current when resolvers completed
-            resolvedAtTick = model.lastCommittedTickId
+        if let (resolverContext, landContext) = onJoinResolverRequest(&m, &side, &outputs, capture) {
+            return .runOnJoinResolvers(capture, resolverContext, landContext)
         }
+        return try legacyJoinAppend(&m, &side, &outputs, capture, resolverOutputs: [:], resolvedAtTick: capture.resolvedAtTick)
+    }
 
+    /// G4: the OnJoin append. A tickless land waits for its input turn.
+    private func legacyJoinAppend(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ capture: OnJoinCapture,
+        resolverOutputs: [String: HeldResolverOutput],
+        resolvedAtTick: Int64
+    ) throws -> LegacyJoinRequest {
+        try appendOnJoin(&m, &side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: resolvedAtTick)
+        // A tickless land applies it now, in an input turn the caller waits for.
+        if definition.lifetimeHandlers.tickHandler == nil {
+            return .awaitInputTurn(sequence: capture.sequence)
+        }
+        return .done
+    }
+
+    /// What a join carries from its insert to its OnJoin append (G2 → G4, J3 → J4).
+    private struct OnJoinCapture {
+        let playerID: PlayerID
+        let clientID: ClientID
+        let sessionID: SessionID
+        let services: LandServices
+        /// The identity the OnJoin input gets.
+        let deviceID: String?
+        let isGuest: Bool
+        let metadata: [String: String]
+        /// Whether the resolvers' context gets the identity too (the reporting join's does).
+        let contextCarriesIdentity: Bool
+        let entryGeneration: Epoch
+        let sequence: Int64
+        let resolvedAtTick: Int64
+    }
+
+    /// The OnJoin resolvers' request, nil when the land declares none.
+    private func onJoinResolverRequest(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ capture: OnJoinCapture
+    ) -> (ResolverContext, LandContext)? {
+        guard !definition.lifetimeHandlers.onJoinResolverExecutors.isEmpty else { return nil }
+        let ctx = capture.contextCarriesIdentity
+            ? makeContext(&m,
+                playerID: capture.playerID,
+                clientID: capture.clientID,
+                sessionID: capture.sessionID,
+                servicesOverride: capture.services,
+                deviceID: capture.deviceID,
+                isGuest: capture.isGuest,
+                metadata: capture.metadata
+            )
+            : makeContext(&m,
+                playerID: capture.playerID,
+                clientID: capture.clientID,
+                sessionID: capture.sessionID,
+                servicesOverride: capture.services
+            )
+        let resolverContext = ResolverContext(
+            landContext: ctx,
+            actionPayload: nil,
+            eventPayload: nil,
+            currentState: m.state
+        )
+        return (resolverContext, ctx)
+    }
+
+    /// The OnJoin resolvers' await. If they throw or time out (#104), the join fails: in the
+    /// segment where the throw resumes, the entry goes if it is still this join's, so `players`
+    /// keeps no player that never joined, and an empty land gets back the destroy timer the
+    /// insert cancelled.
+    private func runOnJoinResolvers(
+        _ capture: OnJoinCapture,
+        _ resolverContext: ResolverContext,
+        _ landContext: LandContext
+    ) async throws -> [String: HeldResolverOutput] {
+        do {
+            return try await ResolverExecutor.executeResolvers(
+                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
+                resolverContext: resolverContext,
+                landContext: landContext,
+                abandonment: resolverAbandonment(.onJoin)
+            ).getAllResolverOutputs()
+        } catch {
+            withTurn { m, side, outputs in onJoinResolversFailed(&m, &side, &outputs, capture) }
+            throw error
+        }
+    }
+
+    /// The OnJoin resolvers failed: the rollback of the entry, if it is still this join's.
+    private func onJoinResolversFailed(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ capture: OnJoinCapture
+    ) {
+        if m.players[capture.playerID]?.generation == capture.entryGeneration {
+            m.players.removeValue(forKey: capture.playerID)
+            removePlayerServices(of: capture.playerID, generation: capture.entryGeneration)
+            scheduleDestroyIfNeeded(&m, &outputs)
+        }
+    }
+
+    /// The OnJoin input's append (G4, J4), with the drain check in the same segment.
+    private func appendOnJoin(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ capture: OnJoinCapture,
+        resolverOutputs: [String: HeldResolverOutput],
+        resolvedAtTick: Int64
+    ) throws {
         // Same synchronous segment as the append: a drain that started during the resolvers
         // must not get an OnJoin input after it took the pending inputs. The entry this join
         // inserted goes too (if it is still this join's), so `players` doesn't keep a player
         // that never joined.
         guard !isDraining else {
-            if model.players[playerID]?.generation == entryGeneration {
-                model.players.removeValue(forKey: playerID)
-                removePlayerServices(of: playerID, generation: entryGeneration)
+            if m.players[capture.playerID]?.generation == capture.entryGeneration {
+                m.players.removeValue(forKey: capture.playerID)
+                removePlayerServices(of: capture.playerID, generation: capture.entryGeneration)
             }
             throw JoinError.landShuttingDown
         }
 
         let pendingItem = PendingItem.lifecycle(
             PendingLifecycleItem(
-                sequence: sequence,
+                sequence: capture.sequence,
                 kind: .join,
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: sessionID,
-                deviceID: session.deviceID,
-                isGuest: session.isGuest,
-                metadata: session.metadata,
+                playerID: capture.playerID,
+                clientID: capture.clientID,
+                sessionID: capture.sessionID,
+                deviceID: capture.deviceID,
+                isGuest: capture.isGuest,
+                metadata: capture.metadata,
                 heldResolverOutputs: resolverOutputs,
                 resolvedAtTick: resolvedAtTick
             )
         )
-        model.pendingItems.append(pendingItem)
-
-        // A tickless land applies it now, in an input turn the caller waits for.
-        if definition.lifetimeHandlers.tickHandler == nil {
-            _ = try await awaitInputTurn(sequence: sequence)
-        }
+        m.pendingItems.append(pendingItem)
     }
 
     /// Handles a player joining the Land with session-based validation.
@@ -2111,50 +2297,158 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         admitThroughTransport: Bool
     ) async throws -> JoinOutcome {
         try await ensureInitializedForJoin()
-        // Call CanJoin handler if defined
-        var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
-
-        if let canJoinHandler = definition.lifetimeHandlers.canJoin {
-            var ctx = makeContext(&model,
-                playerID: PlayerID("_pending"), // Temporary ID for validation
-                clientID: clientID,
-                sessionID: sessionID,
-                servicesOverride: services
-            )
-
-            // Execute resolvers in parallel if any are declared
-            if !definition.lifetimeHandlers.canJoinResolverExecutors.isEmpty {
-                let resolverContext = ResolverContext(
-                    landContext: ctx,
-                    actionPayload: nil,
-                    eventPayload: nil,
-                    currentState: model.state
-                )
-                ctx = try await ResolverExecutor.executeResolvers(
+        let call = JoinCall(session: session, clientID: clientID, sessionID: sessionID, services: services, admitThroughTransport: admitThroughTransport)
+        var request = try withTurn { m, side, outputs in try joinBegin(&m, &side, &outputs, call) }
+        // The attempt's rejoin reservation, ended on every exit (the insert ends it too).
+        var reserved: (epoch: Epoch, playerID: PlayerID)?
+        defer {
+            if let reserved {
+                withTurn { m, _, _ in endRejoinReservation(&m, reserved.epoch, of: reserved.playerID) }
+            }
+        }
+        while true {
+            switch request {
+            case let .runCanJoinResolvers(resolverContext, landContext):
+                let ctx = try await ResolverExecutor.executeResolvers(
                     executors: definition.lifetimeHandlers.canJoinResolverExecutors,
                     resolverContext: resolverContext,
-                    landContext: ctx,
+                    landContext: landContext,
                     abandonment: resolverAbandonment(.canJoin)
                 )
+                request = try withTurn { m, side, outputs in try joinDecide(&m, &side, &outputs, call, canJoinContext: ctx) }
+            case let .holdThenKickCheck(decided):
+                // J2 took the reservation in the segment that just ended: no suspension since.
+                reserved = decided.reservation.map { ($0, decided.playerID) }
+                await holds.at(.join)
+                request = try withTurn { m, side, outputs in try joinKickCheck(&m, &side, &outputs, decided) }
+            case let .kick(decided, oldClientID, oldSessionID):
+                // Kick old connection by calling leave
+                // This will call OnLeave handler and clean up state
+                try await leave(playerID: decided.playerID, clientID: oldClientID, sessionID: oldSessionID)
+                request = try withTurn { m, side, outputs in try joinInsert(&m, &side, &outputs, decided) }
+            case let .admit(decided, joinSequence):
+                // Between two segments, at depth zero, with no suspension since the insert or
+                // the append (§3.5): the admission may call back into the keeper.
+                let admission = admitJoiningInTurn(playerID: decided.playerID, clientID: decided.call.clientID, sessionID: decided.call.sessionID, joinSequence: joinSequence)
+                guard let joinSequence else {
+                    // J3b: no OnJoin input.
+                    return JoinOutcome(decision: decided.decision, admitted: admission.isAdmitted)
+                }
+                request = withTurn { m, side, outputs in
+                    joinAfterAdmission(&m, &side, &outputs, decided, sequence: joinSequence, admission: admission)
+                }
+            case let .runOnJoinResolvers(decided, capture, resolverContext, landContext):
+                let resolverOutputs = try await runOnJoinResolvers(capture, resolverContext, landContext)
+                request = try withTurn { m, side, outputs in
+                    try joinAppend(&m, &side, &outputs, decided, capture, resolverOutputs: resolverOutputs, resolvedAtTick: m.lastCommittedTickId)
+                }
+            case let .awaitInputTurn(outcome, sequence):
+                // Registered in the same segment as the append's: no suspension since it.
+                _ = try await awaitInputTurn(sequence: sequence)
+                return outcome
+            case let .done(outcome):
+                return outcome
             }
+        }
+    }
 
+    /// The reporting join's requests (#700 K1b-5b §4.1): each segment returns the await it needs.
+    private enum JoinRequest {
+        case runCanJoinResolvers(ResolverContext, LandContext)
+        /// J2 decided and reserved: the driver ends the reservation on every exit, runs the
+        /// `.join` hold, then J2b.
+        case holdThenKickCheck(JoinDecided)
+        /// The old session's leave (§4.3's flow); J3 follows it.
+        case kick(JoinDecided, oldClientID: ClientID, oldSessionID: SessionID?)
+        /// The transport's admission, between two segments; `joinSequence` is nil without an
+        /// OnJoin input (J3a), else the appended input's (J4).
+        case admit(JoinDecided, joinSequence: Int64?)
+        case runOnJoinResolvers(JoinDecided, OnJoinCapture, ResolverContext, LandContext)
+        case awaitInputTurn(JoinOutcome, sequence: Int64)
+        case done(JoinOutcome)
+    }
+
+    /// The reporting join's call.
+    private struct JoinCall {
+        let session: PlayerSession
+        let clientID: ClientID
+        let sessionID: SessionID
+        let services: LandServices
+        let admitThroughTransport: Bool
+    }
+
+    /// What the reporting join carries from J2's decision on.
+    private struct JoinDecided {
+        let call: JoinCall
+        let decision: JoinDecision
+        let playerID: PlayerID
+        let reservation: Epoch?
+    }
+
+    /// J1: the CanJoin request. Without resolvers it goes on to J2 in this segment.
+    private func joinBegin(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ call: JoinCall
+    ) throws -> JoinRequest {
+        // Call CanJoin handler if defined
+        guard definition.lifetimeHandlers.canJoin != nil else {
+            return try joinDecide(&m, &side, &outputs, call, canJoinContext: nil)
+        }
+        let ctx = makeContext(&m,
+            playerID: PlayerID("_pending"), // Temporary ID for validation
+            clientID: call.clientID,
+            sessionID: call.sessionID,
+            servicesOverride: call.services
+        )
+
+        // Execute resolvers in parallel if any are declared
+        guard !definition.lifetimeHandlers.canJoinResolverExecutors.isEmpty else {
+            return try joinDecide(&m, &side, &outputs, call, canJoinContext: ctx)
+        }
+        let resolverContext = ResolverContext(
+            landContext: ctx,
+            actionPayload: nil,
+            eventPayload: nil,
+            currentState: m.state
+        )
+        return .runCanJoinResolvers(resolverContext, ctx)
+    }
+
+    /// J2: CanJoin, the stale-join refusal (#234), the drain refusal, the player limit counting
+    /// rejoin reservations, and the reservation (#852). `canJoinContext` is nil when the land
+    /// has no CanJoin.
+    private func joinDecide(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ call: JoinCall,
+        canJoinContext: LandContext?
+    ) throws -> JoinRequest {
+        var decision: JoinDecision = .allow(playerID: PlayerID(call.session.playerID))
+        if let canJoinHandler = definition.lifetimeHandlers.canJoin, let ctx = canJoinContext {
             // Execute handler synchronously (resolvers already executed above). CanJoin isn't
             // repeated from the record (a viewer joining a reevaluation keeper runs it live), so
             // its draws come from a copy of the land's generator, never written back.
-            let (scoped, scope) = openStepScope(ctx, random: detachedRandom())
+            let (scoped, scope) = openStepScope(ctx, random: detachedRandom(m))
             defer { scope.close() }
-            decision = try canJoinHandler(model.state, session, scoped)
+            decision = try canJoinHandler(m.state, call.session, scoped)
         }
 
         // If denied, return early
         guard case let .allow(playerID) = decision else {
-            return JoinOutcome(decision: decision, admitted: false)
+            return .done(JoinOutcome(decision: decision, admitted: false))
         }
 
         // A stale join attempt is refused by the player CanJoin resolved, in this segment,
-        // before the player limit, the kick of its old session and the insert (#234).
-        if admitThroughTransport, refusesResolvedJoinInTurn(playerID: playerID, sessionID: sessionID) {
-            return JoinOutcome(decision: decision, admitted: false, refusedStale: true)
+        // before the player limit, the kick of its old session and the insert (#234). A
+        // refused call out ended the land: the drain check below refuses the join.
+        if call.admitThroughTransport,
+           case .answered(true) = callOut(&m, &side, &outputs, { _ in
+               refusesResolvedJoinInTurn(playerID: playerID, sessionID: call.sessionID)
+           }) {
+            return .done(JoinOutcome(decision: decision, admitted: false, refusedStale: true))
         }
 
         // A destroyed land refuses a late join as shutting down (retryable elsewhere), not as full.
@@ -2163,12 +2457,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
         // Skip check if player is already in the room (reconnection scenario)
         // A player whose old session is being kicked has no entry for a while, but still has a reservation.
-        let isReconnection = model.players[playerID] != nil || !(model.rejoinReservations[playerID]?.isEmpty ?? true)
+        let isReconnection = m.players[playerID] != nil || !(m.rejoinReservations[playerID]?.isEmpty ?? true)
 
         if let maxPlayers = definition.config.maxPlayers, !isReconnection {
             // Reserved places count too: their owners are about to come back with a new connection.
-            let reservedPlaces = model.rejoinReservations.reduce(0) { $0 + ($1.value.isEmpty || model.players[$1.key] != nil ? 0 : 1) }
-            let currentPlayerCount = model.players.count + reservedPlaces
+            let reservedPlaces = m.rejoinReservations.reduce(0) { $0 + ($1.value.isEmpty || m.players[$1.key] != nil ? 0 : 1) }
+            let currentPlayerCount = m.players.count + reservedPlaces
             guard currentPlayerCount < maxPlayers else {
                 behavior.logger.info("Join rejected: room is full", metadata: [
                     "currentPlayers": .stringConvertible(currentPlayerCount),
@@ -2180,29 +2474,46 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Reserve the returning player's place until its entry is back or this join fails. Each
         // attempt ends only its own reservation, at the insert and on every other exit.
-        let reservation = isReconnection ? model.rejoinReservationEpochs.next() : nil
-        if let reservation { model.rejoinReservations[playerID, default: []].insert(reservation) }
-        defer { if let reservation { endRejoinReservation(reservation, of: playerID) } }
+        let reservation = isReconnection ? m.rejoinReservationEpochs.next() : nil
+        if let reservation { m.rejoinReservations[playerID, default: []].insert(reservation) }
+        return .holdThenKickCheck(JoinDecided(call: call, decision: decision, playerID: playerID, reservation: reservation))
+    }
 
-        await holds.at(.join)
+    /// J2b: the kick target, after the hold. Without one it goes on to J3 in this segment.
+    private func joinKickCheck(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ decided: JoinDecided
+    ) throws -> JoinRequest {
         // Check for duplicate playerID login (Kick Old strategy)
-        if let existingSession = model.players[playerID], let oldClientID = existingSession.clientID {
-            behavior.logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
-            // Kick old connection by calling leave
-            // This will call OnLeave handler and clean up state
-            try await leave(playerID: playerID, clientID: oldClientID, sessionID: existingSession.lastSessionID)
+        if let existingSession = m.players[decided.playerID], let oldClientID = existingSession.clientID {
+            behavior.logger.info("Duplicate playerID login detected: \(decided.playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
+            return .kick(decided, oldClientID: oldClientID, oldSessionID: existingSession.lastSessionID)
         }
+        return try joinInsert(&m, &side, &outputs, decided)
+    }
 
+    /// J3: the insert, after the kick if there was one, the reservation's end, and the OnJoin
+    /// request. Without an OnJoin input the admission follows (J3a).
+    private func joinInsert(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ decided: JoinDecided
+    ) throws -> JoinRequest {
+        let playerID = decided.playerID
+        let session = decided.call.session
         // Proceed with join
-        var playerSession = model.players[playerID] ?? KeeperPlayerEntry(
+        var playerSession = m.players[playerID] ?? KeeperPlayerEntry(
             deviceID: session.deviceID,
             isGuest: session.isGuest,
             metadata: session.metadata
         )
         let isFirst = playerSession.clientID == nil
 
-        playerSession.clientID = clientID
-        playerSession.lastSessionID = sessionID
+        playerSession.clientID = decided.call.clientID
+        playerSession.lastSessionID = decided.call.sessionID
         // Update deviceID, isGuest, and metadata if provided (for reconnection scenarios)
         if let deviceID = session.deviceID {
             playerSession.deviceID = deviceID
@@ -2214,103 +2525,85 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Checked in the same synchronous segment as the insert: a destruction that started
         // during this join's awaits must not get a player after it stopped the loops.
         guard !isDraining else { throw JoinError.landShuttingDown }
-        let entryGeneration = model.entryGenerations.next()
+        let entryGeneration = m.entryGenerations.next()
         playerSession.generation = entryGeneration
-        model.players[playerID] = playerSession
-        playerServices[playerID] = (generation: entryGeneration, services: services)
-        if let reservation { endRejoinReservation(reservation, of: playerID) }
+        m.players[playerID] = playerSession
+        playerServices[playerID] = (generation: entryGeneration, services: decided.call.services)
+        if let reservation = decided.reservation { endRejoinReservation(&m, reservation, of: playerID) }
 
-        destroyTask?.cancel()
-        destroyTask = nil
+        cancelDestroy(&m, &side)
 
         // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
         // so they are not added to game state (which would create an extra player in the replay).
         guard isFirst, definition.lifetimeHandlers.onJoin != nil, behavior.config.mode != .reevaluation else {
             // No OnJoin input: admitted in the same segment as the insert.
-            let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: nil).isAdmitted
-            return JoinOutcome(decision: decision, admitted: admitted)
-        }
-
-        // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
-        let sequence = outputCollector.takeNextSequence()
-
-        // Snapshot tick at request time; update after resolver completion for async determinism.
-        var resolvedAtTick = model.lastCommittedTickId
-        var resolverOutputs: [String: HeldResolverOutput] = [:]
-
-        // Execute resolvers in parallel if any are declared
-        if !definition.lifetimeHandlers.onJoinResolverExecutors.isEmpty {
-            var ctx = makeContext(&model,
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: sessionID,
-                servicesOverride: services,
-                deviceID: session.deviceID,
-                isGuest: session.isGuest,
-                metadata: session.metadata
-            )
-            let resolverContext = ResolverContext(
-                landContext: ctx,
-                actionPayload: nil,
-                eventPayload: nil,
-                currentState: model.state
-            )
-            ctx = try await executeOnJoinResolvers(
-                resolverContext: resolverContext,
-                landContext: ctx,
-                playerID: playerID,
-                entryGeneration: entryGeneration
-            )
-            resolverOutputs = ctx.getAllResolverOutputs()
-            resolvedAtTick = model.lastCommittedTickId
-        }
-
-        // Same synchronous segment as the append: a drain that started during the resolvers
-        // must not get an OnJoin input after it took the pending inputs. The entry this join
-        // inserted goes too (if it is still this join's), so `players` doesn't keep a player
-        // that never joined.
-        guard !isDraining else {
-            if model.players[playerID]?.generation == entryGeneration {
-                model.players.removeValue(forKey: playerID)
-                removePlayerServices(of: playerID, generation: entryGeneration)
+            guard decided.call.admitThroughTransport else {
+                return .done(JoinOutcome(decision: decided.decision, admitted: false))
             }
-            throw JoinError.landShuttingDown
+            return .admit(decided, joinSequence: nil)
         }
 
-        let pendingItem = PendingItem.lifecycle(
-            PendingLifecycleItem(
-                sequence: sequence,
-                kind: .join,
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: sessionID,
-                deviceID: session.deviceID,
-                isGuest: session.isGuest,
-                metadata: session.metadata,
-                heldResolverOutputs: resolverOutputs,
-                resolvedAtTick: resolvedAtTick
-            )
+        let capture = OnJoinCapture(
+            playerID: playerID,
+            clientID: decided.call.clientID,
+            sessionID: decided.call.sessionID,
+            services: decided.call.services,
+            deviceID: session.deviceID,
+            isGuest: session.isGuest,
+            metadata: session.metadata,
+            contextCarriesIdentity: true,
+            entryGeneration: entryGeneration,
+            // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
+            sequence: outputCollector.takeNextSequence(),
+            // Snapshot tick at request time; update after resolver completion for async determinism.
+            resolvedAtTick: m.lastCommittedTickId
         )
-        model.pendingItems.append(pendingItem)
-        // Admitted in the same segment as the append, before the OnJoin turn can run.
-        let admission: JoinAdmission = admitThroughTransport
-            ? admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: sequence)
-            : .notAdmitted
-        let admitted = admission.isAdmitted
-
-        // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
-        if definition.lifetimeHandlers.tickHandler == nil {
-            if admission == .admittedCompletesInTurn {
-                // Admitted in the turn: the transport completes the join when a turn consumes
-                // the input (`noteJoinInputsConsumed`) and a sync phase commits for it. Nobody
-                // awaits the input turn here, so it is scheduled in this segment.
-                scheduleInputDrain()
-            } else {
-                _ = try await awaitInputTurn(sequence: sequence)
-            }
+        // Execute resolvers in parallel if any are declared
+        if let (resolverContext, landContext) = onJoinResolverRequest(&m, &side, &outputs, capture) {
+            return .runOnJoinResolvers(decided, capture, resolverContext, landContext)
         }
+        return try joinAppend(&m, &side, &outputs, decided, capture, resolverOutputs: [:], resolvedAtTick: capture.resolvedAtTick)
+    }
 
-        return JoinOutcome(decision: decision, admitted: admitted)
+    /// J4: the OnJoin append, then the admission (or, when the transport doesn't admit, J4b in
+    /// this segment).
+    private func joinAppend(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ decided: JoinDecided,
+        _ capture: OnJoinCapture,
+        resolverOutputs: [String: HeldResolverOutput],
+        resolvedAtTick: Int64
+    ) throws -> JoinRequest {
+        try appendOnJoin(&m, &side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: resolvedAtTick)
+        // Admitted in the same segment as the append, before the OnJoin turn can run.
+        guard decided.call.admitThroughTransport else {
+            return joinAfterAdmission(&m, &side, &outputs, decided, sequence: capture.sequence, admission: .notAdmitted)
+        }
+        return .admit(decided, joinSequence: capture.sequence)
+    }
+
+    /// J4b: after the admission of a join with an OnJoin input.
+    private func joinAfterAdmission(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ decided: JoinDecided,
+        sequence: Int64,
+        admission: JoinAdmission
+    ) -> JoinRequest {
+        let outcome = JoinOutcome(decision: decided.decision, admitted: admission.isAdmitted)
+        // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
+        guard definition.lifetimeHandlers.tickHandler == nil else { return .done(outcome) }
+        if admission == .admittedCompletesInTurn {
+            // Admitted in the turn: the transport completes the join when a turn consumes
+            // the input (`noteJoinInputsConsumed`) and a sync phase commits for it. Nobody
+            // awaits the input turn here, so it is scheduled in this segment.
+            scheduleInputDrain(&m, &outputs)
+            return .done(outcome)
+        }
+        return .awaitInputTurn(outcome, sequence: sequence)
     }
 
     /// The transport's admission of a joining session, only on the in-turn path (the transport
@@ -4166,7 +4459,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// A service for a handler that replay doesn't repeat: a copy of the land's generator,
     /// never written back.
     private func detachedRandom() -> DeterministicRngService {
-        DeterministicRngService(continuing: model.landRandom, seed: behavior.config.landRandomSeed)
+        detachedRandom(model)
+    }
+
+    private func detachedRandom(_ m: KeeperModel<State>) -> DeterministicRngService {
+        DeterministicRngService(continuing: m.landRandom, seed: behavior.config.landRandomSeed)
     }
 
     // MARK: - Tick & Lifetime
@@ -7262,45 +7559,45 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // phase in turn or is refused at the attach (#546 L2d).
     }
 
-    /// The OnJoin resolvers of a join that already inserted its entry (`entryGeneration`). If
-    /// they throw or time out (#104), the join fails: in the segment where the throw resumes, the
-    /// entry goes if it is still this join's, so `players` keeps no player that never joined, and
-    /// an empty land gets back the destroy timer the insert cancelled.
-    private func executeOnJoinResolvers(
-        resolverContext: ResolverContext,
-        landContext: LandContext,
-        playerID: PlayerID,
-        entryGeneration: Epoch
-    ) async throws -> LandContext {
-        do {
-            return try await ResolverExecutor.executeResolvers(
-                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
-                resolverContext: resolverContext,
-                landContext: landContext,
-                abandonment: resolverAbandonment(.onJoin)
-            )
-        } catch {
-            if model.players[playerID]?.generation == entryGeneration {
-                model.players.removeValue(forKey: playerID)
-                removePlayerServices(of: playerID, generation: entryGeneration)
-                scheduleDestroyIfNeeded()
-            }
-            throw error
+    /// `scheduleDestroyIfNeeded` in a turn body: the decision inline, the timer's start staged
+    /// (it captures the keeper). A `cancelDestroy` before the flush stops it.
+    private func scheduleDestroyIfNeeded(_ m: inout KeeperModel<State>, _ outputs: inout TurnOutputs) {
+        guard m.players.isEmpty, let delay = definition.config.destroyWhenEmptyAfter else { return }
+        let ticket = replaceDestroyTicket()
+        outputs.stage { [weak self] in
+            ticket.install(Self.destroyTimer(after: delay, keeper: self))
         }
+    }
+
+    /// Cancels the empty-land destroy timer, and a start staged before this that hasn't
+    /// installed its task yet (D16).
+    private func cancelDestroy(_ m: inout KeeperModel<State>, _ side: inout KeeperTurnSide) {
+        destroyTicket?.cancel()
+        destroyTicket = nil
     }
 
     private func scheduleDestroyIfNeeded() {
         guard model.players.isEmpty, let delay = definition.config.destroyWhenEmptyAfter else { return }
+        replaceDestroyTicket().install(Self.destroyTimer(after: delay, keeper: self))
+    }
 
-        destroyTask?.cancel()
-        destroyTask = Task { [weak self] in
+    /// A new ticket in the slot; the old one's timer is cancelled.
+    private func replaceDestroyTicket() -> DestroyTicket {
+        destroyTicket?.cancel()
+        let ticket = DestroyTicket()
+        destroyTicket = ticket
+        return ticket
+    }
+
+    private static func destroyTimer(after delay: Duration, keeper: LandKeeper?) -> Task<Void, Never> {
+        Task { [weak keeper] in
             do {
                 try await safeTaskSleep(for: delay)
             } catch {
                 return
             }
             guard !Task.isCancelled else { return }
-            await self?.shutdownIfIdle(cause: .emptyTimeout)
+            await keeper?.shutdownIfIdle(cause: .emptyTimeout)
         }
     }
 
@@ -7336,8 +7633,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         syncTask?.cancel()
         syncTask = nil
 
-        destroyTask?.cancel()
-        destroyTask = nil
+        destroyTicket?.cancel()
+        destroyTicket = nil
 
         // No tick starts from now on (`isDraining`); one already running finishes whole.
         await waitForTickInFlight()
