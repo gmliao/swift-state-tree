@@ -153,7 +153,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
         // for a follow-up turn if the answer were read, and an applied commit leaves its probe.
         return InTurnSyncOutput(
             .committed(clearDirtyFlags: false),
-            syncStream: [reenter == .draftFactory ? reenteringDraft() : outputDraft(1)],
+            syncStream: reenter == .draftFactory ? [reenteringDraft(), outputDraft(2)] : [outputDraft(1)],
             keepsEvents: reenter != .nowhere
         )
     }
@@ -246,15 +246,20 @@ struct KeeperTurnSkeletonTests {
         // Closed and noted by the sentinel, inside the transport's call, before the turn went on.
         #expect(transport.gateClosedAtReentry == true)
         #expect(transport.mailboxFailureAtReentry?.kind == .keeperReentry)
+        // Closed once: `failLand` doesn't close the gate the sentinel already closed.
+        #expect(transport.closeCount == 1)
         #expect(await keeper.reentryViolationsForTesting == 1)
         #expect(await keeper.bodyDepthForTesting == 0)
         // The refused call is never numbered, and the refused phase's answer is never read.
         // Recorded: the committed phase's own draft when the re-entry came after it, the
         // terminal entry, then the turn's end.
-        // A factory's re-entry keeps the draft it made, and applies nothing.
+        // A factory's re-entry keeps the whole batch, the draft after the trip included, and
+        // applies nothing.
         let trace = tracker.traceForTesting
         switch reenter {
-        case .joinsAwaitingSync, .runsSyncPhaseWitness, .draftFactory:
+        case .draftFactory:
+            #expect(trace == ["sync-output", "sync-output", "terminal", "endTurn"])
+        case .joinsAwaitingSync, .runsSyncPhaseWitness:
             #expect(trace == ["sync-output", "terminal", "endTurn"])
         default:
             #expect(trace == ["terminal", "endTurn"])
@@ -341,7 +346,7 @@ struct KeeperTurnSkeletonTests {
 
         await keeper.submitLandFailure(TurnSkeletonFailingPhaseTransport.failure)
 
-        #expect(await keeper.waitForFailureForTesting())
+        try #require(await keeper.waitForFailureForTesting())
         await keeper.waitForInputDrainIdleForTesting()
         await tracker.waitForAll()
         #expect(tracker.traceForTesting == ["terminal", "endTurn"])

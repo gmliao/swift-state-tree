@@ -947,6 +947,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var closingGateForReentry = false
     /// Whether the sentinel closed a gate (none is attached on a land without a transport).
     private var reentryGateClosed = false
+    /// The gate the sentinel closed, when it is a class instance (`gateIdentity`), so `failLand`
+    /// skips only that gate's second close: a transport attached after the sentinel closed the
+    /// bound requester still gets its close.
+    private var reentryClosedGate: ObjectIdentifier?
     /// Refused re-entries the backstop applied (tests).
     private var lateReentriesApplied = 0
 
@@ -5699,7 +5703,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             defer { closingGateForReentry = false }
             gate.closeOutputs(for: reported)
             reentryGateClosed = true
+            reentryClosedGate = Self.gateIdentity(gate)
         }
+    }
+
+    /// A gate's identity when it is a class instance. A value-type gate has none, so it is
+    /// closed again by `failLand`, as before the skip.
+    private static func gateIdentity(_ gate: any LandKeeperTransport) -> ObjectIdentifier? {
+        guard type(of: gate) is AnyObject.Type else { return nil }
+        return ObjectIdentifier(gate as AnyObject)
     }
 
     /// Ends the land on a refused re-entry: the mailbox's first failure (the sentinel's, unless
@@ -6001,6 +6013,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 case .answered(let output):
                     // The transport's draft factories run here, in the body and outside any call
                     // out: a factory that re-entered ends the land before the commit is applied.
+                    // The batch is recorded whole first, as a failing phase's is.
                     let beforeRecording = reentryViolations
                     recordSyncStream(output.syncStream)
                     guard reentryViolations == beforeRecording else {
@@ -6035,8 +6048,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
             }
             // A refused call leaves the turn as a failed phase does: no sync is due any more.
-            // Nothing of a refused phase is recorded or applied; a factory's re-entry keeps the
-            // drafts recorded up to it, and applies nothing.
+            // Nothing of a refused phase is recorded or applied. A factory's re-entry keeps the
+            // whole batch recorded, the drafts after the trip included, as a failing phase's
+            // drafts are; it applies nothing.
             if reentry != nil { inTurnSyncDue = false }
             // The common tail, on every path. A tickless land's sync-only turn is its own turn
             // record (#327); a tick land's sync outputs stay with the current tick's.
@@ -6516,10 +6530,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A keeper never attached reaches the adapter bound by its first sync request (#546 L2a).
         let transport = self.transport ?? boundSyncRequester
         // The output gate closes in the mark: no new state or event frame from here (§3.2 step 4).
-        // The sentinel already closed it for a re-entry; a second close outside its guard could
-        // nest a re-entry through a misbehaving port.
-        if !reentryGateClosed {
-            transport?.closeOutputs(for: failure)
+        // The sentinel already closed it for a re-entry when it is the same gate; a second close
+        // outside the sentinel's guard could nest a re-entry through a misbehaving port.
+        if let transport, reentryClosedGate == nil || Self.gateIdentity(transport) != reentryClosedGate {
+            transport.closeOutputs(for: failure)
         }
         drainTask = Task {
             await holds.at(.landFailedTeardown)
