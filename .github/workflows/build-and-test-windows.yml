@@ -53,18 +53,22 @@ jobs:
     # Non-blocking only because the check is not required; keep it out of the required checks.
     continue-on-error: true
     timeout-minutes: 60
+    env:
+      # One place for the toolchain version: the install step and the build cache key both read it, so a
+      # bump cannot restore dependency builds made with the old compiler.
+      SWIFT_VERSION: 6.4.3
 
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-    # The action installs release 6.4.3 on a hosted runner. It is pinned by full commit SHA, but the
+    # The action installs the release named by SWIFT_VERSION on a hosted runner. It is pinned by full commit SHA, but the
     # Linux jobs also pin the image by digest; this action downloads the installer without a pinned
     # digest, so the parity is partial.
-    - name: Install Swift 6.4.3
+    - name: Install Swift
       uses: compnerd/gha-setup-swift@9ff1ee4c44888c5817fc14d1b257ac8cabb4935f # v0.5.1
       with:
-        swift-version: swift-6.4.3-release
-        swift-build: 6.4.3-RELEASE
+        swift-version: swift-${{ env.SWIFT_VERSION }}-release
+        swift-build: ${{ env.SWIFT_VERSION }}-RELEASE
 
     - name: Show toolchain
       run: swift --version
@@ -86,8 +90,13 @@ jobs:
     - name: Build cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: .build
-        key: swiftbuild-${{ runner.os }}-${{ steps.buildcache.outputs.image }}-6.4.3-${{ hashFiles('Package.swift', 'Package.resolved') }}
+        # The debug and release links are left out: the build makes its own, and a restored one made
+        # SwiftPM warn that the link already exists (and left .build/debug pointing at the cached tree).
+        path: |
+          .build
+          !.build/debug
+          !.build/release
+        key: swiftbuild-${{ runner.os }}-${{ steps.buildcache.outputs.image }}-${{ env.SWIFT_VERSION }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
 
     # Same single debug build that every test run reuses, as on Linux.
     # Not built on Windows: SwiftStateTreeNIOProvisioning (left out of the manifest there).
