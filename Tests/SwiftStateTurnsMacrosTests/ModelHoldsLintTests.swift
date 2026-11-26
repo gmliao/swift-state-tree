@@ -114,6 +114,10 @@ enum ModelHoldsLint {
         "answer": "the machine's query entry: the same, for queries",
         "step": "the turn frame: borrows the side for the body, the flush and the late re-entry",
         "tickDueStep": "the tick's driver segments (tickAdmit, tickStart, tickEnd, debugEndWork) around its steps",
+        "syncDueStep": "the sync loop's driver segments (the handler, the fold decision, the failure guard) around its step",
+        "ticklessTickStep": "the tickless tick's driver segments (tickAdmit, scheduleInputDrain, debugEndWork)",
+        "inputDrainStep": "the input drain's loop: the batch, the record's submission and the waiters' resume around its steps",
+        "stepSubmitting": "the turn frame, returning the submission: borrows the side for the body, the flush and the late re-entry",
     ]
     static let sideStoreFramePath = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
 
@@ -1668,7 +1672,7 @@ struct ModelHoldsLintTests {
         // renamed one can't leave a stale exception.
         let frame = Set(report.holders.filter { $0.path == ModelHoldsLint.sideStoreFramePath && !$0.name.contains(" body in ") }.map(\.name))
         #expect(Set(ModelHoldsLint.sideStoreFrame.keys).isSubset(of: frame), "frame members missing: \(Set(ModelHoldsLint.sideStoreFrame.keys).subtracting(frame).sorted())")
-        #expect(ModelHoldsLint.sideStoreFrame.count == 4, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
+        #expect(ModelHoldsLint.sideStoreFrame.count == 8, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
         #expect(report.holders.contains { $0.path == drivers && $0.name == "tickStart" },
                 "holders in \(drivers): \(report.holders.filter { $0.path == drivers }.map(\.name))")
         // Each family of closure holders is found: every member that gives a closure the model

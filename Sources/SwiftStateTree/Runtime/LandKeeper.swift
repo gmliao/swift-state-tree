@@ -489,7 +489,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// not run inside the hold (#700 K1b-5a, MF1). An action whose payload didn't decode gets no
     /// entry: its apply throws on the decode first.
     private func prepareFallbackRecordBytes(_ batch: [PendingItem]) -> [Int64: Result<Data, any Error>] {
-        guard recordsInputs else { return [:] }
+        Self.prepareFallbackRecordBytes(behavior, batch)
+    }
+
+    /// The record's bytes for the inputs of `batch` that hold none, encoded before the body holds
+    /// the model: the encode runs the payload's own `encode(to:)` (#700 K1b-5a, MF1). Static, so a
+    /// core step (#700 K2-1) encodes them the same way, before its body.
+    static func prepareFallbackRecordBytes(_ behavior: KeeperBehavior<State>, _ batch: [PendingItem]) -> [Int64: Result<Data, any Error>] {
+        guard behavior.recordsInputs else { return [:] }
         var prepared: [Int64: Result<Data, any Error>] = [:]
         for item in batch {
             switch item {
@@ -505,7 +512,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return prepared
     }
 
-    fileprivate static func fallbackRecordBytes(_ action: any ActionPayload) throws -> Data {
+    static func fallbackRecordBytes(_ action: any ActionPayload) throws -> Data {
         try RecordPayloadEncoding.canonicalJSON(AnyCodable(action))
     }
 
@@ -4471,7 +4478,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
 
     /// What an input turn did: its record and the inputs it applied (a failed one included).
-    fileprivate struct InputTurnOutcome {
+    struct InputTurnOutcome {
         var record: ReevaluationTickRecord
         var appliedItems: [PendingItem]
         /// Whether a leave asks for a broadcast-only sync (the legacy path's flag).
@@ -4910,7 +4917,7 @@ extension KeeperModel {
     typealias PendingShutdownItem = LandKeeper<State>.PendingShutdownItem
     typealias SettleFence = LandKeeper<State>.SettleFence
     typealias SettleTurnOutcome = LandKeeper<State>.SettleTurnOutcome
-    fileprivate typealias InputTurnOutcome = LandKeeper<State>.InputTurnOutcome
+    typealias InputTurnOutcome = LandKeeper<State>.InputTurnOutcome
     fileprivate typealias InitializeTurnOutput = LandKeeper<State>.InitializeTurnOutput
     typealias TickTurnOutput = LandKeeper<State>.TickTurnOutput
     fileprivate typealias AppliedItem = LandKeeper<State>.AppliedItem
@@ -7759,7 +7766,7 @@ extension KeeperModel {
 
     /// `runInputTurn`'s body, on the model the turn holds. The handlers run inside the hold, as
     /// they have since #877 (`withHandlerStep`); the transport's phase goes through `callOut`.
-    fileprivate mutating func inputTurnBody(
+    mutating func inputTurnBody(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
