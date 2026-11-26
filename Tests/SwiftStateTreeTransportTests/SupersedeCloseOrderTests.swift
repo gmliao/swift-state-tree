@@ -501,10 +501,13 @@ struct CloseDecisionOrderTests {
         await f.adapter.onDisconnect(sessionID: a, clientID: ca, generation: oldGeneration)
         await f.adapter.waitForOutboundIdleForTesting()
         #expect(await f.adapter.isJoined(sessionID: a), "the replacement lost its membership")
-        // The replacement still gets its frames, and isn't closed.
+        // The replacement still gets its frames through the adapter's send path, whose
+        // ended-session filter would drop them had the stale call marked the ID ended, and isn't
+        // closed. (The writer alone doesn't check that filter.)
+        #expect(await !f.adapter.endedSessions.contains(a), "the stale final frame marked the replacement ended")
         let hello = Data("hello".utf8)
         let frame = await f.adapter.sessionFrame(hello, kind: .text, to: a)
-        #expect(await f.adapter.outboundWriter.enqueue([frame]) == .accepted)
+        await f.adapter.enqueueFrames([frame])
         await f.adapter.waitForOutboundIdleForTesting()
         await f.transport.flushSessionQueues()
         let events = await replacement.events, closes = await replacement.closes
