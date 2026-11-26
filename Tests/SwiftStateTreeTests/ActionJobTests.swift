@@ -38,6 +38,13 @@ struct ActionJobGatedAction: ActionPayload {
 }
 
 @Payload
+struct ActionJobTracedAction: ActionPayload {
+    typealias Response = ActionJobAck
+    /// The key of its gate and of its trace.
+    let amount: Int
+}
+
+@Payload
 struct ActionJobPlainAction: ActionPayload {
     typealias Response = ActionJobAck
     let amount: Int
@@ -76,6 +83,34 @@ struct ActionJobGatedResolver: Resolver {
     }
 }
 
+/// Per-key ordered traces, written from a resolver's cancellation handler and from the keeper's
+/// probe, both synchronous inside the keeper's call.
+enum ActionJobTraces {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var traces: [Int: [String]] = [:]
+    static func append(_ key: Int, _ entry: String) { lock.withLock { traces[key, default: []].append(entry) } }
+    static func trace(_ key: Int) -> [String] { lock.withLock { traces[key] ?? [] } }
+}
+
+/// A gated resolver that records its cancellation (the handler runs inside the job task's
+/// `cancel()`), then keeps waiting on its gate.
+@PlainData
+struct ActionJobTracedResolver: Resolver {
+    typealias Dependencies = NoServices
+    typealias Output = ActionJobResolverOutput
+    let amount: Int
+
+    func resolve(_ deps: NoServices) async throws -> ActionJobResolverOutput {
+        let amount = amount
+        await withTaskCancellationHandler {
+            await ActionJobGates.gate(amount).enterAndWait()
+        } onCancel: {
+            ActionJobTraces.append(amount, "resolver-cancelled")
+        }
+        return ActionJobResolverOutput(value: amount)
+    }
+}
+
 private func makeDefinition(tick: Bool) -> LandDefinition<ActionJobTestState> {
     if tick {
         return Land("action-job-test", using: ActionJobTestState.self) {
@@ -87,6 +122,11 @@ private func makeDefinition(tick: Bool) -> LandDefinition<ActionJobTestState> {
                 }
                 HandleAction(ActionJobPlainAction.self) {
                     state, action, _ in
+                    state.total += action.amount
+                    return ActionJobAck(ok: true)
+                }
+                HandleAction(ActionJobTracedAction.self, resolvers: { _, action, _ in ActionJobTracedResolver(amount: action.amount) }) {
+                    state, action, _, _ in
                     state.total += action.amount
                     return ActionJobAck(ok: true)
                 }
@@ -302,6 +342,34 @@ struct ActionJobTests {
         await keeper.stepTickOnce()
         #expect(await keeper.supersededSenderRejections == 1, "the completion rejected the cancelled job again")
         #expect(await keeper.currentState().total == 0)
+    }
+
+    @Test("A leave fills the job's slot before it cancels the job's task")
+    func cancelFillsTheSlotBeforeCancellingTheTask() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let amount = ActionJobGates.freshKey()
+        let submission = try await keeper.submitAction(
+            ActionEnvelope(typeIdentifier: String(describing: ActionJobTracedAction.self),
+                           payload: AnyCodable(ActionJobTracedAction(amount: amount))),
+            playerID: p1, clientID: c1, sessionID: s1
+        )
+        guard case .pending(let sequence) = submission else {
+            Issue.record("Expected a pending job, got \(submission)")
+            return
+        }
+        guard await ActionJobGates.gate(amount).waitUntilEntered() else { return }
+        await keeper.setInTurnProbeForTesting { label in
+            if label == "action-slot-filled" { ActionJobTraces.append(amount, "slot-filled") }
+        }
+        // The leave's cancel: the caller's outcome is in the slot before the task's cancel
+        // runs its handlers, so a handler that looks finds the job answered.
+        try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
+        await keeper.setInTurnProbeForTesting(nil)
+        #expect(ActionJobTraces.trace(amount) == ["slot-filled", "resolver-cancelled"])
+        try await expectRejection(.senderSuperseded) { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
+        ActionJobGates.gate(amount).release()
+        try await settle(keeper)
     }
 
     @Test("A job whose land closed during its resolvers is refused at delivery, not queued")

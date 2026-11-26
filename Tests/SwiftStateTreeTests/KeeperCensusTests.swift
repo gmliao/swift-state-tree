@@ -27,7 +27,7 @@ enum KeeperFieldHome: Hashable, CustomStringConvertible {
     case container
 
     enum OutsideGroup: String {
-        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable, turnSide, reentrySentinel, stepScope
+        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable, reentrySentinel, stepScope
     }
 
     var description: String {
@@ -53,45 +53,36 @@ struct KeeperCensusException {
 
 enum KeeperCensus {
     /// The groups `censusLabelsForTesting()` reflects.
-    static let groups: Set<String> = ["actor", "model", "behavior", "behavior.config", "replay"]
+    static let groups: Set<String> = [
+        "actor", "model", "behavior", "behavior.config", "replay", "turnSide", "turnSide.actions", "behavior.reentrySentinel",
+    ]
 
     /// Every stored property, by storage path, with its home.
     static let homes: [String: KeeperFieldHome] = {
         var homes: [String: KeeperFieldHome] = [
             "actor.abandonmentCounter": .outside(.resolverAbandonment),
-            "actor.actionJobRemovalWaiters": .replaced(by: "K2"),
-            "actor.actionJobTasks": .replaced(by: "K5"),
-            "actor.actionSlotWaiters": .replaced(by: "K2"),
-            "actor.actionTableAuditForTesting": .testHook,
             "actor.appliedSyncPhaseOffset": .outside(.loopDriver),
             "actor.appliedTickPhaseOffset": .outside(.loopDriver),
             "actor.behavior": .container,
-            "actor.bodyDepth": .outside(.reentrySentinel),
             "actor.boundSyncRequesterObject": .outside(.bindingToken),
-            "actor.closingGateForReentry": .outside(.reentrySentinel),
-            "actor.debugDrainWaiters": .replaced(by: "K7"),
             "actor.debugHeldInputs": .replaced(by: "K7"),
             "actor.destroyTask": .replaced(by: "K7"),
             "actor.drainFlag": .outside(.drainFlag),
             "actor.drainStartedWaitersForTesting": .replaced(by: "K2"),
             "actor.drainTask": .replaced(by: "K7"),
             "actor.failureWaitersForTesting": .replaced(by: "K2"),
-            "actor.failures": .outside(.failureTable),
             "actor.forceShutdownFlight": .replaced(by: "K7"),
             "actor.freezeWaitWatchersForTesting": .replaced(by: "K2"),
             "actor.holds": .testHook,
-            "actor.inTurnProbeForTesting": .testHook,
             "actor.inTurnYieldForTesting": .testHook,
             "actor.initializationTask": .replaced(by: "K5"),
             "actor.initializationWaitWatchers": .replaced(by: "K2"),
             "actor.initializationWaits": .replaced(by: "K2"),
             "actor.inputDrainIdleWaitersForTesting": .replaced(by: "K2"),
             "actor.inputTurnWaiters": .replaced(by: "K2"),
-            "actor.lateReentriesApplied": .outside(.reentrySentinel),
             "actor.lateStepOutputAssertsForTesting": .testHook,
             "actor.lateStepOutputs": .outside(.stepScope),
             "actor.destroyHandlerOutputsDropped": .outside(.stepScope),
-            "actor.reentriesAppliedInCall": .outside(.reentrySentinel),
             "actor.model": .container,
             "actor.nextDrainStartedWaiterForTesting": .replaced(by: "K2"),
             "actor.nextFailureWaiterForTesting": .replaced(by: "K2"),
@@ -103,17 +94,11 @@ enum KeeperCensus {
             "actor.pendingTransportFailure": .replaced(by: "K4"),
             "actor.playerServices": .outside(.playerServices),
             "actor.recorderSubmissions": .outside(.recorder),
-            "actor.reentryClosedGate": .outside(.reentrySentinel),
-            "actor.reentryFailure": .outside(.reentrySentinel),
-            "actor.reentryGateClosed": .outside(.reentrySentinel),
-            "actor.reentryViolations": .outside(.reentrySentinel),
-            "actor.reevaluationRecorder": .outside(.recorder),
             "actor.releasedTransport": .outside(.bindingToken),
             "actor.replay": .container,
             "actor.requestedSyncWorkWaitersForTesting": .replaced(by: "K2"),
             "actor.serverInputMaxInFlight": .outside(.serverInputCap),
             "actor.shutdownTurnWaiters": .replaced(by: "K2"),
-            "actor.slotWatchersForTesting": .replaced(by: "K2"),
             "actor.syncClockForTesting": .testHook,
             "actor.syncTask": .replaced(by: "K2"),
             "actor.tickClockForTesting": .testHook,
@@ -122,7 +107,7 @@ enum KeeperCensus {
             "actor.tickLoopConfiguredAt": .outside(.loopDriver),
             "actor.tickTask": .replaced(by: "K2"),
             "actor.transport": .outside(.bindingToken),
-            "actor.turnSide": .outside(.turnSide),
+            "actor.turnSide": .container,
             "behavior.config": .container,
             "behavior.config.actualLandID": .behavior,
             "behavior.config.autoStartLoops": .behavior,
@@ -139,6 +124,30 @@ enum KeeperCensus {
             "behavior.payloadDecoders": .behavior,
             "behavior.resolverServices": .behavior,
             "behavior.services": .behavior,
+            // The sentinel is a class the behavior holds (#700 K1b-5 rev 2.3 D13, a listed
+            // exception below); its fields are rows under its own path.
+            "behavior.reentrySentinel": .behavior,
+            "behavior.reentrySentinel.bodyDepth": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.closingGateForReentry": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.lateReentriesApplied": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentriesAppliedInCall": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentryClosedGate": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentryFailure": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentryGateClosed": .outside(.reentrySentinel),
+            "behavior.reentrySentinel.reentryViolations": .outside(.reentrySentinel),
+            // The turn side and its action tables (#700 K1b-5 rev 2.3 D11): moved paths, homes
+            // unchanged.
+            "turnSide.submissions": .outside(.recorder),
+            "turnSide.actions": .container,
+            "turnSide.failures": .outside(.failureTable),
+            "turnSide.debugDrainWaiters": .replaced(by: "K7"),
+            "turnSide.probe": .testHook,
+            "turnSide.actions.jobTasks": .replaced(by: "K5"),
+            "turnSide.actions.removalWaiters": .replaced(by: "K2"),
+            "turnSide.actions.slotWaiters": .replaced(by: "K2"),
+            "turnSide.actions.slotWatchers": .replaced(by: "K2"),
+            "turnSide.actions.auditOn": .testHook,
+            "behavior.reevaluationRecorder": .behavior,
             "model.actionJobs": .model,
             "model.actionJobsStarted": .model,
             "model.actionSlots": .model,
@@ -227,6 +236,12 @@ enum KeeperCensus {
             fields: ["actor.nextTickDeadline", "actor.pendingFold", "actor.tickLoopConfiguredAt", "actor.tickLoopClock"],
             home: .outside(.loopDriver), why: "F4: instants", endsIn: "K2"
         ),
+        // D13: the behavior holds one reference with mutable state, the re-entry sentinel, used on
+        // the keeper's executor only. K2 draft 7 keeps it there; #773's behavior lint allows it.
+        .init(
+            fields: ["behavior.reentrySentinel"],
+            home: .behavior, why: "D13: the re-entry sentinel, a reference", endsIn: "#773"
+        ),
         // S3 (F8): `runSync` writes these outside a turn, until K2's `.syncDue` step.
         .init(
             fields: ["model.foldedSyncs", "model.overdueFoldedSyncs", "model.inTurnSyncDue"],
@@ -280,11 +295,20 @@ struct KeeperCensusTests {
     @Test("Each row's home matches the container its path names")
     func homesMatchPaths() {
         for (path, home) in KeeperCensus.homes {
-            let container = path.hasPrefix("behavior.config.") ? "behavior.config" : String(path.prefix { $0 != "." })
+            // The longest group that prefixes the path names its container.
+            let container = KeeperCensus.groups.filter { path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
+                ?? String(path.prefix { $0 != "." })
             switch (container, home) {
             case ("model", .model), ("behavior", .behavior), ("behavior.config", .behavior), ("replay", .replay):
                 continue
             case ("behavior", .container) where path == "behavior.config":
+                continue
+            case ("turnSide", .container) where path == "turnSide.actions":
+                continue
+            // The side's rows keep the homes they had on the actor: outside, replaced or a hook.
+            case ("turnSide", .outside), ("turnSide", .replaced), ("turnSide", .testHook),
+                 ("turnSide.actions", .outside), ("turnSide.actions", .replaced), ("turnSide.actions", .testHook),
+                 ("behavior.reentrySentinel", .outside(.reentrySentinel)):
                 continue
             case ("actor", .model), ("actor", .behavior), ("actor", .replay):
                 Issue.record("\(path): a \(home) field still on the actor")
