@@ -43,6 +43,6 @@ Convert the whole chain: `releaseHeldInputsForDrain(_ m: inout …)` and `dropSe
 ## Prevention
 
 - When a function starts holding the model, convert everything it reaches, not only what it calls directly. Find the set with a transitive walk; `scripts/lint-model-holds.py` does it by name (a helper, not a gate: it reads text, and lists what it can't see).
-- Keep a property and a function of the same name apart (`failure` and `failure(for:)`): a check keyed by name alone reports false paths.
+- A check keyed by name alone reports false paths. Keep a property and a function of the same name apart (`failure` and `failure(for:)`), and overloads by their argument labels (`currentPlayerServices(of:)` and `currentPlayerServices(of:entry:)`). Skip string text (`reason: "forceShutdown"` named a function), but not its interpolations. Count a bare name as a function value only in an argument position (`map(held)`), not when it is a parameter that shares a member's name. A use after `await` runs after the hold.
 - A closure that runs later (`Task { … }`) is outside the hold; a closure called during it (`forEach`, `removeAll(where:)`, `map(held)`) is inside.
 - The debug test suite is the proof only for the paths it runs. List the converted functions no test executes, and add a witness for each one where a missed access would trap.

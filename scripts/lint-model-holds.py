@@ -51,8 +51,51 @@ NAME = re.compile(r"(?:(?<![\w.])|(?<=self\.))([A-Za-z_]\w*)\b(\s*\()?")
 
 
 def code(line: str) -> str:
-    """The line without its `//` comment."""
-    return re.sub(r"//.*", "", line)
+    """The line as code: its `//` comment dropped, and each string literal's text blanked except
+    its interpolations (`\\( ... )`), which are code. A string that spans lines isn't seen."""
+    out = []
+    i, n = 0, len(line)
+    in_string = False
+    while i < n:
+        ch = line[i]
+        if not in_string:
+            if line.startswith("//", i):
+                break
+            if ch == '"':
+                in_string = True
+                out.append('"')
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        # Inside a string literal.
+        if ch == "\\" and i + 1 < n and line[i + 1] == "(":
+            # An interpolation: copy it through its matching parenthesis.
+            depth = 0
+            j = i + 1
+            while j < n:
+                if line[j] == "(":
+                    depth += 1
+                elif line[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            out.append(line[i + 1:j + 1])
+            i = j + 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == '"':
+            in_string = False
+            out.append('"')
+            i += 1
+            continue
+        out.append(" ")
+        i += 1
+    return "".join(out)
 
 
 def block_end(lines, start):
@@ -72,8 +115,71 @@ def block_end(lines, start):
 
 
 class Member:
-    def __init__(self, name, start, end, holder, is_func):
+    def __init__(self, name, start, end, holder, is_func, labels=None):
         self.name, self.start, self.end, self.holder, self.is_func = name, start, end, holder, is_func
+        self.labels = labels
+
+
+def split_top(text):
+    """`text` split at its top-level commas (not inside (), [] or <>)."""
+    parts, depth, cur = [], 0, ""
+    for ch in text:
+        if ch in "([<":
+            depth += 1
+        elif ch in ")]>":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
+def enclosed(text, open_index):
+    """The text inside the parenthesis opened at `open_index`, or None if it doesn't close."""
+    depth = 0
+    for j in range(open_index, len(text)):
+        if text[j] == "(":
+            depth += 1
+        elif text[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1:j]
+    return None
+
+
+def declared_labels(signature, name):
+    """A function declaration's argument labels, `_` for an unlabeled one."""
+    i = signature.index("func " + name) + len("func " + name)
+    if i < len(signature) and signature[i] == "<":
+        depth = 0
+        while i < len(signature):
+            depth += signature[i] == "<"
+            depth -= signature[i] == ">"
+            i += 1
+            if depth == 0:
+                break
+    inner = enclosed(signature, signature.index("(", i))
+    labels = []
+    for param in split_top(inner or ""):
+        words = param.split(":")[0].split()
+        labels.append(words[0] if words else "_")
+    return tuple(labels)
+
+
+def call_labels(text, open_index):
+    """A call's argument labels, `_` for an unlabeled one; None when it doesn't close on its line."""
+    inner = enclosed(text, open_index)
+    if inner is None:
+        return None
+    labels = []
+    for arg in split_top(inner):
+        match = re.match(r"\s*([A-Za-z_]\w*)\s*:(?!:)", arg)
+        labels.append(match.group(1) if match else "_")
+    return tuple(labels)
 
 
 KEEPER = re.compile(r"^(?:[a-z@][\w@() ]* )?(?:actor|extension) LandKeeper\b")
@@ -107,7 +213,10 @@ def parse(lines):
                 while sig_end < end and "{" not in code(lines[sig_end]):
                     sig_end += 1
                 signature = " ".join(lines[k:sig_end + 1])
-                members.append(Member(m.group(1), sig_end, end, bool(HOLD_PARAM.search(signature)), True))
+                members.append(Member(
+                    m.group(1), sig_end, end, bool(HOLD_PARAM.search(signature)), True,
+                    declared_labels(signature, m.group(1)),
+                ))
             else:
                 members.append(Member(v.group(1), k, end, False, False))
             k = end + 1
@@ -121,6 +230,14 @@ def is_label(text, match):
     after = text[match.end(1):]
     before = text[:match.start(1)]
     return bool(re.match(r"\s*:(?!:)", after)) or bool(re.search(r"\b(let|var|case|func)\s+$", before))
+
+
+def is_function_value(text, match):
+    """A bare name in an argument position (`map(held)`, `f(x, with: held)`): a function passed
+    as a value. Elsewhere a bare name is a local or a parameter, not a member function."""
+    before = text[:match.start(1)].rstrip()
+    after = text[match.end(1):].lstrip()
+    return bool(before) and before[-1] in "(,:" and bool(after) and after[0] in "),"
 
 
 def task_lines(lines, start, end):
@@ -160,24 +277,46 @@ def check(path: Path):
     # A member is keyed by name and kind (a function or a property), so a property and a function
     # of the same name (`failure`, `failure(for:)`) stay apart.
     properties = {mem.name for mem in members if not mem.is_func}
+    overloads = {}
+    for mem in members:
+        if mem.is_func and not mem.holder:
+            overloads.setdefault(mem.name, set()).add(mem.labels)
 
-    def target(match):
-        """The member a use names: a call is a function; a bare name is a property of that name,
-        or else a function passed as a value (`map(held)`), which may run during the hold."""
+    def key_of(mem):
+        return (mem.name, mem.labels) if mem.is_func else (mem.name, None)
+
+    def targets(text, match):
+        """The members a use may name. A call names the overload whose labels it uses (every
+        overload when its labels can't be read on the line); a bare name is a property of that
+        name, or else a function passed as a value (`map(held)`), which may run during the hold.
+        A use after `await` runs after the hold, never inside it."""
+        if re.search(r"\bawait\b", text[:match.start(1)]):
+            return set()
         name, call = match.group(1), match.group(2)
-        return (name, bool(call) or name not in properties)
+        if not call and name in properties:
+            return {(name, None)}
+        if not call and not is_function_value(text, match):
+            return set()
+        known = overloads.get(name, set())
+        if call:
+            labels = call_labels(text, match.end() - 1)
+            if labels is not None and labels in known:
+                return {(name, labels)}
+        return {(name, labels) for labels in known}
 
     plain = [mem for mem in members if not mem.holder]
     reaches = set()
     uses = {}
     for mem in plain:
-        key = (mem.name, mem.is_func)
+        key = key_of(mem)
         body = body_lines(lines, mem.start, mem.end)
         if any(MODEL.search(text) for _, text in body):
             reaches.add(key)
-        uses[key] = uses.get(key, set()) | {
-            target(n) for _, text in body for n in NAME.finditer(text) if not is_label(text, n)
-        }
+        used = uses.setdefault(key, set())
+        for _, text in body:
+            for n in NAME.finditer(text):
+                if not is_label(text, n):
+                    used |= targets(text, n)
     changed = True
     while changed:
         changed = False
@@ -199,7 +338,7 @@ def check(path: Path):
                 failures.append((k + 1, name, "names `model` while the body holds it; use `m`"))
             for n in NAME.finditer(text):
                 used, call = n.group(1), n.group(2)
-                if target(n) not in reaches or is_label(text, n):
+                if is_label(text, n) or not (targets(text, n) & reaches):
                     continue
                 if call:
                     rest = text[n.end():].lstrip()
@@ -247,6 +386,31 @@ actor LandKeeper<State> {
 
     private func clean() {}
 
+    private func lookup(of id: Int) -> Int { model.count + id }
+
+    private func lookup(of id: Int, entry: Int) -> Int { entry }
+
+    private nonisolated var submitter: Submitter {
+        Submitter { [weak self] in await self?.touches() }
+    }
+
+    private func overloadAndAsync(_ m: inout KeeperModel<State>) {
+        let x = lookup(of: 1, entry: 2)
+        let s = submitter
+    }
+
+    private func badLabelledOverload(_ m: inout KeeperModel<State>) {
+        let x = lookup(of: 1)
+    }
+
+    private func logsAName(_ m: inout KeeperModel<State>) {
+        log("touches() reachesThroughACall")
+    }
+
+    private func badInterpolation(_ m: inout KeeperModel<State>) {
+        log("count: \\(model.count)")
+    }
+
     private func helper() { helper(&model) }
 
     private func helper(_ m: inout KeeperModel<State>) { m.count += 1 }
@@ -289,7 +453,7 @@ actor LandKeeper<State> {
 }
 """
 
-SELF_TEST_EXPECTED = {"badDirect", "badTransitive", "badOverload", "badProperty", "withTurn body"}
+SELF_TEST_EXPECTED = {"badDirect", "badTransitive", "badOverload", "badProperty", "badInterpolation", "badLabelledOverload", "withTurn body"}
 
 
 def self_test() -> int:
@@ -303,7 +467,7 @@ def self_test() -> int:
     ok = (
         failed == SELF_TEST_EXPECTED
         and len(failures) == len(SELF_TEST_EXPECTED)
-        and {"goodHolder", "helper", "withTurn body"} <= names
+        and {"goodHolder", "helper", "logsAName", "overloadAndAsync", "withTurn body"} <= names
         and len(lines) == len(failures)
     )
     if not ok:
