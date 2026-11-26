@@ -4,7 +4,10 @@
 // keeper turn (adapter, transport, router, host). The keeper's own state changes only in turns;
 // async work there returns as a turn input (see the "Reentrancy" rule in CLAUDE.md / AGENTS.md).
 
+import SwiftStateTurns
+
 /// One key's generation, captured before an `await` and checked after it.
+@PlainData
 package struct Ticket<Key: Hashable & Sendable>: Hashable, Sendable, CustomStringConvertible {
     package let key: Key
     package let epoch: Epoch
@@ -28,8 +31,9 @@ package struct Current<Key: Hashable & Sendable>: ~Copyable {
 /// again, also after its key was ended and issued anew.
 ///
 /// Owned by one actor (a stored `var`), like `SingleFlight`.
+@PlainData
 package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
-    private var counter = EpochCounter()
+    private var counter: EpochCounter = EpochCounter()
     private var current: [Key: Epoch] = [:]
     /// Per key, the epochs `renew` moved on to the current one: the key's current lineage only,
     /// which `issue` and `end` drop.

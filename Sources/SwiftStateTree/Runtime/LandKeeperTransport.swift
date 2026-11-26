@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import SwiftStateTurns
 
 /// One in-turn sync fold, reported when the tick turn that carries it starts (#232).
 ///
@@ -315,6 +316,7 @@ package protocol LandKeeperSettlePort: LandKeeperTransport {
 
 /// Why a sync-only turn was requested (`LandKeeper.syncTurnNow(via:reason:ticket:)`): for
 /// diagnostics and tests; no handling depends on it.
+@PlainData
 package enum SyncTurnReason: Hashable, Sendable {
     /// An explicit `syncNow()`.
     case syncNow

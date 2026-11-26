@@ -231,6 +231,10 @@ public protocol StateNodeProtocol: PlainData, Sendable, SchemaMetadataProvider {
     /// ```swift
     /// gameState.clearDirty()  // Clear all dirty flags
     /// ```
+    ///
+    /// The keeper calls it while it holds its model, which holds this state, for writing. A
+    /// hand-written implementation must not call back into its keeper synchronously: Swift's
+    /// run-time exclusivity check stops the process, in release builds too.
     mutating func clearDirty()
 
     /// Whether the node has a player-dependent field at any depth (`.perPlayer`,

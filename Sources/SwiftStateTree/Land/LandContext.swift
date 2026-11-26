@@ -9,6 +9,12 @@ import SwiftStateTurns
 ///
 /// A handler that declares resolvers gets their outputs as typed parameters (#769); the context
 /// holds them only for the runtime and the record.
+///
+/// A handler and anything it calls must not call back into its keeper synchronously (through
+/// `assumeIsolated` on a captured keeper, say): the handler's state borrows the keeper's whole
+/// model, so the keeper can't read it until the handler returns, and Swift's run-time
+/// exclusivity check stops the process, in release builds too. Work that needs the keeper goes
+/// through the context: emit an event, request a sync, submit a server input.
 public struct LandContext: Sendable {
     // MARK: - System IDs
     

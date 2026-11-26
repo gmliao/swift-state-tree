@@ -57,20 +57,24 @@ HandleAction(SomeAction.self) { state, action, ctx in
 }
 ```
 
-`LandKeeper` 透過 `withHandlerStep` 執行會修改狀態的 handler，直接修改 actor 的狀態，並為這次呼叫綁定 `ctx.random`。replay 會重跑的 handler（OnInitialize、OnJoin、OnLeave、action、client event、server input 與 tick）拿到延續 land 產生器的 service，handler 回傳後 keeper 會把產生器寫回。OnDestroyWhenEmpty 與 OnFinalize 也經過 `withHandlerStep`，但拿到的是產生器的一份副本，不會寫回。AfterFinalize 拿到狀態的快照，並從同一份副本抽取，所以 drain 的三個 handler 延續同一個序列。CanJoin 與 sync handler 不經過 `withHandlerStep`：各自拿到自己的一份副本，同樣不會寫回。
+`LandKeeper` 透過 `withHandlerStep` 執行會修改狀態的 handler，直接修改狀態，並為這次呼叫綁定 `ctx.random`。replay 會重跑的 handler（OnInitialize、OnJoin、OnLeave、action、client event、server input 與 tick）拿到延續 land 產生器的 service，handler 回傳後 keeper 會把產生器寫回。OnDestroyWhenEmpty 與 OnFinalize 也經過 `withHandlerStep`，但拿到的是產生器的一份副本，不會寫回。AfterFinalize 拿到狀態的快照，並從同一份副本抽取，所以 drain 的三個 handler 延續同一個序列。CanJoin 與 sync handler 不經過 `withHandlerStep`：各自拿到自己的一份副本，同樣不會寫回。
 
 ```swift
 // 內部實作（簡化版）
-func withHandlerStep<T>(_ ctx: LandContext, _ operation: (inout State, LandContext) throws -> T) rethrows -> T {
+func withHandlerStep<T>(_ ctx: LandContext, _ operation: (inout KeeperModel<State>, LandContext) throws -> T) rethrows -> T {
     // 接續 land 產生器的 service，只供這次呼叫使用
-    let random = DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
-    defer { landRandom = random.generator }   // 抽取會推進 land 的產生器
+    let random = DeterministicRngService(continuing: model.landRandom, seed: landRandomSeed)
+    defer { model.landRandom = random.generator }   // 抽取會推進 land 的產生器
     var bound = ctx
     bound.stepRandom = random
-    // Actor 序列化確保線程安全
-    return try operation(&state, bound)
+    // Actor 序列化確保線程安全；handler 拿到 `&m.state`
+    return try operation(&model, bound)
 }
 ```
+
+狀態放在 keeper 的 model（模型）裡：model 是一個值，同時存著玩家、排隊中的 input 與 keeper 的計數器。handler 以 `inout` 拿到 model 的狀態，這會借用整個 model，直到 handler 返回。
+
+**handler 不可以同步地回呼它的 keeper。** handler 執行期間，keeper 無法讀取自己的 model。因此 handler 以及它呼叫的任何程式，都不可以直接進入它的 keeper，例如對捕捉到的 keeper 呼叫 `assumeIsolated`。Swift 會在執行期檢查這件事（release build 也會），並以 exclusivity 錯誤終止程序。需要 keeper 的工作請經由 context：發出事件、請求同步，或送出 server input。這些都不會在 handler 執行期間碰到 model。手寫的 `clearDirty()` 也一樣。
 
 land 的產生器是 keeper 的狀態。replay 會依錄製重跑的 handler 從它抽取，handler 返回時 keeper 把它寫回。CanJoin、sync handler 與銷毀階段的 handler 不會依錄製重跑，所以從一份不寫回的副本抽取（[`ctx.random`](#landcontext-功能)）。
 
@@ -110,8 +114,8 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
     let outputs = try await run(resolvers)
 
     // 在之後的 turn 中：handler 以具型別的參數拿到輸出
-    return try withHandlerStep(ctx) { state, ctx in
-        try handler.invoke(&state, action: action, outputs: outputs, ctx: ctx)
+    return try withHandlerStep(ctx) { m, ctx in
+        try handler.invoke(&m.state, action: action, outputs: outputs, ctx: ctx)
     }
 }
 ```
@@ -145,7 +149,7 @@ sequenceDiagram
     Keeper->>Keeper: makeContext(...)
     Keeper->>Resolver: executeResolvers(...)
     Resolver-->>Keeper: 更新 ctx
-    Keeper->>Handler: invoke(&state, action, ctx)
+    Keeper->>Handler: invoke(&m.state, action, ctx)
     Handler->>State: 修改狀態
     State-->>Handler: 完成
     Handler-->>Keeper: 返回 Response
@@ -176,8 +180,8 @@ func handleEvent<E: EventPayload>(_ event: E, ...) {
     let ctx = makeContext(...)
 
     // 執行 handler（無返回值）
-    withHandlerStep(ctx) { state, ctx in
-        handler.invoke(&state, event: event, ctx: ctx)
+    withHandlerStep(ctx) { m, ctx in
+        handler.invoke(&m.state, event: event, ctx: ctx)
     }
 }
 ```
@@ -206,7 +210,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
 
     // 3. 檢查人數上限
     if let maxPlayers = definition.config.maxPlayers {
-        guard players.count < maxPlayers else {
+        guard model.players.count < maxPlayers else {
             throw JoinError.roomIsFull
         }
     }
@@ -215,8 +219,8 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // 執行 Resolver（如果有的話）
         // 執行 handler
-        withHandlerStep(ctx) { state, ctx in
-            onJoinHandler(&state, ctx)
+        withHandlerStep(ctx) { m, ctx in
+            onJoinHandler(&m.state, ctx)
         }
     }
 
@@ -232,13 +236,13 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
 public func leave(playerID: PlayerID, ...) async throws {
     // 執行 OnLeave handler（如果定義）
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
-        withHandlerStep(ctx) { state, ctx in
-            onLeaveHandler(&state, ctx)
+        withHandlerStep(ctx) { m, ctx in
+            onLeaveHandler(&m.state, ctx)
         }
     }
 
     // 清理玩家資料
-    players.removeValue(forKey: playerID)
+    model.players.removeValue(forKey: playerID)
 
     // 檢查是否需要自動銷毀
     checkAutoDestroy()
@@ -299,7 +303,7 @@ sequenceDiagram
     Note over Queue: 1. 過濾 resolvedAtTick < tickId
     Note over Queue: 2. 按 resolvedAtTick + sequence 排序
     Queue->>Keeper: 依序執行 handlers
-    Keeper->>Handler: tickHandler(&state, ctx)
+    Keeper->>Handler: tickHandler(&m.state, ctx)
     Keeper->>Keeper: lastCommittedTickId = tickId
     Keeper->>Output: flushOutputs(tickId)
     Note over Output: 發送 emitEvent 事件
@@ -365,7 +369,9 @@ private func runTick() async {
 
     // 2. 執行 Tick handler
     if let tickHandler = definition.lifetimeHandlers.tickHandler {
-        tickHandler(&state, makeContext(tickId: tickId))
+        withHandlerStep(makeContext(tickId: tickId)) { m, ctx in
+            tickHandler(&m.state, ctx)
+        }
     }
 
     // 3. 更新已提交的 tick ID
@@ -459,7 +465,7 @@ Lifetime {
 ```swift
 // 玩家離開時檢查
 private func checkAutoDestroy() {
-    if players.isEmpty {
+    if model.players.isEmpty {
         // 啟動銷毀計時器
         destroyTask = Task {
             try? await safeTaskSleep(for: destroyDelay)

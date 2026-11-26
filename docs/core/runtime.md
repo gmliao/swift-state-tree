@@ -57,20 +57,24 @@ HandleAction(SomeAction.self) { state, action, ctx in
 }
 ```
 
-`LandKeeper` runs a handler that changes the state through `withHandlerStep`. It mutates the actor's state in place and binds `ctx.random` for that call. The handlers that replay repeats (OnInitialize, OnJoin, OnLeave, actions, client events, server inputs and the tick) get a service that continues the land's generator, and the keeper writes the generator back when the handler returns. OnDestroyWhenEmpty and OnFinalize also run through `withHandlerStep`, but with a copy of the generator that is never written back. AfterFinalize, which gets a snapshot of the state, draws from that same copy, so the drain's three handlers continue one sequence. CanJoin and the sync handler don't run through `withHandlerStep`: each gets its own copy, also never written back.
+`LandKeeper` runs a handler that changes the state through `withHandlerStep`. It mutates the state in place and binds `ctx.random` for that call. The handlers that replay repeats (OnInitialize, OnJoin, OnLeave, actions, client events, server inputs and the tick) get a service that continues the land's generator, and the keeper writes the generator back when the handler returns. OnDestroyWhenEmpty and OnFinalize also run through `withHandlerStep`, but with a copy of the generator that is never written back. AfterFinalize, which gets a snapshot of the state, draws from that same copy, so the drain's three handlers continue one sequence. CanJoin and the sync handler don't run through `withHandlerStep`: each gets its own copy, also never written back.
 
 ```swift
 // Internal implementation (simplified)
-func withHandlerStep<T>(_ ctx: LandContext, _ operation: (inout State, LandContext) throws -> T) rethrows -> T {
+func withHandlerStep<T>(_ ctx: LandContext, _ operation: (inout KeeperModel<State>, LandContext) throws -> T) rethrows -> T {
     // A service that continues the land's generator, for this call only
-    let random = DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
-    defer { landRandom = random.generator }   // the draws move the land's generator
+    let random = DeterministicRngService(continuing: model.landRandom, seed: landRandomSeed)
+    defer { model.landRandom = random.generator }   // the draws move the land's generator
     var bound = ctx
     bound.stepRandom = random
-    // Actor serialization ensures thread safety
-    return try operation(&state, bound)
+    // Actor serialization ensures thread safety; the handler gets `&m.state`
+    return try operation(&model, bound)
 }
 ```
+
+The state lives inside the keeper's model: one value that also holds the players, the queued inputs and the keeper's counters. A handler gets the model's state `inout`, and that borrows the whole model until the handler returns.
+
+**A handler must not call back into its keeper synchronously.** While the handler runs, the keeper can't read its own model. So a handler, and anything it calls, must not reach its keeper directly, for example through `assumeIsolated` on a captured keeper. Swift checks this at run time, in release builds too, and stops the process with an exclusivity error. Work that needs the keeper goes through the context: emit an event, request a sync, or submit a server input. None of these touch the model during the handler. The same holds for a hand-written `clearDirty()`.
 
 The land's generator is keeper state. A handler that replay repeats from the record draws from it, and the keeper writes it back when the handler returns. CanJoin, the sync handler and the destroy-phase handlers aren't repeated from the record, so they draw from a copy that is never written back ([`ctx.random`](#landcontext-functions)).
 
@@ -110,8 +114,8 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
     let outputs = try await run(resolvers)
 
     // In a later turn: the handler gets the outputs as a typed parameter
-    return try withHandlerStep(ctx) { state, ctx in
-        try handler.invoke(&state, action: action, outputs: outputs, ctx: ctx)
+    return try withHandlerStep(ctx) { m, ctx in
+        try handler.invoke(&m.state, action: action, outputs: outputs, ctx: ctx)
     }
 }
 ```
@@ -145,7 +149,7 @@ sequenceDiagram
     Keeper->>Keeper: makeContext(...)
     Keeper->>Resolver: executeResolvers(...)
     Resolver-->>Keeper: Update ctx
-    Keeper->>Handler: invoke(&state, action, ctx)
+    Keeper->>Handler: invoke(&m.state, action, ctx)
     Handler->>State: Modify state
     State-->>Handler: Complete
     Handler-->>Keeper: Return Response
@@ -176,8 +180,8 @@ func handleEvent<E: EventPayload>(_ event: E, ...) {
     let ctx = makeContext(...)
 
     // Execute handler (no return value)
-    withHandlerStep(ctx) { state, ctx in
-        handler.invoke(&state, event: event, ctx: ctx)
+    withHandlerStep(ctx) { m, ctx in
+        handler.invoke(&m.state, event: event, ctx: ctx)
     }
 }
 ```
@@ -206,7 +210,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
 
     // 3. Check player limit
     if let maxPlayers = definition.config.maxPlayers {
-        guard players.count < maxPlayers else {
+        guard model.players.count < maxPlayers else {
             throw JoinError.roomIsFull
         }
     }
@@ -215,8 +219,8 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // Execute Resolver (if any)
         // Execute handler
-        withHandlerStep(ctx) { state, ctx in
-            onJoinHandler(&state, ctx)
+        withHandlerStep(ctx) { m, ctx in
+            onJoinHandler(&m.state, ctx)
         }
     }
 
@@ -232,13 +236,13 @@ When a player leaves, `OnLeave` handler is executed:
 public func leave(playerID: PlayerID, ...) async throws {
     // Execute OnLeave handler (if defined)
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
-        withHandlerStep(ctx) { state, ctx in
-            onLeaveHandler(&state, ctx)
+        withHandlerStep(ctx) { m, ctx in
+            onLeaveHandler(&m.state, ctx)
         }
     }
 
     // Clean up player data
-    players.removeValue(forKey: playerID)
+    model.players.removeValue(forKey: playerID)
 
     // Check if auto-destruction is needed
     checkAutoDestroy()
@@ -299,7 +303,7 @@ sequenceDiagram
     Note over Queue: 1. Filter resolvedAtTick < tickId
     Note over Queue: 2. Sort by resolvedAtTick + sequence
     Queue->>Keeper: Execute handlers in order
-    Keeper->>Handler: tickHandler(&state, ctx)
+    Keeper->>Handler: tickHandler(&m.state, ctx)
     Keeper->>Keeper: lastCommittedTickId = tickId
     Keeper->>Output: flushOutputs(tickId)
     Note over Output: Send emitEvent events
@@ -365,7 +369,9 @@ private func runTick() async {
 
     // 2. Execute Tick handler
     if let tickHandler = definition.lifetimeHandlers.tickHandler {
-        tickHandler(&state, makeContext(tickId: tickId))
+        withHandlerStep(makeContext(tickId: tickId)) { m, ctx in
+            tickHandler(&m.state, ctx)
+        }
     }
 
     // 3. Update committed tick ID
@@ -459,7 +465,7 @@ Lifetime {
 ```swift
 // Check when player leaves
 private func checkAutoDestroy() {
-    if players.isEmpty {
+    if model.players.isEmpty {
         // Start destruction timer
         destroyTask = Task {
             try? await safeTaskSleep(for: destroyDelay)
