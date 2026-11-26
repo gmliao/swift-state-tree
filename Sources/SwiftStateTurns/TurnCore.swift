@@ -129,6 +129,12 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline var borrows = 0
     /// Tests: the borrow state between calls (0 when nothing is open).
     package var borrowStateForTesting: Int { borrows }
+    /// Whether a step is writing the machine now (the borrow state is -1): a `send` stepping
+    /// now, `sendAndWait`, `query`, a timer, a completion, an abandonment or mail. False between
+    /// steps, inside a `read`, and in `flush`. An adopter's synchronous entry reads it on the
+    /// shared executor to refuse a call made from inside a step before it reaches the core,
+    /// whose own stop for that call ends the process (#700 K2, plan draft 7 §4.2).
+    package var isStepping: Bool { borrows < 0 }
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
