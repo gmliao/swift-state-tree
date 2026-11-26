@@ -88,7 +88,9 @@ public protocol Transport: Actor {
     func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?) async
 
     /// `closeSessionAfterQueuedFrames(_:generation:)`, closing with `close` instead of a plain
-    /// 1000: a superseded session's 4017 goes out behind the frames queued for it (#909).
+    /// 1000: a superseded session's 4017 goes out behind the frames queued for it (#909). A
+    /// connection gets one close: when an ordered close is already pending for it, this one is
+    /// ignored, and the first one's code goes out (#911).
     ///
     /// The default keeps the ordered close a transport already has for a plain close: with
     /// `.normal` it calls `closeSessionAfterQueuedFrames(_:generation:)`. Any other code needs

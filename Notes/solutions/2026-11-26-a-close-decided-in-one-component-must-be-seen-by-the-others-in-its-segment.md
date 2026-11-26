@@ -1,0 +1,41 @@
+---
+title: "A close decided in one component must be seen by every other component that can decide one, in the same segment"
+module: SwiftStateTreeTransport
+date: 2026-11-26
+problem_type: bug_class
+component: session-close
+symptoms:
+  - "a client is closed with another code (1008) than the one the server decided (1000), and the error sent before the decided close is lost"
+  - "the client gets a run of refusals (JOIN_SESSION_NOT_CONNECTED) after a failure that already ended its session"
+root_cause: second_close_decider_did_not_see_the_first_decision
+resolution_type: established_pattern
+severity: medium
+tags:
+  - ordering
+  - close
+  - segment
+  - router
+related:
+  - "#912"
+  - "2026-11-18-a-server-close-goes-around-the-send-queue"
+  - "2026-11-26-a-precedence-test-must-stage-a-pair-production-can-produce"
+---
+
+# A close decided in one component must be seen by every other component that can decide one, in the same segment
+
+## Problem
+
+A join that failed before its flip (inbound overflow) gets its error and a plain 1000 through the adapter's writer. The router ended the attempt in the same segment, which put the session back in the handshake. Each frame the client kept sending was refused there (JOIN_SESSION_NOT_CONNECTED) and counted against the pre-join refusal budget (8). The ninth refusal closed the session with 1008, directly on the transport, ahead of the error still waiting in the writer. The error was then dropped behind the close marker. #896's macOS log shows it: nine refusals, then "Too many refused frames before join; closing the session budget=8".
+
+## Root cause
+
+Two components can decide a session's close: the adapter (the final frame and its close) and the router (its refusal budget). The router made the first decision, but its own state didn't record it. To the router's refusal path the session still looked open and pre-join, so it decided a second close, and the second one went out first.
+
+## Fix
+
+In the segment that ends the attempt, the router also puts the session in `refusedSessions`, for every failure that closes it: the final-frame failures and the supersede. Every later frame is then dropped, not refused or counted, until the close is reported.
+
+## Prevention
+
+- When a component decides a session's close, list every other component that can decide one for the same session: a budget, a timer, a supersede, a land failure. In the segment of the decision, each of them must be able to see it, through a flag or a phase that its own close path reads.
+- A test holds the first close's frames (a held send), then drives the second decider past its threshold, and expects the first close's code alone.

@@ -147,6 +147,9 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
         /// `submitSyncStream` from the nth port call made during a turn body, armed by
         /// `armNthCallInBody(_:)`: any call of this port, wherever the body makes it.
         case nthCallInBody
+        /// `submitSyncStream` from the first `closeOutputs(for:)`: the gate close a land
+        /// failure performs.
+        case closeOutputs
     }
 
     private let lock = NSLock()
@@ -165,6 +168,11 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     private var nthTarget = 0
     private var callsInBody = 0
     private var reenteredNth = false
+    private var portOrder: [String] = []
+    private var reportWaits = false
+    private let teardownStarted = DispatchSemaphore(value: 0)
+    /// Yields once `landDidFail` has been recorded.
+    let teardownReached = AsyncStream<Void>.makeStream()
 
     init(reenter: Where, joinsWait: Bool = false) {
         self.reenter = reenter
@@ -194,6 +202,17 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     }
     /// Whether the armed nth call was made, and re-entered.
     var reenteredAtNth: Bool { lock.withLock { reenteredNth } }
+    /// The join report and the teardown's `landDidFail`, in the order they reached the port.
+    var reportAndTeardownOrder: [String] { lock.withLock { portOrder } }
+    /// From now on, the join report waits up to half a second for `landDidFail` to start, so a
+    /// teardown that can run during the failing turn does so before the report returns.
+    func armReportWaitsForTeardown() { lock.withLock { reportWaits = true } }
+
+    func landDidFail(_ failure: LandFailure) async {
+        lock.withLock { portOrder.append("landDidFail") }
+        teardownStarted.signal()
+        teardownReached.continuation.yield()
+    }
 
     /// `.nthCallInBody`: counts a port call made during a turn body; re-enters at the armed one.
     private func noteCall() {
@@ -222,7 +241,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
                 keeper.markDrainingForTesting(cause: .forceShutdown)
                 keeper.submitSyncStream([outputDraft(99)])
             case .phase, .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .settleCheck, .settlePhase,
-                 .settleDraftFactory, .nthCallInBody, .nowhere:
+                 .settleDraftFactory, .nthCallInBody, .closeOutputs, .nowhere:
                 keeper.submitSyncStream([outputDraft(99)])
             }
         }
@@ -233,7 +252,11 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     }
 
     nonisolated func closeOutputs(for failure: LandFailure) {
-        lock.withLock { closes += 1 }
+        let first = lock.withLock { () -> Bool in
+            closes += 1
+            return closes == 1
+        }
+        if reenter == .closeOutputs, first { reenterNow() }
     }
 
     /// Answers true when it re-enters, so a follow-up would be scheduled if the refused answer
@@ -272,7 +295,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
         switch reenter {
         case .phase, .phaseRequestingSyncTurn, .phaseOnDrainingLand: reenterNow()
         case .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .settleCheck, .settlePhase, .nestedSettle,
-             .settleDraftFactory, .nthCallInBody, .nowhere: break
+             .settleDraftFactory, .nthCallInBody, .closeOutputs, .nowhere: break
         }
         defer { lock.withLock { phaseReturned = true } }
         // Otherwise a success, so only the re-entry can fail the turn. Kept events would ask
@@ -308,7 +331,13 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
             )
         }))
     }
-    func noteJoinInputsConsumed(_ results: [JoinInputResult]) { noteCall() }
+    func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
+        noteCall()
+        // wall-clock: the bound on a teardown that can't start during the turn; the fixed keeper
+        // waits it out, the broken one returns as soon as the teardown runs.
+        if lock.withLock({ reportWaits }) { _ = teardownStarted.wait(timeout: .now() + .milliseconds(500)) }
+        lock.withLock { portOrder.append("joinReport") }
+    }
     func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool {
         noteCall()
         return false
@@ -766,6 +795,31 @@ struct KeeperTurnSkeletonTests {
         #expect(await keeper.currentState().value == 1, "the OnJoin applied before the failure item")
     }
 
+    /// A failure in the batch stages the drain, and the join report's call-out flushes it while the
+    /// turn goes on. The teardown's first step runs on the keeper, so the transport hears
+    /// `landDidFail` after the failing turn's last port call, as before the move (#914 review).
+    /// Limit: a keeper whose teardown runs off the keeper fails this test only if that task
+    /// reaches `landDidFail` within the report's 500 ms wait.
+    @Test("A failed land's teardown starts after the failing turn's join report")
+    func teardownWaitsForTheFailingTurn() async throws {
+        let (keeper, transport, _) = await attachedKeeper(.nowhere, onJoin: true)
+        await keeper.awaitInitialization()
+        transport.armReportWaitsForTeardown()
+        let join = LandKeeper<TurnSkeletonState>.PendingItem.lifecycle(LandKeeper<TurnSkeletonState>.PendingLifecycleItem(
+            sequence: 1_000, kind: .join, playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"),
+            deviceID: nil, isGuest: nil, metadata: [:], resolverOutputs: [:], resolvedAtTick: 0
+        ))
+        let queued = LandKeeper<TurnSkeletonState>.PendingItem.landFailure(LandKeeper<TurnSkeletonState>.PendingLandFailureItem(
+            sequence: 1_001, resolvedAtTick: 0, failure: TurnSkeletonFailingPhaseTransport.failure
+        ))
+
+        _ = await keeper.runInputTurnForTesting([join, queued])
+        // The suite's time limit bounds the wait.
+        for await _ in transport.teardownReached.stream { break }
+
+        #expect(transport.reportAndTeardownOrder == ["joinReport", "landDidFail"])
+    }
+
     /// A refusal in initialization's turn fails the land, and the keeper starts no tick or sync
     /// loop on it (#891 review): the drain may already have run, and a loop started after it
     /// would keep the keeper alive. Unarmed, the same land starts both.
@@ -822,6 +876,31 @@ struct KeeperTurnSkeletonTests {
         // The recording's witness, the phase, and the joins read after the committed phase (its
         // witness, then the read).
         #expect(reentered == Array(1...4), "calls that re-entered: \(reentered)")
+    }
+
+    /// A failure applied outside a turn body would close the gate at depth zero, where a
+    /// callback from the close isn't refused and reaches the model the failure holds (an
+    /// exclusivity trap). Both paths apply it in a turn now (#700 K1b-5 plan §6, C1 and C2).
+    @Test("A failure's gate close that calls back is refused: the noted failure's sync-only turn and the test hook", arguments: [false, true])
+    func failureCloseReentryIsRefused(viaTestHook: Bool) async throws {
+        let (keeper, transport, _) = await attachedKeeper(.closeOutputs)
+        await keeper.awaitInitialization()
+        let noted = LandFailure(kind: .eventEncode, detail: "noted outside a turn", position: LandFailurePosition(stage: .eventFlush))
+        if viaTestHook {
+            await keeper.failLandForTesting(noted)
+        } else {
+            keeper.notePendingFailure(noted)
+            let result = await keeper.syncTurnNow(via: transport, reason: .syncNow)
+            #expect(result == .landFailed(noted))
+        }
+        // Refused, and the land failed once, with the failure it applied: a re-entry that ended
+        // it instead would be `keeperReentry`.
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(keeper.failure == noted)
+        // The failure's close, and the refusing entry's own close nested inside it (the
+        // same-gate skip covers only a refusal that closed first). A close is idempotent.
+        #expect(transport.closeCount == 2)
+        #expect(await keeper.bodyDepthForTesting == 0)
     }
 
     /// Every port call the settle makes goes through `callOut`, as the input turn's do; the

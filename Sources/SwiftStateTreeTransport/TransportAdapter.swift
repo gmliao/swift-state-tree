@@ -1279,10 +1279,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    func _onDisconnectImpl(sessionID: SessionID, clientID: ClientID) async {
+    func _onDisconnectImpl(sessionID: SessionID, clientID: ClientID, generation: UInt64? = nil) async {
         do {
             try await enqueueMembership {
-                await self.handleDisconnectQueued(sessionID: sessionID, clientID: clientID)
+                await self.handleDisconnectQueued(sessionID: sessionID, clientID: clientID, generation: generation)
             }
         } catch {
             logger.error("❌ Membership queue failed during disconnect", metadata: [
@@ -1292,7 +1292,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    private func handleDisconnectQueued(sessionID: SessionID, clientID: ClientID) async {
+    private func handleDisconnectQueued(sessionID: SessionID, clientID: ClientID, generation: UInt64? = nil) async {
+        // A later connection under the ID took over: this disconnect is an older one's, and
+        // changes nothing (#911). In the segment that acts.
+        if let generation, let current = connectionGenerations[sessionID], current != generation { return }
         profilerCounters?.incrementDisconnects()
         // Late frames for this connection (e.g. an action response still in flight) are dropped,
         // so they cannot reach a later connection that reuses the SessionID.
@@ -1543,7 +1546,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Closes `sessionID` behind every frame already queued for it in the outbound writer, with
     /// `close`, only while its connection is the one with `generation` (nil: any), so a frame
     /// queued before the decision reaches the client before the close (#909). The session must
-    /// already be ended, so nothing is queued for it after the close.
+    /// already be ended, so nothing is queued for it after the close. When an ordered close is
+    /// already pending for the connection, the transport ignores this one: the first close
+    /// decided is the one the client gets (#911).
     ///
     /// Synchronous, and must stay so: the enqueue, the check of its result and the fallback run
     /// in one segment, so no frame is queued for the session and no generation changes between

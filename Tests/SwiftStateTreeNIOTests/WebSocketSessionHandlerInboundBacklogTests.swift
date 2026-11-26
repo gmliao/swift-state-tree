@@ -572,7 +572,9 @@ struct InboundBacklogPendingJoinTests {
             playerID: "p1", deviceID: nil, metadata: StateUpdateFeature.joinMetadata
         )), as: UTF8.self)
         #expect(try await readOne(f, join))
-        #expect(await waitUntilAsync { await router.isJoinPending(SessionID("s-pending")) }, "admitted, waiting for its flip")
+        // No event reports the pending mark; `pollUntil` is bounded by the shared hang bound,
+        // not a 5 s deadline (#912).
+        #expect(await pollUntil { await router.isJoinPending(SessionID("s-pending")) }, "admitted, waiting for its flip")
 
         let action = String(decoding: try JSONEncoder().encode(TransportMessage.action(
             requestID: "a", action: ActionEnvelope(typeIdentifier: "Anything", payload: AnyCodable([String: Int]()))
@@ -588,31 +590,35 @@ struct InboundBacklogPendingJoinTests {
         }
         #expect(sent > 256, "past the adapter's 256-frame bound: \(sent)")
 
-        // The adapter's pending-join bound (256 frames) ends the join: its error, then the close.
+        // The adapter's pending-join bound (256 frames) ends the join: its error, then the close
+        // behind it (#911, #912). Each outbound write is awaited, up to the close frame: a slow
+        // runner waits, and an error that was lost shows as a close frame with no overflow
+        // error before it. A write that never comes is bounded by `testHangBound`: the watchdog
+        // closes the channel, which ends the parked wait (`ioOnClosedChannel`), since the wait
+        // itself has no cancellation.
+        let watchdog = Task { [channel] in
+            try? await safeTaskSleep(for: testHangBound)
+            guard !Task.isCancelled else { return }
+            try? await channel.close()
+        }
+        defer { watchdog.cancel() }
         var codes: [String] = []
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !codes.contains(ErrorCode.joinInboundOverflow.rawValue), ContinuousClock.now < deadline {
-            if let frame = try await channel.readOutbound(as: WebSocketFrame.self) {
-                if let message = try? JSONDecoder().decode(TransportMessage.self, from: Data(frame.unmaskedData.readableBytesView)),
-                   case .error(let payload) = message.payload {
-                    codes.append(payload.code)
-                }
-            } else {
-                try? await safeTaskSleep(for: .milliseconds(2))
+        var closeCode: WebSocketErrorCode?
+        while closeCode == nil {
+            let frame = try await channel.waitForOutboundWrite(as: WebSocketFrame.self)
+            if frame.opcode == .connectionClose {
+                var data = frame.unmaskedData
+                closeCode = data.readWebSocketErrorCode() ?? .unknown(0)
+            } else if let message = try? JSONDecoder().decode(TransportMessage.self, from: Data(frame.unmaskedData.readableBytesView)),
+                      case .error(let payload) = message.payload {
+                codes.append(payload.code)
             }
         }
-        #expect(codes.contains(ErrorCode.joinInboundOverflow.rawValue), "codes: \(codes)")
+        #expect(codes.contains(ErrorCode.joinInboundOverflow.rawValue), "the close came without the overflow error before it; codes: \(codes)")
+        #expect(closeCode == .normalClosure, "\(String(describing: closeCode))")
         let stats = try await onLoop(f) { f.handler.inboundBacklog }
         #expect(stats.readPauses == 0, "the chain bound never trips while the router returns")
         #expect(stats.maxQueuedMessages <= 300)
     }
 }
 
-private func waitUntilAsync(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while ContinuousClock.now < deadline {
-        if await condition() { return true }
-        try? await safeTaskSleep(for: .milliseconds(2))
-    }
-    return await condition()
-}
