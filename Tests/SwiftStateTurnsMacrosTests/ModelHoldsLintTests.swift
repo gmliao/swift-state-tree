@@ -15,11 +15,16 @@
 //   transitively. Overloads are told apart by their argument labels.
 // - A holder must not name `model`, and must not call or read a member that reaches it, except
 //   a holder overload called with the hold first (`f(&m, …)`, `f(m, …)`).
-// - Not checked, because it runs after the hold ends: a closure passed to `Task { … }` or
-//   `Task.detached { … }`, and an `await` expression.
+// - A closure passed in a call that also passes `&model` runs under that hold too: it's a
+//   holder whatever the callee.
+// - Not checked, because it runs after the hold ends: the body of a closure passed to
+//   `Task { … }` or `Task.detached { … }`, and an `await` expression. A task's capture list is
+//   checked: it's evaluated when the task is made, under the hold. Any other closure in a holder
+//   (`forEach`, `map`, `removeAll(where:)`) is taken to run during it.
 //
-// Limits: a call through another receiver (`other.f()`) isn't followed, and a member is matched
-// by name, not by resolved declaration. The run-time check in the debug test suite stays the
+// Limits: a call through another receiver (`other.f()`, a port's witness that calls back into
+// the keeper) isn't followed; the keeper's re-entry sentinel and `callOut` guard that path at
+// run time. A member is matched by name, not by resolved declaration. The run-time check in the debug test suite stays the
 // proof for the paths the tests run. Once the keeper's model moves into the turn core (#700
 // K2-2), a re-entry goes through the core's borrow rule instead; K2-2 decides whether this rule
 // moves to the facade's forwarding or is retired.
@@ -167,9 +172,9 @@ struct KeeperMember {
     let converter: SourceLocationConverter
     /// A function with a `KeeperModel` parameter: the names that parameter goes by.
     let holdNames: Set<String>
-    /// For each function-typed parameter that takes a `KeeperModel`, the index of that argument
-    /// in the closure's parameters: a closure passed here holds the model.
-    let givesHoldAt: Int?
+    /// The function-typed parameters that take a `KeeperModel`, by argument label: the index of
+    /// that argument among the closure's parameters. A closure passed to one holds the model.
+    let givesHold: [(label: String, index: Int)]
 
     var isHolder: Bool { !holdNames.isEmpty }
 
@@ -180,10 +185,11 @@ struct KeeperMember {
         self.path = path
         self.converter = converter
         holdNames = Set(parameters.filter { isKeeperModel($0.type) }.map { ($0.secondName ?? $0.firstName).text })
-        givesHoldAt = parameters.lazy.compactMap { parameter -> Int? in
-            guard let function = unwrap(parameter.type).as(FunctionTypeSyntax.self) else { return nil }
-            return function.parameters.firstIndex { isKeeperModel($0.type) }.map { function.parameters.distance(from: function.parameters.startIndex, to: $0) }
-        }.first
+        givesHold = parameters.compactMap { parameter -> (label: String, index: Int)? in
+            guard let function = unwrap(parameter.type).as(FunctionTypeSyntax.self),
+                  let index = Array(function.parameters).firstIndex(where: { isKeeperModel($0.type) }) else { return nil }
+            return (parameter.firstName.text, index)
+        }
     }
 
     init(property: String, body: Syntax?, path: String, converter: SourceLocationConverter) {
@@ -192,7 +198,7 @@ struct KeeperMember {
         self.path = path
         self.converter = converter
         holdNames = []
-        givesHoldAt = nil
+        givesHold = []
     }
 }
 
@@ -279,8 +285,11 @@ final class MemberGraph {
         byName[name]?.contains(where: \.isHolder) ?? false
     }
 
-    func givesHold(_ name: String) -> Int? {
-        byName[name]?.lazy.compactMap(\.givesHoldAt).first
+    /// The closure parameters a member gives the model to, by argument label; nil when it gives
+    /// none.
+    func givesHold(_ name: String) -> [(label: String, index: Int)]? {
+        let given = byName[name]?.flatMap(\.givesHold) ?? []
+        return given.isEmpty ? nil : given
     }
 
     /// Whether a call's labels can bind to a declaration's: each call label in order matches a
@@ -312,8 +321,8 @@ final class MemberGraph {
             for (giver, index, closure) in finder.found {
                 let line = member.converter.location(for: closure.positionAfterSkippingLeadingTrivia).line
                 out.append(ModelHolder(name: "\(giver) body in \(member.key.name)", path: member.path, line: line,
-                                       holdNames: [closureParameterName(closure, at: index)], body: Syntax(closure),
-                                       converter: member.converter))
+                                       holdNames: index.map { [closureParameterName(closure, at: $0)] } ?? [],
+                                       body: Syntax(closure), converter: member.converter))
             }
         }
         return out.sorted { ($0.path, $0.line) < ($1.path, $1.line) }
@@ -351,16 +360,19 @@ private func isTaskCall(_ call: FunctionCallExprSyntax) -> Bool {
     return callee.as(DeclReferenceExprSyntax.self)?.baseName.text == "Task"
 }
 
-private func closures(of call: FunctionCallExprSyntax) -> [ClosureExprSyntax] {
-    call.arguments.compactMap { $0.expression.as(ClosureExprSyntax.self) }
-        + [call.trailingClosure].compactMap { $0 }
-        + call.additionalTrailingClosures.map(\.closure)
+/// A call's closure arguments, with the label each binds to (nil for the first trailing one).
+private func labelledClosures(of call: FunctionCallExprSyntax) -> [(label: String?, closure: ClosureExprSyntax)] {
+    call.arguments.compactMap { argument in
+        argument.expression.as(ClosureExprSyntax.self).map { (argument.label?.text ?? "_", $0) }
+    }
+        + [call.trailingClosure].compactMap { $0 }.map { (nil, $0) }
+        + call.additionalTrailingClosures.map { ($0.label.text, $0.closure) }
 }
 
 /// The closures passed to a member that gives them the model.
 private final class HoldClosureFinder: SyntaxVisitor {
     let graph: MemberGraph
-    var found: [(giver: String, index: Int, closure: ClosureExprSyntax)] = []
+    var found: [(giver: String, index: Int?, closure: ClosureExprSyntax)] = []
 
     init(graph: MemberGraph) {
         self.graph = graph
@@ -368,10 +380,24 @@ private final class HoldClosureFinder: SyntaxVisitor {
     }
 
     override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
-        if let name = calleeName(node.calledExpression), let index = graph.givesHold(name) {
-            for closure in closures(of: node) { found.append((name, index, closure)) }
+        if let name = calleeName(node.calledExpression), let given = graph.givesHold(name) {
+            // A labelled closure takes the parameter of its label; a trailing one, the last.
+            for (label, closure) in labelledClosures(of: node) {
+                let parameter = given.last { $0.label == label } ?? (label == nil ? given.last : nil)
+                if let parameter { found.append((name, parameter.index, closure)) }
+            }
+        } else if node.arguments.contains(where: { passesModel($0.expression) }) {
+            let name = node.calledExpression.trimmedDescription
+            for (_, closure) in labelledClosures(of: node) { found.append((name, nil, closure)) }
         }
         return .visitChildren
+    }
+
+    /// `&model` or `&self.model`.
+    private func passesModel(_ expression: ExprSyntax) -> Bool {
+        guard let inner = expression.as(InOutExprSyntax.self)?.expression else { return false }
+        if let reference = inner.as(DeclReferenceExprSyntax.self) { return reference.baseName.text == "model" }
+        return calleeName(inner) == "model"
     }
 }
 
@@ -397,7 +423,14 @@ final class UseVisitor: SyntaxVisitor {
     }
 
     override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
-        isTaskCall(node) ? .skipChildren : .visitChildren
+        guard isTaskCall(node) else { return .visitChildren }
+        // The task's body runs later; its capture list is evaluated now, under the hold.
+        for (_, closure) in labelledClosures(of: node) {
+            for capture in closure.signature?.capture?.items ?? [] {
+                if let initializer = capture.initializer { walk(initializer) }
+            }
+        }
+        return .skipChildren
     }
 
     override func visit(_ node: AwaitExprSyntax) -> SyntaxVisitorContinueKind { .skipChildren }
@@ -493,7 +526,8 @@ enum Shadowing {
             }
             return catchClause.catchItems.isEmpty ? ["error"] : names
         }
-        if let closure = parent.as(ClosureExprSyntax.self), let signature = closure.signature {
+        // A closure's parameters and captures are bound in its statements, not in its capture list.
+        if let closure = parent.as(ClosureExprSyntax.self), closure.statements.id == child.id, let signature = closure.signature {
             var names: Set<String> = []
             switch signature.parameterClause {
             case .simpleInput(let list): names.formUnion(list.map(\.name.text))
@@ -680,10 +714,46 @@ struct ModelHoldsLintTests {
         // A task's body runs after the hold.
         ("Task.detached { self.touches() }", 0),
         ("Task<Void, Never> { self.touches() }", 0),
+        // A task's capture list is evaluated under the hold; a capture binds only the body.
+        ("Task { [n = self.model.count] in _ = n }", 1),
+        ("_ = { [n = model.count] in n }", 1),
+        ("_ = { [model = maybe] in model }", 0),
+        // A closure that runs during the hold, and a use after `await`.
+        ("[1].forEach { _ in touches() }", 1),
+        ("await touches()", 0),
     ])
     func syntaxCases(body: String, expected: Int) {
         let report = ModelHoldsLint.check([(path: "LandKeeper.swift", source: holderFixture(body))])
         #expect(report.findings.count == expected, "\(report.findings.joined(separator: "\n"))")
+    }
+
+    @Test("A parameter that shares a member's name, and a closure passed beside `&model`")
+    func parametersAndClosuresBesideTheModel() {
+        let parameter = ModelHoldsLint.check([(path: "LandKeeper.swift", source: """
+        actor LandKeeper<State> {
+            private var model: KeeperModel<State>
+            private func touches() { model.count += 1 }
+            private func holder(_ m: inout KeeperModel<State>, touches: Int) { _ = touches }
+        }
+        """)])
+        #expect(parameter.findings.isEmpty, "\(parameter.findings.joined(separator: "\n"))")
+        // `run` isn't a keeper member, and its closure's type isn't read: passed with `&model`,
+        // the closure runs under the hold.
+        let beside = ModelHoldsLint.check([(path: "LandKeeper.swift", source: """
+        actor LandKeeper<State> {
+            private var model: KeeperModel<State>
+            private func touches() { model.count += 1 }
+            private func plain() { other.run(&model) { touches() } }
+            private func two(_ a: (inout KeeperModel<State>) -> Void, then b: (Int, inout KeeperModel<State>) -> Void) {}
+            private func both() {
+                two({ m in touches() },
+                    then: { n, m in touches() })
+            }
+        }
+        """)])
+        // One finding per line: the two closures of `both` are on lines of their own.
+        #expect(beside.findings.count == 3, "\(beside.findings.joined(separator: "\n"))")
+        #expect(Set(beside.holders.flatMap(\.holdNames)) == ["m"])
     }
 
     @Test("A marker with a reason allows its line; a marker without one doesn't")
