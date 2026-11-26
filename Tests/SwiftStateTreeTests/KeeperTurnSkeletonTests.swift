@@ -67,6 +67,12 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
         case phaseRequestingSyncTurn
         /// The land starts draining in the sync phase, then `submitSyncStream`.
         case phaseOnDrainingLand
+        /// `submitSyncStream` from a draft factory the phase returned, which the keeper runs
+        /// after the phase, outside any call out.
+        case draftFactory
+        /// `submitSyncStream` from `runsSyncPhaseInTurn`, armed once the phase returned: the
+        /// first of the joins-awaiting-sync read's two witnesses.
+        case runsSyncPhaseWitness
     }
 
     private let lock = NSLock()
@@ -75,6 +81,8 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     private var closes = 0
     private var closedAtReentry: Bool?
     private var mailboxAtReentry: LandFailure?
+    private var phaseReturned = false
+    private var joinsAsked = 0
 
     init(reenter: Where) { self.reenter = reenter }
 
@@ -85,6 +93,8 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     /// The keeper's mailbox right after the refused call returned.
     var mailboxFailureAtReentry: LandFailure? { lock.withLock { mailboxAtReentry } }
     var closeCount: Int { lock.withLock { closes } }
+    /// How many times `hasJoinsAwaitingSync` was read.
+    var joinsAskedCount: Int { lock.withLock { joinsAsked } }
 
     private func reenterNow() {
         guard let keeper = lock.withLock({ self.keeper }) else { return }
@@ -96,7 +106,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
             case .phaseOnDrainingLand:
                 keeper.markDrainingForTesting(cause: .forceShutdown)
                 keeper.submitSyncStream([outputDraft(99)])
-            case .phase, .joinsAwaitingSync, .nowhere:
+            case .phase, .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .nowhere:
                 keeper.submitSyncStream([outputDraft(99)])
             }
         }
@@ -113,6 +123,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     /// Answers true when it re-enters, so a follow-up would be scheduled if the refused answer
     /// were read.
     var hasJoinsAwaitingSync: Bool {
+        lock.withLock { joinsAsked += 1 }
         guard reenter == .joinsAwaitingSync else { return false }
         reenterNow()
         return true
@@ -122,7 +133,11 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async {}
-    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    /// Read before the phase too (`inTurnSyncRecording`); re-enters only once the phase returned.
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool {
+        if reenter == .runsSyncPhaseWitness, lock.withLock({ phaseReturned }) { reenterNow() }
+        return true
+    }
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
@@ -131,15 +146,27 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     ) -> InTurnSyncOutput {
         switch reenter {
         case .phase, .phaseRequestingSyncTurn, .phaseOnDrainingLand: reenterNow()
-        case .joinsAwaitingSync, .nowhere: break
+        case .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .nowhere: break
         }
+        defer { lock.withLock { phaseReturned = true } }
         // Otherwise a success, so only the re-entry can fail the turn. Kept events would ask
         // for a follow-up turn if the answer were read, and an applied commit leaves its probe.
         return InTurnSyncOutput(
             .committed(clearDirtyFlags: false),
-            syncStream: [outputDraft(1)],
+            syncStream: [reenter == .draftFactory ? reenteringDraft() : outputDraft(1)],
             keepsEvents: reenter != .nowhere
         )
+    }
+
+    /// A draft whose factory re-enters when the keeper makes its entry.
+    private func reenteringDraft() -> SyncStreamDraft {
+        SyncStreamDraft(.output(observedTickId: 0, make: { [self] streamIndex, index in
+            reenterNow()
+            return ReevaluationRecordedSyncOutput(
+                index: index, turnKind: .syncOnly, observedTickId: 0,
+                streamIndex: streamIndex, sequence: Int64(streamIndex), broadcastHash: 0xbeef_0000 + 1
+            )
+        }))
     }
     func waitForWriterDrainForInTurnSync() async {}
 }
@@ -200,6 +227,7 @@ private func attachedKeeper(
 struct KeeperTurnSkeletonTests {
     @Test("A re-entry during a requested sync-only turn ends the land in that turn", arguments: [
         TurnSkeletonReenteringTransport.Where.phase, .joinsAwaitingSync, .phaseRequestingSyncTurn,
+        .draftFactory, .runsSyncPhaseWitness,
     ])
     func reentryEndsTheLandInTheTurn(at reenter: TurnSkeletonReenteringTransport.Where) async throws {
         let (keeper, transport, tracker) = await attachedKeeper(reenter)
@@ -223,9 +251,10 @@ struct KeeperTurnSkeletonTests {
         // The refused call is never numbered, and the refused phase's answer is never read.
         // Recorded: the committed phase's own draft when the re-entry came after it, the
         // terminal entry, then the turn's end.
+        // A factory's re-entry keeps the draft it made, and applies nothing.
         let trace = tracker.traceForTesting
         switch reenter {
-        case .joinsAwaitingSync:
+        case .joinsAwaitingSync, .runsSyncPhaseWitness, .draftFactory:
             #expect(trace == ["sync-output", "terminal", "endTurn"])
         default:
             #expect(trace == ["terminal", "endTurn"])
@@ -235,8 +264,13 @@ struct KeeperTurnSkeletonTests {
         #expect(await keeper.joinSyncTurnsScheduledForTesting == 0)
         #expect(await keeper.hasRequestedSyncWorkForTesting == false)
         #expect(await keeper.requestedSyncTurnsForTesting[.keptEvents] == nil)
-        // A refused phase's answer is never applied; the witness's phase was answered first.
-        #expect(probes.entries.contains("sync-committed") == (reenter == .joinsAwaitingSync))
+        // A refused phase's answer is never applied; the witnesses' phase was answered first.
+        let applied: Set<TurnSkeletonReenteringTransport.Where> = [.joinsAwaitingSync, .runsSyncPhaseWitness]
+        #expect(probes.entries.contains("sync-committed") == applied.contains(reenter))
+        // A trip in the first witness stops the read before the second one.
+        if reenter == .runsSyncPhaseWitness {
+            #expect(transport.joinsAskedCount == 0)
+        }
         // The refused `syncTurnNow` changed nothing: only the outer request was counted.
         #expect(await keeper.requestedSyncTurnsForTesting[.syncNow] == 1)
         // The backstop had nothing left to apply.
@@ -453,13 +487,13 @@ struct KeeperTurnSkeletonTests {
             hold.open()
             blocker.open()
         }
-        #expect(await hold.waitForArrivals(1))
+        try #require(await hold.waitForArrivals(1))
         // A later submission that can't finish until the blocker opens.
         tracker.submit(label: "later") { await blocker.arrive() }
         hold.open()
         // Returns while the later submission is still blocked: awaiting the tracker's tail
         // instead would wait for the blocker, which opens only after this returns.
-        #expect(await returned.waitForArrivals(1), "submitTurnRecord returned")
+        try #require(await returned.waitForArrivals(1), "submitTurnRecord returned")
         // Its own submission is applied, and only the later one is pending.
         #expect(tracker.pendingCount == 1)
         blocker.open()

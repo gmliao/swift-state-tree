@@ -5999,8 +5999,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 case .refused(let refused):
                     reentry = refused
                 case .answered(let output):
-                    result = output.result
+                    // The transport's draft factories run here, in the body and outside any call
+                    // out: a factory that re-entered ends the land before the commit is applied.
+                    let beforeRecording = reentryViolations
                     recordSyncStream(output.syncStream)
+                    guard reentryViolations == beforeRecording else {
+                        reentry = applyReentryFailure()
+                        break
+                    }
+                    result = output.result
                     applyInTurnSyncResult(
                         output.result,
                         transport: transport,
@@ -6028,7 +6035,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
             }
             // A refused call leaves the turn as a failed phase does: no sync is due any more.
-            // Nothing of the refused phase is recorded or applied.
+            // Nothing of a refused phase is recorded or applied; a factory's re-entry keeps the
+            // drafts recorded up to it, and applies nothing.
             if reentry != nil { inTurnSyncDue = false }
             // The common tail, on every path. A tickless land's sync-only turn is its own turn
             // record (#327); a tick land's sync outputs stay with the current tick's.
@@ -6508,7 +6516,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A keeper never attached reaches the adapter bound by its first sync request (#546 L2a).
         let transport = self.transport ?? boundSyncRequester
         // The output gate closes in the mark: no new state or event frame from here (§3.2 step 4).
-        transport?.closeOutputs(for: failure)
+        // The sentinel already closed it for a re-entry; a second close outside its guard could
+        // nest a re-entry through a misbehaving port.
+        if !reentryGateClosed {
+            transport?.closeOutputs(for: failure)
+        }
         drainTask = Task {
             await holds.at(.landFailedTeardown)
             if let transport { await transport.landDidFail(failure) }
