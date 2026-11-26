@@ -911,6 +911,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private weak var reentryClosedGate: AnyObject?
     /// Refused re-entries the backstop applied (tests).
     private var lateReentriesApplied = 0
+    /// How many refused re-entries a `callOut` applied in its own call (tests: a bare port call's
+    /// refusal is applied by a later mailbox check or the backstop instead, and isn't counted).
+    private var reentriesAppliedInCall = 0
 
     /// A land without a tick handler: every turn records under one tick id, so the keeper
     /// closes each turn's record itself (`ReevaluationRecorder.endTurn()`, #327).
@@ -5771,9 +5774,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) -> CallOutcome<Answer> {
         let before = reentryViolations
         side.flush(&outputs)
-        guard reentryViolations == before else { return .refused(applyReentryFailure(&m)) }
+        guard reentryViolations == before else {
+            reentriesAppliedInCall += 1
+            return .refused(applyReentryFailure(&m))
+        }
         let answer = call(m)
-        guard reentryViolations == before else { return .refused(applyReentryFailure(&m)) }
+        guard reentryViolations == before else {
+            reentriesAppliedInCall += 1
+            return .refused(applyReentryFailure(&m))
+        }
         return .answered(answer)
     }
 
@@ -5854,6 +5863,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tests: refused re-entries the backstop applied (`applyLateReentry`).
     package var lateReentriesAppliedForTesting: Int { lateReentriesApplied }
+    /// Tests: how many refused re-entries a `callOut` applied in its own call.
+    package var reentriesAppliedInCallForTesting: Int { reentriesAppliedInCall }
 
     /// Tests: turn bodies running now (0 outside a body).
     package var bodyDepthForTesting: Int { bodyDepth }

@@ -88,6 +88,7 @@ enum KeeperCensus {
             "actor.inputDrainIdleWaitersForTesting": .replaced(by: "K2"),
             "actor.inputTurnWaiters": .replaced(by: "K2"),
             "actor.lateReentriesApplied": .outside(.reentrySentinel),
+            "actor.reentriesAppliedInCall": .outside(.reentrySentinel),
             "actor.model": .container,
             "actor.nextDrainStartedWaiterForTesting": .replaced(by: "K2"),
             "actor.nextFailureWaiterForTesting": .replaced(by: "K2"),

@@ -578,6 +578,9 @@ struct KeeperTurnSkeletonTests {
             #expect(keeper.failure?.kind == .keeperReentry, "call \(n)")
             #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
             #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
+            // Applied by the call's own `callOut`: a bare call's refusal is applied by a later
+            // mailbox check instead (`applyPendingTransportFailure`), with the same failure.
+            #expect(await keeper.reentriesAppliedInCallForTesting == 1, "call \(n): not applied by its call's callOut")
             #expect(transport.closeCount == 1, "call \(n)")
             #expect(await keeper.bodyDepthForTesting == 0, "call \(n)")
         }
@@ -611,6 +614,9 @@ struct KeeperTurnSkeletonTests {
             #expect(reported.kind == .keeperReentry, "call \(n)")
             #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
             #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
+            // Applied by the call's own `callOut`: a bare call's refusal is applied by a later
+            // mailbox check instead (`applyPendingTransportFailure`), with the same failure.
+            #expect(await keeper.reentriesAppliedInCallForTesting == 1, "call \(n): not applied by its call's callOut")
             #expect(transport.closeCount == 1, "call \(n)")
             #expect(tracker.traceForTesting.suffix(2) == ["terminal", "endTurn"], "call \(n): \(tracker.traceForTesting)")
         }
