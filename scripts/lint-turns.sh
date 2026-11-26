@@ -59,7 +59,7 @@ ALLOW_MARKERS='
 Tests/SwiftStateTurnsTests/Support/DemoActor.swift 6 the runtime stops (reentry, a replaced core, a class machine and its checks)
 Tests/SwiftStateTreeTests/KeeperReentryTrapTests.swift 1 a handler that re-enters its keeper, to show the exclusivity trap of the model access (LandKeeper.withHandlerStep)
 Tests/SwiftStateTreeTests/DecimalRegistrationTests.swift 1 a Decimal in state for the registration walk (#597), which keeps guarding hand-written witnesses
-Tests/SwiftStateTreeTests/KeeperTurnSkeletonTests.swift 7 the keeper refuses a synchronous re-entry from a transport or a staged effect during a turn body, its backstop applies one, and an attach from the callback is refused (#700)
+Tests/SwiftStateTreeTests/KeeperTurnSkeletonTests.swift 8 the keeper refuses a synchronous re-entry from a transport or a staged effect during a turn body, its backstop applies one (and refuses the intake whose input it dropped), and an attach from the callback is refused (#700)
 Tests/SwiftStateTreeTests/InTurnSyncFoldReportTests.swift 3 a fold-recording transport calls back into its keeper from a tick turn port call, which the sentinel refuses (#700)
 Tests/SwiftStateTreeTests/InputTurnHoldTests.swift 1 a payload whose encode(to:) calls back into its keeper, to show the fallback record encode runs before the input turn holds the model (#700)
 Tests/SwiftStateTreeTests/NestedNodePolicyTests.swift 1 a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses

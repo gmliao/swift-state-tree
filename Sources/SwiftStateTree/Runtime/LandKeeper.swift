@@ -3539,6 +3539,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Tickless, delivered: an input turn applies it (with the other ready inputs) and
             // returns its response. The work count ends after it, on success and on a throw.
             defer { debugEndWork() }
+            try rejectIfAppendedInputDropped(sequence)
             return .completed(try await awaitInputTurn(sequence: sequence))
         }
     }
@@ -3780,6 +3781,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // count ends after the turn, on success and on a throw.
         if let sequence = awaited {
             defer { debugEndWork() }
+            try rejectIfAppendedInputDropped(sequence)
             _ = try await awaitInputTurn(sequence: sequence)
         }
         // A tick land applies the event in its next tick.
@@ -6981,6 +6983,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// input's task registers late (its outcome is empty); actions, client events, joins and
     /// leaves register in the same synchronous segment as their append, so their caller always
     /// gets its own outcome, an error included.
+    /// An intake's driver, right after its segment: if the land failed in that segment's
+    /// backstop (`applyLateReentry`, in `withTurn`'s defer) and the failure dropped the input it
+    /// appended, the caller gets `landClosed`, not the `.none` that `awaitInputTurn` returns for
+    /// a sequence it can't find.
+    private func rejectIfAppendedInputDropped(_ sequence: Int64) throws {
+        guard failure != nil,
+              model.inputTurnResults[sequence] == nil,
+              !model.pendingItems.contains(where: { $0.sequence == sequence })
+        else { return }
+        throw LandInputRejection.landClosed
+    }
+
     private func awaitInputTurn(sequence: Int64) async throws -> InputOutcome {
         try await withCheckedThrowingContinuation { continuation in
             guard model.inputTurnResults[sequence] != nil

@@ -26,6 +26,36 @@ private func turnSkeletonLand() -> LandDefinition<TurnSkeletonState> {
     }
 }
 
+@Payload
+struct TurnSkeletonAck: ResponsePayload {
+    let ok: Bool
+}
+
+@Payload
+struct TurnSkeletonAction: ActionPayload {
+    typealias Response = TurnSkeletonAck
+    let value: Int
+}
+
+@Payload
+struct TurnSkeletonEvent: ClientEventPayload {
+    let value: Int
+}
+
+/// Tickless, with an action and a client event.
+private func turnSkeletonLandWithIntakes() -> LandDefinition<TurnSkeletonState> {
+    Land("turn-skeleton", using: TurnSkeletonState.self) {
+        ClientEvents { Register(TurnSkeletonEvent.self) }
+        Rules {
+            HandleAction(TurnSkeletonAction.self) { state, action, _ in
+                state.value = action.value
+                return TurnSkeletonAck(ok: true)
+            }
+            HandleEvent(TurnSkeletonEvent.self) { state, event, _ in state.value = event.value }
+        }
+    }
+}
+
 /// Tickless, with an OnJoin: a join queues its OnJoin as an input, which an input turn applies.
 private func turnSkeletonLandWithOnJoin() -> LandDefinition<TurnSkeletonState> {
     Land("turn-skeleton", using: TurnSkeletonState.self) {
@@ -928,6 +958,38 @@ struct KeeperTurnSkeletonTests {
         #expect(keeper.failure?.kind == .keeperReentry)
         #expect(await keeper.reentryViolationsForTesting == 1)
         #expect(await keeper.lateReentriesAppliedForTesting == 0, "applied by the call out, not the backstop")
+    }
+
+    @Test("A tickless intake whose input the backstop drops is refused, not reported applied", arguments: [true, false])
+    func backstopDropInAnIntakeIsRefused(action: Bool) async throws {
+        let keeper = LandKeeper<TurnSkeletonState>(
+            definition: turnSkeletonLandWithIntakes(), initialState: TurnSkeletonState(),
+            autoStartLoops: false, landID: "turn-skeleton:1"
+        )
+        let player = PlayerID("p1"), client = ClientID("c1"), session = SessionID("s1")
+        try await keeper.join(playerID: player, clientID: client, sessionID: session)
+        // A re-entry from inside the intake's segment, after its append, that no call out sees:
+        // the backstop in `withTurn`'s defer ends the land and drops the appended input.
+        await keeper.setInTurnProbeForTesting { label in
+            guard label == "action-queued" || label == "client-event-queued" else { return }
+            keeper.assumeIsolated { $0.submitSyncStream([outputDraft(9)]) } // lint-allow: turns-isolated: a re-entry inside an intake's segment, for the backstop's drop
+        }
+        await #expect(throws: LandInputRejection.landClosed) {
+            if action {
+                _ = try await keeper.handleActionEnvelope(
+                    ActionEnvelope(typeIdentifier: String(describing: TurnSkeletonAction.self),
+                                   payload: AnyCodable(TurnSkeletonAction(value: 7))),
+                    playerID: player, clientID: client, sessionID: session
+                )
+            } else {
+                try await keeper.handleClientEvent(
+                    AnyClientEvent(TurnSkeletonEvent(value: 7)), playerID: player, clientID: client, sessionID: session
+                )
+            }
+        }
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect(await keeper.lateReentriesAppliedForTesting == 1)
+        #expect(await keeper.currentState().value == 0)
     }
 
     @Test("The backstop applies a re-entry a body didn't apply, once, and only while the land runs")
