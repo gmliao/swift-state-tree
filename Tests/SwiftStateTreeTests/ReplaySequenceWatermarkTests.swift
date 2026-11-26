@@ -128,7 +128,7 @@ final class WatermarkGate: @unchecked Sendable {
     /// that would next await something only the entry unblocks returns on `false`.
     func waitUntilEntered(
         _ step: String? = nil,
-        deadline: Duration = .seconds(10),
+        deadline: Duration = TestBounds.hang,
         sourceLocation: SourceLocation = #_sourceLocation
     ) async -> Bool {
         let id: Int = lock.withLock {

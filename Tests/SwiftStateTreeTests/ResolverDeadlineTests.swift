@@ -145,12 +145,34 @@ private func makeInitKeeper(gateKey: Int, transport: DestroyRecorder) -> LandKee
 private final class DestroyRecorder: LandKeeperTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var flag = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
     var destroyed: Bool { lock.withLock { flag } }
+
+    /// Returns once the land's destruction ended. A continuation, not a yield spin: a spin can
+    /// starve the 1 ms destroy timer on a loaded runner.
+    func waitUntilDestroyed() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let ready = lock.withLock { () -> Bool in
+                if flag { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if ready { continuation.resume() }
+        }
+    }
 
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
-    func onLandDestroyed() async { lock.withLock { flag = true } }
+    func onLandDestroyed() async {
+        let toResume = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            flag = true
+            let all = waiters
+            waiters = []
+            return all
+        }
+        toResume.forEach { $0.resume() }
+    }
     /// Opts in (#546 L2d): a live keeper's transport runs its sync phase in turn. Sends nothing.
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
@@ -290,7 +312,7 @@ struct ResolverDeadlineTests {
         #expect(await keeper.playerCount() == 0, "the inserted player is removed")
         // The insert cancelled the destroy timer; the failure reschedules it.
         _ = try await withinDeadline("the empty land is destroyed") { () async -> Void in
-            while !transport.destroyed { await Task.yield() }
+            await transport.waitUntilDestroyed()
         }
     }
 
@@ -456,7 +478,7 @@ struct ResolverDeadlineTests {
         }
         #expect(await keeper.playerCount() == 0)
         _ = try await withinDeadline("the land is torn down") { () async -> Void in
-            while !transport.destroyed { await Task.yield() }
+            await transport.waitUntilDestroyed()
         }
         #expect(await keeper.currentState().log == [], "neither OnInitialize nor OnFinalize ran")
 
