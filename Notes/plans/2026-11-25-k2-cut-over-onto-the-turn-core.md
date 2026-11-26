@@ -4,6 +4,7 @@
 - The sentinel now has one route that every step has, `turn.behavior` (§4.2).
 - K2-1 pins a core-driven step that carries no binding token (§4.2).
 - The shoulds and nits are tracked as the K2-1 PR checklist (§16).
+- 2026-11-26: §3 names the facade lint's three clauses; §4.2's matrix gains the §16 item 4 rows; §16 item 3 is decided (the atomic set directly).
 - 2026-11-26: the callback audit (§4.5) is done; no stop. The admission's package path is a K2-2 must.
 - 2026-11-26: K2-E keeps the sequence counter and `syncRequestsByTick` in the collector; K1b-5's move commit moves them into the model (§4.4, K1b-5 plan D15.3 rev 2.6).
 
@@ -62,7 +63,10 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
 - **The machine is the model** (survey §1): `extension KeeperModel: TurnMachine`, with `Behavior = KeeperBehavior<State>`. `TurnActor` requires `M: TurnMachine & PlainData`, which K1b-4's `@PlainData` gives.
 - **The executor:** the facade adopts `LiveLandTurns`' executor, and the adapter adopts the facade's (TA:113, `unownedExecutor`), so all three share one serial executor. The facade forwards with `live.assumeIsolated { … }`.
 - **Identity:** `runsSyncPhaseInTurn(of:)` keeps receiving the facade. `LiveLandTurns` holds it `nonisolated(unsafe) weak`, set once at the end of `LandKeeper.init`, with a set-once flag that the first step asserts.
-- **The lint:** `scripts/lint-turns.sh` gets the facade's forwarding rule, with a fixture.
+- **The lint:** `scripts/lint-turns.sh` gets the facade's forwarding rule, `facade`, with a fixture in its `--self-test`. It applies to the file that declares the facade's owner (`enum KeeperOwner`), so it is inert until K2-2. Three clauses, each with the mistake it catches. Per the lint's rule for honest mistakes, an honest shape fails, and a deliberate bypass is a known limitation:
+  1. **Every `public` or `package` entry of the facade forwards.** Its body is one forwarding expression: `live.assumeIsolated { … }`, `await live.…`, or a `switch owner` whose arms each forward. A listed exception carries a count, as the `isolated` rule's boundary files do. *Catches:* work done in the facade, outside a step, which is the reentrancy rule's mistake moved one layer up. *Honest shape (fails):* `if isDraining { return .refused(.draining) }` before the forward. *Bypass (passes, known limit):* the same check moved into a `nonisolated` helper that the forwarding closure calls.
+  2. **`assumeIsolated` in the facade's file is only `live.assumeIsolated`.** *Catches:* entering another actor's isolation from the facade (the adapter's, or a second core's), which the `isolated` rule's file count alone wouldn't name. *Honest shape (fails):* `transport.assumeIsolated { … }` in a facade entry. *Bypass:* a helper in another file that does it; that file then falls under the `isolated` rule's list.
+  3. **The facade has no stored `var` besides `owner`, and no `nonisolated(unsafe)` member besides the identity reference §3 names.** *Catches:* keeper state that moves back out of the model into the facade, where no step sees it. *Honest shape (fails):* `private var pendingFold: …` on the facade. *Bypass:* a `let` of a reference type with mutable state (a class box); the `machine-file` rule doesn't cover the facade's file, so this is a known limit.
 
 ## 4. The machine
 
@@ -137,7 +141,18 @@ Each row of parent §3.3's table becomes one forwarding method on the facade. Th
   | `syncTurnNow` | awaited (TA:3158, :3211, :3231, :3524, :5134) | nested: `.skipped`, and the outer turn returns `.landFailed` | the same, through `isStepping` (the tests reach it synchronously) |
   | `syncTurnTicket`, `settleTurn` | awaited (TA:3227, :3519; the freeze settle) | no refusal result | keeps the core's stop: a query inside a step. Unreachable during a step in production; a test pins that |
   | `currentState()`, `playerCount()` | awaited (LandManager:95, :104) | no refusal result | keeps the core's stop (`read`) |
-  | the `send` entries (join, leave, actions, events, server inputs) | awaited | not guarded | deferred by the core, as a `send` during a step is |
+  | the `send` entries: join, leave, a tick land's actions and events (queued), server inputs' delivery | awaited | not guarded | deferred by the core, as a `send` during a step is |
+  | the `sendAndWait` entries: a tickless action and client event (the input turn's result), join and leave when a caller waits, `awaitInitialization`, the freeze barrier | awaited | not guarded | the core's `sendAndWait`: during a step it's a stop, unreachable in production (each is awaited) |
+  | the intake queries: `.admitAction`, `.admitClientEvent`, `.admitServerInput` | awaited | not guarded | the core's `query`: answered as its own step, never inside one |
+  | `setTransport` | awaited (LandManager:712, and the keeper's own teardown at LK:7226, outside a body) | refused: `noteReentry(through: "setTransport")` (LK:591) | refused through `isStepping`, with the entry's name |
+  | `debugFreeze` / `debugResume` | awaited (the admin routes, `LandRealm`, the adapter's freeze at TA:6250 and resume at TA:6399) | not guarded; each writes the model in its own job | `.freeze` / `.resume` inputs, deferred during a step like a `send` |
+  | `submitLandFailure` | awaited (TA:5697, after the adapter's hold) | not guarded; ends the land through `failLand` in its own job | a `send` of a failure input until K4's mail (`LandReport`); deferred during a step |
+  | `currentStateLocated`, `entrySession` | awaited (TA:5247; TA:1480) | no refusal result (reads) | keeps the core's stop (`read`), unreachable during a step |
+  | the freeze settle (TA:6264) and the resume's `syncTurnNow` (TA:6415) | awaited | `settleTurn` and `syncTurnNow` are guarded (LK:1841, :6449) | as their rows above |
+
+  `syncReadPosition` is not an entry: a private read over the model the caller holds (LK:5769), called only inside the keeper.
+
+  **Where `isStepping` refuses more than `bodyDepth` does today.** `syncTurnNow` and `syncTurnTicket` call the port's witness (`port.runsSyncPhaseInTurn(of:)`, through `acceptsSyncTurn`) after the depth guard and before the body (LK:6449–6460, :6438), at depth zero. Under K2 the whole entry is a query step, so a callback from that witness is refused. No transport's witness calls back: the adapter's is `isAttached(to:)` (TransportAdapter+LandKeeperTransport.swift:29–31). `settleTurn`'s port call runs inside `withTurn` on main since #891, so it doesn't differ.
 
   **Where the name comes from.** The core's stop is generic. Each guarded facade entry passes its own name to the refusal, as `noteReentry(through:)` does today, and the debug check reports that name. An entry that keeps the core's stop (the rows above) reports the core's generic message. Only an unreachable path ends up there.
 - **Queries can't wait.** A query is used only where today's caller gets its answer at intake (the tick ACK, the two-phase action's `.pending`, the server input's `.accepted`).
@@ -193,7 +208,7 @@ K1b-5's request cases are of three kinds, and K2 maps each kind differently:
 | `KeeperTurnSide` method | K1b-5 (on the actor) | K2 (in a step) |
 |---|---|---|
 | `services(for:generation:)`; inserts and removals staged | the actor's `playerServices` (K1b-4: written in the same segment as each insert, rollback, removal and clear of `model.players`; K1b-5 D10 moves it into the side) | reads from the overrides on the input; writes are outputs that `flush` applies to `LiveLandTurns`' table |
-| `markFailedFirst(_:) -> Bool` | `drainFlag.setFailed` | a model flag decides; the atomic set is staged |
+| `markFailedFirst(_:) -> Bool` | `drainFlag.setFailed` | a model flag decides, and the step sets the atomic directly in the same place, before the gate closes (§16 item 3, decided) |
 | `closeOutputs(for:)` | the transport | **direct**, on the binding token: the in-turn sync phase sends frames during the step and emits flush after it, so a staged close would let a later frame of the same step out before the gate closes. A direct call closes it at its place in the turn, as `failLand` does today |
 | `syncNowInTurn(…)` | the transport | **direct**, on the binding token: it returns frames to the body mid-turn |
 | `takeEmittedEvents`, `takeSyncRequest`, `readPosition` | the collector | the scoped emitter (K2-E) |
@@ -407,7 +422,8 @@ Each line is checked in K2-1's PR body, with its anchor at the PR's base. The an
 1. **P5's claim.** Case 2 reuses `live`, which case 1 left with `failed = true`, so `failed=true` in case 2 proves nothing new. K2-1 reruns P5 with a fresh model per case, or narrows the claim to the counts (`violations`, `gateCloses`).
 2. **`callOut`'s order.** K2-1 keeps #865's flush → check → call → check (LK:5544–5554). The sync-only turn checks once, after the whole draft batch and before the phase result applies (LK:5889–5935). `KeeperTurnSkeletonTests` pins the trace `sync-output, sync-output, terminal, endTurn`. The backstop is only for late trips. The same-gate skip (`reentryClosedGate`) carries over.
 3. **`markFailedFirst`.** Today `drainFlag.setFailed` publishes `failure`, `isDraining` and `destructionCause` before `failLand` closes the gate (LK:621–630, :6342–6376). K2-1 either sets the atomic directly in the step, as it does the close, or pins what the port sees at the gate close.
-4. **The matrix, completed** (§4.2):
+   **Decided (2026-11-26):** the step sets the atomic directly, as it closes the gate directly. `failLand` publishes `failure`, `isDraining` and `destructionCause` (`drainFlag.setFailed`, LK:6709) before the port's `closeOutputs` (LK:6742), and the port reads them during the close. A staged set would publish after the flush, after the close, so the port would see a closed gate on a land that isn't draining yet. The model flag stays the decision (first failure wins); the atomic mirrors it in the same step. `drainFlag` is a lock-protected reference the keeper holds as a `let` today (LK:654). If the step reaches it through the behavior, as it reaches the sentinel, it is a second stated exception to the behavior's values-only advice, bounded the same way: written only in a step, read by `nonisolated` readers (`isDraining`, `destructionCause`).
+4. **The matrix, completed** (§4.2). Done 2026-11-26 in §4.2's table:
    - add `setTransport`, `debugResume`, `submitLandFailure`, `currentStateLocated`, `entrySession` and `syncReadPosition`;
    - split the "send entries" row: several are `sendAndWait` or queries, not sends;
    - name where `isStepping` refuses more than `bodyDepth` does today: `settleTurn`'s port call runs outside `withTurn` (LK:6082–6100; K1b-5a step 2 moves it inside), and `syncTurnNow`'s port witness runs before its guarded body;
