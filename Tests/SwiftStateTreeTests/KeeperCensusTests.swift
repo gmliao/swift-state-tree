@@ -7,6 +7,7 @@
 // Rows are keyed by storage path (`model.players`, `behavior.config.mode`, `actor.transport`), so
 // a field in the wrong container fails too.
 
+import SwiftStateTurns
 import Testing
 @testable import SwiftStateTree
 
@@ -267,4 +268,13 @@ struct KeeperCensusTests {
             }
         }
     }
+
+    @Test("The model is plain at compile time")
+    func modelIsPlain() {
+        // Compiles only while `KeeperModel` is `@PlainData` and every field it holds is plain.
+        requirePlain(KeeperModel<CensusState>.self)
+    }
 }
+
+/// Compiles only when `T` is `PlainData`.
+private func requirePlain<T: PlainData>(_: T.Type) {}

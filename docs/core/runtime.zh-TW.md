@@ -57,20 +57,24 @@ HandleAction(SomeAction.self) { state, action, ctx in
 }
 ```
 
-`LandKeeper` 透過 `withHandlerStep` 執行會修改狀態的 handler，直接修改 actor 的狀態，並為這次呼叫綁定 `ctx.random`。replay 會重跑的 handler（OnInitialize、OnJoin、OnLeave、action、client event、server input 與 tick）拿到延續 land 產生器的 service，handler 回傳後 keeper 會把產生器寫回。OnDestroyWhenEmpty 與 OnFinalize 也經過 `withHandlerStep`，但拿到的是產生器的一份副本，不會寫回。AfterFinalize 拿到狀態的快照，並從同一份副本抽取，所以 drain 的三個 handler 延續同一個序列。CanJoin 與 sync handler 不經過 `withHandlerStep`：各自拿到自己的一份副本，同樣不會寫回。
+`LandKeeper` 透過 `withHandlerStep` 執行會修改狀態的 handler，直接修改狀態，並為這次呼叫綁定 `ctx.random`。replay 會重跑的 handler（OnInitialize、OnJoin、OnLeave、action、client event、server input 與 tick）拿到延續 land 產生器的 service，handler 回傳後 keeper 會把產生器寫回。OnDestroyWhenEmpty 與 OnFinalize 也經過 `withHandlerStep`，但拿到的是產生器的一份副本，不會寫回。AfterFinalize 拿到狀態的快照，並從同一份副本抽取，所以 drain 的三個 handler 延續同一個序列。CanJoin 與 sync handler 不經過 `withHandlerStep`：各自拿到自己的一份副本，同樣不會寫回。
 
 ```swift
 // 內部實作（簡化版）
-func withHandlerStep<T>(_ ctx: LandContext, _ operation: (inout State, LandContext) throws -> T) rethrows -> T {
+func withHandlerStep<T>(_ ctx: LandContext, _ operation: (inout KeeperModel<State>, LandContext) throws -> T) rethrows -> T {
     // 接續 land 產生器的 service，只供這次呼叫使用
-    let random = DeterministicRngService(continuing: landRandom, seed: landRandomSeed)
-    defer { landRandom = random.generator }   // 抽取會推進 land 的產生器
+    let random = DeterministicRngService(continuing: model.landRandom, seed: landRandomSeed)
+    defer { model.landRandom = random.generator }   // 抽取會推進 land 的產生器
     var bound = ctx
     bound.stepRandom = random
-    // Actor 序列化確保線程安全
-    return try operation(&state, bound)
+    // Actor 序列化確保線程安全；handler 拿到 `&m.state`
+    return try operation(&model, bound)
 }
 ```
+
+狀態放在 keeper 的 model（模型）裡：model 是一個值，同時存著玩家、排隊中的 input 與 keeper 的計數器。handler 以 `inout` 拿到 model 的狀態，這會借用整個 model，直到 handler 返回。
+
+**handler 不可以同步地回呼它的 keeper。** handler 執行期間，keeper 無法讀取自己的 model。因此 handler 以及它呼叫的任何程式，都不可以直接進入它的 keeper，例如對捕捉到的 keeper 呼叫 `assumeIsolated`。Swift 會在執行期檢查這件事（release build 也會），並以 exclusivity 錯誤終止程序。需要 keeper 的工作請經由 context：發出事件、請求同步，或送出 server input。這些都不會在 handler 執行期間碰到 model。手寫的 `clearDirty()` 也一樣。
 
 land 的產生器是 keeper 的狀態。replay 會依錄製重跑的 handler 從它抽取，handler 返回時 keeper 把它寫回。CanJoin、sync handler 與銷毀階段的 handler 不會依錄製重跑，所以從一份不寫回的副本抽取（[`ctx.random`](#landcontext-功能)）。
 
