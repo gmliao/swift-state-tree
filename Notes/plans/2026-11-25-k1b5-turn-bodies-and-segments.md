@@ -28,7 +28,7 @@
 | D7 | §4.4, §4.5 | `.waitWhileFrozen` is a driver loop. The work counts' `defer`s that span the input-turn wait stay in the driver, as D1's does. |
 | D8 | §4.5 | S1's frozen branch holds the input outside the queue and returns `.accepted` with no kick. |
 | D9 | §4.1, §4.2 | **J4 has no generation re-check before its append** (nor G4). Rev 2.1's J4 row named one. The missing check is #860's fix, out of K1b-5b's pure move. |
-| D10 | §3.1 | K1b-4 keeps `playerServices` on the actor. It moves into `KeeperTurnSide` in K1b-5a step 2, or in K1b-5b's first commit if step 2 doesn't move it. |
+| D10 | §3.1 | K1b-4 keeps `playerServices` on the actor. It moves into `KeeperTurnSide` in the move commit, with the side's other copies (amended in rev 2.8: not before J3/L1). |
 
 **Rev 2.2 → rev 2.3** (the move onto the model; Review, 2026-11-26). #884 (K1b-5a step 2) landed the bodies as actor methods that take `_ m: inout KeeperModel<State>`, reviewed as a stand-in for commit 2's `mutating` methods. K2-1's `handle` is a nonisolated method on the model, so it can't call them (K2 plan §6, condition 1). The move is now its own commit (§6, 2b), and §3.1 gets the rows the stand-in still reads from the actor. Anchors: `LK` at 5be6faab (#884's head 3e33ab18 plus this slice's flows 1 and 2), grep, unverified.
 
@@ -101,6 +101,7 @@ A body is synchronous, but today its sync callees reach actor-side state. The sc
 `KeeperTurnSide` is one non-plain struct, passed `inout` beside the model. Its fields are private, and a body reaches them only through its methods.
 - **In K1b-5** it is a stored property on the actor, `var turnSide`, holding the tables a body touches: `playerServices`, the continuation tables (§3.3), `pendingSyncTurnAfterTurn` and `pendingFold`. K1b-5 updates K1b-4's census paths for these rows (`actor.X` → `turnSide.X`).
 - **Rev 2.2 (D10):** K1b-4 keeps `playerServices` on the actor (`actor.playerServices`), and #865's `KeeperTurnSide` holds only the recorder tracker. K1b-5a step 2 moves the tables above into the side. If it doesn't, K1b-5b's first commit does, before J3's insert and L1's removal use `insertServices` and `removeServices`.
+- **Rev 2.8 (D10 amended, 2026-11-26):** `playerServices` stays on the actor through flows 3+4 (#896), and moves into the side in the move commit, together with the side copies of the shared references. Flows 3+4's join and leave segments (J3's insert, L1's removal) still write the actor's table; the move routes them through the side. The side-tables PR (#895) moves only the tables independent of the join and leave segments, so it doesn't move this one ahead of the segments that flows 3+4 rewrite.
 - **In K2-1** a step builds it locally from snapshots and binding tokens, and its writes become the step's outputs (K2 draft 2 §4.5). The methods keep their signatures.
 - **The shared references stay on the actor** as `nonisolated let`, and the side holds copies of the references: `drainFlag`, the `LandFailureMailbox`, the keeper's identity. Nonisolated code reads them today (`isDraining`, `destructionCause`, `failure` and `notePendingFailure`, LK:633–664), and moving them under an isolated `var` would cut that off.
 
