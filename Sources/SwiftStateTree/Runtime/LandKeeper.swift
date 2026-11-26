@@ -3872,17 +3872,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// of the side, so no access to `turnSide` is held while its actions run.
     @discardableResult
     private func withTurn<R>(_ body: (inout KeeperModel<State>, inout KeeperTurnSide, inout TurnOutputs) throws -> R) rethrows -> R {
-        assert(sentinel.bodyDepth == 0, "turn bodies don't nest")
-        var outputs = TurnOutputs()
-        let violationsBefore = sentinel.reentryViolations
-        defer {
-            let side = turnSide
-            side.flush(&outputs)
-            applyLateReentry(since: violationsBefore)
+        try KeeperTurnFrame.run(
+            sentinel,
+            flush: { outputs in flushOutsideTurn(&outputs) },
+            lateReentry: { applyLateReentry(since: $0) }
+        ) { outputs in
+            try body(&model, &turnSide, &outputs)
         }
-        sentinel.bodyDepth += 1
-        defer { sentinel.bodyDepth -= 1 }
-        return try body(&model, &turnSide, &outputs)
     }
 
     /// `withTurn` for a body whose flush makes the submission its caller awaits: the body runs
@@ -3972,15 +3968,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The backstop: a re-entry refused during a body that didn't apply it (a call not made
     /// through `callOut`). The body's result was already fixed, so this is logged as late.
     private func applyLateReentry(since violationsBefore: Int) {
-        guard sentinel.reentryViolations != violationsBefore, failure == nil, !isDraining else { return }
-        var outputs = TurnOutputs()
-        let applied = model.applyReentryFailure(behavior, &turnSide, &outputs)
-        flushOutsideTurn(&outputs)
-        sentinel.lateReentriesApplied += 1
-        behavior.logger.error("A refused re-entry was applied after its turn body returned", metadata: [
-            "landID": .string(behavior.config.actualLandID ?? "-"),
-            "failure": .string(applied.description),
-        ])
+        guard var late = model.applyLateReentry(behavior, &turnSide, since: violationsBefore) else { return }
+        flushOutsideTurn(&late.outputs)
+        KeeperModel<State>.noteLateReentry(behavior, late.applied)
     }
 
     /// Tests: re-entries refused so far.
