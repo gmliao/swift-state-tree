@@ -4,6 +4,9 @@
 # check-turns-doc-blocks.py and solutions-index.py copied in),
 # against that HEAD as the base.
 # Usage: scripts/test-pre-push-checks.sh
+# The setup commands are strings eval'd in the clone, so their $variables are meant to stay
+# unexpanded here (SC2016), and `zeros` is read only inside them (SC2034).
+# shellcheck disable=SC2016,SC2034
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
@@ -25,8 +28,10 @@ printf '#!/bin/sh\nexit 127\n' > "$noswift/swift"
 chmod +x "$noswift/swift"
 
 case_() {  # name, expected exit, required output line (grep -E), setup command (run in the clone),
-           # [PATH prefix], [GIT_DIR the checks inherit]
-  local name=$1 want=$2 pattern=$3 setup=$4 prefix=${5:-} gitdir=${6:-} dir="$tmp/$1" out rc=0
+           # [PATH prefix], [GIT_DIR the checks inherit], [VAR=value the checks inherit]. The setup may
+           # write ref lines to "$stdinfile": they are the hook's stdin (else /dev/null).
+  local name=$1 want=$2 pattern=$3 setup=$4 prefix=${5:-} gitdir=${6:-} extraenv=${7:-} dir="$tmp/$1" out rc=0
+  local stdinfile="$tmp/$1.stdin"
   git clone -q --shared --no-checkout "$root" "$dir" && git -C "$dir" checkout -q "$(git -C "$root" rev-parse HEAD)"
   cp "$root/scripts/pre-push-checks.sh" "$dir/scripts/pre-push-checks.sh"
   cp "$root/scripts/lint-text-encoding.py" "$dir/scripts/lint-text-encoding.py"
@@ -36,7 +41,8 @@ case_() {  # name, expected exit, required output line (grep -E), setup command 
   git -C "$dir" -c user.name=t -c user.email=t@t commit -q -am "pre-push-checks under test" --allow-empty
   base="$(git -C "$dir" rev-parse HEAD)"
   (cd "$dir" && eval "$setup")
-  out="$(cd "$dir" && env ${gitdir:+GIT_DIR="$gitdir"} PATH="${prefix:+$prefix:}$PATH" bash scripts/pre-push-checks.sh "$base" 2>&1)" || rc=$?
+  [ -f "$stdinfile" ] || : > "$stdinfile"
+  out="$(cd "$dir" && env ${gitdir:+GIT_DIR="$gitdir"} ${extraenv:+"$extraenv"} PATH="${prefix:+$prefix:}$PATH" bash scripts/pre-push-checks.sh "$base" < "$stdinfile" 2>&1)" || rc=$?
   if [ "$rc" = "$want" ] && grep -qE -- "$pattern" <<<"$out"; then
     echo "ok   $name (exit $rc)"
   else
@@ -80,4 +86,20 @@ case_ variant-selection-runs 0 '^ok    variant-selection' ':'
 case_ variant-selection-r1-violation 1 '^FAIL  variant-selection' 'printf "import Testing\n@testable import SwiftStateTreeTransport\n@Suite struct VariantProbe {\n    func make(_ keeper: LandKeeper<S>, _ transport: T) { _ = TransportAdapter<S>(keeper: keeper, transport: transport, landID: \"x\") }\n}\n" > Tests/SwiftStateTreeTests/VariantSelectionProbe.swift'
 case_ variant-selection-without-swift 1 'swift not found on PATH' ':' "$noswift"
 case_ gitignore-change-runs-ignore-readers 0 '^ok    multiroom-ignored' 'echo "# probe" >> .gitignore'
+# A pre-push hook gets the pushed refs on stdin (#856). `mkcommit <file> <content>` makes a commit on
+# top of the base and goes back to it, leaving the checkout clean and at the base; the commit's sha
+# is $pushed. The checks must run on the pushed commit, not on the checkout.
+mkcommit='mkcommit() { git checkout -q --detach && printf "$2" > "$1" && git add "$1" && git -c user.name=t -c user.email=t@t commit -q -m probe && pushed="$(git rev-parse HEAD)" && git checkout -q --detach "$(git rev-parse HEAD~1)"; }'
+zeros=0000000000000000000000000000000000000000
+case_ pushed-other-commit-fails 1 '^FAIL  shellcheck' "$mkcommit"'; mkcommit scripts/bad.sh "#!/usr/bin/env bash\ncd /nonexistent\necho hi\n" && echo "refs/heads/x $pushed refs/heads/x $zeros" > "$stdinfile"'
+case_ pushed-other-commit-passes 0 '^pre-push-checks: passed \(the pushed commits' "$mkcommit"'; mkcommit scripts/probe.txt "probe\n" && echo "refs/heads/x $pushed refs/heads/x $zeros" > "$stdinfile"'
+# HEAD is pushed, and a failing commit exists but isn't pushed: the checkout is what's checked.
+case_ pushed-head-passes 0 '^pre-push-checks: passed$' "$mkcommit"'; mkcommit scripts/bad.sh "#!/usr/bin/env bash\ncd /nonexistent\n"; echo "refs/heads/x $(git rev-parse HEAD) refs/heads/x $zeros" > "$stdinfile"'
+# Only a deleted ref: nothing is pushed, so a failing checkout doesn't matter.
+case_ pushed-deletion-skipped 0 'is a deletion, nothing to check' 'printf "#!/usr/bin/env bash\ncd /nonexistent\n" > scripts/bad.sh; echo "(delete) $zeros refs/heads/x $zeros" > "$stdinfile"'
+# A pushed commit that is not in the repository is refused.
+case_ pushed-unknown-sha 2 'is not a commit here' 'echo "refs/heads/x 1234567890123456789012345678901234567890 refs/heads/x $zeros" > "$stdinfile"'
+# An exported GIT_INDEX_FILE (a hook run by `git commit` or a rebase) lists another tree than the
+# files on disk: the script drops it.
+case_ inherited-index-file 0 '^ok    shellcheck' 'echo "# probe" >> scripts/pre-push-checks.sh' '' '' "GIT_INDEX_FILE=$tmp/no-such.index"
 exit $fail

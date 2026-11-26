@@ -48,6 +48,14 @@
 # ws-loadtest tests.
 #
 # Usage: scripts/pre-push-checks.sh [base]   (default origin/main; run `git fetch` first)
+#
+# As a pre-push hook (stdin is not a terminal), git sends one `<local ref> <local sha> <remote ref>
+# <remote sha>` line per ref. The checks then run on the commits being pushed, not on the checkout
+# (#856): a pushed sha other than HEAD is checked in a temporary detached worktree, removed on exit;
+# a deleted ref (all-zero local sha) is skipped; the checkout itself is checked only when HEAD is
+# pushed, or when stdin carries no ref line (command-line use, as before). A worktree check runs
+# this script's checks on that commit's files, so a commit that fails a check fails the push even
+# from a clean checkout of another branch.
 # Tests: scripts/test-pre-push-checks.sh
 set -uo pipefail
 # git exports GIT_DIR to a hook run from a linked worktree. Drop git's repository variables, so
@@ -58,11 +66,62 @@ unset $(git rev-parse --local-env-vars)
 # Python's own text I/O in UTF-8 whatever the host's locale (belt and braces: the lint below keeps
 # deep-research/ and scripts/ explicit).
 export PYTHONUTF8=1
-root="$(cd "$(dirname "$0")/.." && pwd)"
+self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+# PRE_PUSH_CHECKS_ROOT is set only by this script's own worktree runs, below.
+root="${PRE_PUSH_CHECKS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$root" || exit 1
 base="${1:-origin/main}"
 workflow=.github/workflows/build-and-test.yml
 failed=()
+
+if [ -z "${PRE_PUSH_CHECKS_ROOT:-}" ] && [ ! -t 0 ]; then
+  head_sha="$(git rev-parse HEAD)"
+  pushed=()
+  check_head=0
+  saw_line=0
+  while read -r pushed_ref lsha _; do
+    [ -n "${lsha:-}" ] || continue
+    saw_line=1
+    case "$lsha" in *[!0]*) ;; *) echo "pre-push-checks: $pushed_ref is a deletion, nothing to check"; continue ;; esac
+    sha="$(git rev-parse --verify -q "$lsha^{commit}")" || { echo "pre-push-checks: pushed $pushed_ref $lsha is not a commit here" >&2; exit 2; }
+    if [ "$sha" = "$head_sha" ]; then
+      check_head=1
+    else
+      case " ${pushed[*]-} " in *" $sha "*) ;; *) pushed+=("$sha") ;; esac
+    fi
+  done
+  if [ "$saw_line" -eq 1 ]; then
+    worktrees=()
+    cleanup() {
+      local w
+      for w in ${worktrees[@]+"${worktrees[@]}"}; do
+        git worktree remove --force "$w/tree" > /dev/null 2>&1
+        rm -rf "$w"
+      done
+      git worktree prune
+    }
+    trap cleanup EXIT
+    trap 'exit 130' INT TERM
+    for sha in ${pushed[@]+"${pushed[@]}"}; do
+      wt="$(mktemp -d)"
+      worktrees+=("$wt")
+      echo "pre-push-checks: pushed ${sha:0:12} is not HEAD (${head_sha:0:12}): checking it in a temporary worktree"
+      if git worktree add -q --detach "$wt/tree" "$sha" && (cd "$wt/tree" && PRE_PUSH_CHECKS_ROOT="$wt/tree" bash "$self" "${1:-origin/main}" < /dev/null); then
+        :
+      else
+        failed+=("pushed-${sha:0:12}")
+      fi
+    done
+    if [ "$check_head" -eq 0 ]; then
+      if [ ${#failed[@]} -ne 0 ]; then
+        echo "pre-push-checks: FAILED: ${failed[*]}"
+        exit 1
+      fi
+      echo "pre-push-checks: passed (the pushed commits; the checkout is not what is pushed)"
+      exit 0
+    fi
+  fi
+fi
 
 fork="$(git merge-base "$base" HEAD 2>/dev/null)" || { echo "pre-push-checks: no merge base with $base" >&2; exit 2; }
 changed="$( { git diff --name-only "$fork"; git ls-files --others --exclude-standard; } | sort -u)"
