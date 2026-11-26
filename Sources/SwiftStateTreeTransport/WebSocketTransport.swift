@@ -627,7 +627,7 @@ public actor WebSocketTransport: Transport {
     /// `closeSessionAfterQueuedFrames(_:generation:)`, closing with `close` instead of 1000: the
     /// frames queued so far (an error explaining the close) reach the connection before the
     /// close. Only while the session's connection is the one with `generation` (nil: any).
-    package func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose) async {
+    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose) async {
         closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout, generation: generation, close: close)
     }
 

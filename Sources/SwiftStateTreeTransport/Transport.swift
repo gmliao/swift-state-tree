@@ -86,6 +86,15 @@ public protocol Transport: Actor {
     /// `generation` (nil: any), so a close decided about one connection never closes the next one
     /// that reuses the session ID. The default ignores the generation.
     func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?) async
+
+    /// `closeSessionAfterQueuedFrames(_:generation:)`, closing with `close` instead of a plain
+    /// 1000: a superseded session's 4017 goes out behind the frames queued for it (#909).
+    ///
+    /// The default keeps the ordered close a transport already has for a plain close: with
+    /// `.normal` it calls `closeSessionAfterQueuedFrames(_:generation:)`. Any other code needs
+    /// the transport to implement this method; the default closes at once with the code
+    /// (`closeSession(_:with:generation:)`), which may drop frames still queued.
+    func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose) async
 }
 
 extension Transport {
@@ -120,6 +129,16 @@ extension Transport {
     /// Default: close at once.
     public func closeSessionAfterQueuedFrames(_ sessionID: SessionID) async {
         await closeSession(sessionID)
+    }
+
+    /// Default: a plain close takes the transport's ordered close
+    /// (`closeSessionAfterQueuedFrames(_:generation:)`); any other code closes at once with it.
+    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose) async {
+        if close == .normal {
+            await closeSessionAfterQueuedFrames(sessionID, generation: generation)
+        } else {
+            await closeSession(sessionID, with: close, generation: generation)
+        }
     }
 
     /// Default: no generation check; forwards to `sendBatch`.

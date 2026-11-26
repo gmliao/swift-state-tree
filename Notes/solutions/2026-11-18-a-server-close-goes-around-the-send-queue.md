@@ -57,3 +57,7 @@ that path always closed with 1000.
 - A refusal that closes a session also makes it terminal in the same segment, before the first
   await: until the close goes out, the client can still send, and a frame read in that window
   must not join.
+- The same class came back at the supersede's 4017 close (#909), whose close was detached while
+  frames for the old session were still in the outbound writer. Every server close of a session
+  that may have frames queued goes through the writer (`closeSessionBehindQueuedFrames`, or a
+  final frame's `closingSessions`), never a detached `closeSession`.

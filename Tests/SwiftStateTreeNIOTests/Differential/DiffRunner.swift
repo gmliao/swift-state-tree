@@ -126,6 +126,9 @@ struct DiffRunResult: Codable, Equatable, Sendable {
 struct DiffAttempt: Sendable {
     let session: SessionID
     let connection: RecordingConnection
+    /// The transport's generation for this connection, read when it was accepted: a barrier
+    /// finds the attempt a close was for by it, not by what the transport holds now (#909).
+    let generation: UInt64?
 }
 
 /// A run of one scenario in one cell. Steps run in order on one task; the hold table and the
@@ -261,7 +264,8 @@ final class DiffRun: @unchecked Sendable {
             let id = SessionID(session)
             let acceptance = await transport.handleConnection(sessionID: id, connection: connection, authInfo: nil)
             guard acceptance == .accepted else { throw DiffRunFailure("\(name)'s connection was \(acceptance)") }
-            attempts[name] = DiffAttempt(session: id, connection: connection)
+            let generation = await transport.connectionGeneration(for: id)
+            attempts[name] = DiffAttempt(session: id, connection: connection, generation: generation)
             attemptOrder.append(name)
 
         case .join(let name, let player):
@@ -581,9 +585,32 @@ final class DiffRun: @unchecked Sendable {
             try await bounded("a spawned task") { await task.value }
         }
         try await bounded("no pending flip") { [router] in await router.waitForNoPendingFlipForTesting() }
-        // A supersede closes the old connection from a task of its own, which a zero forward
-        // count can precede, and the close then starts a forward of its own: the closes first.
-        try await bounded("the supersedes' closes") { [adapter] in await adapter.waitForDetachedClosesForTesting() }
+        // A supersede closes the old connection behind the frames queued for it (#909): the
+        // writer hands the close to the transport, whose drain closes the connection at its
+        // marker, after telling the router of the disconnect. A zero forward count can precede
+        // that, so the closes come first: each superseded connection is waited for until it has
+        // its 4017. A writer-idle wait alone isn't enough: the transport's queue may not have
+        // sent the frames ahead of the marker yet. The connection is found by the session and
+        // the generation recorded when it was accepted, never by what the transport holds now:
+        // while the marker's close runs, the transport has already removed the session's queue
+        // (its leave runs before the close frame goes out). Only an attempt the scenario
+        // disconnected is skipped: its queue was retired, so its marker is never read. A close
+        // the writer refused went out from a task (`waitForDetachedClosesForTesting`).
+        try await bounded("the supersedes' fallback closes") { [adapter] in await adapter.waitForDetachedClosesForTesting() }
+        try await bounded("outbound idle") { [adapter] in await adapter.waitForOutboundIdleForTesting() }
+        for (session, generation) in await adapter.queuedClosesForTesting() {
+            guard let name = attemptOrder.last(where: {
+                attempts[$0]?.session == session && (generation == nil || attempts[$0]?.generation == generation)
+            }), !disconnected.contains(name), let connection = attempts[name]?.connection else { continue }
+            guard try await bounded("\(name)'s 4017 close", { await connection.waitUntilClosed() }) else {
+                throw DiffRunFailure("\(name)'s superseded connection wasn't closed")
+            }
+            // A stopped land's 4014 can close it first.
+            let code = await connection.closeCode
+            guard stopped || code == SessionClose.Code.superseded else {
+                throw DiffRunFailure("\(name)'s superseded connection closed with \(String(describing: code))")
+            }
+        }
         try await bounded("the disconnect forwards") { [router] in await router.waitForDisconnectForwardsForTesting() }
         guard !stopped else {
             try await bounded("the transport's queues") { [transport] in await transport.flushSessionQueues() }

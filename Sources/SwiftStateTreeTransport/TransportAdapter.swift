@@ -1522,7 +1522,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// `generation`; with nil, whatever connection has the ID. A transport that doesn't
     /// implement the generation-aware close (the `Transport` default) closes by ID (#531).
     /// `close` is what the connection is closed with: a plain 1000 unless the caller says
-    /// otherwise (a supersede passes `.superseded`, #861).
+    /// otherwise (a supersede whose writer has finished passes `.superseded`, #861). It doesn't
+    /// wait for frames queued for the session; `closeSessionBehindQueuedFrames` does (#909).
     func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose = .normal) {
         let transport = self.transport
         guard tracksDetachedClosesForTesting else {
@@ -1537,6 +1538,23 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             await transport.closeSession(sessionID, with: close, generation: generation)
             await self?.detachedCloseEnded(id)
         }
+    }
+
+    /// Closes `sessionID` behind every frame already queued for it in the outbound writer, with
+    /// `close`, only while its connection is the one with `generation` (nil: any), so a frame
+    /// queued before the decision reaches the client before the close (#909). The session must
+    /// already be ended, so nothing is queued for it after the close.
+    ///
+    /// Synchronous, and must stay so: the enqueue, the check of its result and the fallback run
+    /// in one segment, so no frame is queued for the session and no generation changes between
+    /// them. A finished writer refuses the close; it then goes out at once, from a task.
+    func closeSessionBehindQueuedFrames(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose) {
+        let result = outboundWriter.enqueueClose([ClosingSession(sessionID: sessionID, generation: generation, close: close)])
+        guard result == .accepted else {
+            closeSessionDetached(sessionID, generation: generation, with: close)
+            return
+        }
+        if tracksDetachedClosesForTesting { queuedCloses.append((sessionID, generation)) }
     }
 
     private func detachedCloseEnded(_ id: UInt64) {
@@ -1555,8 +1573,20 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         tracksDetachedClosesForTesting = true
     }
 
-    /// Tests only (#555): returns once every close `closeSessionDetached` started (a supersede's)
-    /// since `trackDetachedClosesForTesting` has returned from the transport.
+    /// The closes `closeSessionBehindQueuedFrames` put in the writer while tracking, with the
+    /// connection each is for (#909).
+    private var queuedCloses: [(sessionID: SessionID, generation: UInt64?)] = []
+
+    /// Tests only (#909): the closes put behind queued frames (a supersede's) since
+    /// `trackDetachedClosesForTesting`, in order. Each one's connection closes once the
+    /// transport's drain reaches its marker, after the writer handed it over.
+    package func queuedClosesForTesting() -> [(sessionID: SessionID, generation: UInt64?)] {
+        queuedCloses
+    }
+
+    /// Tests only (#555): returns once every close `closeSessionDetached` started (a supersede's
+    /// fallback, a refused registration's) since `trackDetachedClosesForTesting` has returned
+    /// from the transport.
     package func waitForDetachedClosesForTesting() async {
         while let task = detachedCloses.values.first {
             await task.value
@@ -1936,8 +1966,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let superseded = membershipCoordinator.sessionIDs(for: playerID).filter { $0 != sessionID }
         guard !superseded.isEmpty else { return }
         for old in superseded {
-            // The close runs later, from a task: it closes only this connection, never a later
-            // one that reuses the ID (#531).
+            // The close runs later, behind the frames queued for the session: it closes only
+            // this connection, never a later one that reuses the ID (#531).
             let generation = connectionGenerations[old]
             // Before the membership goes: its queued targeted events still match it, and are
             // counted with its held ones.
@@ -1959,7 +1989,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "newSessionID": .string(sessionID.rawValue),
                 "supersededTotal": .stringConvertible(supersededSessionCount),
             ])
-            closeSessionDetached(old, generation: generation, with: .superseded)
+            closeSessionBehindQueuedFrames(old, generation: generation, with: .superseded)
         }
         syncEngine.clearCacheForDisconnectedPlayer(playerID)
         perPlayerTables?.clear(playerID)
