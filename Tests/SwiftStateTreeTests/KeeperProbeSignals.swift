@@ -51,7 +51,7 @@ final class KeeperProbeSignals: @unchecked Sendable {
     func wait(
         for label: String,
         count: Int = 1,
-        deadline: Duration = .seconds(10),
+        deadline: Duration = TestBounds.hang,
         sourceLocation: SourceLocation = #_sourceLocation
     ) async -> Bool {
         let id = lock.withLock { () -> UInt64 in
@@ -78,7 +78,7 @@ final class KeeperProbeSignals: @unchecked Sendable {
     /// after `deadline`.
     func waitForInputDrainIdle<S: StateNodeProtocol>(
         _ keeper: LandKeeper<S>,
-        deadline: Duration = .seconds(10),
+        deadline: Duration = TestBounds.hang,
         sourceLocation: SourceLocation = #_sourceLocation
     ) async -> Bool {
         let ends = count("input-drain-end")

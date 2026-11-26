@@ -336,7 +336,9 @@ struct LandKeeperDebugFreezeTests {
 
         let start = ContinuousClock.now
         #expect(await keeper.debugFreeze(generation: 1, timeout: .milliseconds(100)) == false)
-        #expect(ContinuousClock.now - start < .seconds(2), "drain ignored its deadline")
+        // The 100 ms timeout fires; the bound only separates it from a hang (a hang also hits the
+        // suite's time limit), so it is the slow-runner scale, not a measurement.
+        #expect(ContinuousClock.now - start < TestBounds.hang, "drain ignored its deadline")
         #expect(await keeper.isDebugFrozen(), "a missed deadline keeps the freeze until it is released")
 
         await keeper.debugResume(generation: 1)

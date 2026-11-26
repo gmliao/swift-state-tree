@@ -254,14 +254,15 @@ struct LandKeeperLoopPhaseOffsetTests {
             landID: landID
         )
         try await keeper.join(playerID: PlayerID("p"), clientID: ClientID("c"), sessionID: SessionID("s"))
-        let deadline = ContinuousClock.now + .seconds(5)
+        // The loop ends at the third tick; the bound only matters on a slow runner.
+        let deadline = ContinuousClock.now + TestBounds.hang
         while recorder.all.count < 3, ContinuousClock.now < deadline {
             try await safeTaskSleep(for: .milliseconds(10))
         }
         try await keeper.leave(playerID: PlayerID("p"), clientID: ClientID("c"))
 
         let ticks = recorder.all
-        try #require(ticks.count >= 3, "expected at least 3 ticks in 5 s, got \(ticks.count)")
+        try #require(ticks.count >= 3, "expected at least 3 ticks in \(TestBounds.hang), got \(ticks.count)")
         #expect(await keeper.appliedTickPhaseOffset == offset)
         // Lower bounds only (a loaded runner makes ticks late, never early); 5 ms slack for
         // clock granularity. The exact schedule is the manual-clock test's.

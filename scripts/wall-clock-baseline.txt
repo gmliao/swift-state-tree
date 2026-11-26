@@ -25,7 +25,7 @@ Tests/SwiftStateTreeTests/LandKeeperLoopPhaseOffsetTests.swift sleep-poll 1
 Tests/SwiftStateTreeTests/ReevaluationMonitorFrameIdentityTests.swift helper-poll 2
 Tests/SwiftStateTreeTests/ReevaluationRecordLogTests.swift sleep-poll 1
 Tests/SwiftStateTreeTests/ReevaluationRecordLogTests.swift yield-poll 1
-Tests/SwiftStateTreeTests/ResolverDeadlineTests.swift yield-poll 10
+Tests/SwiftStateTreeTests/ResolverDeadlineTests.swift yield-poll 8
 Tests/SwiftStateTreeTests/SyncTablesLandCellTests.swift helper-poll 1
 Tests/SwiftStateTreeTests/TicklessReplayPassTests.swift yield-poll 1
 Tests/SwiftStateTreeTransportTests/ActionJobReplayOrderTests.swift helper-poll 1

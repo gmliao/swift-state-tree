@@ -10,7 +10,7 @@ import Testing
 /// thrown by `work` are rethrown.
 func withinDeadline<Value: Sendable>(
     _ step: String,
-    deadline: Duration = .seconds(10),
+    deadline: Duration = TestBounds.hang,
     sourceLocation: SourceLocation = #_sourceLocation,
     _ work: @escaping @Sendable () async throws -> Value
 ) async throws -> Value? {
@@ -29,7 +29,7 @@ func withinDeadline<Value: Sendable>(
 /// stream (`watchActionSlotForTesting`) does.
 func withinCancellingDeadline<Value: Sendable>(
     _ step: String,
-    deadline: Duration = .seconds(10),
+    deadline: Duration = TestBounds.hang,
     sourceLocation: SourceLocation = #_sourceLocation,
     _ work: @escaping @Sendable () async -> Value
 ) async -> Value? {
