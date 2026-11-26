@@ -413,26 +413,34 @@ private struct TwoSpellingsBox: Codable {
     }
 }
 
+/// The UTF-8 of the key a `duplicateKey` refusal names, or nil for no refusal or another error.
+/// The error's `==` and its message compare the key as a `String`, which equates the two
+/// spellings, so the reported spelling is pinned by its bytes.
+private func refusedKeyBytes(_ body: () throws -> Void) -> [UInt8]? {
+    do {
+        try body()
+        return nil
+    } catch CanonicalMessagePackError.duplicateKey(let key) {
+        return Array(key.utf8)
+    } catch {
+        return nil
+    }
+}
+
 @Test("Two spellings of one key in one container are refused when written, as a duplicate key (#805)")
 func equivalentKeysRefusedOnEncode() {
     #expect("\u{e9}" == "e\u{301}" && "K" == "\u{212A}", "String equality is canonical equivalence")
     for (first, second) in equivalentSpellings {
-        #expect(throws: CanonicalMessagePackError.duplicateKey(second)) {
-            _ = try CanonicalMessagePack.encode(TwoSpellingsBox(first, second))
-        }
-        // At every depth: a map in a map, two levels down, and maps in arrays, the duplicate
-        // in a later element too. A check of the top-level map only would miss these.
-        #expect(throws: CanonicalMessagePackError.duplicateKey(second)) {
-            _ = try CanonicalMessagePack.encode(["outer": TwoSpellingsBox(first, second)])
-        }
-        #expect(throws: CanonicalMessagePackError.duplicateKey(second)) {
-            _ = try CanonicalMessagePack.encode(["a": ["b": TwoSpellingsBox(first, second)]])
-        }
-        #expect(throws: CanonicalMessagePackError.duplicateKey(second)) {
-            _ = try CanonicalMessagePack.encode([TwoSpellingsBox("x", "y"), TwoSpellingsBox(first, second)])
-        }
-        #expect(throws: CanonicalMessagePackError.duplicateKey(second)) {
-            _ = try CanonicalMessagePack.encode(["list": [TwoSpellingsBox(first, second)]])
+        // The spelling later in byte order is reported, in either insertion order.
+        let later = Array(second.utf8)
+        for box in [TwoSpellingsBox(first, second), TwoSpellingsBox(second, first)] {
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(box) } == later)
+            // At every depth: a map in a map, two levels down, and maps in arrays, the duplicate
+            // in a later element too. A check of the top-level map only would miss these.
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(["outer": box]) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(["a": ["b": box]]) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode([TwoSpellingsBox("x", "y"), box]) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(["list": [box]]) } == later)
         }
     }
 }
@@ -440,32 +448,25 @@ func equivalentKeysRefusedOnEncode() {
 @Test("A map holding two spellings of one key is refused when read, as a duplicate key (#805)")
 func equivalentKeysRefusedOnDecode() {
     for (first, second) in equivalentSpellings {
-        // In byte order, as the encoder would write them: "e"+U+0301 before U+00E9, "K" before U+212A.
-        let bytes = mapBytes([(first, 1), (second, 2)])
-        #expect(throws: CanonicalMessagePackError.duplicateKey(second)) {
-            _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes)
-        }
-        #expect(throws: CanonicalMessagePackError.duplicateKey(second)) {
-            _ = try CanonicalMessagePack.decode([String: Int].self, from: bytes)
-        }
-        #expect(throws: CanonicalMessagePackError.duplicateKey(second)) {
-            _ = try CanonicalMessagePack.decode(TwoSpellingsBox.self, from: bytes)
-        }
-        // At every depth: one and two maps down ("o", then "p"), in an array behind an empty
-        // map, and in an array inside a map.
-        let nestings: [[UInt8]] = [
-            [0x81, 0xa1, 0x6f] + bytes,
-            [0x81, 0xa1, 0x6f, 0x81, 0xa1, 0x70] + bytes,
-            [0x92, 0x80] + bytes,
-            [0x81, 0xa1, 0x6f, 0x91] + bytes,
-        ]
-        for nested in nestings {
-            #expect(throws: CanonicalMessagePackError.duplicateKey(second), "\(nested)") {
-                _ = try CanonicalMessagePack.decode(AnyCodable.self, from: nested)
+        let later = Array(second.utf8)
+        // In byte order, as the encoder would write them ("e"+U+0301 before U+00E9, "K" before
+        // U+212A), and reversed: the later spelling in byte order is reported either way.
+        for bytes in [mapBytes([(first, 1), (second, 2)]), mapBytes([(second, 2), (first, 1)])] {
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode([String: Int].self, from: bytes) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(TwoSpellingsBox.self, from: bytes) } == later)
+            // At every depth: one and two maps down ("o", then "p"), in an array behind an empty
+            // map, and in an array inside a map.
+            let nestings: [[UInt8]] = [
+                [0x81, 0xa1, 0x6f] + bytes,
+                [0x81, 0xa1, 0x6f, 0x81, 0xa1, 0x70] + bytes,
+                [0x92, 0x80] + bytes,
+                [0x81, 0xa1, 0x6f, 0x91] + bytes,
+            ]
+            for nested in nestings {
+                #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: nested) } == later, "\(nested)")
             }
-        }
-        #expect(throws: CanonicalMessagePackError.duplicateKey(second)) {
-            _ = try CanonicalMessagePack.decode([[String: Int]].self, from: [0x92, 0x80] + bytes)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode([[String: Int]].self, from: [0x92, 0x80] + bytes) } == later)
         }
     }
 }
