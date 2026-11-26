@@ -255,7 +255,7 @@ API：`start`（取代時回傳 true）、`generation(of:)`、`Generation`。
 *request* 是由某個 key 目前的 generation 擁有的 effect。它有一個 ID，並以兩種方式之一結束。結果在它仍開著時回來：結果在 `handle` 裡執行。或者它先關閉，也就是被*放棄*（abandoned）：`handleAbandoned` 帶著原因執行（deadline 已過、key 結束、或被取消）。在那之後才到的結果交給 `handleLateResult`，所以一個卡住的資料庫載入最後才回來，也不會改變任何東西。
 
 ```swift
-let hold = Hold.untilRequestCloses(Key.store, deadline: .seconds(2))
+let hold = Hold.untilRequestCloses(Key.store, deadline: loadDeadline)
 guard let id = turn.request(.loadProfile(player: player), for: .player(player), holding: hold) else { return }
 loading[id] = player
 ```

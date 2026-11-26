@@ -105,7 +105,7 @@ struct ComparisonTests {
     @Test("On the turn core: the leave ends the binding; the load's result is stale, and nothing is seated")
     func turnCoreNeedsNoTicket() async throws {
         let f = Fixture()
-        let lobby = LobbyActor(profiles: HeldProfiles(fixture: f))
+        let lobby = LobbyActor(profiles: HeldProfiles(fixture: f), loadDeadline: .seconds(300))
         let join = Task { try await lobby.sendAndWait(.join(player: 7), cancellation: .ignoresCancel) }
         await f.reach("loading 7")
         await lobby.send(.leave(player: 7))
@@ -116,7 +116,7 @@ struct ComparisonTests {
         for _ in 0 ..< 10_000 where await lobby.late() == 0 {
             await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the late result has run
         }
-        #expect(throws: LobbyError.self) { try result.get() }
+        #expect(throws: LobbyError.left) { try result.get() }
         #expect(await lobby.late() == 1)
         #expect(await lobby.seats().isEmpty)
         #expect(await lobby.heldKeys() == 0)
