@@ -133,6 +133,8 @@ HandleAction(BuyAction.self,
 
 `OnJoin` 不會失敗：玩家能否加入由 `CanJoin` 在 join 收件時決定。`OnJoin` 在之後的 turn 才套用，因此 `CanJoin` 對其他 input 會改變的狀態所做的檢查，到那時可能已經過時（turn 內的 join 檢查由 #588 追蹤）。不要把這類依賴狀態的檢查放在 `CanJoin`，改在 `OnJoin` 處理已經不適合加入的 joiner：讓他成為旁觀者，或發出 event 請他離開。`MaxPlayers` 不受影響：它在插入玩家時檢查，並計入仍在等待中的 joiner。`OnLeave` 也不會失敗：離開一定會發生。
 
+`CanJoin` 沒有輸出：它送出的事件與同步請求都會被丟棄。它只決定能否加入，replay 也不會再執行它，因此它送出的任何東西都無從核對。請改在 `OnJoin` 送出事件。
+
 ### 必須至多套用一次的 action
 
 transport 至多傳遞一次 action，且不會對重送去重（見 SDK 的[傳遞語意](../sdk/README.zh-TW.md#傳遞語意至多一次at-most-once)）：
@@ -294,6 +296,7 @@ HandleAction(AddToCartAction.self, resolvers: { _, action, _ in ProductInfo(prod
   - `OnFinalize` 與 `DestroyWhenEmpty(after:_:)` 的 handler 接受不會拋出錯誤的 body。Land 正在結束，沒有人會處理拒絕：body 若呼叫會拋出錯誤的程式碼，要自己處理錯誤。
   - `OnInitialize` 接受不會拋出錯誤的 body，或像 input 一樣分成 `validate` 與 `apply` 兩段（[兩段式 Handler](#兩段式-handler)）。`validate` 拋出錯誤時，land 的初始化失敗，和 resolver 失敗時相同，什麼都不寫入（見下方範例）。
   - 重新評估（replay）keeper 不會執行任何銷毀 handler：記錄中沒有 finalize 事件，replay 無法對其進行核對。
+  - `StateSync` 的 callback 同樣沒有輸出：它送出的事件與同步請求都會被丟棄。Replay 不會再執行它，因此它送出的任何東西都無從核對。`ctx.random` 照常可用。
   - 銷毀 handler（`OnFinalize`、`AfterFinalize` 與 `DestroyWhenEmpty(after:_:)` 的 handler）沒有輸出：它們送出的事件與同步請求都會被丟棄。Land 正在結束，之後不會再有 tick 或同步把它們送出去。它們送出的 server input（`ctx.serverInputs.submit`）會以 drain 中為由被拒絕（`.refused(.draining)`）。`ctx.random` 照常可用。
 - `OnInitialize(resolvers:onResolverFailure:)`：resolver 丟錯時預設會讓 land 初始化失敗（`.failLand`）；`.continue` 則在沒有 resolver 輸出的情況下執行 OnInitialize。見 [Resolver 期限](resolver.zh-TW.md#期限)
 

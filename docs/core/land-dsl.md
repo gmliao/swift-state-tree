@@ -133,6 +133,8 @@ A land declares one `HandleAction` per action type, one `HandleEvent` per client
 
 `OnJoin` can't fail: whether a player may join is `CanJoin`'s decision, made at join intake. `OnJoin` applies in a later turn, so a `CanJoin` check on state that other inputs change can be stale by then (an in-turn join check is tracked in #588). Keep such state-dependent checks out of `CanJoin`, and handle a joiner that no longer fits in `OnJoin`: make them a spectator, or emit an event asking them to leave. `MaxPlayers` is unaffected: it is checked when the player is inserted, counting the joiners still pending. `OnLeave` can't fail either: a leave always happens.
 
+`CanJoin` has no outputs: an event it emits and a sync request it makes are dropped. It only decides the join, and replay doesn't run it again, so nothing it sent could be checked. Emit from `OnJoin` instead.
+
 ### Actions that must apply at most once
 
 The transport delivers an action at most once and doesn't deduplicate resends (see the SDK's [delivery semantics](../sdk/README.md#delivery-semantics-at-most-once)):
@@ -294,6 +296,7 @@ The `resolvers:` closure builds the resolver values from the State and the input
   - `OnFinalize` and the `DestroyWhenEmpty(after:_:)` handler take bodies that don't throw. The land is ending, so nothing would act on a refusal: a body that calls throwing code handles its errors itself.
   - `OnInitialize` takes a body that doesn't throw, or two stages, `validate` and `apply`, as an input does ([Two-Phase Handlers](#two-phase-handlers)). A `validate` that throws fails the land's initialization, as a failing resolver does, with nothing written (see the example below).
   - A re-evaluation (replay) keeper runs none of the destroy handlers: the record holds no finalize event, so replay has nothing to check them against.
+  - The `StateSync` callback has no outputs either: an event it emits and a sync request it makes are dropped. Replay doesn't run it again, so nothing it sent could be checked. `ctx.random` works.
   - The destroy handlers (`OnFinalize`, `AfterFinalize` and the `DestroyWhenEmpty(after:_:)` handler) have no outputs: an event they emit and a sync request they make are dropped. The land is ending, and no tick or sync runs again to send them. A server input they submit (`ctx.serverInputs.submit`) is refused as draining (`.refused(.draining)`). `ctx.random` works.
 - `OnInitialize(resolvers:onResolverFailure:)`: a throwing resolver fails the land's initialization by default (`.failLand`); `.continue` runs OnInitialize without the resolvers' outputs. See [Resolver deadline](resolver.md#deadline)
 
