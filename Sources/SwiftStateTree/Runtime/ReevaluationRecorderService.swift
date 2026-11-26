@@ -18,16 +18,21 @@ public final class ReevaluationSubmissionTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var pending = 0
     private var tail: Task<Void, Never>?
+    private var submitted = 0
+    private var trace: [String]?
 
     public init() {}
 
-    /// Wraps `apply` in a submission that runs after every earlier one.
+    /// Wraps `apply` in a submission that runs after every earlier one. `label` names it in the
+    /// submission trace (tests), recorded here, at submit, in submit order.
     @discardableResult
-    package func submit(_ apply: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
+    package func submit(label: String = "-", _ apply: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
         lock.lock()
         defer { lock.unlock() }
         let previous = tail
         pending += 1
+        submitted += 1
+        trace?.append(label)
         let submission = Task { [self] in
             await previous?.value
             await apply()
@@ -39,6 +44,18 @@ public final class ReevaluationSubmissionTracker: @unchecked Sendable {
 
     /// Submissions not yet applied.
     public var pendingCount: Int { lock.withLock { pending } }
+
+    /// Tests: submissions made so far. Unlike `pendingCount` it never falls, so a test can read
+    /// it while submissions finish.
+    package var submittedCountForTesting: Int { lock.withLock { submitted } }
+
+    /// Tests: starts the submission trace (the labels, in submit order) from empty.
+    package func startTraceForTesting() {
+        lock.withLock { trace = [] }
+    }
+
+    /// Tests: the labels submitted since `startTraceForTesting()`.
+    package var traceForTesting: [String] { lock.withLock { trace ?? [] } }
 
     /// Waits until every submission so far is applied, or `deadline` passes; returns how many
     /// are still pending (0 when all were applied).
