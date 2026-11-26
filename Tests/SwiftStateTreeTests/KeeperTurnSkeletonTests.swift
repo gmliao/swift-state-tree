@@ -705,7 +705,7 @@ struct KeeperTurnSkeletonTests {
     /// shutting down before the player limit and the insert.
     @Test("A re-entry at the stale-join refusal ends the land and refuses the join", arguments: [1, 2])
     func staleRefusalReentryRefusesTheJoin(at call: Int) async throws {
-        let (keeper, transport, _) = await attachedKeeper(.nthCallInBody, onJoin: true)
+        let (keeper, transport, tracker) = await attachedKeeper(.nthCallInBody, onJoin: true)
         await keeper.awaitInitialization()
         // The in-turn check (`runsSyncPhaseInTurn`), then the refusal.
         transport.armNthCallInBody(call)
@@ -733,6 +733,11 @@ struct KeeperTurnSkeletonTests {
         #expect(await keeper.reentriesAppliedInCallForTesting == 1)
         #expect(await keeper.lateReentriesAppliedForTesting == 0)
         #expect(await keeper.currentState().value == 0, "no OnJoin applied")
+        // The tickless land's turn record ends after the terminal entry, as after the settle's
+        // and the sync-only turn's refusals (#896 round 1).
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let fromTerminal = Array(tracker.traceForTesting.drop { $0 != "terminal" })
+        #expect(fromTerminal == ["terminal", "endTurn"], "\(tracker.traceForTesting)")
     }
 
     /// A batch's queued failure is applied before its join report (#884's second track), so a

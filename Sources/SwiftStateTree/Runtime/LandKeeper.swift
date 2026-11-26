@@ -59,6 +59,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case shutdownTurnApplied
     /// The start of the destruction, after `isDraining` is set and before any destroy handler.
     case drainStart
+    /// The empty-land destroy timer after its sleep and its cancellation check, before it hops
+    /// to the keeper: the window in which its ticket can stop being current.
+    case destroyTimerFired
     /// The start of a failed land's teardown task (#535), before it tells the transport: the
     /// failing segment has already cleared the players and installed `drainTask`.
     case landFailedTeardown
@@ -2444,11 +2447,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A stale join attempt is refused by the player CanJoin resolved, in this segment,
         // before the player limit, the kick of its old session and the insert (#234). A
         // refused call out ended the land: the drain check below refuses the join.
-        if call.admitThroughTransport,
-           case .answered(true) = callOut(&m, &side, &outputs, { _ in
-               refusesResolvedJoinInTurn(playerID: playerID, sessionID: call.sessionID)
-           }) {
-            return .done(JoinOutcome(decision: decision, admitted: false, refusedStale: true))
+        if call.admitThroughTransport {
+            // On a tick land before its first tick, the failure's terminal entry goes into
+            // frame 0, whose handler never ran: it must end that tick's inputs, or replay runs
+            // the handler. After a committed tick the frame's handler ran, and the defaults hold.
+            let beforeFirstTick = m.lastCommittedTickId < 0
+            let mark = m.recorderSubmissionCount
+            switch callOut(&m, &side, &outputs, endsInputs: beforeFirstTick, { _ in
+                refusesResolvedJoinInTurn(playerID: playerID, sessionID: call.sessionID)
+            }) {
+            case .answered(true):
+                return .done(JoinOutcome(decision: decision, admitted: false, refusedStale: true))
+            case .answered(false):
+                break
+            case .refused:
+                // A tickless land's turn record ends here, as after the settle's and the
+                // sync-only turn's refusals.
+                enqueueTicklessTurnEnd(&m, since: mark)
+            }
         }
 
         // A destroyed land refuses a late join as shutting down (retryable elsewhere), not as full.
@@ -7657,8 +7673,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func scheduleDestroyIfNeeded(_ m: inout KeeperModel<State>, _ outputs: inout TurnOutputs) {
         guard m.players.isEmpty, let delay = definition.config.destroyWhenEmptyAfter else { return }
         let ticket = replaceDestroyTicket()
+        // A copy, so the timer doesn't hop to the keeper for it.
+        let holds = self.holds
         outputs.stage { [weak self] in
-            ticket.install(Self.destroyTimer(after: delay, keeper: self))
+            ticket.install(Self.destroyTimer(after: delay, keeper: self, ticket: ticket, holds: holds))
         }
     }
 
@@ -7671,7 +7689,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private func scheduleDestroyIfNeeded() {
         guard model.players.isEmpty, let delay = definition.config.destroyWhenEmptyAfter else { return }
-        replaceDestroyTicket().install(Self.destroyTimer(after: delay, keeper: self))
+        let ticket = replaceDestroyTicket()
+        ticket.install(Self.destroyTimer(after: delay, keeper: self, ticket: ticket, holds: holds))
     }
 
     /// A new ticket in the slot; the old one's timer is cancelled.
@@ -7682,7 +7701,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return ticket
     }
 
-    private static func destroyTimer(after delay: Duration, keeper: LandKeeper?) -> Task<Void, Never> {
+    /// The empty-land destroy timer. Its cancellation check runs before the hop to the keeper,
+    /// so a rejoin (which cancels the ticket) and a new leave (which arms another) can both land
+    /// between the check and the hop. The keeper then checks the ticket itself, in the segment
+    /// that starts the drain (`destroyTimerFired`).
+    private static func destroyTimer(
+        after delay: Duration,
+        keeper: LandKeeper?,
+        ticket: DestroyTicket,
+        holds: HoldPoints<LandKeeperHoldPoint>
+    ) -> Task<Void, Never> {
         Task { [weak keeper] in
             do {
                 try await safeTaskSleep(for: delay)
@@ -7690,8 +7718,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return
             }
             guard !Task.isCancelled else { return }
-            await keeper?.shutdownIfIdle(cause: .emptyTimeout)
+            await holds.at(.destroyTimerFired)
+            await keeper?.destroyTimerFired(ticket)
         }
+    }
+
+    /// The timer's drain, only while its ticket is still the current one: a timer whose ticket
+    /// was cancelled or replaced after its own check would drain on a stale deadline. The check
+    /// and `shutdownIfIdle`'s emptiness check and drain flag are one synchronous segment.
+    private func destroyTimerFired(_ ticket: DestroyTicket) async {
+        guard destroyTicket === ticket else { return }
+        await shutdownIfIdle(cause: .emptyTimeout)
     }
 
     private func shutdownIfIdle(cause: LandDestructionCause) async {

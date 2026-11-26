@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTree
 
 @StateNodeBuilder
@@ -1001,6 +1002,69 @@ func testDestroyWhenEmptyArmsAfterOnLeave(tick: Bool) async throws {
     if tick { await keeper.stepTickOnce() }
     #expect((await keeper.currentState()).ticks == 1, "OnLeave ran")
     timer.cancel()
+}
+
+/// Holds the destroy timers at `.destroyTimerFired`: the first arrival on `first`, every later
+/// one on `later`.
+private final class DestroyTimerHolds: @unchecked Sendable {
+    let first = TestGate()
+    let later = TestGate()
+    private let lock = NSLock()
+    private var arrivals = 0
+
+    func hold() async {
+        let index = lock.withLock { () -> Int in
+            arrivals += 1
+            return arrivals
+        }
+        await (index == 1 ? first : later).arrive()
+    }
+}
+
+/// The destroy timer checks its cancellation, then hops to the keeper. A rejoin (which cancels
+/// its ticket) and a leave (which arms a new one) can both land in between. The old timer must
+/// not drain on its stale deadline: the keeper checks the timer's ticket in the segment that
+/// starts the drain (#896 round 1).
+@Test("DestroyWhenEmpty: a timer whose ticket was replaced after its own check doesn't drain")
+func testDestroyWhenEmptyStaleTimerDoesNotDrain() async throws {
+    let definition = Land("stale-destroy-timer", using: DemoLandState.self) {
+        Lifetime {
+            DestroyWhenEmpty(after: .milliseconds(1)) { _, _ in }
+        }
+    }
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState(),
+        autoStartLoops: false
+    )
+    let holds = DestroyTimerHolds()
+    await keeper.installHolds { point in
+        guard point == .destroyTimerFired else { return }
+        await holds.hold()
+    }
+    defer { holds.first.open(); holds.later.open() }
+    let playerID = PlayerID("p1"), clientID = ClientID("c1"), sessionID = SessionID("s1")
+
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.leave(playerID: playerID, clientID: clientID)
+    let stale = try #require(await keeper.destroyTimerForTesting())
+    #expect(await holds.first.waitForArrivals(1), "the first timer is past its own check")
+
+    // A rejoin cancels the first ticket, and a leave arms a second timer.
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.leave(playerID: playerID, clientID: clientID)
+    let current = try #require(await keeper.destroyTimerForTesting())
+    #expect(current != stale)
+
+    holds.first.open()
+    await stale.value
+    #expect(!keeper.isDraining, "the stale timer drained the land")
+
+    // Control: the current timer drains.
+    #expect(await holds.later.waitForArrivals(1))
+    holds.later.open()
+    await current.value
+    #expect(keeper.isDraining)
 }
 
 @Test("DestroyWhenEmpty does not destroy when players are present")
