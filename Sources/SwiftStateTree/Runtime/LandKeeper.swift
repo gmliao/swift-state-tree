@@ -3981,16 +3981,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         _ m: inout KeeperModel<State>,
         _ ctx: LandContext,
         random: HandlerRandom = .step,
+        dropsOutputs: Bool = false,
         _ body: (inout KeeperModel<State>, LandContext) throws -> R
     ) rethrows -> R {
         switch random {
         case .detached(let service):
-            let (bound, scope) = openStepScope(ctx, random: service)
+            let (bound, scope) = openStepScope(ctx, random: service, dropsOutputs: dropsOutputs)
             defer { scope.close() }
             return try body(&m, bound)
         case .step:
             let service = DeterministicRngService(continuing: m.landRandom, seed: behavior.config.landRandomSeed)
-            let (bound, scope) = openStepScope(ctx, random: service)
+            let (bound, scope) = openStepScope(ctx, random: service, dropsOutputs: dropsOutputs)
             // After the body's access to the model ends: it doesn't overlap.
             defer {
                 scope.close()
@@ -4003,9 +4004,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Opens a handler call's scope (#700 K2-E) and binds it to a copy of `ctx`; the caller
     /// closes it when the handler returns. Outputs made through the copy before the close go
     /// where they go today, numbered at emit time; later ones are dropped and counted in
-    /// `lateStepOutputs`.
-    private func openStepScope(_ ctx: LandContext, random: DeterministicRngService) -> (LandContext, StepScope) {
-        let scope = StepScope(random: random, late: lateStepOutputs, assertsOnLateOutput: lateStepOutputAssertsForTesting)
+    /// `lateStepOutputs`. With `dropsOutputs` (a destroy handler, #893), every output is dropped
+    /// and counted in `destroyHandlerOutputsDropped`.
+    private func openStepScope(
+        _ ctx: LandContext,
+        random: DeterministicRngService,
+        dropsOutputs: Bool = false
+    ) -> (LandContext, StepScope) {
+        let scope = StepScope(
+            random: random,
+            late: lateStepOutputs,
+            assertsOnLateOutput: lateStepOutputAssertsForTesting,
+            dropsOutputs: dropsOutputs ? destroyHandlerOutputsDropped : nil
+        )
         var bound = ctx
         bound.stepScope = scope
         return (bound, scope)
@@ -4013,6 +4024,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Outputs dropped because their `LandContext` outlived its handler call (#700 K2-E).
     package nonisolated let lateStepOutputs = LateStepOutputCounter()
+
+    /// The destroy handlers' outputs (OnDestroyWhenEmpty, OnFinalize, AfterFinalize), all
+    /// dropped (#893). They run after the drain began, when no tick, sync or input turn will
+    /// take an event or a sync request again.
+    package nonisolated let destroyHandlerOutputsDropped = LateStepOutputCounter()
 
     /// Whether a late output stops a debug build. Tests that pin the drop turn it off.
     private var lateStepOutputAssertsForTesting = true
@@ -7230,7 +7246,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 clientID: behavior.config.systemClientID,
                 sessionID: behavior.config.systemSessionID
             )
-            let (scoped, scope) = openStepScope(ctx, random: drainRandom)
+            // Its outputs are dropped: nothing takes them after the drain began, and one made
+            // after an internal await would reach the collector off the keeper (#893).
+            let (scoped, scope) = openStepScope(ctx, random: drainRandom, dropsOutputs: true)
             defer { scope.close() }
             await afterFinalizeHandler(snapshot, scoped)
         }
@@ -7292,7 +7310,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
         // The handler can't throw (#593): the land is ending, so nothing would act on a refusal.
-        withHandlerStep(&model, updatedCtx, random: .detached(random)) { m, ctx in
+        // Its outputs are dropped: nothing takes them after the drain began (#893).
+        withHandlerStep(&model, updatedCtx, random: .detached(random), dropsOutputs: true) { m, ctx in
             handler(&m.state, ctx)
         }
     }

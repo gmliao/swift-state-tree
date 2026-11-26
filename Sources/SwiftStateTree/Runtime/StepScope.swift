@@ -4,11 +4,13 @@
 // pass. The keeper opens a scope for each handler call, binds it to the call's `LandContext`,
 // and closes it when the handler returns. An output (an emitted event, a sync request) made
 // through the context while the scope is open goes where it goes today; one made after the
-// close, from a context kept past its call, is dropped and counted.
+// close, from a context kept past its call, is dropped and counted. A destroy handler's scope
+// drops every output (#893): the land is gone, and nothing would take it.
 
 import Foundation
 
-/// The outputs dropped because their context outlived its handler call, counted per land.
+/// A count of dropped outputs, per land: the ones whose context outlived its handler call
+/// (`LandKeeper.lateStepOutputs`), or a destroy handler's (`destroyHandlerOutputsDropped`).
 package final class LateStepOutputCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var dropped = 0
@@ -33,15 +35,15 @@ package final class LateStepOutputCounter: @unchecked Sendable {
 /// time, which the body around the handler reads (the tick body's watermarks, K2 plan §4.4).
 ///
 /// The lock orders an output against its own scope's close only; it doesn't make the output
-/// the only access to the keeper's output collector, which has no lock of its own. For a
-/// synchronous handler the keeper is inside the call while the scope is open, so nothing else
-/// reaches the collector then. AfterFinalize is async: while it awaits, the keeper runs other
-/// work, which can emit through its own scope (another lock), so an emit of AfterFinalize's
-/// after an await can race with it on the collector. That race predates the scope (#893).
+/// the only access to the keeper's output collector, which has no lock of its own. That is
+/// enough because an open scope's output always runs on the keeper: the keeper is inside the
+/// synchronous handler call while its scope is open. The one async handler, AfterFinalize, is
+/// a destroy handler, and a destroy handler's scope passes nothing (`dropsOutputs`): its
+/// outputs, made after the drain began, would never be taken, and AfterFinalize's after an
+/// internal await would run off the keeper, racing another call's output on the collector
+/// (#893).
 ///
-/// The boundary is the keeper's close: for a synchronous handler, its return; for
-/// AfterFinalize, the keeper's `defer` after the awaited handler, so an emit the handler makes
-/// after an internal await still passes.
+/// The boundary is the keeper's close: the handler's return.
 package final class StepScope: @unchecked Sendable {
     /// The service the call draws from (`LandContext.random`).
     let random: DeterministicRngService
@@ -50,20 +52,37 @@ package final class StepScope: @unchecked Sendable {
     private var isOpen = true
     private let late: LateStepOutputCounter
     private let assertsOnLateOutput: Bool
+    /// A destroy handler's count: set, an output made while the scope is open is dropped and
+    /// counted there, with no assert. It is legal land code that has nowhere to go. One made
+    /// after the close is a late output as in any scope.
+    private let dropsOutputs: LateStepOutputCounter?
 
-    /// - Parameter assertsOnLateOutput: whether a late output stops a debug build; tests that
-    ///   pin the drop turn it off.
-    init(random: DeterministicRngService, late: LateStepOutputCounter, assertsOnLateOutput: Bool) {
+    /// - Parameters:
+    ///   - assertsOnLateOutput: whether a late output stops a debug build; tests that pin the
+    ///     drop turn it off.
+    ///   - dropsOutputs: a destroy handler's count; see the property.
+    init(
+        random: DeterministicRngService,
+        late: LateStepOutputCounter,
+        assertsOnLateOutput: Bool,
+        dropsOutputs: LateStepOutputCounter? = nil
+    ) {
         self.random = random
         self.late = late
         self.assertsOnLateOutput = assertsOnLateOutput
+        self.dropsOutputs = dropsOutputs
     }
 
-    /// Runs `output` if the scope is open; otherwise drops it and counts the drop.
+    /// Runs `output` if the scope is open and passes outputs; otherwise drops it and counts the
+    /// drop.
     func pass(_ output: () -> Void) {
         let passed = lock.withLock { () -> Bool in
             guard isOpen else { return false }
-            output()
+            if let dropsOutputs {
+                dropsOutputs.increment()
+            } else {
+                output()
+            }
             return true
         }
         guard !passed else { return }

@@ -294,6 +294,7 @@ The `resolvers:` closure builds the resolver values from the State and the input
   - `OnFinalize` and the `DestroyWhenEmpty(after:_:)` handler take bodies that don't throw. The land is ending, so nothing would act on a refusal: a body that calls throwing code handles its errors itself.
   - `OnInitialize` takes a body that doesn't throw, or two stages, `validate` and `apply`, as an input does ([Two-Phase Handlers](#two-phase-handlers)). A `validate` that throws fails the land's initialization, as a failing resolver does, with nothing written (see the example below).
   - A re-evaluation (replay) keeper runs none of the destroy handlers: the record holds no finalize event, so replay has nothing to check them against.
+  - The destroy handlers (`OnFinalize`, `AfterFinalize` and the `DestroyWhenEmpty(after:_:)` handler) have no outputs: an event they emit and a sync request they make are dropped. The land is ending, and no tick or sync runs again to send them. `ctx.random` works.
 - `OnInitialize(resolvers:onResolverFailure:)`: a throwing resolver fails the land's initialization by default (`.failLand`); `.continue` runs OnInitialize without the resolvers' outputs. See [Resolver deadline](resolver.md#deadline)
 
 ```swift

@@ -657,6 +657,9 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
 /// different destruction scenarios. It also runs on a live forced shutdown (e.g., server
 /// restart). A reevaluation keeper skips the handler entirely (#826).
 ///
+/// The handler's context has no outputs (#893): an event it emits and a sync request it makes are dropped,
+/// because the land is ending and no tick or sync will run again. `ctx.random` works.
+///
 /// - Parameters:
 ///   - duration: The duration to wait after the last player leaves before destroying.
 ///   - handler: The cleanup handler to execute before destruction. It can't throw (#593), as
@@ -784,6 +787,9 @@ public func OnInitialize<State: StateNodeProtocol>(
 /// body that calls throwing code handles its errors itself. A resolver that throws skips the
 /// body; the land's teardown goes on.
 ///
+/// Its context has no outputs (#893): an event it emits and a sync request it makes are dropped,
+/// because the land is ending and no tick or sync will run again. `ctx.random` works.
+///
 /// - Parameter body: The synchronous closure to execute.
 public func OnFinalize<State: StateNodeProtocol>(
     fileID: String = #fileID,
@@ -803,6 +809,9 @@ public func OnFinalize<State: StateNodeProtocol>(
 ///
 /// A re-evaluation (replay) keeper runs none of the destroy handlers, including AfterFinalize:
 /// the record holds no finalize event, so replay has nothing to check them against.
+///
+/// Its context has no outputs (#893): an event it emits and a sync request it makes are dropped,
+/// because the land is ending and no tick or sync will run again. `ctx.random` works.
 ///
 /// - Parameter body: The async closure to execute with state snapshot and context.
 public func AfterFinalize<State: StateNodeProtocol>(
