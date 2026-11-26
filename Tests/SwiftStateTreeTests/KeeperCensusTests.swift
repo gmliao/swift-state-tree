@@ -27,7 +27,7 @@ enum KeeperFieldHome: Hashable, CustomStringConvertible {
     case container
 
     enum OutsideGroup: String {
-        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable, turnSide, reentrySentinel
+        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable, turnSide, reentrySentinel, stepScope
     }
 
     var description: String {
@@ -88,6 +88,8 @@ enum KeeperCensus {
             "actor.inputDrainIdleWaitersForTesting": .replaced(by: "K2"),
             "actor.inputTurnWaiters": .replaced(by: "K2"),
             "actor.lateReentriesApplied": .outside(.reentrySentinel),
+            "actor.lateStepOutputAssertsForTesting": .testHook,
+            "actor.lateStepOutputs": .outside(.stepScope),
             "actor.reentriesAppliedInCall": .outside(.reentrySentinel),
             "actor.model": .container,
             "actor.nextDrainStartedWaiterForTesting": .replaced(by: "K2"),
