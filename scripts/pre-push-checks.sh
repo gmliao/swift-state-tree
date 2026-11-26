@@ -47,15 +47,22 @@
 # them the plain-data lint, a test), E2E, generated schemas and codegen, the TypeScript SDK and
 # ws-loadtest tests.
 #
-# Usage: scripts/pre-push-checks.sh [base]   (default origin/main; run `git fetch` first)
+# As a pre-push hook, git writes one `<local ref> <local sha> <remote ref> <remote sha>` line per
+# ref to stdin before it starts the script. The checks then run on the commits being pushed, not on
+# the checkout (#856):
+#   - a pushed sha other than HEAD is checked in a temporary detached worktree, removed on exit;
+#   - HEAD is checked the same way when the checkout has uncommitted or untracked changes, so a
+#     fix or a broken file that isn't in the pushed commit can't change the result; a clean checkout
+#     is checked in place;
+#   - a deleted ref (all-zero local sha) is skipped.
+# Command-line use is unchanged: the checkout is checked, uncommitted changes included. Stdin is
+# not what tells the two apart (`! -t 0` is also true for `ssh host cmd`, a background job or an
+# agent with an open pipe, which never ends): the first read waits 5 seconds for a ref line, and
+# none means command-line use. A worktree run executes this checkout's copy of the script against
+# the pushed commit's files, so the helper scripts it calls (lint-*.sh, check-*.sh, the Python
+# checks) are the pushed commit's own: when a push changes them, one run mixes the two versions.
 #
-# As a pre-push hook (stdin is not a terminal), git sends one `<local ref> <local sha> <remote ref>
-# <remote sha>` line per ref. The checks then run on the commits being pushed, not on the checkout
-# (#856): a pushed sha other than HEAD is checked in a temporary detached worktree, removed on exit;
-# a deleted ref (all-zero local sha) is skipped; the checkout itself is checked only when HEAD is
-# pushed, or when stdin carries no ref line (command-line use, as before). A worktree check runs
-# this script's checks on that commit's files, so a commit that fails a check fails the push even
-# from a clean checkout of another branch.
+# Usage: scripts/pre-push-checks.sh [base]   (default origin/main; run `git fetch` first)
 # Tests: scripts/test-pre-push-checks.sh
 set -uo pipefail
 # git exports GIT_DIR to a hook run from a linked worktree. Drop git's repository variables, so
@@ -79,7 +86,10 @@ if [ -z "${PRE_PUSH_CHECKS_ROOT:-}" ] && [ ! -t 0 ]; then
   pushed=()
   check_head=0
   saw_line=0
-  while read -r pushed_ref lsha _; do
+  # Only the first read is bounded: git has written every line before it starts the hook.
+  first_read=(-t 5)
+  while read -r ${first_read[@]+"${first_read[@]}"} pushed_ref lsha _; do
+    first_read=()
     [ -n "${lsha:-}" ] || continue
     saw_line=1
     case "$lsha" in *[!0]*) ;; *) echo "pre-push-checks: $pushed_ref is a deletion, nothing to check"; continue ;; esac
@@ -91,6 +101,11 @@ if [ -z "${PRE_PUSH_CHECKS_ROOT:-}" ] && [ ! -t 0 ]; then
     fi
   done
   if [ "$saw_line" -eq 1 ]; then
+    if [ "$check_head" -eq 1 ] && [ -n "$(git status --porcelain)" ]; then
+      echo "pre-push-checks: HEAD (${head_sha:0:12}) is pushed but the checkout has uncommitted changes: checking the commit in a temporary worktree"
+      pushed+=("$head_sha")
+      check_head=0
+    fi
     worktrees=()
     cleanup() {
       local w
@@ -105,7 +120,7 @@ if [ -z "${PRE_PUSH_CHECKS_ROOT:-}" ] && [ ! -t 0 ]; then
     for sha in ${pushed[@]+"${pushed[@]}"}; do
       wt="$(mktemp -d)"
       worktrees+=("$wt")
-      echo "pre-push-checks: pushed ${sha:0:12} is not HEAD (${head_sha:0:12}): checking it in a temporary worktree"
+      echo "pre-push-checks: pushed ${sha:0:12} is checked in a temporary worktree"
       if git worktree add -q --detach "$wt/tree" "$sha" && (cd "$wt/tree" && PRE_PUSH_CHECKS_ROOT="$wt/tree" bash "$self" "${1:-origin/main}" < /dev/null); then
         :
       else

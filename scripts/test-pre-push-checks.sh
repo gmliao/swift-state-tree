@@ -3,7 +3,7 @@
 # (with the working tree's pre-push-checks.sh, lint-text-encoding.py, check-plan-index.sh and
 # check-turns-doc-blocks.py and solutions-index.py copied in),
 # against that HEAD as the base.
-# Usage: scripts/test-pre-push-checks.sh
+# Usage: scripts/test-pre-push-checks.sh [case-name-regex]   (default: every case)
 # The setup commands are strings eval'd in the clone, so their $variables are meant to stay
 # unexpanded here (SC2016), and `zeros` is read only inside them (SC2034).
 # shellcheck disable=SC2016,SC2034
@@ -12,6 +12,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fail=0
+only="${1:-}"
 
 # A PATH where `shellcheck` is a stub that isn't found-like (no version, exit 127), as on a host
 # without ShellCheck.
@@ -28,10 +29,13 @@ printf '#!/bin/sh\nexit 127\n' > "$noswift/swift"
 chmod +x "$noswift/swift"
 
 case_() {  # name, expected exit, required output line (grep -E), setup command (run in the clone),
-           # [PATH prefix], [GIT_DIR the checks inherit], [VAR=value the checks inherit]. The setup may
-           # write ref lines to "$stdinfile": they are the hook's stdin (else /dev/null).
-  local name=$1 want=$2 pattern=$3 setup=$4 prefix=${5:-} gitdir=${6:-} extraenv=${7:-} dir="$tmp/$1" out rc=0
-  local stdinfile="$tmp/$1.stdin"
+           # [PATH prefix], [GIT_DIR the checks inherit], [VAR=value the checks inherit],
+           # [stdin mode]. The setup may write ref lines to "$stdinfile": they are the hook's stdin
+           # (else empty). Mode "open-pipe": stdin is a pipe that stays open until the run ends,
+           # as for `ssh host cmd` or a background job, and the run is bounded by `timeout`.
+  local name=$1 want=$2 pattern=$3 setup=$4 prefix=${5:-} gitdir=${6:-} extraenv=${7:-} stdinmode=${8:-} dir="$tmp/$1" out rc=0
+  local stdinfile="$tmp/$1.stdin" done="$tmp/$1.done"
+  [ -z "$only" ] || [[ $1 =~ $only ]] || return 0
   git clone -q --shared --no-checkout "$root" "$dir" && git -C "$dir" checkout -q "$(git -C "$root" rev-parse HEAD)"
   cp "$root/scripts/pre-push-checks.sh" "$dir/scripts/pre-push-checks.sh"
   cp "$root/scripts/lint-text-encoding.py" "$dir/scripts/lint-text-encoding.py"
@@ -42,7 +46,13 @@ case_() {  # name, expected exit, required output line (grep -E), setup command 
   base="$(git -C "$dir" rev-parse HEAD)"
   (cd "$dir" && eval "$setup")
   [ -f "$stdinfile" ] || : > "$stdinfile"
-  out="$(cd "$dir" && env ${gitdir:+GIT_DIR="$gitdir"} ${extraenv:+"$extraenv"} PATH="${prefix:+$prefix:}$PATH" bash scripts/pre-push-checks.sh "$base" < "$stdinfile" 2>&1)" || rc=$?
+  if [ "$stdinmode" = open-pipe ]; then
+    # The holder keeps the pipe open until the run is over (the done file), then ends: no orphan.
+    out="$(cd "$dir" && timeout 240 env ${gitdir:+GIT_DIR="$gitdir"} ${extraenv:+"$extraenv"} PATH="${prefix:+$prefix:}$PATH" bash scripts/pre-push-checks.sh "$base" < <({ while [ ! -e "$done" ]; do sleep 1; done; } 2> /dev/null) 2>&1)" || rc=$?
+    : > "$done"
+  else
+    out="$(cd "$dir" && env ${gitdir:+GIT_DIR="$gitdir"} ${extraenv:+"$extraenv"} PATH="${prefix:+$prefix:}$PATH" bash scripts/pre-push-checks.sh "$base" < "$stdinfile" 2>&1)" || rc=$?
+  fi
   if [ "$rc" = "$want" ] && grep -qE -- "$pattern" <<<"$out"; then
     echo "ok   $name (exit $rc)"
   else
@@ -102,4 +112,13 @@ case_ pushed-unknown-sha 2 'is not a commit here' 'echo "refs/heads/x 1234567890
 # An exported GIT_INDEX_FILE (a hook run by `git commit` or a rebase) lists another tree than the
 # files on disk: the script drops it.
 case_ inherited-index-file 0 '^ok    shellcheck' 'echo "# probe" >> scripts/pre-push-checks.sh' '' '' "GIT_INDEX_FILE=$tmp/no-such.index"
+# Command-line use with a stdin that stays open (`ssh host cmd`, a background job, an agent without
+# `< /dev/null`) must not wait for an end of input that never comes: no ref line within the first
+# read's bound means command-line use, and the checkout is checked.
+case_ open-stdin-pipe-checks-checkout 1 '^FAIL  shellcheck' 'printf "#!/usr/bin/env bash\ncd /nonexistent\necho hi\n" > scripts/bad.sh' '' '' '' open-pipe
+# HEAD is pushed but the checkout has an uncommitted (here untracked) failing file: the pushed
+# commit is what is checked, in a temporary worktree.
+case_ pushed-dirty-head-checks-the-commit 0 '^pre-push-checks: passed \(the pushed commits' 'printf "#!/usr/bin/env bash\ncd /nonexistent\necho hi\n" > scripts/bad.sh; echo "refs/heads/x $(git rev-parse HEAD) refs/heads/x $zeros" > "$stdinfile"'
+# HEAD is a pushed commit that fails a check, and the checkout carries an uncommitted fix: the push fails.
+case_ pushed-dirty-head-commit-fails 1 '^FAIL  shellcheck' 'printf "#!/usr/bin/env bash\ncd /nonexistent\necho hi\n" > scripts/bad.sh && git add scripts/bad.sh && git -c user.name=t -c user.email=t@t commit -q -m bad && printf "#!/usr/bin/env bash\necho fixed\n" > scripts/bad.sh; echo "refs/heads/x $(git rev-parse HEAD) refs/heads/x $zeros" > "$stdinfile"'
 exit $fail
