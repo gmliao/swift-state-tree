@@ -164,10 +164,11 @@ public struct LandContext: Sendable {
     /// produced live, or read from a record in replay.
     private var resolverOutputs: [String: HeldResolverOutput] = [:]
     
-    /// The service for this handler invocation's draws, bound by the keeper at the call: a step
-    /// service written back to the land's generator when the step ends, or a detached copy for a
-    /// handler that replay doesn't repeat. `nil` in a context built without a keeper.
-    var stepRandom: DeterministicRngService? = nil
+    /// This handler call's scope, bound by the keeper at the call (#700 K2-E): the service for its
+    /// draws (a step service written back to the land's generator when the step ends, or a
+    /// detached copy for a handler that replay doesn't repeat) and the gate its outputs pass.
+    /// `nil` in a context built without a keeper, and in a resolver's context.
+    var stepScope: StepScope? = nil
 
     /// The land's deterministic random number generator.
     ///
@@ -199,7 +200,7 @@ public struct LandContext: Sendable {
     /// }
     /// ```
     public var random: DeterministicRngService {
-        if let stepRandom { return stepRandom }
+        if let stepScope { return stepScope.random }
         guard let rngService = services.get(DeterministicRngService.self) else {
             fatalError("LandContext.random: no generator. A keeper binds one for each handler call; a context built without a keeper needs a DeterministicRngService in services.")
         }
@@ -249,9 +250,12 @@ public struct LandContext: Sendable {
     ///
     /// This does NOT perform network I/O directly. The runtime will flush emitted events
     /// in a deterministic order at the end of the current tick.
+    ///
+    /// Emit from the handler itself. A context kept past its handler call (captured by a `Task`
+    /// the handler started) drops the event, and the keeper counts the drop.
     public func emitEvent(_ event: any ServerEventPayload, to target: EventTarget) {
         let anyEvent = AnyServerEvent(event)
-        emitEventHandler(anyEvent, target)
+        output { emitEventHandler(anyEvent, target) }
     }
 
     /// Emits a pre-built type-erased event (tests only). Land code emits typed events only
@@ -259,17 +263,24 @@ public struct LandContext: Sendable {
     /// PR 1b, #538). This keeps the path a framework bug would take: on a compressed encoding a
     /// payload that isn't a payload type is lost and ends the land with `.eventEncode` (#544).
     package func emitAnyServerEventForTesting(_ event: AnyServerEvent, to target: EventTarget) {
-        emitEventHandler(event, target)
+        output { emitEventHandler(event, target) }
     }
 
     /// Request an immediate sync at the end of the current tick (deterministic).
     public func requestSyncNow() {
-        requestSyncNowHandler()
+        output { requestSyncNowHandler() }
     }
 
     /// Request a broadcast-only sync at the end of the current tick (deterministic).
     public func requestSyncBroadcastOnly() {
-        requestSyncBroadcastOnlyHandler()
+        output { requestSyncBroadcastOnlyHandler() }
+    }
+
+    /// Runs an output through the call's scope: dropped once the call has returned. A context
+    /// without a scope runs it as is.
+    private func output(_ body: () -> Void) {
+        guard let stepScope else { return body() }
+        stepScope.pass(body)
     }
 
     // MARK: - Resolver Outputs

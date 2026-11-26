@@ -2170,8 +2170,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Execute handler synchronously (resolvers already executed above). CanJoin isn't
             // repeated from the record (a viewer joining a reevaluation keeper runs it live), so
             // its draws come from a copy of the land's generator, never written back.
-            ctx.stepRandom = detachedRandom()
-            decision = try canJoinHandler(model.state, session, ctx)
+            let (scoped, scope) = openStepScope(ctx, random: detachedRandom())
+            defer { scope.close() }
+            decision = try canJoinHandler(model.state, session, scoped)
         }
 
         // If denied, return early
@@ -3982,18 +3983,43 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         random: HandlerRandom = .step,
         _ body: (inout KeeperModel<State>, LandContext) throws -> R
     ) rethrows -> R {
-        var bound = ctx
         switch random {
         case .detached(let service):
-            bound.stepRandom = service
+            let (bound, scope) = openStepScope(ctx, random: service)
+            defer { scope.close() }
             return try body(&m, bound)
         case .step:
             let service = DeterministicRngService(continuing: m.landRandom, seed: behavior.config.landRandomSeed)
+            let (bound, scope) = openStepScope(ctx, random: service)
             // After the body's access to the model ends: it doesn't overlap.
-            defer { m.landRandom = service.generator }
-            bound.stepRandom = service
+            defer {
+                scope.close()
+                m.landRandom = service.generator
+            }
             return try body(&m, bound)
         }
+    }
+
+    /// Opens a handler call's scope (#700 K2-E) and binds it to a copy of `ctx`; the caller
+    /// closes it when the handler returns. Outputs made through the copy before the close go
+    /// where they go today, numbered at emit time; later ones are dropped and counted in
+    /// `lateStepOutputs`.
+    private func openStepScope(_ ctx: LandContext, random: DeterministicRngService) -> (LandContext, StepScope) {
+        let scope = StepScope(random: random, late: lateStepOutputs, assertsOnLateOutput: lateStepOutputAssertsForTesting)
+        var bound = ctx
+        bound.stepScope = scope
+        return (bound, scope)
+    }
+
+    /// Outputs dropped because their `LandContext` outlived its handler call (#700 K2-E).
+    package nonisolated let lateStepOutputs = LateStepOutputCounter()
+
+    /// Whether a late output stops a debug build. Tests that pin the drop turn it off.
+    private var lateStepOutputAssertsForTesting = true
+
+    /// Tests only: lets a late output be dropped and counted without stopping a debug build.
+    func setLateStepOutputAssertsForTesting(_ asserts: Bool) {
+        lateStepOutputAssertsForTesting = asserts
     }
 
     /// A service for a handler that replay doesn't repeat: a copy of the land's generator,
@@ -7020,7 +7046,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Execute optional read-only callback if provided
         // This callback is read-only and should NOT modify state
         if let handler = definition.lifetimeHandlers.syncHandler {
-            var ctx = makeContext(&model,
+            let ctx = makeContext(&model,
                 playerID: behavior.config.systemPlayerID,
                 clientID: behavior.config.systemClientID,
                 sessionID: behavior.config.systemSessionID,
@@ -7029,9 +7055,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             // The sync handler isn't repeated from the record, so it draws from a copy of the
             // land's generator, never written back.
-            ctx.stepRandom = detachedRandom()
+            let (scoped, scope) = openStepScope(ctx, random: detachedRandom())
+            defer { scope.close() }
             // Pass state as value (read-only) to emphasize that it should not be modified
-            handler(model.state, ctx)
+            handler(model.state, scoped)
         }
 
         // In-turn sync: a sync-only turn at the sync loop's own interval, unless a tick is due
@@ -7198,13 +7225,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Execute AfterFinalize handler (async cleanup)
         if let afterFinalizeHandler = definition.lifetimeHandlers.afterFinalize {
             let snapshot = model.state
-            var ctx = makeContext(&model,
+            let ctx = makeContext(&model,
                 playerID: behavior.config.systemPlayerID,
                 clientID: behavior.config.systemClientID,
                 sessionID: behavior.config.systemSessionID
             )
-            ctx.stepRandom = drainRandom
-            await afterFinalizeHandler(snapshot, ctx)
+            let (scoped, scope) = openStepScope(ctx, random: drainRandom)
+            defer { scope.close() }
+            await afterFinalizeHandler(snapshot, scoped)
         }
 
         // Notify transport that land has been destroyed
