@@ -3284,9 +3284,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Cancels the jobs whose ticket names the entry `generation` (a leave ended it). Only the
     /// ticket selects them, never the player or session key: a newer entry's jobs stay.
-    private func cancelActionJobs(ofEntryGeneration generation: Epoch) {
-        for (sequence, job) in model.actionJobs where job.ticket.entryGeneration == generation {
-            cancelActionJob(&model, &turnSide, sequence)
+    private func cancelActionJobs(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        ofEntryGeneration generation: Epoch
+    ) {
+        for (sequence, job) in m.actionJobs where job.ticket.entryGeneration == generation {
+            cancelActionJob(&m, &side, sequence)
         }
     }
 
@@ -3430,6 +3435,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// The leave flow's requests (#700 K1b-5b §4.3): each segment returns the await it needs.
+    private enum LeaveRequest {
+        case runOnLeaveResolvers(LeaveCapture, ResolverContext, LandContext)
+        /// The OnLeave input's turn, on a tickless land; L3 follows it.
+        case awaitInputTurn(sequence: Int64)
+        case done
+    }
+
+    /// What the leave carries across its awaits: the outgoing entry, read in L1.
+    private struct LeaveCapture {
+        let playerID: PlayerID
+        let clientID: ClientID
+        let sessionID: SessionID
+        let deviceID: String?
+        let isGuest: Bool
+        let metadata: [String: String]
+        let sequence: Int64
+        let resolvedAtTick: Int64
+    }
+
     /// Handles a player/client leaving the Land.
     ///
     /// If this is the player's last connection, the `OnLeave` handler is called.
@@ -3452,11 +3477,65 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     public func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?) async throws {
         try await ensureInitialized()
         await holds.at(.leave)
-        guard let session = model.players[playerID] else {
+        let request = withTurn { m, side, outputs in
+            leaveBegin(&m, &side, &outputs, playerID: playerID, clientID: clientID, sessionID: sessionID)
+        }
+        try await driveLeave(request)
+    }
+
+    /// The leave flow's driver (#700 K1b-5b §4.3): performs each request's await and runs the
+    /// next segment in a turn body. A segment never awaits.
+    private func driveLeave(_ first: LeaveRequest) async throws {
+        var request = first
+        while true {
+            switch request {
+            case .done:
+                return
+            case let .runOnLeaveResolvers(capture, resolverContext, landContext):
+                let ctx: LandContext
+                do {
+                    ctx = try await ResolverExecutor.executeResolvers(
+                        executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
+                        resolverContext: resolverContext,
+                        landContext: landContext,
+                        abandonment: resolverAbandonment(.onLeave)
+                    )
+                } catch {
+                    withTurn { m, side, outputs in
+                        leaveResolversFailed(&m, &side, &outputs, capture, error: error)
+                    }
+                    throw error
+                }
+                let resolverOutputs = ctx.getAllResolverOutputs()
+                request = withTurn { m, side, outputs in
+                    // The resolvers' outputs, and the tick they finished at.
+                    leaveAppend(&m, &side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: m.lastCommittedTickId)
+                }
+            case let .awaitInputTurn(sequence):
+                // Registered in the same segment as the append's: no suspension since it.
+                _ = try await awaitInputTurn(sequence: sequence)
+                // L3: skipped when the input turn throws, as before.
+                withTurn { m, _, outputs in scheduleDestroyIfNeeded(&m, &outputs) }
+                return
+            }
+        }
+    }
+
+    /// L1: the identity checks, the entry's removal, its services by value and its jobs'
+    /// cancel, and the OnLeave sequence. Without resolvers it goes on to L2 in this segment.
+    private func leaveBegin(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID?
+    ) -> LeaveRequest {
+        guard let session = m.players[playerID] else {
             if behavior.logger.logLevel <= .debug {
                 behavior.logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
             }
-            return
+            return .done
         }
 
         // Verify this is the correct client (should always match since we only allow one client per playerID)
@@ -3464,13 +3543,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if behavior.logger.logLevel <= .debug {
                 behavior.logger.debug("Leave called for player \(playerID.rawValue) with mismatched clientID: expected=\(session.clientID?.rawValue ?? "nil"), received=\(clientID.rawValue)")
             }
-            return
+            return .done
         }
         if let sessionID, let recorded = session.lastSessionID, recorded != sessionID {
             if behavior.logger.logLevel <= .debug {
                 behavior.logger.debug("Leave called for player \(playerID.rawValue) with mismatched session: expected=\(recorded.rawValue), received=\(sessionID.rawValue)")
             }
-            return
+            return .done
         }
 
         if behavior.logger.logLevel <= .debug {
@@ -3478,102 +3557,116 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // Since we only allow one client per playerID, always call OnLeave handler
-        let deviceID = session.deviceID
-        let isGuest = session.isGuest
-        let metadata = session.metadata
         // The OnLeave resolvers get the outgoing entry's services, read before it goes.
-        let outgoingServices = currentPlayerServices(of: playerID) ?? LandServices()
-        model.players.removeValue(forKey: playerID)
+        let outgoingServices = currentPlayerServices(of: playerID, entry: session) ?? LandServices()
+        m.players.removeValue(forKey: playerID)
         removePlayerServices(of: playerID, generation: session.generation)
         // Its pending actions can't be delivered any more (the ticket names this entry).
-        cancelActionJobs(ofEntryGeneration: session.generation)
+        cancelActionJobs(&m, &side, &outputs, ofEntryGeneration: session.generation)
 
         // In reevaluation mode, replay viewers never ran OnJoin so skip OnLeave (no game state to clean).
         guard definition.lifetimeHandlers.onLeave != nil, behavior.config.mode != .reevaluation else {
-            scheduleDestroyIfNeeded()
-            return
+            scheduleDestroyIfNeeded(&m, &outputs)
+            return .done
         }
 
         behavior.logger.info("Player \(playerID.rawValue) leaving, enqueuing OnLeave lifecycle item")
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
-        let sequence = outputCollector.takeNextSequence()
-
-        // Snapshot tick at request time; update after resolver completion for async determinism.
-        var resolvedAtTick = model.lastCommittedTickId
-        var resolverOutputs: [String: HeldResolverOutput] = [:]
+        let capture = LeaveCapture(
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: session.lastSessionID ?? behavior.config.systemSessionID,
+            deviceID: session.deviceID,
+            isGuest: session.isGuest,
+            metadata: session.metadata,
+            sequence: outputCollector.takeNextSequence(),
+            // Snapshot tick at request time; update after resolver completion for async determinism.
+            resolvedAtTick: m.lastCommittedTickId
+        )
 
         // Execute resolvers in parallel if any are declared
-        if !definition.lifetimeHandlers.onLeaveResolverExecutors.isEmpty {
-            var ctx = makeContext(&model,
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: session.lastSessionID ?? behavior.config.systemSessionID,
-                servicesOverride: outgoingServices,
-                deviceID: deviceID,
-                isGuest: isGuest,
-                metadata: metadata
-            )
-            let resolverContext = ResolverContext(
-                landContext: ctx,
-                actionPayload: nil,
-                eventPayload: nil,
-                currentState: model.state
-            )
-            do {
-                ctx = try await ResolverExecutor.executeResolvers(
-                    executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
-                    resolverContext: resolverContext,
-                    landContext: ctx,
-                    abandonment: resolverAbandonment(.onLeave)
-                )
-            } catch {
-                // The player is already removed: its OnLeave is dropped (its sequence is a gap
-                // replay steps over), and the player's game state stays behind.
-                ResolverDeadline.metrics.noteOnLeaveDropped()
-                behavior.logger.warning("OnLeave dropped: its resolvers failed", metadata: [
-                    "playerID": .string(playerID.rawValue),
-                    "error": .string("\(error)"),
-                ])
-                scheduleDestroyIfNeeded()
-                throw error
-            }
-            resolverOutputs = ctx.getAllResolverOutputs()
-            resolvedAtTick = model.lastCommittedTickId
+        guard !definition.lifetimeHandlers.onLeaveResolverExecutors.isEmpty else {
+            return leaveAppend(&m, &side, &outputs, capture, resolverOutputs: [:], resolvedAtTick: capture.resolvedAtTick)
         }
+        let ctx = makeContext(&m,
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: capture.sessionID,
+            servicesOverride: outgoingServices,
+            deviceID: capture.deviceID,
+            isGuest: capture.isGuest,
+            metadata: capture.metadata
+        )
+        let resolverContext = ResolverContext(
+            landContext: ctx,
+            actionPayload: nil,
+            eventPayload: nil,
+            currentState: m.state
+        )
+        return .runOnLeaveResolvers(capture, resolverContext, ctx)
+    }
 
+    /// The OnLeave resolvers failed. The player is already removed: its OnLeave is dropped (its
+    /// sequence is a gap replay steps over), and the player's game state stays behind.
+    private func leaveResolversFailed(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ capture: LeaveCapture,
+        error: any Error
+    ) {
+        ResolverDeadline.metrics.noteOnLeaveDropped()
+        behavior.logger.warning("OnLeave dropped: its resolvers failed", metadata: [
+            "playerID": .string(capture.playerID.rawValue),
+            "error": .string("\(error)"),
+        ])
+        scheduleDestroyIfNeeded(&m, &outputs)
+    }
+
+    /// L2: the OnLeave input's append. A tickless land waits for its input turn (L3 follows it);
+    /// a tick land is done.
+    private func leaveAppend(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ capture: LeaveCapture,
+        resolverOutputs: [String: HeldResolverOutput],
+        resolvedAtTick: Int64
+    ) -> LeaveRequest {
         // Same synchronous segment as the append: a drain that started during the resolvers
         // has taken the pending inputs and runs the destroy handlers, so this OnLeave is dropped
         // (its sequence is a gap replay steps over). The player was already removed.
         guard !isDraining else {
             behavior.logger.warning("OnLeave dropped: the land started closing during its resolvers", metadata: [
-                "playerID": .string(playerID.rawValue),
+                "playerID": .string(capture.playerID.rawValue),
             ])
-            return
+            return .done
         }
 
         let pendingItem = PendingItem.lifecycle(
             PendingLifecycleItem(
-                sequence: sequence,
+                sequence: capture.sequence,
                 kind: .leave,
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: session.lastSessionID ?? behavior.config.systemSessionID,
-                deviceID: deviceID,
-                isGuest: isGuest,
-                metadata: metadata,
+                playerID: capture.playerID,
+                clientID: capture.clientID,
+                sessionID: capture.sessionID,
+                deviceID: capture.deviceID,
+                isGuest: capture.isGuest,
+                metadata: capture.metadata,
                 heldResolverOutputs: resolverOutputs,
                 resolvedAtTick: resolvedAtTick
             )
         )
-        model.pendingItems.append(pendingItem)
+        m.pendingItems.append(pendingItem)
 
         // A tickless land applies it now, in an input turn the caller waits for.
         if definition.lifetimeHandlers.tickHandler == nil {
-            _ = try await awaitInputTurn(sequence: sequence)
+            return .awaitInputTurn(sequence: capture.sequence)
         }
 
-        scheduleDestroyIfNeeded()
+        scheduleDestroyIfNeeded(&m, &outputs)
+        return .done
     }
 
     /// Shuts the land down now: the players still in it are cleared without OnLeave, the

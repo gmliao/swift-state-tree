@@ -965,6 +965,44 @@ func testDestroyWhenEmptyResetsTimerOnRejoin() async throws {
     #expect((await keeper.currentState()).spawnedTaskCount == 0, "the cancelled timer destroyed nothing")
 }
 
+/// A leave with an OnLeave handler arms the timer from its last segment: after the input turn on
+/// a tickless land (L3), at the append on a tick land (L2) (#700 K1b-5b §4.3). The other tests'
+/// lands have no OnLeave, so their leaves arm it in L1.
+@Test("DestroyWhenEmpty: the last leave arms the timer when the land has an OnLeave handler", arguments: [false, true])
+func testDestroyWhenEmptyArmsAfterOnLeave(tick: Bool) async throws {
+    let definition = tick
+        ? Land("destroy-after-onleave-tick", using: DemoLandState.self) {
+            Rules { OnLeave { state, _ in state.ticks += 1 } }
+            Lifetime {
+                Tick(every: .seconds(3600)) { _, _ in }
+                // Never fires in the test: the timer itself is checked (#264).
+                DestroyWhenEmpty(after: .seconds(3600)) { _, _ in }
+            }
+        }
+        : Land("destroy-after-onleave", using: DemoLandState.self) {
+            Rules { OnLeave { state, _ in state.ticks += 1 } }
+            Lifetime {
+                DestroyWhenEmpty(after: .seconds(3600)) { _, _ in }
+            }
+        }
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState(),
+        autoStartLoops: false
+    )
+    let playerID = PlayerID("p1"), clientID = ClientID("c1")
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: SessionID("s1"))
+    if tick { await keeper.stepTickOnce() }
+    #expect(await keeper.destroyTimerForTesting() == nil)
+
+    try await keeper.leave(playerID: playerID, clientID: clientID)
+    let timer = try #require(await keeper.destroyTimerForTesting(), "the last leave arms the timer")
+    #expect(!timer.isCancelled)
+    if tick { await keeper.stepTickOnce() }
+    #expect((await keeper.currentState()).ticks == 1, "OnLeave ran")
+    timer.cancel()
+}
+
 @Test("DestroyWhenEmpty does not destroy when players are present")
 func testDestroyWhenEmptyDoesNotDestroyWithPlayers() async throws {
     let definition = Land(
