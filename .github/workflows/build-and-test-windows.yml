@@ -102,16 +102,23 @@ jobs:
     - name: Remove the restored build links
       shell: bash
       run: |
+        # The tool follows the link's type (the tag `dir /AL` prints), never "rmdir failed": `del` on a
+        # <SYMLINKD> or <JUNCTION> deletes the top-level files inside its target.
         for link in debug release; do
           path=".build/$link"
           win="$(cygpath -w "$path")"
-          if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+          entry="$(cmd //c "dir /AL .build" 2>/dev/null | tr -d '\015' | grep -E "<SYMLINK> +$link( |$)" || true)"
+          if [ -n "$entry" ]; then
+            # A file-type symlink: rmdir refuses it, del removes just the link.
+            if cmd //c del //q "$win" >/dev/null 2>&1; then
+              echo "removed $path (file-type link): $entry"
+            else
+              echo "::warning::$path is a file-type link that del could not remove: $entry"
+            fi
+          elif [ ! -e "$path" ] && [ ! -L "$path" ]; then
             echo "$path: absent"
           elif cmd //c rmdir //q "$win" >/dev/null 2>&1; then
             echo "removed $path"
-          elif cmd //c "dir /AL /B .build" 2>/dev/null | tr -d '\015' | grep -qx "$link" \
-            && cmd //c del //q "$win" >/dev/null 2>&1; then
-            echo "removed $path (a file-type link, which rmdir cannot remove; its target is left alone)"
           else
             echo "::warning::$path exists and is not a link or an empty directory; kept, SwiftPM may warn about it"
             cmd //c "dir /A .build" 2>&1 | tr -d '\015' | grep -E "debug|release" || true
