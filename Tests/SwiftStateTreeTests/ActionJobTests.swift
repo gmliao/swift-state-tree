@@ -266,6 +266,34 @@ struct ActionJobTests {
         #expect(await counts(keeper) == [0, 0])
     }
 
+    @Test("A job whose land closed during its resolvers is refused at delivery, not queued")
+    func jobRefusedAtDeliveryAfterTheLandClosed() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let amount = ActionJobGates.freshKey()
+        let sequence = try await submitPending(keeper, amount)
+        guard await ActionJobGates.gate(amount).waitUntilEntered() else { return }
+        // Closed without starting the drain, so the job isn't cancelled: its completion's
+        // delivery check is what refuses it.
+        await keeper.markDrainingForTesting(cause: .forceShutdown)
+        ActionJobGates.gate(amount).release()
+        try await expectRejection(.landClosed) { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == 0, "delivered after the land closed")
+    }
+
+    @Test("A tick land's resolver-free action on a closed land is refused at delivery, not queued")
+    func plainActionRefusedAtDeliveryOnAClosedLand() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        await keeper.markDrainingForTesting(cause: .forceShutdown)
+        await #expect(throws: LandInputRejection.landClosed) {
+            _ = try await keeper.submitAction(plain(5), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == 0, "queued after the land closed")
+    }
+
     @Test("A late reader of a rejected job gets the rejection, not an empty response")
     func lateReaderFindsRejection() async throws {
         let keeper = await makeKeeper()

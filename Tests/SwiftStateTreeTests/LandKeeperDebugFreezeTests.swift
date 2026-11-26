@@ -317,6 +317,31 @@ struct LandKeeperDebugFreezeTests {
         #expect(await eventually { await keeper.currentState().events == 3 })
     }
 
+    @Test("Tickless: a client event that waits out a freeze while the land closes is refused, not applied")
+    func ticklessClientEventRefusedWhenLandClosesDuringFreeze() async throws {
+        let keeper = LandKeeper<DebugFreezeKeeperState>(
+            definition: makeTicklessDefinition(),
+            initialState: DebugFreezeKeeperState()
+        )
+        try await keeper.join(playerID: player, clientID: client, sessionID: session)
+
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(10)))
+        // Past the driver's check, held at the freeze.
+        let event = Task { [player, client, session] in
+            try await keeper.handleClientEvent(
+                AnyClientEvent(DebugFreezeBumpEvent(amount: 3)),
+                playerID: player, clientID: client, sessionID: session
+            )
+        }
+        await settleScheduler()
+        // The land closes while the event waits; the intake's own segment must see it.
+        await keeper.markDrainingForTesting(cause: .forceShutdown)
+        await keeper.debugResume(generation: 1)
+        await #expect(throws: LandInputRejection.landClosed) { try await event.value }
+        await settleScheduler()
+        #expect(await keeper.currentState().events == 0, "applied after the land closed")
+    }
+
     @Test("The drain has a deadline: a stuck resolver makes freeze return false, and resume releases")
     func drainDeadline() async throws {
         let keeper = LandKeeper<DebugFreezeKeeperState>(
