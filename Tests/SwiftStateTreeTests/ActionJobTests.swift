@@ -266,6 +266,72 @@ struct ActionJobTests {
         #expect(await counts(keeper) == [0, 0])
     }
 
+    @Test("A cancelled caller's job takes its sequence before it is refused, so the numbers stay in intake order")
+    func cancelledCallerTakesItsSequence() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let first = ActionJobGates.freshKey(), cancelled = ActionJobGates.freshKey(), last = ActionJobGates.freshKey()
+        let before = try await submitPending(keeper, first)
+        // A caller whose task is cancelled before it submits: the intake takes the number, then
+        // refuses the job (D5's order).
+        let refused = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await keeper.submitAction(gated(cancelled), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        await #expect(throws: CancellationError.self) { _ = try await refused.value }
+        let after = try await submitPending(keeper, last)
+        #expect(after == before + 2, "the cancelled caller's job took no sequence")
+        ActionJobGates.gate(first).release()
+        ActionJobGates.gate(last).release()
+        try await settle(keeper)
+    }
+
+    @Test("A job the keeper cancelled is answered once: its resolvers' completion doesn't deliver or reject it again")
+    func keeperCancelledJobIsAnsweredOnce() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let amount = ActionJobGates.freshKey()
+        let sequence = try await submitPending(keeper, amount)
+        guard await ActionJobGates.gate(amount).waitUntilEntered() else { return }
+        try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
+        try await expectRejection(.senderSuperseded) { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
+        #expect(await keeper.supersededSenderRejections == 1)
+        // The resolvers end after the cancel: the completion finds the job cancelled and stops.
+        ActionJobGates.gate(amount).release()
+        try await settle(keeper)
+        await keeper.stepTickOnce()
+        #expect(await keeper.supersededSenderRejections == 1, "the completion rejected the cancelled job again")
+        #expect(await keeper.currentState().total == 0)
+    }
+
+    @Test("A job whose land closed during its resolvers is refused at delivery, not queued")
+    func jobRefusedAtDeliveryAfterTheLandClosed() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let amount = ActionJobGates.freshKey()
+        let sequence = try await submitPending(keeper, amount)
+        guard await ActionJobGates.gate(amount).waitUntilEntered() else { return }
+        // Closed without starting the drain, so the job isn't cancelled: its completion's
+        // delivery check is what refuses it.
+        await keeper.markDrainingForTesting(cause: .forceShutdown)
+        ActionJobGates.gate(amount).release()
+        try await expectRejection(.landClosed) { try await keeper.awaitActionResult(sequence: sequence).boundaryValue }
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == 0, "delivered after the land closed")
+    }
+
+    @Test("A tick land's resolver-free action on a closed land is refused at delivery, not queued")
+    func plainActionRefusedAtDeliveryOnAClosedLand() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        await keeper.markDrainingForTesting(cause: .forceShutdown)
+        await #expect(throws: LandInputRejection.landClosed) {
+            _ = try await keeper.submitAction(plain(5), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == 0, "queued after the land closed")
+    }
+
     @Test("A late reader of a rejected job gets the rejection, not an empty response")
     func lateReaderFindsRejection() async throws {
         let keeper = await makeKeeper()
