@@ -188,6 +188,11 @@ private func envelope<A: ActionPayload>(_ action: A) -> ActionEnvelope {
     ActionEnvelope(typeIdentifier: String(describing: A.self), payload: AnyCodable(action))
 }
 
+/// A freeze deadline for tests that hold in-flight work and assert that the freeze waits for it:
+/// far above any runner stall, so only the release ends the wait. The suite's time limit bounds a
+/// hang. The deadline itself is tested in "The drain has a deadline" (#904).
+private let freezeWithoutDeadline: Duration = .seconds(3600)
+
 // MARK: - Tests
 
 @Suite("LandKeeper debug freeze (#79)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
@@ -215,12 +220,14 @@ struct LandKeeperDebugFreezeTests {
 
         let freezeDone = DoneFlag()
         let freeze = Task {
-            let drained = await keeper.debugFreeze(generation: 1, timeout: .seconds(10))
+            let drained = await keeper.debugFreeze(generation: 1, timeout: freezeWithoutDeadline)
             await freezeDone.set()
             return drained
         }
-        await settleScheduler()
+        // The freeze is waiting on the held tick: it registered its waiter with the work in flight.
+        await keeper.waitUntilFreezeWaitsForTesting()
         #expect(await freezeDone.isDone == false, "freeze returned while a tick was still running")
+        #expect(await keeper.debugInFlightWorkForTesting() == 1)
 
         await keeper.installHolds(nil)
         record.release()
@@ -280,12 +287,14 @@ struct LandKeeperDebugFreezeTests {
 
         let freezeDone = DoneFlag()
         let freeze = Task {
-            let drained = await keeper.debugFreeze(generation: 1, timeout: .seconds(10))
+            let drained = await keeper.debugFreeze(generation: 1, timeout: freezeWithoutDeadline)
             await freezeDone.set()
             return drained
         }
-        await settleScheduler()
+        // The freeze is waiting on the held tick: it registered its waiter with the work in flight.
+        await keeper.waitUntilFreezeWaitsForTesting()
         #expect(await freezeDone.isDone == false, "freeze returned while a resolver was in flight")
+        #expect(await keeper.debugInFlightWorkForTesting() == 1)
 
         await DebugFreezeGatedResolver.gate.open()
         #expect(await freeze.value)
