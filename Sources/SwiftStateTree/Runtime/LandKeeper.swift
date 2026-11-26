@@ -2706,7 +2706,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         m.actionSlots[sequence] = KeeperActionSlot()
         m.actionJobs[sequence] = KeeperActionJob(item: item, ticket: ticket, input: input)
-        side.actions.insertJobTask(sequence, abandonment: abandonment)
+        let box = side.actions.insertJobTask(sequence, abandonment: abandonment)
         m.actionJobsStarted += 1
         // A copy, so the task doesn't hop to the keeper for it: with no hook it returns at once.
         let holds = self.holds
@@ -2726,7 +2726,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             await self?.completeAction(sequence: sequence, resolved: resolved)
         }
-        side.actions.setJobTask(sequence, task)
+        box.install(task)
         checkActionTables(&m, &side, #function)
     }
 
@@ -2934,12 +2934,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// rejection or resolver error. Read once; the slot is removed after, and a second read (or
     /// one for a sequence that had no job) throws `ActionResultUnavailable`.
     ///
-    /// Cancelling the caller cancels the job's task directly (no actor hop) and marks the job,
+    /// Cancelling the caller cancels the job's task through its box (no actor hop) and marks the job,
     /// so a completion that hasn't run yet fails with `CancellationError` instead of delivering.
     package func awaitActionResult(sequence: Int64) async throws -> InputOutcome {
-        let side = turnSide.actions.jobTasks[sequence]
-        let task = side?.task
-        let callerCancelled = side?.callerCancelled
+        let box = turnSide.actions.jobTask(sequence)
+        let callerCancelled = box?.callerCancelled
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<InputOutcome, any Error>) in
                 guard let slot = model.actionSlots[sequence], turnSide.actions.slotWaiters[sequence] == nil else {
@@ -2950,7 +2949,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // completion can't run in between.
                 if Task.isCancelled {
                     callerCancelled?.set()
-                    task?.cancel()
+                    box?.cancel()
                 }
                 if let result = slot.result {
                     model.actionSlots.removeValue(forKey: sequence)
@@ -2967,7 +2966,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } onCancel: {
             // Synchronous: once `cancel()` returns, a completion that hasn't run yet won't deliver.
             callerCancelled?.set()
-            task?.cancel()
+            box?.cancel()
         }
     }
 
@@ -3000,9 +2999,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } catch {
             outcome = .failure(error)
         }
-        let task = side.actions.jobTasks[sequence]?.task
+        let box = side.actions.jobTask(sequence)
         fillActionSlot(&m, &side, sequence, with: outcome)
-        task?.cancel()
+        box?.cancel()
         checkActionTables(&m, &side, #function)
     }
 
@@ -3107,7 +3106,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func waitForActionJobsForTesting() async {
         // Captured before the first await: the tables change while this waits.
         for (sequence, side) in turnSide.actions.jobTasks {
-            let task = side.task, abandonment = side.abandonment
+            let task = side.installedTask, abandonment = side.abandonment
             await task?.value
             await abandonment.waitUntilEnded()
             // The release is its own turn (`onEnded` hops to the keeper); wait for it without

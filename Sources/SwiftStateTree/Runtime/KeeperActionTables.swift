@@ -25,14 +25,51 @@ final class ActionJobCallerCancellation: @unchecked Sendable {
 /// A job's references, beside the model until K5 (the task, the abandonment) and K2's
 /// `JobCancellation` (the caller's flag). Keyed as `actionJobs`; the two are inserted and
 /// removed together.
-struct KeeperActionJobTask {
-    var task: Task<Void, Never>?
+///
+/// The task handle's home (#700 K1b-5 rev 2.5 D16): the box is made when the job registers, its
+/// start installs the task, and a cancel that comes first is kept, so the start that follows
+/// cancels the task it installs. The install and its check, and the cancel, each decide under
+/// one lock, and `cancel()` on the task runs after the lock is released: a task's cancellation
+/// handlers can run synchronously inside `cancel()`, and one that reads this box must not find
+/// the lock held. The shape is a `CancellationTokenSource` with its task.
+final class KeeperActionJobTask: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    private var cancelled = false
     /// Its resolvers' abandonment (the caller stopped waiting while they still run). The job
     /// keeps its place in the caps until they end.
     let abandonment: ResolverAbandonment
     /// The caller was cancelled while waiting: the completion fails with `CancellationError`
     /// instead of delivering, unless it ran first.
     let callerCancelled = ActionJobCallerCancellation()
+
+    init(abandonment: ResolverAbandonment) {
+        self.abandonment = abandonment
+    }
+
+    /// The installed task, if any.
+    var installedTask: Task<Void, Never>? {
+        lock.withLock { task }
+    }
+
+    /// Installs the job's started task; cancels it at once when a cancel came first.
+    func install(_ started: Task<Void, Never>) {
+        let cancelNow = lock.withLock { () -> Bool in
+            task = started
+            return cancelled
+        }
+        if cancelNow { started.cancel() }
+    }
+
+    /// Cancels the installed task, or, before the install, marks the box so the install cancels.
+    func cancel() {
+        let installed = lock.withLock { () -> Task<Void, Never>? in
+            if let task { return task }
+            cancelled = true
+            return nil
+        }
+        installed?.cancel()
+    }
 }
 
 /// Tests: what a slot watcher waits for, a fill or a waiter, and on which slot.
@@ -62,14 +99,11 @@ struct KeeperActionTables {
     /// The job's handle and abandonment, if it is registered.
     func jobTask(_ sequence: Int64) -> KeeperActionJobTask? { jobTasks[sequence] }
 
-    /// Registers a job's references, with no task yet (its start installs it, `setJobTask`).
-    mutating func insertJobTask(_ sequence: Int64, abandonment: ResolverAbandonment) {
-        jobTasks[sequence] = KeeperActionJobTask(task: nil, abandonment: abandonment)
-    }
-
-    /// Installs the started task of a registered job.
-    mutating func setJobTask(_ sequence: Int64, _ task: Task<Void, Never>) {
-        jobTasks[sequence]?.task = task
+    /// Registers a job's box, with no task yet; returns it for the start to install into.
+    mutating func insertJobTask(_ sequence: Int64, abandonment: ResolverAbandonment) -> KeeperActionJobTask {
+        let box = KeeperActionJobTask(abandonment: abandonment)
+        jobTasks[sequence] = box
+        return box
     }
 
     /// Removes a job's references and returns its removal waiters, whose resume the caller
