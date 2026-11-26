@@ -1,6 +1,6 @@
 # #901: a tick land's failure before its first tick ends frame 0's inputs
 
-Rev 1. Issue #901. Plan and probe only; code after Review's GO.
+Rev 2. Issue #901. Review GO on rev 1 (two nits, folded in here).
 
 ## Problem
 
@@ -38,7 +38,7 @@ The increment of `nextTickId` and the tick turn share one synchronous segment in
 
 The other candidate reads give the same answer at every site today:
 - **`m.nextTickId == 0`** differs inside any tick turn, before its commit. Every site there passes `true` itself. It would be wrong for a future site there that took the defaults, because that tick's handler hadn't run yet.
-- **`m.lastCommittedTickId < 0`** (J2's hand fix in #896) differs only inside tick N's turn, for N > 0, before its commit. The same sites, the same reasoning.
+- **`m.lastCommittedTickId < 0`** (J2's hand fix in #896) differs only inside a turn that has taken frame N > 0, before its commit: tick N's turn, and the shutdown turn between ticks (`shutdownTurnBetweenTicksBody`, which increments `nextTickId` and commits in its own body). Their sites pass `true` themselves. The same reasoning.
 - **A tick-in-progress marker or the recorder's open turn** would add keeper state, or depend on a recorder being attached. The failure's position is reported with or without a recorder.
 
 I chose `lastCommittedTickId < frame` because it is replay's own condition, written in the keeper's terms. It stays right for a future site anywhere in a tick turn.
@@ -87,10 +87,11 @@ Controls, inside tick 0 with no tick before it: the fold report (`endsInputs == 
 
 1. The rule removed: the before-the-first-tick cases fail on the position and on replay.
 2. The rule reads `m.lastCommittedTickId <= frame`: the after-the-first-tick cases and the joins-read control fail. They would claim the inputs ended in a committed frame.
-3. The rule without `!isTickless`: the tickless refusal tests that pin `endsInputs` nil on a pass that applied inputs fail. If none does, the implementation adds one.
-4. J2's hand fix restored and the rule removed: J2 passes and the other sites fail. This shows the sites need the rule, not more hand fixes.
+3. J2's hand fix restored and the rule removed: J2 passes and the other sites fail. This shows the sites need the rule, not more hand fixes.
 
-`m.nextTickId == 0` and `m.lastCommittedTickId < 0` are equivalent mutants today, as the section above explains. No test separates them, and none should be written for a site that doesn't exist.
+Equivalent mutants today, with no test that can separate them:
+- `m.nextTickId == 0` and `m.lastCommittedTickId < 0`, as the section above explains.
+- The rule without `!isTickless` (Review asked for a tickless case that kills it; there is none). On a tickless land `ended` also needs `appliedInputs`, and every site that passes `appliedInputs: true` also passes `endsInputs: true`: the join report, `applyInputs`' failure and `finishApply`. So `(endsInputs || x) && appliedInputs` equals `endsInputs && appliedInputs` at every call. `!isTickless` stays because a tickless land's frame is always 0 and counts by pass, so "the frame hasn't committed" means nothing there. A future tickless site that passes `appliedInputs: true` without `endsInputs` would make it observable, and would need its own test.
 
 ## Where it goes
 
