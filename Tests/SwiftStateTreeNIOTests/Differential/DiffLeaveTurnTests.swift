@@ -5,7 +5,8 @@
 // that turn ran moved the turn's sync phase into a sync-only turn after the cycle's `endSync`,
 // so the record's output after the leave's pass read `syncOnly` instead of `tick`. The row pins
 // the order with `awaitDisconnectForwards` (and a flush before the leave, against the writer's
-// back-pressure). This test checks the pinned row's output at the flake's index.
+// back-pressure). This test checks the pinned row's first output after the leave's pass (at
+// the flake's index, `syncOutputs[3]`, then).
 //
 // Its other half held a legacy cycle over the leave's turn and checked the latch. Since #546 L2a
 // an in-turn `syncNow()` is a sync-only turn, so no legacy cycle can be held there; that half is
@@ -32,13 +33,22 @@ extension DifferentialHarness {
 
         @Test("The pinned row keeps the leave's sync in its turn")
         func pinnedRowKeepsTheLeaveSyncInItsTurn() async throws {
-            // The flake was `syncOutputs[3]`: sequence 3, after pass 3, `tick` then `syncOnly`.
+            // The flake was the leave pass's first output (`syncOutputs[3]`): sequence 3, after
+            // pass 3, `tick` then `syncOnly`. Found by its pass, not by its index, so an output
+            // that a deferral moves or merges earlier in the stream (#908) doesn't hide it.
             let pinned = try #require(diffScenarios.first { $0.name == "disconnect-during-keeper-join" })
-            let pinnedOutputs = try syncOutputs(try await runChecked(pinned, cell))
-            try #require(pinnedOutputs.count > 3, "the pinned row has \(pinnedOutputs.count) sync outputs")
+            let result = try await runChecked(pinned, cell)
+            let pinnedOutputs = try syncOutputs(result)
+            // The run's back-pressure deferrals, when there were any: a deferral can move or
+            // merge an output (#908).
+            let diagnostics = result.diagnostics.summary.isEmpty ? "" : " (\(result.diagnostics.summary))"
+            let leaveOutput = try #require(
+                pinnedOutputs.first { $0.afterPass == leavePass },
+                "the pinned row has no output after the leave's pass: \(pinnedOutputs)\(diagnostics)"
+            )
             #expect(
-                pinnedOutputs[3] == SyncOutput(kind: "tick", afterPass: leavePass, sequence: 3),
-                "the pinned row's syncOutputs[3]: \(pinnedOutputs[3])"
+                leaveOutput == SyncOutput(kind: "tick", afterPass: leavePass, sequence: 3),
+                "the pinned row's first output after the leave's pass: \(leaveOutput)\(diagnostics)"
             )
         }
 

@@ -10,7 +10,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 @testable import SwiftStateTreeNIO
 
 extension DifferentialHarness {
@@ -206,6 +206,134 @@ extension DifferentialHarness {
             #expect(DiffGolden.corruption(of: record) != nil, "an edited record view")
         }
 
+        // Two tests, not one with arguments: the gate script names each test `name()` in the
+        // results, which a parameterized test's `name(land:)` doesn't match.
+        @Test("The harness waits for the writer's sync-cycle drain before the tick land's tick (#917)")
+        func harnessTickWaitsForTheWriter() async throws {
+            try await harnessSyncWaitsForTheWriter(land: .tick)
+        }
+
+        @Test("The harness waits for the writer's sync-cycle drain before the tickless land's sync (#917)")
+        func harnessSyncWaitsForTheWriter() async throws {
+            try await harnessSyncWaitsForTheWriter(land: .tickless)
+        }
+
+        private func harnessSyncWaitsForTheWriter(land: DiffLandKind) async throws {
+            // The writer can't be held from here: the transport's `send` hands each frame to its
+            // connection in a task, so the writer's element retires before any connection-level
+            // gate. The harness's own seam is the drain observer, called by each drain it waits
+            // for, before the wait. (A drain that calls the observer and skips the wait passes
+            // this check; only the sweep's deferral count, which depends on timing, would see it.)
+            let seen = DrainObservation()
+            let site: DiffDrainSite = land == .tick ? .tick : .beforeSync
+            let scenario = DiffScenario(
+                name: "self-check-writer-drain",
+                cells: .all,
+                steps: [
+                    .connect("A", session: "s-a"),
+                    .join("A", player: "pa"),
+                    .bumpUnsynced("A", requestID: "bump-a", amount: 1),
+                    .tickUnsynced,
+                    .check("the next drain is observed") { run in
+                        let deferred = await run.adapter.syncSkipCounts().outboundBacklog
+                        let outputs = await run.adapter.syncOutputDigestCountForTesting
+                        run.drainObserverForTesting = { run, reached in
+                            guard reached == site, !seen.recorded else { return }
+                            // Nothing of the next step has run yet: no phase was deferred, and no
+                            // phase planned an output (the count moves inside the phase, in the
+                            // keeper's turn, so this doesn't depend on the writer's timing).
+                            seen.record(
+                                deferredSince: await run.adapter.syncSkipCounts().outboundBacklog - deferred,
+                                outputsSince: await run.adapter.syncOutputDigestCountForTesting - outputs
+                            )
+                        }
+                    },
+                    // The step that runs a sync (and on a tick land, a tick first).
+                    land == .tick ? .tick : .settleJobs,
+                    .liveCheckpoint,
+                ],
+                outcomes: [:],
+                lifecycle: ["pa": [.join, .leave]]
+            )
+            let cell = DiffCell(sync: .inTurn, encoding: .json, land: land)
+            let result = try await DiffRun.make(scenario, cell: cell).execute()
+            let observed = try #require(seen.value, "the step ran no writer drain at \(site)")
+            #expect(observed.deferredSince == 0 && observed.outputsSince == 0, "the step's phase ran before the drain: \(observed)")
+            #expect(result.diagnostics.syncPhasesDeferredByBackPressure == 0, "\(result.diagnostics.summary)")
+            // And the step's sync delivered the bump afterwards.
+            let frames = try #require(result.live.connections["A"]?.frames)
+            #expect(frames.contains { DiffValue.canonicalText($0.decoded).contains("\"/counter\"") }, "A never got the bump's update")
+        }
+
+        @Test("A kick's leave and a join's sync request wait for the writer's drain too (#917)")
+        func keeperPhasesWaitForTheWriter() async throws {
+            // second-session: A2's join kicks A (a keeper leave), then asks for A2's join sync turn.
+            let scenario = try #require(diffScenarios.first { $0.name == "second-session" })
+            let events = DrainEvents()
+            let run = try await DiffRun.make(scenario, cell: DiffCell(sync: .inTurn, encoding: .json, land: .tickless))
+            // The observer lives on this run only, and goes with it.
+            run.drainObserverForTesting = { _, site in events.append("drain \(site)") }
+            // Registered after `make`, as a scenario's armed hold is: it must run after the
+            // harness's body at the same point (HoldRegistry runs a point's bodies in
+            // registration order, one after another), so the writer has drained when it runs.
+            let writer = await run.adapter.outboundWriter
+            run.holds.keeper.on(.leave) {
+                events.append("scenario leave, writer drained: \(writer.backlog.syncCycleElements == 0)")
+            }
+            run.holds.adapter.on(.joinSyncRequested) {
+                events.append("scenario joinSync, writer drained: \(writer.backlog.syncCycleElements == 0)")
+            }
+            let result = try await run.execute()
+            let all = events.all
+            let leaves = all.indices.filter { all[$0].hasPrefix("scenario leave") }
+            let joinSyncs = all.indices.filter { all[$0].hasPrefix("scenario joinSync") }
+            #expect(!leaves.isEmpty && !joinSyncs.isEmpty, "\(all)")
+            for index in leaves {
+                #expect(index > 0 && all[index - 1] == "drain keeperLeave", "\(all)")
+                #expect(all[index].hasSuffix("true"), "\(all)")
+            }
+            for index in joinSyncs {
+                #expect(index > 0 && all[index - 1] == "drain joinSyncRequest", "\(all)")
+                #expect(all[index].hasSuffix("true"), "\(all)")
+            }
+            #expect(result.diagnostics.syncPhasesDeferredByBackPressure == 0, "\(result.diagnostics.summary)")
+        }
+
+        @Test("The sweep flags a deferral outside the forcing scenario, and a forcing scenario without one (#917)")
+        func sweepChecksDeferrals() async throws {
+            let base = try await baseRun()
+            let forcing = try #require(diffScenarios.first { $0.name == "join-during-writer-backlog" })
+            let other = try #require(diffScenarios.first { $0.name == "two-players" })
+            #expect(DiffSweep.scenariosForcingBackPressure == [forcing.name])
+            func sweep(forcing forcingCount: Int, other otherCount: Int) async -> DiffSweep.Report {
+                await DiffSweep.run(
+                    scenarios: [forcing, other], retired: [], expected: [], toolchain: "self-check",
+                    execute: { scenario, _ in
+                        var result = base
+                        result.diagnostics.syncPhasesDeferredByBackPressure = scenario.name == forcing.name ? forcingCount : otherCount
+                        return result
+                    },
+                    readGolden: { name in
+                        DiffGoldenFile(
+                            scenario: name, cell: "",
+                            recordedWith: DiffRecordedWith(commit: "self-check", toolchain: "self-check"),
+                            result: base
+                        )
+                    }
+                )
+            }
+            let clean = await sweep(forcing: 1, other: 0)
+            #expect(clean.issues.isEmpty, "\(clean.issues)")
+
+            let flagged = await sweep(forcing: 0, other: 1)
+            let forcingCells = forcing.cells.cells.count, otherCells = other.cells.cells.count
+            let stopped = flagged.issues.filter { $0.contains("no sync phase was deferred, in a scenario that forces") }
+            let stray = flagged.issues.filter { $0.contains("in a scenario that doesn't force the writer's back-pressure") }
+            #expect(stopped.count == forcingCells && stopped.allSatisfy { $0.hasPrefix(forcing.name) }, "\(flagged.issues)")
+            #expect(stray.count == otherCells && stray.allSatisfy { $0.hasPrefix(other.name) }, "\(flagged.issues)")
+            #expect(flagged.issues.count == forcingCells + otherCells, "\(flagged.issues)")
+        }
+
         @Test("A cell that throws is reported, and the sweep still compares and reports every later cell")
         func sweepGoesOnAfterAThrow() async throws {
             let base = try await baseRun()
@@ -323,6 +451,62 @@ extension DifferentialHarness {
             }
             #expect(Set(lifecycles) == ["teardown-during-keeper-join pa #548"], "recorded lifecycles: \(Set(lifecycles).sorted())")
         }
+
+        @Test("A run reports the sync phases the writer's back-pressure deferred, outside the comparison (#908)")
+        func runReportsBackPressureDeferrals() async throws {
+            let scenario = try #require(diffScenarios.first { $0.name == "second-session" })
+            let cell = DiffCell(sync: .inTurn, encoding: .json, land: .tickless)
+            let quiet = try await DiffRun.make(scenario, cell: cell).execute()
+            #expect(quiet.diagnostics.syncPhasesDeferredByBackPressure == 0)
+            #expect(quiet.diagnostics.summary.isEmpty)
+
+            // One deferral: the first join's sync turn finds the writer busy once.
+            let run = try await DiffRun.make(scenario, cell: cell)
+            let busy = OneBusyRead()
+            _ = run.holds.adapter.on(.joinSyncRequested, arrival: 1) { busy.arm() }
+            await run.adapter.setWriterBackPressureOverrideForTesting { busy.take() }
+            let deferred = try await run.execute()
+            #expect(deferred.diagnostics.syncPhasesDeferredByBackPressure == 1)
+            #expect(deferred.diagnostics.summary == "sync phases deferred by the writer's back-pressure: 1")
+            // Not part of the result's identity, and not in its encoding.
+            var copy = quiet
+            copy.diagnostics = deferred.diagnostics
+            #expect(copy == quiet)
+            let encoded = String(decoding: try JSONEncoder().encode(copy), as: UTF8.self)
+            #expect(!encoded.contains("diagnostics"))
+        }
     }
+}
+
+/// What the harness's drain observer saw, once.
+private final class DrainObservation: @unchecked Sendable {
+    struct Value: CustomStringConvertible {
+        let deferredSince: Int
+        let outputsSince: Int
+        var description: String { "deferred since \(deferredSince), outputs since \(outputsSince)" }
+    }
+    private let lock = NSLock()
+    private var stored: Value?
+    var value: Value? { lock.withLock { stored } }
+    var recorded: Bool { value != nil }
+    func record(deferredSince: Int, outputsSince: Int) {
+        lock.withLock { if stored == nil { stored = Value(deferredSince: deferredSince, outputsSince: outputsSince) } }
+    }
+}
+
+/// What ran at the harness's drains and at a scenario's holds, in order.
+private final class DrainEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [String] = []
+    var all: [String] { lock.withLock { events } }
+    func append(_ event: String) { lock.withLock { events.append(event) } }
+}
+
+/// A writer that reads busy once after `arm()`.
+private final class OneBusyRead: @unchecked Sendable {
+    private let lock = NSLock()
+    private var armed = false
+    func arm() { lock.withLock { armed = true } }
+    func take() -> Bool { lock.withLock { defer { armed = false }; return armed } }
 }
 #endif
