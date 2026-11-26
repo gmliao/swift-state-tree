@@ -864,7 +864,7 @@ private final class PatternNameFinder: SyntaxVisitor {
 private let modelHoldsRepositoryRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-/// The text helper's self-test (scripts/lint-model-holds.py, K1b-5a step 2), ported.
+/// The self-test of the text helper this rule replaced (K1b-5a step 2), ported.
 private let modelHoldsFixture = #"""
 actor LandKeeper<State> {
     private var model: KeeperModel<State>
