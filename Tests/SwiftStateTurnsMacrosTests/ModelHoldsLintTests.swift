@@ -34,7 +34,10 @@
 // Limits: a call through another receiver (`other.f()`, a port's witness that calls back into
 // the keeper) isn't followed; the bare-port rule makes every port call in a hold go through
 // `callOut`, whose checks catch that re-entry at run time. A member is matched by name, not by
-// resolved declaration, and a local is a port by how it's bound, anywhere in its member. The run-time check in the debug test suite stays the
+// resolved declaration. The port tracker reads bindings, not types: a local is a port by how
+// it's bound, anywhere in its member, and it doesn't see a port that comes out of an operator
+// (`transport ?? boundSyncRequester`), out of a tuple (`let (gate, port) = …`), or through a
+// port passed to a helper that isn't a keeper member (`audit(port)`). The run-time check in the debug test suite stays the
 // proof for the paths the tests run. Once the keeper's model moves into the turn core (#700
 // K2-2), a re-entry goes through the core's borrow rule instead; K2-2 decides whether this rule
 // moves to the facade's forwarding or is retired.
@@ -76,7 +79,8 @@ enum ModelHoldsLint {
     static func isMarker(_ comment: String) -> Bool { hasReason(comment, after: marker) }
 
     /// The bare-port rule's marker (#884's review, agreed with the step-2 work): a port call on
-    /// its line, in a holder or a member a holder reaches, is allowed without `callOut`. Allowed
+    /// its line is allowed without `callOut`. The line is the port access itself (in a holder or
+    /// a member a holder reaches), or a holder's call of a member that reaches the port. Allowed
     /// in Sources/, with a reason that says why the call can't go through `callOut`.
     static let portMarker = "// lint-" + "allow: bare-port:"
 
@@ -155,6 +159,8 @@ enum ModelHoldsLint {
             for use in uses.uses where !use.inCallOut {
                 guard let reached = use.targets.sorted(by: { $0.name < $1.name }).first(where: graph.callsPort.contains) else { continue }
                 let line = holder.converter.location(for: use.at.positionAfterSkippingLeadingTrivia).line
+                // A marker on the holder's call allows that call, as one on the port access does.
+                guard !(portMarked[holder.path]?.contains(line) ?? false) else { continue }
                 let path = ([holder.name] + graph.portPath(from: reached)).joined(separator: " → ")
                 findings.insert(Finding(path: holder.path, line: line,
                                         text: "in \(holder.name): `\(reached)` calls a port while the hold is open; go through callOut: \(path)"))
@@ -550,15 +556,20 @@ final class UseVisitor: SyntaxVisitor {
     }
 
     override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
-        if calleeName(node.calledExpression) == "callOut" {
-            // A port call inside the closure goes through the call-out's checks.
+        if isKeeperCallOut(node) {
+            // A port call in the closure's statements goes through the call-out's checks (flush,
+            // check, call, check). Its other arguments and its capture list are evaluated before
+            // them, so they're checked as any other code under the hold.
             walk(node.calledExpression)
             for argument in node.arguments where argument.expression.as(ClosureExprSyntax.self) == nil {
                 walk(argument.expression)
             }
-            callOutDepth += 1
-            for (_, closure) in labelledClosures(of: node) { walk(closure) }
-            callOutDepth -= 1
+            for (_, closure) in labelledClosures(of: node) {
+                if let capture = closure.signature?.capture { walk(capture) }
+                callOutDepth += 1
+                walk(closure.statements)
+                callOutDepth -= 1
+            }
             return .skipChildren
         }
         guard isTaskCall(node) else { return .visitChildren }
@@ -574,6 +585,29 @@ final class UseVisitor: SyntaxVisitor {
     }
 
     override func visit(_ node: AwaitExprSyntax) -> SyntaxVisitorContinueKind { .skipChildren }
+
+    /// A capture with no initializer (`[model]`, `[count]`) reads the name it captures when the
+    /// closure is made.
+    override func visit(_ node: ClosureCaptureSyntax) -> SyntaxVisitorContinueKind {
+        guard node.initializer == nil, node.name.tokenKind != .keyword(.self) else { return .visitChildren }
+        let name = node.name.text
+        guard !Shadowing.binds(name, above: Syntax(node), within: root) else { return .visitChildren }
+        if name == "model" {
+            modelReferences.append(Syntax(node))
+        } else if graph.byName[name] != nil {
+            uses.append(MemberUse(at: Syntax(node), targets: graph.readTargets(name), inCallOut: callOutDepth > 0))
+        }
+        return .visitChildren
+    }
+
+    /// `callOut(…)` or `self.callOut(…)` naming the keeper's member, not a local of that name.
+    private func isKeeperCallOut(_ node: FunctionCallExprSyntax) -> Bool {
+        guard calleeName(node.calledExpression) == "callOut", graph.byName["callOut"] != nil else { return false }
+        if let reference = node.calledExpression.as(DeclReferenceExprSyntax.self) {
+            return !Shadowing.binds("callOut", above: Syntax(reference), within: root)
+        }
+        return true
+    }
 
     override func visit(_ node: MemberAccessExprSyntax) -> SyntaxVisitorContinueKind {
         guard callOutDepth == 0, let base = node.base, PortNames.holdsPort(base, portNames) else { return .visitChildren }
@@ -976,6 +1010,10 @@ struct ModelHoldsLintTests {
         // A task's other arguments are evaluated under the hold too.
         ("Task(priority: level(model.count)) { self.touches() }", 1),
         ("Task(priority: level(count)) {}", 1),
+        // A capture with no initializer reads what it names, under the hold.
+        ("Task { [model] in _ = model }", 1),
+        ("_ = { [count] in count }", 1),
+        ("let model = 0\n_ = { [model] in model }", 0),
         // A closure that runs during the hold, and a use after `await`.
         ("[1].forEach { _ in touches() }", 1),
         ("await touches()", 0),
@@ -1051,10 +1089,14 @@ struct ModelHoldsLintTests {
         ("_ = callOut(&m) { _ in syncs }", 0),
         ("_ = callOut(&m, { _ in transport?.note() })", 0),
         ("_ = callOut(&m) { _ in 0 }\nnote()", 1),
+        // The call-out's capture list runs before its checks; a local `callOut` isn't the keeper's.
+        ("_ = callOut(&m) { [n = transport?.count] _ in n }", 1),
+        ("func callOut(_ f: () -> Void) { f() }\ncallOut { transport?.note() }", 1),
         // Not a member access on the port, a task's body, and a marked call in a member.
         ("_ = transport == nil", 0),
         ("Task { transport?.note() }", 0),
         ("closeGate()", 0),
+        ("note() \(ModelHoldsLint.portMarker) outside a body until the port moves into callOut", 0),
     ])
     func barePort(body: String, expected: Int) {
         let source = """
