@@ -107,7 +107,7 @@ struct StepScopeTests {
         #expect(await keeper.syncRequestTicksForTesting() == syncsBefore, "the late sync requests reached no table")
     }
 
-    @Test("The sync handler's context passes its outputs in the call and drops them once kept past it")
+    @Test("The sync handler's outputs are dropped and counted in the call (K2-E2), and late once kept past it")
     func syncHandlerContextIsScoped() async throws {
         let kept = KeptContexts()
         let definition = Land("step-scope-sync", using: StepScopeState.self) {
@@ -130,10 +130,12 @@ struct StepScopeTests {
         let syncsBefore = await keeper.syncRequestTicksForTesting()
         await keeper.runSyncLoopIterationForTesting()
         #expect(keeper.lateStepOutputs.count == 0)
+        // In the call, its outputs are dropped and counted (#700 K2-E2): no turn would take them.
+        #expect(keeper.readOnlyHandlerOutputsDropped.count == 2)
         let eventsInCall = await keeper.emittedEventTicksForTesting()
         let syncsInCall = await keeper.syncRequestTicksForTesting()
-        #expect(eventsInCall.count == eventsBefore.count + 1, "the in-call emit landed")
-        #expect(syncsInCall.count == Set(syncsBefore + syncsInCall).count && !syncsInCall.isEmpty, "the in-call sync request landed")
+        #expect(eventsInCall == eventsBefore, "the in-call emit reached no list")
+        #expect(syncsInCall == syncsBefore, "the in-call sync request reached no table")
 
         let ctx = try #require(kept.last)
         ctx.emitEvent(StepScopeNotice(n: -1), to: .all)

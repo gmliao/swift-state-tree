@@ -161,10 +161,11 @@ struct AfterFinalizeRaceTests {
 
         // AfterFinalize resumed off the keeper while the actor was held in CanJoin's segment.
         #expect(box.handlerWait == .success)
-        // Its emit didn't reach the collector: only CanJoin's two events are there, and the
-        // emit was dropped and counted.
-        #expect(await keeper.emittedEventTicksForTesting().count == 2)
+        // Its emit didn't reach the collector, and was dropped and counted. CanJoin's two events
+        // are dropped and counted too (#700 K2-E2), so the collector holds nothing.
+        #expect(await keeper.emittedEventTicksForTesting().isEmpty)
         #expect(keeper.destroyHandlerOutputsDropped.count == 1)
+        #expect(keeper.readOnlyHandlerOutputsDropped.count == 2)
         #expect(keeper.lateStepOutputs.count == 0)
     }
 }

@@ -83,6 +83,7 @@ enum KeeperCensus {
             "actor.lateStepOutputAssertsForTesting": .testHook,
             "actor.lateStepOutputs": .outside(.stepScope),
             "actor.destroyHandlerOutputsDropped": .outside(.stepScope),
+            "actor.readOnlyHandlerOutputsDropped": .outside(.stepScope),
             "actor.model": .container,
             "actor.nextDrainStartedWaiterForTesting": .replaced(by: "K2"),
             "actor.nextFailureWaiterForTesting": .replaced(by: "K2"),
