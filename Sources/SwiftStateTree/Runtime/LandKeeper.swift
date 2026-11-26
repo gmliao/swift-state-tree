@@ -5692,7 +5692,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// What the sync stream records of the current turn's sync phase, nil when it isn't
     /// recorded: the turn's kind (`tick` or `syncOnly`) and where the phase reads the state.
     private func inTurnSyncRecording(_ m: KeeperModel<State>) -> InTurnSyncRecording? {
-        guard recordsSyncStream else { return nil }
+        guard recordsSyncStream else { return nil } // lint-allow: bare-port: a body calls this only inside callOut; the old runTurnOutputs outside a body until part 2
         return InTurnSyncRecording(turnKind: m.inTurnSyncTurnKind, position: syncReadPosition(m))
     }
 
