@@ -89,6 +89,11 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
 
 `Input` and `Effect` are `Sendable`, not `PlainData` (Machine.swift:10–12). So a non-plain value can cross an await inside an effect and its result input: the model never stores it.
 
+**`.tickDue` in K2-1's code** (2026-11-26) is `.tickDue(fold:foldStart:syncsInTurn:)`:
+- It has no tick ID: the step's `tickStart` takes it from the model, as `runTick` does.
+- `syncsInTurn` is the driver's read of the attached transport's mode, made outside the step, as `runTick` makes it outside its body. A step that read it would make a port call under the hold. K2-2's binding token carries it instead.
+- The loop epoch of §4.6 comes with K2-2's drivers.
+
 ### 4.2 Entries (parent §3.3, unchanged)
 
 Each row of parent §3.3's table becomes one forwarding method on the facade. The table is the contract, and §6.2's K2 tests pin each row. Three notes for the implementation:
@@ -496,6 +501,7 @@ Each line is checked in K2-1's PR body, with its anchor at the PR's base. The an
 11. **The lend under the core (§4.4).** K2-1's step-local side carries `KeeperSequenceLease`; the differential's eventful path checks that the step's events keep their emit-time numbers and that `unlentCount` stays 0 on both paths.
 12. **The fold on `.tickDue` (§4.5).** `.tickDue` carries the fold and its start instant; K2-1's tokenless-step test (§4.2) drives it, and the fold report matches the keeper's path.
 13. **A staged start's first step (#914 round 1).** A task a step stages runs at the flush, from nonisolated code, so it inherits no isolation (SE-0420): work that must come after the step (the failed land's `landDidFail`, then the drain) starts with a call into the owner, as `runFailureTeardown` does on the keeper. K2-1's step-local side keeps that shape for every staged start, and the differential reruns `teardownWaitsForTheFailingTurn`'s scenario (a join, then a queued failure) on the core path.
+14. **Open, for K2-2: the frame's isolation on the core** (Review, 2026-11-26). In K2-1, `KeeperTurnFrame.run` is isolated to its caller (`#isolation`). On the core path that is nil statically: the step is a synchronous model method the core calls. So the step checks the owner's executor once at entry (`KeeperSideStore.preconditionOnOwner`), and `withSide` checks it per borrow. When K2-2 wires the core, revisit passing the core's `TurnActor` as `isolation:` explicitly.
 9. **Nit:** §7.2's overlap wording is limited to the optional-chain form, and the citation of K1b-5's D2 names its branch and commit. Done in draft 7.
 
 ## 17. Draft 6 → draft 7

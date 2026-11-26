@@ -230,6 +230,9 @@ struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
     /// keeper's executor only, written by the refusing entries and `withTurn`'s depth count, and
     /// read by a body only to end the land through its own model.
     let reentrySentinel: KeeperReentrySentinel
+    /// A core-driven keeper's turn side (#700 K2-1, `KeeperSideStore`), the second stated
+    /// exception to the advice above. Nil on the keeper, which borrows its own stored side.
+    var sideStore: KeeperSideStore? = nil
 }
 
 /// What the behavior's fixed fields decide (#700 K1b-5 move, step 1): the reads a turn body made
