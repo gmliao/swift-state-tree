@@ -8,7 +8,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
@@ -29,6 +29,12 @@ private actor AttemptConnection: WebSocketConnection {
 
     private(set) var frames: [Data] = []
     private(set) var closed = false
+    /// Arrives once per close; open, so a close never waits on it (`waitUntilClosed`).
+    private let closeSignal: TestGate = {
+        let gate = TestGate()
+        gate.open()
+        return gate
+    }()
     private var frameWaiters: [Int: FrameWaiter] = [:]
     private var nextWaiterID = 0
 
@@ -41,7 +47,16 @@ private actor AttemptConnection: WebSocketConnection {
         }
     }
 
-    func close() async throws { closed = true }
+    func close() async throws {
+        closed = true
+        await closeSignal.arrive()
+    }
+
+    /// Waits for the connection's close, on the event, not by polling. `false` after the
+    /// gate's hang bound.
+    func waitUntilClosed() async -> Bool {
+        await closeSignal.waitForArrivals(1)
+    }
 
     var messages: [TransportMessage] {
         frames.compactMap { try? JSONDecoder().decode(TransportMessage.self, from: $0) }
@@ -530,5 +545,63 @@ struct LandRouterJoinAttemptTests {
         #expect(!(await newerConnection.closed))
         #expect(await h.players == ["p1"])
         #expect(await h.keeper.playerCount() == 1)
+    }
+}
+
+@Suite("LandRouter: a failed join's final frame carries its connection (#911)", .timeLimit(.minutes(1)))
+struct LandRouterFlipFailureGenerationTests {
+    @Test("A superseded failed join's final frame doesn't close a new connection that took its ID")
+    func finalFrameSparesAReusedID() async throws {
+        let h = try await AttemptHarness.make()
+        let a = SessionID("s-a"), a2 = SessionID("s-a2")
+        // A's join stays pending (no flip), and its second deferred frame fails it.
+        await h.adapter.setJoinFlipHeldForTesting(true)
+        await h.adapter.setDeferredInboundLimitForTesting(count: 1, bytes: 1 << 20)
+        let first = await h.connect(a)
+        let oldGeneration = try #require(await h.transport.connectionGeneration(for: a))
+        // The router returns after the admission; the flip wait runs in a Task of its own.
+        try await h.startJoin(a, requestID: "join-a", player: "p1").value
+        #expect(await h.router.isJoinPending(a), "admitted, waiting for its flip")
+
+        let failed = await h.hold(at: .flipFailed)
+        let action = try JSONEncoder().encode(TransportMessage.action(
+            requestID: "act", action: ActionEnvelope(typeIdentifier: "Anything", payload: AnyCodable([String: Int]()))
+        ))
+        await h.router.onMessage(action, from: a)
+        await h.router.onMessage(action, from: a)
+        #expect(await failed.waitForArrivals(1), "A's join failed (inbound overflow) and its flip wait is held")
+
+        // While the router holds A's failure: a newer join of p1 supersedes A, A's 4017 goes
+        // out, A's client goes, and a new connection takes the ID before the router sends.
+        // A's close is the test's precondition: A must be ended when the router sends, so
+        // its final frame takes the ended branch (F1 pins the 4017's order).
+        await h.router.installHolds(nil)
+        _ = await h.connect(a2)
+        try await h.startJoin(a2, requestID: "join-a2", player: "p1").value
+        #expect(await first.waitUntilClosed(), "A was closed by its supersede")
+        await h.transport.handleDisconnection(sessionID: a)
+        let reused = AttemptConnection()
+        #expect(await h.transport.handleConnection(sessionID: a, connection: reused, authInfo: nil) == .accepted)
+        let reusedGeneration = try #require(await h.transport.connectionGeneration(for: a))
+        #expect(reusedGeneration != oldGeneration)
+
+        // The router sends A's JOIN_INBOUND_OVERFLOW and its close, for A's old connection,
+        // then hands A's cleanup to the adapter's membership queue: that arrival is the event.
+        // (A2's flip stays held, so a wait for no pending flip would wait for its budget.)
+        let cleanup = TestGate()
+        cleanup.open()
+        await h.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.membershipQueued) { await cleanup.arrive() }.hook)
+        failed.open()
+        #expect(await cleanup.waitForArrivals(1), "the router's failure path reached A's cleanup")
+        await h.adapter.waitForOutboundIdleForTesting()
+        // No close marker is on the new connection's queue: a frame for it still goes out.
+        let dropsBefore = await h.transport.framesDroppedAfterCloseMarker
+        await h.transport.sendSessionFrames([SessionFrame(data: Data("hello".utf8), sessionID: a, connectionGeneration: reusedGeneration)])
+        #expect(await h.transport.framesDroppedAfterCloseMarker == dropsBefore, "the old connection's close reached the new one")
+        await h.transport.flushSessionQueues()
+        #expect(await reused.frames == [Data("hello".utf8)])
+        #expect(await !reused.closed, "the old connection's close closed the new one")
+        await h.adapter.installHolds(nil)
+        await h.keeper.forceShutdown()
     }
 }

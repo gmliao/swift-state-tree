@@ -1400,6 +1400,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // Same segment as the check: unbind, so the disconnect the close causes doesn't reach
         // the adapter again; the cases below clean it up themselves.
         endAttempt(sessionID)
+        await holds.at(.flipFailed)
         logger.warning(failure == .timeout ? "Join timed out" : "Join failed before it completed", metadata: [
             "sessionID": .string(sessionID.rawValue),
             "reason": .string("\(failure)"),
@@ -1789,6 +1790,10 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     /// A flip wait after its join flipped (the JoinResponse is sent), before the phase becomes
     /// `.joined` (#69).
     case flipWaitResumed
+    /// A flip wait whose join failed, after it read the connection generation and ended the
+    /// attempt, before it sends the failure (#911): another join of the player can supersede
+    /// the session, and its client reconnect under the ID, before the final frame goes out.
+    case flipFailed
     /// The join budget's timer fired, before it checks the attempt (#104).
     case joinBudgetExpired
     /// A join after its land was looked up or created, before the attempt binds the session
