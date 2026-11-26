@@ -33,6 +33,20 @@
 #                isn't unsafe, only a release-build slowdown: every use of that var pays the
 #                runtime exclusivity check. Debug builds, and release builds with
 #                `-Xswiftc -DTURNS_EXCLUSIVITY_CHECKED`, keep the checks.
+#   facade       in the file that declares `enum KeeperOwner` (the keeper's facade, #700 K2 plan
+#                §3; no file declares it before K2-2, so the rule is inert until then), on
+#                `LandKeeper`'s declaration and its extensions there:
+#                - every `public` or `package` entry (func, var, subscript; not init) is one
+#                  forwarding expression: `live.…` (`return`, `try` and `await` before it are
+#                  fine), a `get` accessor holding one, or a `switch owner` whose every arm is
+#                  one forwarding expression to a name its pattern binds. An entry that does
+#                  other work fails, a guard or an `if` before the forward included. A file
+#                  may have as many unforwarded entries as FACADE_EXCEPTIONS lists for it;
+#                - every `assumeIsolated` in the file is `live.assumeIsolated`;
+#                - no stored `var` member besides `owner`, and no `nonisolated(unsafe)` member.
+#                Known limits: a check moved into a helper that the forward calls, or a
+#                `let` of a class with mutable state, passes; so does an extension of the
+#                facade in another file.
 #
 # A deliberate site (a test that shows at run time what a rule refuses) carries
 # `// lint-allow: turns-<rule>: <reason>` on its line, or on any line of a multi-line header. A
@@ -52,6 +66,11 @@ set -euo pipefail
 ISOLATED_BOUNDARIES='
 Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift 6 the keeper calls the adapter inside its turn (the settle phase included), on their shared executor
 Sources/SwiftStateTreeTransport/TransportAdapter.swift 3 the adapter submits sync streams into its keeper, on their shared executor
+'
+
+# Public or package entries of the facade that don't forward, per file, with their counts and
+# the reason each may (the `facade` rule; empty until K2-2 declares the facade).
+FACADE_EXCEPTIONS='
 '
 
 # Test files that carry allow markers, with their counts.
@@ -330,6 +349,7 @@ lint() {  # root
   rm -f "$findings.counts"
 
   unchecked_state >> "$findings"
+  facade_rule "$heads" "$corpus" >> "$findings"
 
   if [ -s "$findings" ]; then
     sort "$findings"
@@ -392,12 +412,193 @@ unchecked_state() {
     END { if (stored == 0) print path ": [unchecked-state] no stored var of TurnCore found: the rule matches nothing" }' "$file"
 }
 
+# facade, over the file that declares `enum KeeperOwner` (K2 plan §3): the facade is
+# `LandKeeper`'s declaration and extensions there. Inert until K2-2 declares the owner.
+facade_rule() {  # heads corpus
+  # shellcheck disable=SC2016 # awk program, not shell
+  LINT_FACADE="$FACADE_EXCEPTIONS" awk -F'\t' '
+    function rest(n,   t, i) { t = $0; for (i = 1; i < n; i++) sub(/^[^\t]*\t/, "", t); return t }
+    function last(n) { sub(/.*\./, "", n); return n }
+    function trim(t) { sub(/^[ \t\n]+/, "", t); sub(/[ \t\n]+$/, "", t); return t }
+    function braces(code,   i, c, d) {
+      d = 0
+      for (i = 1; i <= length(code); i++) { c = substr(code, i, 1); if (c == "{") d++; else if (c == "}") d-- }
+      return d
+    }
+    # The index of the bracket that closes the one at `open` (any of ( [ {), or 0.
+    function closing(t, open,   i, c, d) {
+      d = 0
+      for (i = open; i <= length(t); i++) {
+        c = substr(t, i, 1)
+        if (c == "(" || c == "[" || c == "{") d++
+        else if (c == ")" || c == "]" || c == "}") { d--; if (d == 0) return i }
+      }
+      return 0
+    }
+    # The index of the first `{` outside parentheses and brackets, or 0.
+    function firstBrace(t,   i, c, d) {
+      d = 0
+      for (i = 1; i <= length(t); i++) {
+        c = substr(t, i, 1)
+        if (c == "(" || c == "[") d++
+        else if (c == ")" || c == "]") d--
+        else if (c == "{" && d == 0) return i
+      }
+      return 0
+    }
+    # One statement: no `;` and no new line at depth 0 that starts another. A line that starts
+    # with `.` or a closing bracket, or follows one that ends in an operator, continues it.
+    function single(t,   i, c, d, r, f, b) {
+      d = 0
+      for (i = 1; i <= length(t); i++) {
+        c = substr(t, i, 1)
+        if (c == "(" || c == "[" || c == "{") d++
+        else if (c == ")" || c == "]" || c == "}") d--
+        else if (d == 0 && (c == ";" || c == "\n")) {
+          r = trim(substr(t, i + 1)); if (r == "") return 1
+          if (c == ";") return 0
+          f = substr(r, 1, 1); b = trim(substr(t, 1, i - 1)); b = substr(b, length(b), 1)
+          if (index(".)]}", f) == 0 && (b == "" || index("(,.=+*/&|?:[-", b) == 0)) return 0
+        }
+      }
+      return 1
+    }
+    function forwardsTo(t, names,   p) {
+      p = "^((return|try[?!]?|await)[ \t\n]+)*(" names ")[ \t\n]*\\."
+      return single(t) && t ~ p
+    }
+    # Each arm of `switch owner` is one forwarding expression to a name its pattern binds.
+    function armsForward(t,   n, L, i, d, line, arms, a, k, txt, colon, j, c, pd, pat, stmt, names, m) {
+      n = split(t, L, "\n"); d = 0; arms = 0
+      for (i = 1; i <= n; i++) {
+        line = trim(L[i])
+        if (d == 0 && line ~ /^(case[ \t]|default[ \t]*:|@unknown[ \t]+default)/) { arms++; arm[arms] = line }
+        else if (line != "") { if (arms == 0) return 0; arm[arms] = arm[arms] "\n" line }
+        d += braces(L[i])
+      }
+      if (arms == 0) return 0
+      for (a = 1; a <= arms; a++) {
+        txt = arm[a]; colon = 0; pd = 0
+        for (j = 1; j <= length(txt); j++) {
+          c = substr(txt, j, 1)
+          if (c == "(") pd++; else if (c == ")") pd--; else if (c == ":" && pd == 0) { colon = j; break }
+        }
+        if (colon == 0) return 0
+        pat = substr(txt, 1, colon - 1); stmt = trim(substr(txt, colon + 1)); names = ""
+        if (pat ~ /^case[ \t]+let[ \t]/) {
+          m = pat; sub(/^[^(]*\(/, "", m); sub(/\).*/, "", m); gsub(/[ \t]/, "", m); gsub(/,/, "|", m); names = m
+        } else {
+          m = pat
+          while (match(m, /(let|var)[ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
+            k = substr(m, RSTART, RLENGTH); sub(/^(let|var)[ \t]+/, "", k)
+            names = names (names == "" ? "" : "|") k; m = substr(m, RSTART + RLENGTH)
+          }
+        }
+        if (names == "" || !forwardsTo(stmt, names)) return 0
+      }
+      return 1
+    }
+    function forwards(t,   b, o, e) {
+      b = trim(t)
+      if (b ~ /^get([ \t\n]+(async|throws))*[ \t\n]*\{/) {
+        o = index(b, "{"); e = closing(b, o)
+        if (e == 0 || trim(substr(b, e + 1)) != "") return 0
+        return forwards(substr(b, o + 1, e - o - 1))
+      }
+      if (b ~ /^switch[ \t]+(self\.)?owner[ \t\n]*\{/) {
+        o = index(b, "{"); e = closing(b, o)
+        if (e == 0 || trim(substr(b, e + 1)) != "") return 0
+        return armsForward(substr(b, o + 1, e - o - 1))
+      }
+      return forwardsTo(b, "(self\\.)?live")
+    }
+    function finish(   o, e) {
+      o = firstBrace(entText); e = o ? closing(entText, o) : 0
+      if (!o || !e || !forwards(substr(entText, o + 1, e - o - 1))) {
+        k = ++unforwarded[path]; unforwardedAt[path, k] = entLine
+      }
+      ent = 0
+    }
+    FNR == 1 { pass++ }
+    pass == 1 {
+      if ($4 == "enum" && last($5) == "KeeperOwner") facadeFile[$1] = 1
+      next
+    }
+    {
+      path = $1; n = $2; code = rest(4)
+      if (path != lastPath) { depth = 0; fbody = 0; pendingF = 0; ent = 0; varPending = 0; lastPath = path }
+      if (!(path in facadeFile)) next
+      # Clause 2: every assumeIsolated in the file is live.assumeIsolated.
+      t = code
+      while (match(t, /[A-Za-z0-9_.]*assumeIsolated([^A-Za-z0-9_]|$)/)) {
+        recv = substr(t, RSTART, RLENGTH); sub(/\.?assumeIsolated.*/, "", recv)
+        if (recv !~ /(^|\.)live$/) { print path ":" n ": [facade] assumeIsolated in the facade file is live.assumeIsolated only"; break }
+        t = substr(t, RSTART + RLENGTH)
+      }
+      before = depth
+      if (varPending) {
+        if (code !~ /^[ \t]*\{/ || code ~ /^[ \t]*\{[ \t]*(didSet|willSet)/)
+          print path ":" varLine ": [facade] the facade has no stored var besides owner"
+        varPending = 0
+      }
+      if (ent) {
+        entText = entText "\n" code
+      } else if (fbody > 0 && depth == fbody) {
+        member = code; sub(/\{.*/, "", member)
+        after = code; if (index(code, "{")) sub(/^[^{]*\{/, "", after); else after = ""
+        stored = 0
+        if (member ~ /nonisolated\(unsafe\)/) {
+          print path ":" n ": [facade] no nonisolated(unsafe) member on the facade"
+        } else if (match(member, /(^|[^A-Za-z0-9_])var[ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
+          name = substr(member, RSTART, RLENGTH); sub(/.*var[ \t]+/, "", name)
+          if (index(code, "{")) stored = (member ~ /=/ || after ~ /^[ \t]*(didSet|willSet)/)
+          else if (member ~ /=/) stored = 1
+          else if (name != "owner") { varPending = 1; varLine = n }
+          if (stored && name != "owner") print path ":" n ": [facade] the facade has no stored var besides owner"
+        }
+        if (!stored && !varPending && member ~ /(^|[ \t])(public|package)([ \t(]|$)/ &&
+            member ~ /(^|[^A-Za-z0-9_])(func|var|subscript)([ \t(]|$)/) {
+          ent = 1; entText = code; entLine = n; entDepth = depth
+        }
+      }
+      if (fbody == 0 && match(code, /(^|[^A-Za-z0-9_@.])(actor|extension)[ \t]+LandKeeper([^A-Za-z0-9_.]|$)/)) pendingF = 1
+      depth += braces(code)
+      if (pendingF && index(code, "{") > 0) { fbody = before + 1; pendingF = 0; if (depth < fbody) fbody = 0 }
+      else if (fbody > 0 && depth < fbody) fbody = 0
+      # The entry ends where its body closes: back at the depth it started at.
+      if (ent && index(entText, "{") > 0 && depth <= entDepth) finish()
+      next
+    }
+    END {
+      nl = split(ENVIRON["LINT_FACADE"], rows, "\n")
+      for (i = 1; i <= nl; i++) { split(rows[i], f, " "); if (f[1] != "") listed[f[1]] = f[2] }
+      for (p in unforwarded) {
+        a = (p in listed) ? listed[p] : 0
+        if (unforwarded[p] + 0 > a + 0)
+          for (k = 1; k <= unforwarded[p]; k++)
+            print p ":" unforwardedAt[p, k] ": [facade] a public or package entry of the facade is one forwarding expression (live.…, or a switch owner whose arms forward); list an exception in FACADE_EXCEPTIONS only with a reason"
+      }
+      for (p in listed) {
+        c = (p in unforwarded) ? unforwarded[p] : 0
+        if (c + 0 < listed[p] + 0) print p ": [facade] " c " entr(ies) that do not forward, listed " listed[p] ": lower FACADE_EXCEPTIONS"
+      }
+    }' "$1" "$2"
+}
+
 self_test() {
   local dir out
   dir="$(mktemp -d)"
   # shellcheck disable=SC2064 # expand now: the path is local
   trap "rm -rf '$dir'" RETURN
   mkdir -p "$dir/Sources/App" "$dir/Sources/SwiftStateTurns" "$dir/Tests/SwiftStateTurnsTests/Support" "$dir/Examples"
+  # The facade fixtures: one listed exception, and the facade's two forwarding calls listed as
+  # a boundary file, as K2-2 lists the facade's file.
+  local FACADE_EXCEPTIONS='
+Sources/App/Facade.swift 1 a nonisolated read that needs no hop
+'
+  local ISOLATED_BOUNDARIES="$ISOLATED_BOUNDARIES
+Sources/App/Facade.swift 2 the facade forwards on its core's executor
+"
   local path n _reason
   while read -r path n _reason; do
     [ -n "$path" ] || continue
@@ -503,6 +704,75 @@ public final class WithdrawToken: @unchecked Sendable {}
 public protocol TurnActor: Actor { var core: TurnCore<M> { get } }
 public protocol TurnMachine: Sendable {}
 EOF
+  cat > "$dir/Sources/App/Facade.swift" <<'EOF'
+enum KeeperOwner {
+    case live(LiveTurns)
+    case replay(ReplayOwner)
+}
+actor LiveTurns {
+    nonisolated(unsafe) weak var facade: AnyObject?
+    var count = 0
+    func work() -> Int { count += 1; return count }
+}
+public actor LandKeeper<State> {
+    let owner: KeeperOwner
+    let live: LiveTurns
+    nonisolated public var unownedExecutor: UnownedSerialExecutor { live.unownedExecutor }
+    public init(live: LiveTurns) {
+        self.live = live
+        self.owner = .live(live)
+    }
+    public func count() -> Int { live.assumeIsolated { $0.work() } }
+    @discardableResult
+    public func join(
+        playerID: String,
+        clientID: String
+    ) async throws -> Int {
+        try await live.join(
+            playerID: playerID,
+            clientID: clientID
+        )
+    }
+    package func closure() -> Int {
+        live.assumeIsolated { turns in
+            let a = turns.work()
+            return a + 1
+        }
+    }
+    public var state: Int {
+        get async { await live.state }
+    }
+    public func located() async -> Int {
+        switch owner {
+        case .live(let live):
+            return await live.located()
+        case let .replay(replay):
+            return replay.located()
+        }
+    }
+    public func chained() async -> Int {
+        await live
+            .chained()
+    }
+    public nonisolated var exceptionCount: Int { 0 }
+    private var computed: Int { 0 }
+    private func helper() -> Int { if true { return 1 }; return 2 }
+    package struct Outcome {
+        var a: Int
+        public func f() -> Int { a }
+    }
+}
+extension LandKeeper {
+    public func fromExtension() async -> Int { await live.fromExtension() }
+}
+EOF
+  # Not the facade's file (no KeeperOwner): the rule is inert there.
+  cat > "$dir/Sources/App/NotFacade.swift" <<'EOF'
+actor LandKeeper {
+    var x = 0
+    public func f() -> Int { if true { return 1 }; return x }
+}
+EOF
   if ! out="$(lint "$dir" 2>&1)"; then
     echo "self-test: the passing fixture failed:"; echo "$out"; return 1
   fi
@@ -570,6 +840,35 @@ actor TabOwner: TurnActor {
 EOF
   cat > "$dir/Sources/App/BadConformance.swift" <<'EOF'
 extension Elsewhere: TurnActor {}
+EOF
+  cat > "$dir/Sources/App/BadFacade.swift" <<'EOF'
+enum KeeperOwner { case live(LiveTurns), replay(ReplayOwner) }
+actor LandKeeper {
+    let owner: KeeperOwner
+    private var pendingFold: Int = 0
+    nonisolated(unsafe) let leak = Box()
+    var bare: Int
+    public func guarded() async -> Int {
+        if isDraining { return 0 }
+        return await live.guarded()
+    }
+    package func crossed() {
+        transport.assumeIsolated { _ in }
+    }
+    public func twice() async {
+        await live.twice(); count += 1
+    }
+    public func arms() async -> Int {
+        switch owner {
+        case .live(let live):
+            return await live.arms()
+        case .replay:
+            return 0
+        }
+    }
+    var observed: Int = 0 { didSet { } }
+    public func bareSelf() { assumeIsolated { _ in } }
+}
 EOF
   cat > "$dir/Sources/App/BadMachine.swift" <<'EOF'
 struct Machine: TurnMachine {
@@ -658,6 +957,18 @@ Marked.swift:1: [allow] a lint-allow marker names a rule
 Marked.swift:3: [allow] one lint-allow marker per line
 Tests/Marked.swift: [allow] 1 marker(s), 0 listed
 Calls.swift: [isolated]
+BadFacade.swift: [isolated]
+BadFacade.swift:4: [facade] the facade has no stored var besides owner
+BadFacade.swift:5: [facade] no nonisolated(unsafe) member on the facade
+BadFacade.swift:6: [facade] the facade has no stored var besides owner
+BadFacade.swift:7: [facade] a public or package entry of the facade is one forwarding expression
+BadFacade.swift:11: [facade] a public or package entry of the facade is one forwarding expression
+BadFacade.swift:12: [facade] assumeIsolated in the facade file is live.assumeIsolated only
+BadFacade.swift:14: [facade] a public or package entry of the facade is one forwarding expression
+BadFacade.swift:17: [facade] a public or package entry of the facade is one forwarding expression
+BadFacade.swift:25: [facade] the facade has no stored var besides owner
+BadFacade.swift:26: [facade] a public or package entry of the facade is one forwarding expression
+BadFacade.swift:26: [facade] assumeIsolated in the facade file is live.assumeIsolated only
 TurnCore.swift:2: [unchecked-state] a stored var
 TurnCore.swift:3: [unchecked-state] @exclusivity(unchecked) outside
 TurnCore.swift:4: [unchecked-state] a stored var
@@ -685,6 +996,7 @@ TurnCore.swift:35: [unchecked-state] a stored var'
   fi
   # A listed count that went down must be lowered.
   rm "$dir/Sources/App/Bad.swift" "$dir/Sources/App/BadConformance.swift" "$dir/Sources/App/BadMachine.swift" \
+     "$dir/Sources/App/BadFacade.swift" \
      "$dir/Sources/App/Calls.swift" "$dir/Tests/Marked.swift"
   mv "$dir/GoodTurnCore.swift" "$dir/Sources/SwiftStateTurns/TurnCore.swift"
   local first
@@ -692,6 +1004,10 @@ TurnCore.swift:35: [unchecked-state] a stored var'
   sed -i.bak '1d' "$dir/$first" && rm -f "$dir/$first.bak"
   out="$(lint "$dir" 2>&1)" && { echo "self-test: a lowered count passed"; return 1; }
   grep -q -F "lower the list" <<<"$out" || { echo "self-test: no 'lower the list' in:"; echo "$out"; return 1; }
+  # A facade exception that went away must be lowered too.
+  sed -i.bak '/exceptionCount/d' "$dir/Sources/App/Facade.swift" && rm -f "$dir/Sources/App/Facade.swift.bak"
+  out="$(lint "$dir" 2>&1)" && { echo "self-test: a lowered facade count passed"; return 1; }
+  grep -q -F "lower FACADE_EXCEPTIONS" <<<"$out" || { echo "self-test: no 'lower FACADE_EXCEPTIONS' in:"; echo "$out"; return 1; }
   echo "lint-turns: self-test passed"
 }
 
