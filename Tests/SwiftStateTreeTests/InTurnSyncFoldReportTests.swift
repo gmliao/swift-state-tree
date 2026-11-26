@@ -101,8 +101,9 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
     /// `reentersAtFirstPhaseQuery`: the first `runsSyncPhaseInTurn(of:)` asked during a turn body
     /// re-enters the keeper that asked, so a body that runs before the test holds the keeper
     /// (initialization, which the keeper starts from its `init`) can be refused (#901). The
-    /// keeper's `init` asks once, off its actor, before it starts the initialization: that query
-    /// is skipped, and every later one comes from the keeper's actor.
+    /// keeper's `init` asks once, off its actor, before it starts the initialization
+    /// (`refuseTransportWithoutInTurnPhase`, LandKeeper.swift:636 at #896's head 1ea3b13b): that
+    /// query is skipped, and every later one comes from the keeper's actor.
     init(records: Bool, reentersAtFirstPhaseQuery: Bool = false) {
         self.records = records
         self.reentersAtFirstPhaseQuery = reentersAtFirstPhaseQuery

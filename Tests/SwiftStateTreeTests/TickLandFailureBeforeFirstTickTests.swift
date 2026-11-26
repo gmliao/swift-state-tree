@@ -149,11 +149,16 @@ struct TickLandFailureBeforeFirstTickTests {
     }
 
     /// Saves the keeper's record, shuts it down, and replays the record: no server-event
-    /// mismatch, and the events verified.
+    /// mismatch, and the events verified. The record must also carry the failure itself, as
+    /// live reported it, in `frame`: without its terminal entry a record of a land that failed
+    /// before its first tick has no frame at all, so replay steps no tick and the server-event
+    /// checks pass on nothing.
     private static func expectReplayMatches(
         _ keeper: LandKeeper<FoldReportState>,
-        definition: LandDefinition<FoldReportState> = foldReportLandEmitting()
+        definition: LandDefinition<FoldReportState> = foldReportLandEmitting(),
+        frame: Int64 = 0
     ) async throws {
+        let liveFailure = try #require(keeper.failure)
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("failure-before-first-tick-\(UUID().uuidString).sstr").path
         defer { try? FileManager.default.removeItem(atPath: path) }
         await keeper.waitForRecorderSubmissionsForTesting()
@@ -165,6 +170,9 @@ struct TickLandFailureBeforeFirstTickTests {
             initialState: FoldReportState(),
             recordFilePath: path
         )
+        #expect(result.liveFailure == liveFailure, "\(String(describing: result.liveFailure)) vs \(liveFailure)")
+        let recorded = try await ReevaluationRecordFile.openSource(filePath: path).getLandFailure()
+        #expect(recorded?.tickId == frame, "the terminal entry's frame: \(String(describing: recorded?.tickId))")
         #expect(result.serverEventMismatches.isEmpty, "\(result.serverEventMismatches.map(\.tickId))")
         #expect(result.serverEventVerification == .passed)
     }
