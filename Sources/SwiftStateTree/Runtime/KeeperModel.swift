@@ -10,6 +10,13 @@ import SwiftStateTurns
 /// it as `model`; field names are the ones the keeper's stored properties had.
 @PlainData
 struct KeeperModel<State: StateNodeProtocol> {
+    /// The land's state. A handler runs on `&model.state`, which is an access to the whole
+    /// model: nothing may read another model field while it runs (one `inout` per step).
+    var state: State
+    /// The land's generator: keeper state, advanced by the handlers that replay repeats from the
+    /// record (#700 K1b-3, #765).
+    var landRandom: DeterministicRng
+
     // The player table.
     /// The players in the land. Their services are beside the model, in the keeper's
     /// `playerServices`.
@@ -181,7 +188,10 @@ struct KeeperModel<State: StateNodeProtocol> {
     var filledActionSlotsNextForAssert: Int = 0
 #endif
 
-    init() {}
+    init(state: State, landRandom: DeterministicRng) {
+        self.state = state
+        self.landRandom = landRandom
+    }
 }
 
 /// What a keeper is fixed with at init (#700 K1b-4): its land's definition, its own

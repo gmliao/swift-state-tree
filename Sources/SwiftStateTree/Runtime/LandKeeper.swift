@@ -397,7 +397,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// The keeper's plain state (#700 K1b-4): every field a turn reads or writes. A step takes
     /// it with one `inout` access and reaches each field through that binding.
-    private var model = KeeperModel<State>()
+    private var model: KeeperModel<State>
     /// Each player's services (#700 K1b-4), beside the model: `LandServices` holds references.
     /// Written in the same synchronous segment as every insert and removal of `model.players`,
     /// keyed by the entry's generation, so a late writer never removes a newer entry's services.
@@ -424,11 +424,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     public nonisolated var definition: LandDefinition<State> { behavior.definition }
 
-    private var state: State
 
-    /// The land's generator: keeper state, advanced by the handlers that replay repeats from the
-    /// record (#700 K1b-3, #765).
-    private var landRandom: DeterministicRng
 
     private var transport: LandKeeperTransport?
 
@@ -602,7 +598,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     var transportForTesting: LandKeeperTransport? { transport }
 
     /// Tests: the land's generator now.
-    var landRandomForTesting: DeterministicRng { landRandom }
+    var landRandomForTesting: DeterministicRng { model.landRandom }
 
     /// The seed the land's generator started from, for the record header: a caller-registered
     /// `DeterministicRngService`'s seed, else the one derived from the land ID. Never `nil`.
@@ -1115,7 +1111,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
-        state = initialState
         outputCollector.checksOverflow = mode == .reevaluation
         self.reevaluationSink = reevaluationSink
 
@@ -1125,7 +1120,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // generator per handler call.
         let rngSeed = services.get(DeterministicRngService.self)?.seed
             ?? DeterministicSeed.fromLandID(landID ?? definition.id)
-        self.landRandom = DeterministicRng(seed: rngSeed)
+        self.model = KeeperModel(state: initialState, landRandom: DeterministicRng(seed: rngSeed))
         var resolvedServices = services.removing(DeterministicRngService.self)
 
         self.transport = transport
@@ -1348,8 +1343,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         do {
             // `invoke` throws only from `validate`, before `apply` writes (#593).
-            try withHandlerStep(ctx) { state, ctx in
-                try handler.invoke(&state, ctx)
+            try withHandlerStep(ctx) { m, ctx in
+                try handler.invoke(&m.state, ctx)
             }
         } catch {
             noteReplayedInitializeRefusal(error)
@@ -1464,7 +1459,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // initial State, here, before the group runs (#769). A closure that built none has
             // no group to run.
             if let declaration = definition.lifetimeHandlers.onInitializeResolvers,
-               case let executors = declaration.build(state, ValidateContext(ctx)), !executors.isEmpty {
+               case let executors = declaration.build(model.state, ValidateContext(ctx)), !executors.isEmpty {
                 let resolverContext = makeResolverContext(ctx)
                 do {
                     ctx = try await ResolverExecutor.executeInitializeResolvers(
@@ -1509,8 +1504,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             do {
                 // `invoke` throws only from `validate`, before `apply` writes (#593).
-                try withHandlerStep(ctx) { state, ctx in
-                    try handler.invoke(&state, ctx)
+                try withHandlerStep(ctx) { m, ctx in
+                    try handler.invoke(&m.state, ctx)
                 }
             } catch {
                 // A refusal fails the initialization, as a resolver failure with `.failLand`
@@ -1622,13 +1617,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// This is a read-only view of the state. Mutations should be done through action/event handlers.
     public func currentState() -> State {
-        state
+        model.state
     }
 
     /// `currentState()`, with where it was read and whether the sync stream is recorded, from
     /// the same job.
     package func currentStateLocated() -> (state: State, position: SyncReadPosition, recordsSyncStream: Bool) {
-        (state, syncReadPosition(), recordsSyncStream)
+        (model.state, syncReadPosition(), recordsSyncStream)
     }
 
     /// Whether this keeper syncs the land periodically on its own: its loops auto-start and either
@@ -1818,7 +1813,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         model.inTurnSyncTurnKind = .syncOnly
         defer { model.inTurnSyncTurnKind = .tick }
         let mark = model.recorderSubmissionCount
-        let copy = state
+        let copy = model.state
         let tickId = model.lastCommittedTickId
         let output = settlePort.runSettlePhaseInTurn(
             state: copy,
@@ -1829,7 +1824,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let outcome: SettleTurnOutcome
         switch output.settle ?? .refused(.notCurrent) {
         case let .committed(membershipEpoch, clearDirtyFlags):
-            if clearDirtyFlags { state.clearDirty() }
+            if clearDirtyFlags { model.state.clearDirty() }
             outcome = .settled(state: copy, tickId: tickId, membershipEpoch: membershipEpoch, planned: true)
         case let .empty(membershipEpoch):
             outcome = .settled(state: copy, tickId: tickId, membershipEpoch: membershipEpoch, planned: false)
@@ -1940,7 +1935,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 landContext: ctx,
                 actionPayload: nil,
                 eventPayload: nil,
-                currentState: state
+                currentState: model.state
             )
             ctx = try await executeOnJoinResolvers(
                 resolverContext: resolverContext,
@@ -2057,7 +2052,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     landContext: ctx,
                     actionPayload: nil,
                     eventPayload: nil,
-                    currentState: state
+                    currentState: model.state
                 )
                 ctx = try await ResolverExecutor.executeResolvers(
                     executors: definition.lifetimeHandlers.canJoinResolverExecutors,
@@ -2071,7 +2066,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // repeated from the record (a viewer joining a reevaluation keeper runs it live), so
             // its draws come from a copy of the land's generator, never written back.
             ctx.stepRandom = detachedRandom()
-            decision = try canJoinHandler(state, session, ctx)
+            decision = try canJoinHandler(model.state, session, ctx)
         }
 
         // If denied, return early
@@ -2181,7 +2176,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 landContext: ctx,
                 actionPayload: nil,
                 eventPayload: nil,
-                currentState: state
+                currentState: model.state
             )
             ctx = try await executeOnJoinResolvers(
                 resolverContext: resolverContext,
@@ -3048,7 +3043,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 landContext: ctx,
                 actionPayload: nil,
                 eventPayload: nil,
-                currentState: state
+                currentState: model.state
             )
             do {
                 ctx = try await ResolverExecutor.executeResolvers(
@@ -3370,7 +3365,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 sessionID: sessionID,
                 tickId: model.lastCommittedTickId
             )
-            let executors = resolvers.build((state, decodedAction), ValidateContext(ctx))
+            let executors = resolvers.build((model.state, decodedAction), ValidateContext(ctx))
             if !executors.isEmpty { job = (executors, ctx) }
         }
         let becomesJob = job != nil
@@ -3737,7 +3732,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The context a resolver group runs with: the land's services value for `Resolver` values
     /// (#769), and today's fields for the `ContextResolver`s of CanJoin, OnJoin and OnLeave.
     private func makeResolverContext(_ ctx: LandContext) -> ResolverContext {
-        var resolverContext = ResolverContext(landContext: ctx, currentState: state)
+        var resolverContext = ResolverContext(landContext: ctx, currentState: model.state)
         resolverContext.resolverServices = behavior.resolverServices
         return resolverContext
     }
@@ -3800,37 +3795,43 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case detached(DeterministicRngService)
     }
 
-    /// Runs a handler on the state, in place, with `ctx.random` bound for this call: handlers
-    /// are synchronous, so the body can't suspend and the actor's state is mutated directly.
+    /// Runs a handler on the model's state, in place, with `ctx.random` bound for this call:
+    /// handlers are synchronous, so the body can't suspend and the model is mutated directly.
     ///
-    /// With `.step`, the service is built from `landRandom` and its generator is written back
-    /// in the same segment, after the body's access to `state` ends; a `defer` keeps draws made
-    /// before a throw. Calls don't nest: a second `&state` would break exclusivity.
+    /// The body gets the model `inout`, once per step, and passes `&m.state` to the handler: the
+    /// access covers the whole model, so the body reaches any other field through `m`, never
+    /// through `model`, and nothing the handler calls may read the keeper's model (a dynamic
+    /// exclusivity trap, in release builds too). Calls don't nest.
+    ///
+    /// With `.step`, the service is built from `model.landRandom` and its generator is written
+    /// back in the same segment, after the body's access ends; a `defer` keeps draws made before
+    /// a throw.
     ///
     /// Handlers throw only from `validate`, before they write: the input handlers (#586) and
     /// OnInitialize (#593). The destroy handlers don't throw.
     private func withHandlerStep<R>(
         _ ctx: LandContext,
         random: HandlerRandom = .step,
-        _ body: (inout State, LandContext) throws -> R
+        _ body: (inout KeeperModel<State>, LandContext) throws -> R
     ) rethrows -> R {
         var bound = ctx
         switch random {
         case .detached(let service):
             bound.stepRandom = service
-            return try body(&state, bound)
+            return try body(&model, bound)
         case .step:
-            let service = DeterministicRngService(continuing: landRandom, seed: behavior.config.landRandomSeed)
-            defer { landRandom = service.generator }
+            let service = DeterministicRngService(continuing: model.landRandom, seed: behavior.config.landRandomSeed)
+            // After the body's access to the model ends: it doesn't overlap.
+            defer { model.landRandom = service.generator }
             bound.stepRandom = service
-            return try body(&state, bound)
+            return try body(&model, bound)
         }
     }
 
     /// A service for a handler that replay doesn't repeat: a copy of the land's generator,
     /// never written back.
     private func detachedRandom() -> DeterministicRngService {
-        DeterministicRngService(continuing: landRandom, seed: behavior.config.landRandomSeed)
+        DeterministicRngService(continuing: model.landRandom, seed: behavior.config.landRandomSeed)
     }
 
     // MARK: - Tick & Lifetime
@@ -4094,8 +4095,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Execute handler and capture response
             // Throws only from the type check or `validate`, before anything is written (#586).
-            let response = try withHandlerStep(ctx) { state, ctx in
-                try handler.invokeTyped(&state, action: decodedAction, ctx: ctx)
+            let response = try withHandlerStep(ctx) { m, ctx in
+                try handler.invokeTyped(&m.state, action: decodedAction, ctx: ctx)
             }
             return .action(response: response)
 
@@ -4161,8 +4162,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             // Throws only from `validate`, before anything is written (#586).
             var ranHandler = true
-            try withHandlerStep(ctx) { state, ctx in
-                ranHandler = try handler.invokeDecoded(&state, event: decoded, ctx: ctx)
+            try withHandlerStep(ctx) { m, ctx in
+                ranHandler = try handler.invokeDecoded(&m.state, event: decoded, ctx: ctx)
             }
             if !ranHandler {
                 // A hand-built handler whose type differs from its descriptor's: skipped, as when
@@ -4202,8 +4203,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // it (#700 K1b-1, S5).
             let input = try inputItem.decoded.get()
             // Throws only from `validate`, before anything is written (#586).
-            try withHandlerStep(ctx) { state, ctx in
-                try handler.invoke(&state, input: input, ctx: ctx)
+            try withHandlerStep(ctx) { m, ctx in
+                try handler.invoke(&m.state, input: input, ctx: ctx)
             }
 
         case .landFailure:
@@ -4295,8 +4296,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // (a live run writes one whenever it records). `invoke` throws only from `validate`,
             // before `apply` writes and with nothing emitted (#593).
             do {
-                try withHandlerStep(ctx) { state, ctx in
-                    try handler.invoke(&state, ctx)
+                try withHandlerStep(ctx) { m, ctx in
+                    try handler.invoke(&m.state, ctx)
                 }
             } catch {
                 noteReplayedInitializeRefusal(error)
@@ -4318,8 +4319,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 tickId: executingTickId,
                 resolverOutputs: lifecycleItem.heldResolverOutputs
             )
-            withHandlerStep(ctx) { state, ctx in
-                handler(&state, ctx)
+            withHandlerStep(ctx) { m, ctx in
+                handler(&m.state, ctx)
             }
         case .leave:
             guard
@@ -4341,8 +4342,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // The player is gone: the broadcast-only sync follows the pass, deferred until after
             // the pending items' removal.
             applied.shouldSyncBroadcastOnly = true
-            withHandlerStep(ctx) { state, ctx in
-                handler(&state, ctx)
+            withHandlerStep(ctx) { m, ctx in
+                handler(&m.state, ctx)
             }
         }
     }
@@ -4587,7 +4588,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // The pass and the state after it, taken in the segment that applied it, for what
             // the record read after it (`afterPass`, #563).
             let ordinalAfter = model.passOrdinal
-            let stateAfter = state
+            let stateAfter = model.state
             if !outcome.record.isEmpty {
                 await submitTurnRecord(outcome.record)
             }
@@ -5053,8 +5054,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // handler: live applied the shutdown as a turn of its own, between ticks. A tickless or
         // shutdown frame binds nothing.
         if !model.shutdownTurnApplied, let tickHandler {
-            withHandlerStep(ctx) { state, ctx in
-                tickHandler(&state, ctx)
+            withHandlerStep(ctx) { m, ctx in
+                tickHandler(&m.state, ctx)
             }
         }
 
@@ -5138,7 +5139,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // that consumed a join's input completes it in its own output step.
         let includeSync = wantsSync || (!hasPeriodicSync && transportHasJoinsAwaitingSync)
         let output = transport.runSyncPhaseInTurn(
-            state: state,
+            state: model.state,
             events: events.map { InTurnServerEvent(event: $0.event, target: $0.target, sequence: $0.sequence) },
             includeSync: includeSync,
             recording: inTurnSyncRecording()
@@ -5166,7 +5167,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         switch result {
         case let .committed(clearDirtyFlags):
             if clearDirtyFlags {
-                state.clearDirty()
+                model.state.clearDirty()
             }
             model.inTurnSyncDue = false
             model.joinSyncWaitsForCommit = false
@@ -5263,8 +5264,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         // Sequence watermark W2 (before the tick handler).
         let sequenceBeforeTickHandler = outputCollector.nextSequence
-        withHandlerStep(ctx) { state, ctx in
-            handler(&state, ctx)
+        withHandlerStep(ctx) { m, ctx in
+            handler(&m.state, ctx)
         }
         model.lastCommittedTickId = tickId
 
@@ -5387,7 +5388,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// throws never stops the tick: the hash is recorded as unavailable, logged and counted, and
     /// replay reports that tick as unverifiable.
     private func liveStateHash(tickId: Int64) -> (hash: String, snapshot: StateSnapshot) {
-        let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
+        let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(model.state)
         if ReevaluationEngine.isUnavailableHash(hash) {
             model.stateHashUnavailableTotal += 1
             behavior.logger.error("State hash unavailable; tick recorded without a hash", metadata: [
@@ -5613,7 +5614,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         model.inTurnSyncTurnKind = .syncOnly
         defer { model.inTurnSyncTurnKind = .tick }
         let mark = model.recorderSubmissionCount
-        let output = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true, recording: inTurnSyncRecording())
+        let output = transport.runSyncPhaseInTurn(state: model.state, events: [], includeSync: true, recording: inTurnSyncRecording())
         submitSyncStream(output.syncStream)
         applyInTurnSyncResult(output.result, transport: transport, joinSyncOnly: joinSyncOnly, keepsEvents: output.keepsEvents)
         // A tickless land's sync-only turn is its own turn record (#327); a tick land's sync
@@ -6309,7 +6310,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // land's generator, never written back.
             ctx.stepRandom = detachedRandom()
             // Pass state as value (read-only) to emphasize that it should not be modified
-            handler(state, ctx)
+            handler(model.state, ctx)
         }
 
         // In-turn sync: a sync-only turn at the sync loop's own interval, unless a tick is due
@@ -6475,7 +6476,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Execute AfterFinalize handler (async cleanup)
         if let afterFinalizeHandler = definition.lifetimeHandlers.afterFinalize {
-            let snapshot = state
+            let snapshot = model.state
             var ctx = makeContext(
                 playerID: behavior.config.systemPlayerID,
                 clientID: behavior.config.systemClientID,
@@ -6525,7 +6526,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var updatedCtx = ctx
         // Built from the State the handler will see: nothing changes it before the handler's
         // segment (see the caller).
-        let resolvers = buildResolvers(state, ValidateContext(ctx))
+        let resolvers = buildResolvers(model.state, ValidateContext(ctx))
         if !resolvers.isEmpty {
             let resolverContext = makeResolverContext(ctx)
             do {
@@ -6542,8 +6543,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
         // The handler can't throw (#593): the land is ending, so nothing would act on a refusal.
-        withHandlerStep(updatedCtx, random: .detached(random)) { state, ctx in
-            handler(&state, ctx)
+        withHandlerStep(updatedCtx, random: .detached(random)) { m, ctx in
+            handler(&m.state, ctx)
         }
     }
 
