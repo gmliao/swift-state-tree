@@ -581,9 +581,28 @@ final class DiffRun: @unchecked Sendable {
             try await bounded("a spawned task") { await task.value }
         }
         try await bounded("no pending flip") { [router] in await router.waitForNoPendingFlipForTesting() }
-        // A supersede closes the old connection from a task of its own, which a zero forward
-        // count can precede, and the close then starts a forward of its own: the closes first.
-        try await bounded("the supersedes' closes") { [adapter] in await adapter.waitForDetachedClosesForTesting() }
+        // A supersede closes the old connection behind the frames queued for it (#909): the
+        // writer hands the close to the transport, whose drain closes the connection at its
+        // marker, after telling the router of the disconnect. A zero forward count can precede
+        // that, so the closes come first: every superseded connection still open is waited for
+        // until it has its 4017. A writer-idle wait alone isn't enough: the transport's queue may
+        // not have sent the frames ahead of the marker yet. A close the writer refused went out
+        // from a task (`waitForDetachedClosesForTesting`).
+        try await bounded("the supersedes' fallback closes") { [adapter] in await adapter.waitForDetachedClosesForTesting() }
+        try await bounded("outbound idle") { [adapter] in await adapter.waitForOutboundIdleForTesting() }
+        for (session, generation) in await adapter.queuedClosesForTesting() {
+            guard let generation, await transport.connectionGeneration(for: session) == generation,
+                  let name = attemptOrder.last(where: { attempts[$0]?.session == session }),
+                  let connection = attempts[name]?.connection
+            else { continue }
+            guard try await bounded("\(name)'s 4017 close", { await connection.waitUntilClosed() }) else {
+                throw DiffRunFailure("\(name)'s superseded connection wasn't closed")
+            }
+            let code = await connection.closeCode
+            guard code == SessionClose.Code.superseded else {
+                throw DiffRunFailure("\(name)'s superseded connection closed with \(String(describing: code))")
+            }
+        }
         try await bounded("the disconnect forwards") { [router] in await router.waitForDisconnectForwardsForTesting() }
         guard !stopped else {
             try await bounded("the transport's queues") { [transport] in await transport.flushSessionQueues() }

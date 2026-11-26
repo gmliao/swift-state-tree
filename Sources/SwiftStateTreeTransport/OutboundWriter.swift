@@ -73,10 +73,12 @@ struct OutboundElement: Sendable {
     var closingSessions: [ClosingSession] = []
 }
 
-/// A session a writer element closes behind its frames, and the connection it means (nil: any).
+/// A session a writer element closes behind its frames, the connection it means (nil: any),
+/// and what it is closed with (a superseded session's 4017, #909).
 struct ClosingSession: Sendable, Equatable {
     let sessionID: SessionID
     let generation: UInt64?
+    var close: SessionClose = .normal
 }
 
 /// Lock-protected counters shared by the writer and its consumer task (which must not retain
@@ -202,9 +204,11 @@ final class OutboundWriter: @unchecked Sendable {
             for await element in stream {
                 if Task.isCancelled { break }
                 let start = ContinuousClock.now
-                await transport.sendSessionFrames(element.frames)
+                if !element.frames.isEmpty {
+                    await transport.sendSessionFrames(element.frames)
+                }
                 for closing in element.closingSessions {
-                    await transport.closeSessionAfterQueuedFrames(closing.sessionID, generation: closing.generation)
+                    await transport.closeSessionAfterQueuedFrames(closing.sessionID, generation: closing.generation, with: closing.close)
                 }
                 onSent?(ContinuousClock.now - start, element.frames.count)
                 counters.sent(bytes: element.frames.reduce(0) { $0 + $1.data.count }, isSyncCycle: element.isSyncCycle)
@@ -255,6 +259,29 @@ final class OutboundWriter: @unchecked Sendable {
         if isSyncCycle { counters.syncCycleElements += 1 }
         counters.lock.unlock()
         continuation.yield(OutboundElement(frames: frames, isSyncCycle: isSyncCycle, closingSessions: closingSessions))
+        return .accepted
+    }
+
+    /// Enqueues a close-only element: each session is closed behind every element enqueued
+    /// before it (`Transport.closeSessionAfterQueuedFrames`), so the close can't overtake a frame
+    /// already queued for it (#909). Synchronous. It carries no bytes, so the ceiling never
+    /// refuses it, and it isn't a sync cycle, so sync back-pressure doesn't count it. Refused
+    /// only after `finish`: the caller then closes another way.
+    @discardableResult
+    func enqueueClose(_ closingSessions: [ClosingSession]) -> OutboundEnqueueResult {
+        guard !closingSessions.isEmpty else { return .accepted }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let continuation else {
+            counters.lock.lock()
+            counters.droppedAfterFinish += 1
+            counters.lock.unlock()
+            return .droppedAfterFinish
+        }
+        counters.lock.lock()
+        counters.elements += 1
+        counters.lock.unlock()
+        continuation.yield(OutboundElement(frames: [], isSyncCycle: false, closingSessions: closingSessions))
         return .accepted
     }
 
