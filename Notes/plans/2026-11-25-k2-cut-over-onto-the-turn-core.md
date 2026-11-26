@@ -4,6 +4,7 @@
 - The sentinel now has one route that every step has, `turn.behavior` (§4.2).
 - K2-1 pins a core-driven step that carries no binding token (§4.2).
 - The shoulds and nits are tracked as the K2-1 PR checklist (§16).
+- 2026-11-26: K2-E keeps the sequence counter and `syncRequestsByTick` in the collector; K1b-5's move commit moves them into the model (§4.4, K1b-5 plan D15.3 rev 2.6).
 
 §17 lists the changes. Draft 6 answered Review's NOT GO on draft 5 (3 must-fix, 3 should, 3 nits):
 - K2-Q3's recommended option now has a mechanism and a probe (§4.2, P5).
@@ -170,7 +171,7 @@ K1b-5's request cases are of three kinds, and K2 maps each kind differently:
 ### 4.4 Outputs (survey §3; parent §3.1, §3.6)
 
 **In its own PR, K2-E, between K2-1 and K2-2, on today's keeper** (Review's condition 2; §6). It is a per-handler-call scope, the same shape as K1b-3's step RNG service, bound in `withHandlerStep`. One type, `StepScope`, can hold both the RNG service and the emitter scope.
-- **The sequence counter** (`nextSequence`, `checksOverflow`, `sequenceExhausted`) and `syncRequestsByTick` move from `OutputCollector` into the model. This ends K1b-4's D1.
+- **The sequence counter** (`nextSequence`, `checksOverflow`, `sequenceExhausted`) and `syncRequestsByTick` stay in `OutputCollector` in K2-E. They move into the model in K1b-5's move commit (K1b-5 plan D15.3, rev 2.6), which ends K1b-4's D1. Their takes sit on the intake, join and leave lines that K1b-5 rewrites, so moving them in K2-E would collide with it. **The invariant that keeps the numbering unchanged meanwhile:** the scope takes each event's number from the collector at emit time, as `enqueueEmittedEvent` does today, and hands the numbered events to the collector's list in emit order when the step takes them. Nothing else can take a number or append an event between an emit and that take: the handler is synchronous, handler calls don't nest, and `ServerInputSubmitter.submit` is async.
 - **The scoped emitter:** each handler call gets a per-step scope (a lock-protected open flag and the staged list). `LandContext`'s three output closures capture the scope, not the model. When the handler returns, the step takes the staged events and closes the scope. A call after that is dropped and counted, asserted in debug. That is a visible behavior change, stated in K2's PR (parent §8).
 - **Where the events go: today's route, not `turn.emit`** (draft 6; Review's MF3). Today an eventful tick or input turn hands its events to the in-turn sync phase, `runTurnOutputs(events:)` (LK:5137) → `runSyncPhaseInTurn(events:)`, ahead of the sync plan, in one call. Only the sync-only turn passes `events: []` (LK:5884). If K2 sent events through `turn.emit`, they would go out after the step, after that turn's frames, so the order would change. So inside a step:
   - the events still ride the in-phase batch, through the binding token's direct call (§4.5), on every path that runs the phase;
@@ -258,7 +259,7 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 | PR | Content | Behavior change | Host A/B |
 |---|---|---|---|
 | **K2-1, the types** | `KeeperInput`, `KeeperQuery`, `KeeperEffect` and the rest; `extension KeeperModel: TurnMachine`. `handle` calls the very K1b-5 bodies and segments the keeper calls, not copies, so the two can't drift (condition 1). The callback audit (§4.5, condition 3). The lint fixture for the facade. Not wired: the keeper doesn't use it yet | none | none (not wired) |
-| **K2-E, the step scope** | `StepScope` (the RNG service and the emitter scope), bound in `withHandlerStep`; the sequence counter into the model (ends K1b-4's D1). On today's keeper (condition 2) | yes, the one in K2: an emit from a context kept past its step is dropped and counted (parent §8) | small: it touches the emit path |
+| **K2-E, the step scope** | `StepScope` (the RNG service and the emitter scope), bound in `withHandlerStep`; the counter and `syncRequestsByTick` stay in the collector (they move into the model in K1b-5's move commit, ending K1b-4's D1). On today's keeper (condition 2) | yes, the one in K2: an emit from a context kept past its step is dropped and counted (parent §8) | small: it touches the emit path |
 | **K2-2, the cut-over** | the facade and `KeeperOwner`; every entry forwards to the core; the binding token, the services table, the package admission path, the drivers. A pure cut-over. The K2-Q1 docs (§5) | none | full, plus §8's three cells |
 | **K2-3, the leftovers** | the code paths K2-2 made unreachable, each proven unreachable on live keepers **and in the replay owner**: until #612, replay calls the same bodies without a core (§7.2), so a path dead on live keepers can still be live in replay (condition 4). K9 still owns the deletions that need K3–K7 | none | none, unless it touches a hot path |
 
