@@ -658,7 +658,8 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
 /// restart). A reevaluation keeper skips the handler entirely (#826).
 ///
 /// The handler's context has no outputs (#893): an event it emits and a sync request it makes are dropped,
-/// because the land is ending and no tick or sync will run again. `ctx.random` works.
+/// because the land is ending and no tick or sync will run again. A server input it submits
+/// (`ctx.serverInputs.submit`) is refused as draining (`.refused(.draining)`). `ctx.random` works.
 ///
 /// - Parameters:
 ///   - duration: The duration to wait after the last player leaves before destroying.
@@ -788,7 +789,8 @@ public func OnInitialize<State: StateNodeProtocol>(
 /// body; the land's teardown goes on.
 ///
 /// Its context has no outputs (#893): an event it emits and a sync request it makes are dropped,
-/// because the land is ending and no tick or sync will run again. `ctx.random` works.
+/// because the land is ending and no tick or sync will run again. A server input it submits
+/// (`ctx.serverInputs.submit`) is refused as draining (`.refused(.draining)`). `ctx.random` works.
 ///
 /// - Parameter body: The synchronous closure to execute.
 public func OnFinalize<State: StateNodeProtocol>(
@@ -811,7 +813,8 @@ public func OnFinalize<State: StateNodeProtocol>(
 /// the record holds no finalize event, so replay has nothing to check them against.
 ///
 /// Its context has no outputs (#893): an event it emits and a sync request it makes are dropped,
-/// because the land is ending and no tick or sync will run again. `ctx.random` works.
+/// because the land is ending and no tick or sync will run again. A server input it submits
+/// (`ctx.serverInputs.submit`) is refused as draining (`.refused(.draining)`). `ctx.random` works.
 ///
 /// - Parameter body: The async closure to execute with state snapshot and context.
 public func AfterFinalize<State: StateNodeProtocol>(

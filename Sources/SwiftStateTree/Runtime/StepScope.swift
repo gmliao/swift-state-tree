@@ -34,14 +34,15 @@ package final class LateStepOutputCounter: @unchecked Sendable {
 /// comes after finds it closed. An open output goes where it goes today, numbered at emit
 /// time, which the body around the handler reads (the tick body's watermarks, K2 plan §4.4).
 ///
-/// The lock orders an output against its own scope's close only; it doesn't make the output
-/// the only access to the keeper's output collector, which has no lock of its own. That is
-/// enough because an open scope's output always runs on the keeper: the keeper is inside the
-/// synchronous handler call while its scope is open. The one async handler, AfterFinalize, is
-/// a destroy handler, and a destroy handler's scope passes nothing (`dropsOutputs`): its
-/// outputs, made after the drain began, would never be taken, and AfterFinalize's after an
-/// internal await would run off the keeper, racing another call's output on the collector
-/// (#893).
+/// The lock orders an output against its own scope's close only, so two open scopes' outputs
+/// can run at once; the keeper's output collector has no lock of its own. What keeps them
+/// apart is that only one scope that passes outputs is open at a time: a scope that passes
+/// outputs belongs to a synchronous handler call, which the keeper runs inside one segment of
+/// its actor, and a context kept past the call finds its scope closed. The one async handler,
+/// AfterFinalize, could hold its scope open across awaits while other calls run, so a destroy
+/// handler's scope passes nothing (`dropsOutputs`): its outputs, made after the drain began,
+/// would never be taken (#893). A later async handler needs the same drop, or the collector
+/// needs its own lock.
 ///
 /// The boundary is the keeper's close: the handler's return.
 package final class StepScope: @unchecked Sendable {

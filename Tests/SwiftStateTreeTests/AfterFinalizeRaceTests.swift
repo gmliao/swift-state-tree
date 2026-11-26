@@ -29,8 +29,20 @@ struct AfterFinalizeRaceOutput: ResolverOutput {
     let value: Int
 }
 
+/// One land's gates and flags, keyed by its land ID, so repeated runs don't share them.
 private final class AfterFinalizeRaceBox: @unchecked Sendable {
-    static let shared = AfterFinalizeRaceBox()
+    private static let registryLock = NSLock()
+    nonisolated(unsafe) private static var boxes: [String: AfterFinalizeRaceBox] = [:]
+
+    static func box(for landID: String) -> AfterFinalizeRaceBox {
+        registryLock.withLock {
+            if let box = boxes[landID] { return box }
+            let box = AfterFinalizeRaceBox()
+            boxes[landID] = box
+            return box
+        }
+    }
+
     let canJoinResolverGate = TestGate()
     let afterFinalizeGate = TestGate()
     /// Released by AfterFinalize right after its emit.
@@ -50,15 +62,27 @@ private final class AfterFinalizeRaceBox: @unchecked Sendable {
         waiter?.resume()
     }
 
-    /// Returns once CanJoin's handler has entered (an event, not a poll).
+    /// Whether CanJoin's handler has entered.
+    var isInHandler: Bool { lock.withLock { inHandler } }
+
+    /// Returns once CanJoin's handler has entered (an event, not a poll), or when the waiting
+    /// task is cancelled (`withinHangBound`).
     func handlerEntered() async {
-        await withCheckedContinuation { continuation in
-            let entered = lock.withLock { () -> Bool in
-                if inHandler { return true }
-                enteredWaiter = continuation
-                return false
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let entered = lock.withLock { () -> Bool in
+                    if inHandler || Task.isCancelled { return true }
+                    enteredWaiter = continuation
+                    return false
+                }
+                if entered { continuation.resume() }
             }
-            if entered { continuation.resume() }
+        } onCancel: {
+            let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                defer { enteredWaiter = nil }
+                return enteredWaiter
+            }
+            waiter?.resume()
         }
     }
 
@@ -68,7 +92,7 @@ private final class AfterFinalizeRaceBox: @unchecked Sendable {
 struct AfterFinalizeRaceCanJoinResolver: ContextResolver {
     typealias Output = AfterFinalizeRaceOutput
     static func resolve(ctx: ResolverContext) async throws -> AfterFinalizeRaceOutput {
-        await AfterFinalizeRaceBox.shared.canJoinResolverGate.arrive()
+        await AfterFinalizeRaceBox.box(for: ctx.landID).canJoinResolverGate.arrive()
         return AfterFinalizeRaceOutput(value: 0)
     }
 }
@@ -78,7 +102,7 @@ private func afterFinalizeRaceLand() -> LandDefinition<AfterFinalizeRaceState> {
         ServerEvents { Register(AfterFinalizeRaceEvent.self) }
         Rules {
             CanJoin(resolvers: AfterFinalizeRaceCanJoinResolver.self) { _, session, _, ctx in
-                let box = AfterFinalizeRaceBox.shared
+                let box = AfterFinalizeRaceBox.box(for: ctx.landID)
                 ctx.emitEvent(AfterFinalizeRaceEvent(tag: "canJoin-before"), to: .all)
                 box.enterHandler()
                 // The keeper's actor is held here, inside one synchronous segment.
@@ -89,7 +113,7 @@ private func afterFinalizeRaceLand() -> LandDefinition<AfterFinalizeRaceState> {
         }
         Lifetime {
             AfterFinalize { _, ctx in
-                let box = AfterFinalizeRaceBox.shared
+                let box = AfterFinalizeRaceBox.box(for: ctx.landID)
                 await box.afterFinalizeGate.arrive()
                 ctx.emitEvent(AfterFinalizeRaceEvent(tag: "afterFinalize"), to: .all)
                 box.emitted.signal()
@@ -102,13 +126,15 @@ private func afterFinalizeRaceLand() -> LandDefinition<AfterFinalizeRaceState> {
 struct AfterFinalizeRaceTests {
     @Test("an AfterFinalize emit made while the actor is in CanJoin's segment is dropped, not appended")
     func afterFinalizeEmitsInsideAnotherSegment() async throws {
-        let box = AfterFinalizeRaceBox.shared
+        let landID = "after-finalize-race:\(UUID().uuidString)"
+        let box = AfterFinalizeRaceBox.box(for: landID)
         let keeper = LandKeeper<AfterFinalizeRaceState>(
             definition: afterFinalizeRaceLand(),
             initialState: AfterFinalizeRaceState(),
             autoStartLoops: false,
-            landID: "after-finalize-race:\(UUID().uuidString)"
+            landID: landID
         )
+        defer { box.canJoinResolverGate.open(); box.afterFinalizeGate.open(); box.emitted.signal() }
         await keeper.awaitInitialization()
 
         // 1. A join parks in CanJoin's resolver.
@@ -118,15 +144,15 @@ struct AfterFinalizeRaceTests {
                 clientID: ClientID("c1"), sessionID: SessionID("s1"), services: LandServices()
             )
         }
-        #expect(await box.canJoinResolverGate.waitForArrivals(1), "the join is in CanJoin's resolver")
+        try #require(await box.canJoinResolverGate.waitForArrivals(1), "the join is in CanJoin's resolver")
 
         // 2. The land shuts down; AfterFinalize parks at its await.
         let shutdown = Task { await keeper.forceShutdown() }
-        #expect(await box.afterFinalizeGate.waitForArrivals(1), "AfterFinalize is at its await")
+        try #require(await box.afterFinalizeGate.waitForArrivals(1), "AfterFinalize is at its await")
 
         // 3. The join resumes on the actor and blocks inside CanJoin's handler.
         box.canJoinResolverGate.open()
-        await box.handlerEntered()
+        try #require(await withinHangBound { await box.handlerEntered() } && box.isInHandler, "the actor is inside CanJoin's handler")
 
         // 4. AfterFinalize resumes and emits while the actor is still blocked.
         box.afterFinalizeGate.open()
