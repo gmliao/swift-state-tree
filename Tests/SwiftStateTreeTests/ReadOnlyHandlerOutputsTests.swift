@@ -158,12 +158,15 @@ struct ReadOnlyHandlerOutputsTests {
         #expect(run.keeper.readOnlyHandlerOutputsDropped.count == 8)
         #expect(run.keeper.destroyHandlerOutputsDropped.count == 0)
         #expect(run.keeper.lateStepOutputs.count == 0)
-        // Every number the run took is in the record: no gap is left where a dropped output was.
+        // Every number the run took is in the record, with no gap where a dropped output was: the
+        // two joins, the action, and the events of OnJoin (twice), the action and, on a tick
+        // land, the two ticks. The tick land's is P-K2E-1's after-picture in the PR.
         let frames = await run.recorder.getAllFrames()
         let sequences = frames.flatMap { frame in
             frame.lifecycleEvents.map(\.sequence) + frame.actions.map(\.sequence) + frame.serverEvents.map(\.sequence)
         }.sorted()
-        #expect(sequences == Array(0..<Int64(sequences.count)), "\(sequences)")
+        #expect(sequences == Array(0..<(tick ? 8 : 6)), "\(sequences)")
+        #expect(frames.flatMap(\.serverEvents).count == (tick ? 5 : 3))
         await run.keeper.forceShutdown()
     }
 
@@ -174,6 +177,14 @@ struct ReadOnlyHandlerOutputsTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         try await run.recorder.save(to: path)
         await run.keeper.forceShutdown()
+        // The record holds the events the replay is checked against: without them the verdict
+        // below would pass on nothing.
+        let source = try ReevaluationRecordFile.openSource(filePath: path)
+        var recordedEvents = 0
+        for tickId in 0...(try await source.getMaxTickId()) {
+            recordedEvents += try await source.getServerEvents(for: tickId).count
+        }
+        #expect(recordedEvents == (tick ? 5 : 3))
         let result = try await ReevaluationEngine.run(
             definition: readOnlyOutputsLand(tick: tick),
             initialState: ReadOnlyOutputsState(),
