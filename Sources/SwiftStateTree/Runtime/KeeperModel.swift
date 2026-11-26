@@ -234,6 +234,45 @@ struct KeeperConfig: Sendable {
     let systemSessionID: SessionID = LandContext.systemSessionID
 }
 
+/// The re-evaluation fields (#700 K1b-4, D2): set on a keeper that already exists
+/// (`ReevaluationEngine`, `ReevaluationRunnerImpl`); a live keeper keeps the defaults. Not plain:
+/// it holds the source, the sink and an observer closure. #612 removes the group with the replay
+/// land's owner.
+struct ReplayFields<State: StateNodeProtocol> {
+    /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
+    var reevaluationSource: (any ReevaluationSource)?
+    /// Optional sink for emitting recorded outputs during re-evaluation.
+    var reevaluationSink: (any ReevaluationSink)?
+    /// The encoding of a replayed entry that names none: the record header's (#700 K1a).
+    var replayHeaderPayloadEncoding: RecordPayloadEncoding = .json
+    /// Re-evaluation: OnInitialize was replayed before tick 0 from the record's initialize
+    /// record, so tick 0 skips its `initialize` lifecycle event.
+    var replayedInitializeBeforeTickZero: Bool = false
+    /// Re-evaluation: OnInitialize's `validate` threw on the recorded inputs (#593), set once,
+    /// naming the handler and the error. The record holds an initialize entry only when the live
+    /// `validate` passed, so the replay contradicts it: `ReevaluationEngine.verifyInitialize`
+    /// reports `.failed`. Nothing was written, as live.
+    var replayedInitializeRefusal: String?
+    /// Re-evaluation: called after each replayed tickless pass with its ordinal and the state after
+    /// it (#563), so the sync-output check locates what the record read after that pass.
+    var replayPassObserver: (@Sendable (Int64, State) async -> Void)?
+    /// Re-evaluation: where the recorded failure ended its turn among its inputs
+    /// (`LandFailurePosition.endsInputs`): the tick (a tick land's tick handler is skipped and
+    /// its events dropped) or, tickless, the pass whose events are dropped. Replay doesn't end
+    /// the land (`failLand` returns early), so it ends that work by this instead.
+    var replayFailureEnd: ReplayFailureEnd?
+    /// Re-evaluation: the record is 3.4 or later, so every tickless pass carries its ordinal.
+    var replayRecordsPassOrdinals: Bool = false
+    /// Re-evaluation: the record is 3.5 or later, so its passes and tick frames list the inputs
+    /// refused live (`rejected`, #586), and a missing list means none was.
+    var replayRecordsRejected: Bool = false
+    /// Re-evaluation: the inputs refused since the last `takeReplayRejected()`, in apply order.
+    var replayRejected: [Int64] = []
+    /// Re-evaluation: why each replayed tick's record can't be reproduced: its passes don't match
+    /// its inputs (`replayRecordedPasses`), or it holds a server input the land doesn't declare.
+    var recordedPassMismatches: [Int64: String] = [:]
+}
+
 // MARK: - The keeper's nested types the model holds (were private to `LandKeeper.swift`)
 
 /// A player's entry in the land (was `InternalPlayerSession`), without its services: those are

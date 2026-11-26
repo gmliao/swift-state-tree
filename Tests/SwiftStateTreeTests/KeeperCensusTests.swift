@@ -50,7 +50,7 @@ struct KeeperCensusException {
 
 enum KeeperCensus {
     /// The groups `censusLabelsForTesting()` reflects.
-    static let groups: Set<String> = ["actor", "model", "behavior", "behavior.config"]
+    static let groups: Set<String> = ["actor", "model", "behavior", "behavior.config", "replay"]
 
     /// Every stored property, by storage path, with its home.
     static let homes: [String: KeeperFieldHome] = {
@@ -92,20 +92,10 @@ enum KeeperCensus {
             "actor.pendingSyncTurnAfterTurn": .outside(.bindingToken),
             "actor.pendingTransportFailure": .replaced(by: "K4"),
             "actor.playerServices": .outside(.playerServices),
-            "actor.recordedPassMismatches": .replay,
             "actor.recorderSubmissions": .outside(.recorder),
             "actor.reevaluationRecorder": .outside(.recorder),
-            "actor.reevaluationSink": .replay,
-            "actor.reevaluationSource": .replay,
             "actor.releasedTransport": .outside(.bindingToken),
-            "actor.replayFailureEnd": .replay,
-            "actor.replayHeaderPayloadEncoding": .replay,
-            "actor.replayPassObserver": .replay,
-            "actor.replayRecordsPassOrdinals": .replay,
-            "actor.replayRecordsRejected": .replay,
-            "actor.replayRejected": .replay,
-            "actor.replayedInitializeBeforeTickZero": .replay,
-            "actor.replayedInitializeRefusal": .replay,
+            "actor.replay": .container,
             "actor.requestedSyncWorkWaitersForTesting": .replaced(by: "K2"),
             "actor.serverInputMaxInFlight": .outside(.serverInputCap),
             "actor.shutdownTurnWaiters": .replaced(by: "K2"),
@@ -194,6 +184,17 @@ enum KeeperCensus {
             "model.ticklessJobWork": .model,
             "model.ticksInFlight": .model,
             "model.transportRecordsFolds": .model,
+            "replay.recordedPassMismatches": .replay,
+            "replay.reevaluationSink": .replay,
+            "replay.reevaluationSource": .replay,
+            "replay.replayFailureEnd": .replay,
+            "replay.replayHeaderPayloadEncoding": .replay,
+            "replay.replayPassObserver": .replay,
+            "replay.replayRecordsPassOrdinals": .replay,
+            "replay.replayRecordsRejected": .replay,
+            "replay.replayRejected": .replay,
+            "replay.replayedInitializeBeforeTickZero": .replay,
+            "replay.replayedInitializeRefusal": .replay,
         ]
         // The filled-slot ring exists in debug builds only; a release run expects it absent.
         #if DEBUG

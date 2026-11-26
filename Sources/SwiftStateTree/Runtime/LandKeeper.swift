@@ -403,6 +403,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// keyed by the entry's generation, so a late writer never removes a newer entry's services.
     /// K2 replaces it with the turn core's table.
     private var playerServices: [PlayerID: (generation: Epoch, services: LandServices)] = [:]
+    /// The re-evaluation fields; a live keeper keeps their defaults.
+    private var replay = ReplayFields<State>()
+    /// Re-evaluation: OnInitialize's `validate` threw on the recorded inputs (#593); see
+    /// `ReplayFields.replayedInitializeRefusal`.
+    package var replayedInitializeRefusal: String? { replay.replayedInitializeRefusal }
 
     // The model's fields that tests and diagnostics read, under their old names.
     /// Server inputs refused because the in-flight cap was reached.
@@ -534,13 +539,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
-    /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
-    private var reevaluationSource: (any ReevaluationSource)?
-    /// The encoding of a replayed entry that names none: the record header's (#700 K1a).
-    private var replayHeaderPayloadEncoding: RecordPayloadEncoding = .json
 
-    /// Optional sink for emitting recorded outputs during re-evaluation.
-    private var reevaluationSink: (any ReevaluationSink)?
 
 
     /// Set the transport interface (called after TransportAdapter is created). A keeper whose
@@ -723,14 +722,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             throw failure(for: id, path: .initialization, sequence: nil)
         }
     }
-    /// Re-evaluation: OnInitialize was replayed before tick 0 from the record's initialize
-    /// record, so tick 0 skips its `initialize` lifecycle event.
-    private var replayedInitializeBeforeTickZero = false
-    /// Re-evaluation: OnInitialize's `validate` threw on the recorded inputs (#593), set once,
-    /// naming the handler and the error. The record holds an initialize entry only when the live
-    /// `validate` passed, so the replay contradicts it: `ReevaluationEngine.verifyInitialize`
-    /// reports `.failed`. Nothing was written, as live.
-    package private(set) var replayedInitializeRefusal: String?
 
 
 
@@ -768,7 +759,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     await transport?.sendEventToTransport(item.event, to: item.target)
                 }
             }
-            if let sink = reevaluationSink, !toFlush.isEmpty {
+            if let sink = replay.reevaluationSink, !toFlush.isEmpty {
                 let records = toFlush.map { item in
                     ReevaluationRecordedServerEvent(
                         kind: "serverEvent",
@@ -1112,7 +1103,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         logger: Logger? = nil
     ) {
         outputCollector.checksOverflow = mode == .reevaluation
-        self.reevaluationSink = reevaluationSink
+        self.replay.reevaluationSink = reevaluationSink
 
         // The land's generator starts from a caller-registered service's seed (replay registers
         // the recorded one), else from the instance ID when known, else from definition.id. The
@@ -1179,7 +1170,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Initialize source if in re-evaluation mode
         if mode == .reevaluation {
-            self.reevaluationSource = reevaluationSource
+            self.replay.reevaluationSource = reevaluationSource
         }
 
         // Execute OnInitialize handler and then start tick/sync loops.
@@ -1314,7 +1305,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func replayedResolverOutputs(
         _ recorded: [String: ReevaluationRecordedResolverOutput]
     ) -> [String: HeldResolverOutput] {
-        let integralFloats = reevaluationSource?.readsJSONRecord ?? false
+        let integralFloats = replay.reevaluationSource?.readsJSONRecord ?? false
         return recorded.mapValues {
             .recorded(RecordedResolverOutput(typeIdentifier: $0.typeIdentifier, value: $0.value, integralFloats: integralFloats))
         }
@@ -1325,7 +1316,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// recorded resolver outputs. Its events are flushed at tick -1 for the initialize check.
     private func replayInitializeBeforeTickZero() async {
         guard behavior.config.mode == .reevaluation,
-              let source = reevaluationSource,
+              let source = replay.reevaluationSource,
               let handler = definition.lifetimeHandlers.onInitialize,
               let record = try? await source.getInitializeRecord(),
               let recorded = try? await source.getLifecycleEvents(for: 0)
@@ -1349,7 +1340,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } catch {
             noteReplayedInitializeRefusal(error)
         }
-        replayedInitializeBeforeTickZero = true
+        replay.replayedInitializeBeforeTickZero = true
         await flushOutputs(forTick: model.lastCommittedTickId)
     }
 
@@ -1359,8 +1350,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         behavior.logger.error("❌ OnInitialize's validate threw during re-evaluation: nothing is written", metadata: [
             "error": .string(String(describing: error)),
         ])
-        if replayedInitializeRefusal == nil {
-            replayedInitializeRefusal = "OnInitialize's validate threw in replay: \(error)"
+        if replay.replayedInitializeRefusal == nil {
+            replay.replayedInitializeRefusal = "OnInitialize's validate threw in replay: \(error)"
         }
     }
 
@@ -1427,9 +1418,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // A record whose payloads this replay has no decoder for is refused before anything
             // is replayed (#700 K1a): `ReevaluationRecordPayloadError.noDecoder`.
             // A source whose metadata can't be read is refused too (fails closed).
-            if let source = reevaluationSource {
+            if let source = replay.reevaluationSource {
                 do {
-                    replayHeaderPayloadEncoding = try await source.getMetadata().effectivePayloadEncoding
+                    replay.replayHeaderPayloadEncoding = try await source.getMetadata().effectivePayloadEncoding
                     try await behavior.payloadDecoders.check(source)
                 } catch {
                     behavior.logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
@@ -2558,6 +2549,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             "model": labels(model),
             "behavior": labels(behavior),
             "behavior.config": labels(behavior.config),
+            "replay": labels(replay),
         ]
     }
     package func setInputTurnResultForTesting(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
@@ -4277,7 +4269,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         switch lifecycleItem.kind {
         case .initialize:
             guard let handler = definition.lifetimeHandlers.onInitialize,
-                  !replayedInitializeBeforeTickZero else { break }
+                  !replay.replayedInitializeBeforeTickZero else { break }
             // Only a record without an initialize record reaches this fallback, and a live run
             // writes one whenever it records: records before 2.1 no longer open
             // (`minimumReplayable`), so it is a crafted record. `ctx.tickId` is the executing tick
@@ -4453,7 +4445,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // record, and the rejected list names recorded inputs only.
                 if applied.appliedOrder.last == item.sequence {
                     applied.rejected.append(item.sequence)
-                    if behavior.config.mode == .reevaluation { replayRejected.append(item.sequence) }
+                    if behavior.config.mode == .reevaluation { replay.replayRejected.append(item.sequence) }
                 }
                 behavior.logger.error("Input refused: its validate threw; the inputs after it continue", metadata: [
                     "sequence": .stringConvertible(item.sequence),
@@ -4524,7 +4516,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         for (index, pass) in passes.enumerated() where mismatch == nil {
             if let ordinal = pass.ordinal, ordinal != ordinalBase + Int64(index) + 1 {
                 mismatch = "pass \(index) is numbered \(ordinal), expected \(ordinalBase + Int64(index) + 1)"
-            } else if pass.ordinal == nil, replayRecordsPassOrdinals {
+            } else if pass.ordinal == nil, replay.replayRecordsPassOrdinals {
                 // A 3.4 record numbers every tickless pass: a missing ordinal is a malformed record.
                 mismatch = "pass \(index) has no ordinal, which a record from 3.4 on always carries"
             }
@@ -4532,7 +4524,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 mismatch = "pass \(index) starts at sequence \(pass.sequenceBefore), before the previous pass's \(previousWatermark)"
             }
             previousWatermark = pass.sequenceBefore
-            if mismatch == nil, replayRecordsRejected, let rejected = pass.rejected {
+            if mismatch == nil, replay.replayRecordsRejected, let rejected = pass.rejected {
                 mismatch = Self.malformedRejected(rejected, inputs: Set(pass.inputs), scope: "pass \(index)")
             }
             for sequence in pass.inputs where mismatch == nil {
@@ -4575,14 +4567,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             _ = takeReplayRejected()
             let outcome = runInputTurn(batch, removingFromQueue: false)
             let replayedRejected = takeReplayRejected()
-            if replayRecordsRejected,
+            if replay.replayRecordsRejected,
                let divergence = Self.rejectedDivergence(recorded: pass.rejected ?? [], replayed: replayedRejected) {
                 mismatch = "pass \(index): \(divergence)"
             }
             if outcome.syncBroadcastOnly { syncBroadcastOnly = true }
             // Live, a failure applied as an input in this pass ended it there: its inputs'
             // events were never sent, so the replayed pass sends none either (#535 D9).
-            if let end = replayFailureEnd, end.tickId == tickId, let failingPass = end.pass, failingPass == model.passOrdinal {
+            if let end = replay.replayFailureEnd, end.tickId == tickId, let failingPass = end.pass, failingPass == model.passOrdinal {
                 outputCollector.emittedEvents.removeAll { $0.tickId == tickId && $0.sequence >= pass.sequenceBefore }
             }
             // The pass and the state after it, taken in the segment that applied it, for what
@@ -4597,12 +4589,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // The pass's events reach the sink now, not after the frame's last pass, so the
             // sync-output check sees each pass's events before the outputs read after it.
             await flushOutputs(forTick: tickId)
-            if let observer = replayPassObserver {
+            if let observer = replay.replayPassObserver {
                 await observer(ordinalAfter, stateAfter)
             }
         }
         if let mismatch {
-            recordedPassMismatches[tickId] = mismatch
+            replay.recordedPassMismatches[tickId] = mismatch
             behavior.logger.error("Re-evaluation: the record's passes don't match its inputs", metadata: [
                 "tickId": .stringConvertible(tickId),
                 "reason": .string(mismatch),
@@ -4613,39 +4605,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return syncBroadcastOnly
     }
 
-    /// Re-evaluation: called after each replayed tickless pass with its ordinal and the state after
-    /// it (#563), so the sync-output check locates what the record read after that pass.
-    private var replayPassObserver: (@Sendable (Int64, State) async -> Void)?
 
-    /// Re-evaluation: where the recorded failure ended its turn among its inputs
-    /// (`LandFailurePosition.endsInputs`): the tick (a tick land's tick handler is skipped and
-    /// its events dropped) or, tickless, the pass whose events are dropped. Replay doesn't end
-    /// the land (`failLand` returns early), so it ends that work by this instead.
-    private var replayFailureEnd: ReplayFailureEnd?
 
-    /// Re-evaluation: the record is 3.4 or later, so every tickless pass carries its ordinal.
-    private var replayRecordsPassOrdinals = false
 
     /// Sets `replayRecordsPassOrdinals` from the record's version (re-evaluation only).
     package func setReplayRecordsPassOrdinals(_ value: Bool) {
-        replayRecordsPassOrdinals = value
+        replay.replayRecordsPassOrdinals = value
     }
 
-    /// Re-evaluation: the record is 3.5 or later, so its passes and tick frames list the inputs
-    /// refused live (`rejected`, #586), and a missing list means none was.
-    private var replayRecordsRejected = false
 
     /// Sets `replayRecordsRejected` from the record's version (re-evaluation only).
     package func setReplayRecordsRejected(_ value: Bool) {
-        replayRecordsRejected = value
+        replay.replayRecordsRejected = value
     }
 
-    /// Re-evaluation: the inputs refused since the last `takeReplayRejected()`, in apply order.
-    private var replayRejected: [Int64] = []
 
     private func takeReplayRejected() -> [Int64] {
-        defer { replayRejected = [] }
-        return replayRejected
+        defer { replay.replayRejected = [] }
+        return replay.replayRejected
     }
 
     /// Why a recorded `rejected` list is malformed for inputs `inputs` (#586): it names an input
@@ -4677,7 +4654,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Installs `replayFailureEnd` (re-evaluation only).
     package func setReplayFailureEnd(tickId: Int64, pass: Int64?) {
-        replayFailureEnd = ReplayFailureEnd(tickId: tickId, pass: pass)
+        replay.replayFailureEnd = ReplayFailureEnd(tickId: tickId, pass: pass)
     }
 
     /// Re-evaluation only: whether a take found the sequence counter at `Int64.max` (#741). The run
@@ -4688,16 +4665,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Installs `replayPassObserver` (re-evaluation only).
     package func setReplayPassObserver(_ observer: (@Sendable (Int64, State) async -> Void)?) {
-        replayPassObserver = observer
+        replay.replayPassObserver = observer
     }
 
-    /// Re-evaluation: why each replayed tick's record can't be reproduced: its passes don't match
-    /// its inputs (`replayRecordedPasses`), or it holds a server input the land doesn't declare.
-    private var recordedPassMismatches: [Int64: String] = [:]
 
     /// Re-evaluation: takes why `tickId`'s recorded passes didn't match its inputs, if they didn't.
     package func takeRecordedPassMismatch(for tickId: Int64) -> String? {
-        recordedPassMismatches.removeValue(forKey: tickId)
+        replay.recordedPassMismatches.removeValue(forKey: tickId)
     }
 
     /// Re-evaluation only: move the shared sequence counter forward to a recorded watermark.
@@ -4770,7 +4744,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         model.nextTickId += 1
 
         // In re-evaluation mode, stop when we exceed the recorded tick range (prevent simulation beyond record)
-        if behavior.config.mode == .reevaluation, let source = reevaluationSource {
+        if behavior.config.mode == .reevaluation, let source = replay.reevaluationSource {
             let maxTickId = (try? await source.getMaxTickId()) ?? -1
             if tickId > maxTickId {
                 tickTask?.cancel()
@@ -4802,7 +4776,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var replayFrameRejected: [Int64] = []
 
         // In re-evaluation mode, load actions, client events, and lifecycle events from ReevaluationSource.
-        if behavior.config.mode == .reevaluation, let source = reevaluationSource {
+        if behavior.config.mode == .reevaluation, let source = replay.reevaluationSource {
             do {
                 replayWatermarks = try await source.getSequenceWatermarks(for: tickId)
                 replayPasses = try await source.getPasses(for: tickId)
@@ -4811,11 +4785,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 let recordedClientEvents = try await source.getClientEvents(for: tickId)
                 let recordedServerInputs = try await source.getServerInputs(for: tickId)
                 let recordedLifecycleEvents = try await source.getLifecycleEvents(for: tickId)
-                if replayRecordsRejected, !replayFrameRejected.isEmpty {
+                if replay.replayRecordsRejected, !replayFrameRejected.isEmpty {
                     let inputs = Set(recordedActions.map(\.sequence) + recordedClientEvents.map(\.sequence)
                         + recordedServerInputs.map(\.sequence) + recordedLifecycleEvents.map(\.sequence))
                     if let reason = Self.malformedRejected(replayFrameRejected, inputs: inputs, scope: "tick \(tickId)") {
-                        recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                        replay.recordedPassMismatches[tickId] = replay.recordedPassMismatches[tickId] ?? reason
                         behavior.logger.error("Re-evaluation: the record's rejected inputs are malformed", metadata: [
                             "tickId": .stringConvertible(tickId),
                             "reason": .string(reason),
@@ -4865,7 +4839,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // payload that doesn't decode is still queued, and fails when it is applied.
                     let recorded = RecordedPayloadBytes(
                         bytes: recordedAction.payload,
-                        encoding: recordedAction.payloadEncoding ?? replayHeaderPayloadEncoding
+                        encoding: recordedAction.payloadEncoding ?? replay.replayHeaderPayloadEncoding
                     )
                     let decoded = DecodedAction(catching: {
                         let source = try behavior.payloadDecoders.makeSource(recorded.bytes, recorded.encoding)
@@ -4893,7 +4867,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 for recordedClientEvent in recordedClientEvents {
                     let recorded = RecordedPayloadBytes(
                         bytes: recordedClientEvent.payload,
-                        encoding: recordedClientEvent.payloadEncoding ?? replayHeaderPayloadEncoding
+                        encoding: recordedClientEvent.payloadEncoding ?? replay.replayHeaderPayloadEncoding
                     )
                     let payload: PendingClientEventPayload
                     do {
@@ -4932,7 +4906,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 for recorded in recordedServerInputs {
                     guard let handler = definition.serverInputHandlers[recorded.typeIdentifier] else {
                         let reason = "recorded server input \(recorded.sequence) has type \(recorded.typeIdentifier), which the land doesn't declare"
-                        recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                        replay.recordedPassMismatches[tickId] = replay.recordedPassMismatches[tickId] ?? reason
                         behavior.logger.error("Re-evaluation: a recorded server input can't be applied", metadata: [
                             "tickId": .stringConvertible(tickId),
                             "reason": .string(reason),
@@ -4965,7 +4939,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // rather than being replayed as something else.
                     guard let kind = LifecycleKind(rawValue: recordedLifecycleEvent.kind) else {
                         let reason = "recorded lifecycle event \(recordedLifecycleEvent.sequence) has kind \(recordedLifecycleEvent.kind), which this build doesn't know"
-                        recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                        replay.recordedPassMismatches[tickId] = replay.recordedPassMismatches[tickId] ?? reason
                         behavior.logger.error("Re-evaluation: a recorded lifecycle event can't be applied", metadata: [
                             "tickId": .stringConvertible(tickId),
                             "reason": .string(reason),
@@ -5013,10 +4987,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await processPendingActions()
             // A tick land's refused inputs are on its frame (#586); a tickless frame without
             // passes (an older record) has none to compare.
-            if behavior.config.mode == .reevaluation, replayRecordsRejected, !isTickless,
+            if behavior.config.mode == .reevaluation, replay.replayRecordsRejected, !isTickless,
                let divergence = Self.rejectedDivergence(recorded: replayFrameRejected, replayed: takeReplayRejected()) {
                 let reason = "tick \(tickId): \(divergence)"
-                recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                replay.recordedPassMismatches[tickId] = replay.recordedPassMismatches[tickId] ?? reason
                 behavior.logger.error("Re-evaluation: an input's validate decided differently than live", metadata: [
                     "tickId": .stringConvertible(tickId),
                     "reason": .string(reason),
@@ -5026,7 +5000,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await transport?.syncBroadcastOnlyFromTransport()
         }
         // Replay of a tick land whose recorded failure ended this tick's inputs ends it the same way.
-        let replayEndsHere = behavior.config.mode == .reevaluation && !isTickless && replayFailureEnd?.tickId == tickId
+        let replayEndsHere = behavior.config.mode == .reevaluation && !isTickless && replay.replayFailureEnd?.tickId == tickId
         if failure != nil || replayEndsHere {
             // The land failed in this tick's inputs (#535, a legacy failure arrives here as a
             // `landFailure` item): no tick handler, no state hash, no W2 and no outputs, as the
