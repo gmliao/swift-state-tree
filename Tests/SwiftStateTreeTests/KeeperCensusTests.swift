@@ -27,7 +27,7 @@ enum KeeperFieldHome: Hashable, CustomStringConvertible {
     case container
 
     enum OutsideGroup: String {
-        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable
+        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable, turnSide, reentrySentinel
     }
 
     var description: String {
@@ -66,7 +66,9 @@ enum KeeperCensus {
             "actor.appliedSyncPhaseOffset": .outside(.loopDriver),
             "actor.appliedTickPhaseOffset": .outside(.loopDriver),
             "actor.behavior": .container,
+            "actor.bodyDepth": .outside(.reentrySentinel),
             "actor.boundSyncRequesterObject": .outside(.bindingToken),
+            "actor.closingGateForReentry": .outside(.reentrySentinel),
             "actor.debugDrainWaiters": .replaced(by: "K7"),
             "actor.debugHeldInputs": .replaced(by: "K7"),
             "actor.destroyTask": .replaced(by: "K7"),
@@ -85,6 +87,7 @@ enum KeeperCensus {
             "actor.initializationWaits": .replaced(by: "K2"),
             "actor.inputDrainIdleWaitersForTesting": .replaced(by: "K2"),
             "actor.inputTurnWaiters": .replaced(by: "K2"),
+            "actor.lateReentriesApplied": .outside(.reentrySentinel),
             "actor.model": .container,
             "actor.nextDrainStartedWaiterForTesting": .replaced(by: "K2"),
             "actor.nextFailureWaiterForTesting": .replaced(by: "K2"),
@@ -96,6 +99,10 @@ enum KeeperCensus {
             "actor.pendingTransportFailure": .replaced(by: "K4"),
             "actor.playerServices": .outside(.playerServices),
             "actor.recorderSubmissions": .outside(.recorder),
+            "actor.reentryClosedGate": .outside(.reentrySentinel),
+            "actor.reentryFailure": .outside(.reentrySentinel),
+            "actor.reentryGateClosed": .outside(.reentrySentinel),
+            "actor.reentryViolations": .outside(.reentrySentinel),
             "actor.reevaluationRecorder": .outside(.recorder),
             "actor.releasedTransport": .outside(.bindingToken),
             "actor.replay": .container,
@@ -111,6 +118,7 @@ enum KeeperCensus {
             "actor.tickLoopConfiguredAt": .outside(.loopDriver),
             "actor.tickTask": .replaced(by: "K2"),
             "actor.transport": .outside(.bindingToken),
+            "actor.turnSide": .outside(.turnSide),
             "behavior.config": .container,
             "behavior.config.actualLandID": .behavior,
             "behavior.config.autoStartLoops": .behavior,
@@ -156,6 +164,7 @@ enum KeeperCensus {
             "model.joinSyncTicks": .model,
             "model.joinSyncTurnBinding": .model,
             "model.joinSyncTurnsForTesting": .model,
+            "model.joinSyncTurnsScheduledForTesting": .model,
             "model.joinSyncWaitsForCommit": .model,
             "model.landRandom": .model,
             "model.lastCommittedTickId": .model,

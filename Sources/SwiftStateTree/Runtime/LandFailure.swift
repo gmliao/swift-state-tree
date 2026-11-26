@@ -3,9 +3,10 @@ import SwiftStateTurns
 
 /// Why a land was ended by a failure (#535).
 ///
-/// A sync conversion, a frame, event or action-response encode, a sync plan, or a handler that
-/// threw after writing synced state can't be brought back to a fully correct state, so the land
-/// ends: its sessions close with 4016 (`landFailed`), and its destroy handlers and save see
+/// A sync conversion, a frame, event or action-response encode, a sync plan, a handler that
+/// threw after writing synced state, or a transport that called back into the keeper during a
+/// turn (`keeperReentry`) can't be brought back to a fully correct state, so the land ends: its
+/// sessions close with 4016 (`landFailed`), and its destroy handlers and save see
 /// `LandDestructionCause.failed`. The keeper keeps the first failure (`LandKeeper.failure`).
 @PlainData
 public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConvertible {
@@ -25,6 +26,10 @@ public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConv
         /// A handler threw after mutable access to synced state (#87). Not produced today: no
         /// handler throws after it writes (#586, #593).
         case handlerWrite
+        /// Code outside the keeper called back into it synchronously while a turn body ran
+        /// (#700): a transport's callback during a port call. The keeper refuses the call and
+        /// ends the land, so the callback's write is never half-applied.
+        case keeperReentry
     }
 
     public let kind: Kind
