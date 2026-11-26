@@ -454,3 +454,7 @@ struct KeeperSequenceCounter: Sendable, Equatable {
         return s
     }
 }
+
+/// A turn machine is `Sendable` (`TurnMachine`); its conformance has to be declared beside the
+/// model (#700 K2-1). Every stored field is plain data.
+extension KeeperModel: Sendable {}
