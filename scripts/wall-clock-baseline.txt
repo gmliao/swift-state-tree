@@ -9,9 +9,7 @@ Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift clock-poll 1
 Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift helper-poll 4
 Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift sleep-poll 1
 Tests/SwiftStateTreeNIOTests/NIOLandHostTests.swift sleep-poll 1
-Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift clock-poll 2
-Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift helper-poll 1
-Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift sleep-poll 2
+Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift poll-helper 1
 Tests/SwiftStateTreeTests/ActionJobTests.swift yield-poll 1
 Tests/SwiftStateTreeTests/DebugProjectionWireShapeTests.swift helper-poll 1
 Tests/SwiftStateTreeTests/InitializeResolverFailureTests.swift yield-poll 2

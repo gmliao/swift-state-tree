@@ -26,7 +26,7 @@ import { clientCpuCores, measureClientCpu, startCpuSampler, type CpuSample } fro
 import { summarizeLoopDelay, type ClientLoopDelay } from "./loop-delay";
 import type { ClientCpu } from "./client-cpu";
 import { measureClientElu, type ClientElu } from "./client-elu";
-import { timerAt } from "./timer-at";
+import { timerAt, waitForStartAt } from "./timer-at";
 import { INPUT_LATENCY_MIN_SEEN_DEFAULT, measureInputLatency, type InputLatencyMeasurement } from "./input-latency";
 import { isInjectedJoinFailure, sumActionOutcomes, type ActionOutcomeCounts } from "./action-outcomes";
 
@@ -605,12 +605,9 @@ export async function runScenario(filePath: string, options: RunOptions | number
             controlServer = await startControlServer(opts.controlSocket, pool);
         }
         if (opts.startAt !== undefined) {
-            const waitMs = opts.startAt - Date.now();
-            if (waitMs < 0) {
-                // A late start would break the barrier the other instance relies on.
-                throw new Error(`--start-at ${opts.startAt} is ${-waitMs} ms in the past once the workers are up`);
-            }
-            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            // Never before the target: a timer can fire up to 1 ms early (#916), and
+            // `firstPhaseStartedAt` below must not be earlier than the barrier.
+            await waitForStartAt(opts.startAt);
         }
         runConfig.firstPhaseStartedAt = Date.now();
         const slowReadWindow = opts.slowRead

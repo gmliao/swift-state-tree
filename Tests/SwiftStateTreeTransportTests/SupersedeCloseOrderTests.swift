@@ -386,3 +386,156 @@ struct SupersedeCloseOrderTests {
         await keeper.forceShutdown()
     }
 }
+
+// MARK: - #911: the first close decided for a connection is the one it gets
+
+@Suite("The first close decided for a connection is the one it gets (#911)", .timeLimit(.minutes(1)))
+struct CloseDecisionOrderTests {
+    let a = SessionID("a"), ca = ClientID("ca")
+    let a2 = SessionID("a2"), ca2 = ClientID("ca2")
+    let error = Data("a's error".utf8)
+
+    /// A joined as `old`, with a last frame queued in the writer and held at its connection's send.
+    private func joinWithHeldFrame(_ f: SupersedeFixture, _ old: HeldSendConnection) async throws -> (generation: UInt64, last: Data) {
+        let generation = try await f.join(a, ca, old)
+        let before = await old.sendAttempts
+        await old.holdSends()
+        let last = Data("a's last frame".utf8)
+        let frame = await f.adapter.sessionFrame(last, kind: .text, to: a)
+        #expect(await f.adapter.outboundWriter.enqueue([frame]) == .accepted)
+        #expect(await old.attempted.waitForArrivals(before + 1), "the frame reached the connection's send")
+        return (generation, last)
+    }
+
+    @Test("An ended session's final frame doesn't overtake the supersede's pending 4017")
+    func endedFinalFrameKeepsThePendingClose() async throws {
+        let f = await SupersedeFixture()
+        await f.adapter.trackDetachedClosesForTesting()
+        let bound = await f.transport.holdBoundClosesForTesting()
+        defer { bound.open() }
+        let old = HeldSendConnection()
+        let (generation, last) = try await joinWithHeldFrame(f, old)
+        // A2 supersedes A: its 4017 waits behind the held frame. Then the router's final frame
+        // for A, a join failure it decided before the supersede, finds A ended.
+        try await f.join(a2, ca2, HeldSendConnection(), flushes: false)
+        await f.adapter.sendFinalFrameAndClose(error, kind: .text, to: a, generation: generation)
+        await f.adapter.waitForDetachedClosesForTesting()
+        await f.adapter.waitForOutboundIdleForTesting()
+        #expect(await old.closes.isEmpty, "a close overtook A's held frame")
+
+        await old.releaseSends()
+        #expect(await old.closedSignal.waitForArrivals(1))
+        await f.adapter.waitForOutboundIdleForTesting()
+        let events = await old.events
+        #expect(events.suffix(2) == [.sent(last), .closed(SessionClose.Code.superseded)], "\(events.suffix(2))")
+        #expect(await old.closes == [SessionClose.Code.superseded], "one close, the first decided")
+        await f.keeper.forceShutdown()
+    }
+
+    @Test("An ended session's final frame, with the old connection's generation, leaves a new connection under the ID open")
+    func endedFinalFrameSparesAReusedID() async throws {
+        let f = await SupersedeFixture()
+        let first = HeldSendConnection()
+        let generation = try await f.join(a, ca, first)
+        // A2 supersedes A, and A's 4017 goes out.
+        try await f.join(a2, ca2, HeldSendConnection())
+        #expect(await first.closedSignal.waitForArrivals(1))
+        #expect(await first.closes == [SessionClose.Code.superseded])
+        // A's client goes, and a new connection takes the ID: the transport accepted it, the
+        // adapter hasn't registered it, so the adapter still has A as ended.
+        await f.transport.handleDisconnection(sessionID: a)
+        let reused = HeldSendConnection()
+        _ = await f.transport.handleConnection(sessionID: a, connection: reused, authInfo: nil)
+        let reusedGeneration = try #require(await f.transport.connectionGeneration(for: a))
+        #expect(reusedGeneration != generation)
+
+        // The router's final frame for the old connection.
+        await f.adapter.sendFinalFrameAndClose(error, kind: .text, to: a, generation: generation)
+        await f.adapter.waitForOutboundIdleForTesting()
+        // A frame for the new connection still goes out: no close marker is on its queue.
+        let dropsBefore = await f.transport.framesDroppedAfterCloseMarker
+        await f.transport.sendSessionFrames([SessionFrame(data: Data("hello".utf8), sessionID: a, connectionGeneration: reusedGeneration)])
+        await f.transport.flushSessionQueues()
+        #expect(await f.transport.framesDroppedAfterCloseMarker == dropsBefore)
+        #expect(await reused.events == [.sent(Data("hello".utf8))])
+        #expect(await reused.closes.isEmpty, "the old connection's close closed the new one")
+        await f.keeper.forceShutdown()
+    }
+
+    @Test("A pending final frame's close keeps its place: a later supersede's 4017 is ignored")
+    func pendingFinalFrameWinsOverALaterSupersede() async throws {
+        let f = await SupersedeFixture()
+        let bound = await f.transport.holdBoundClosesForTesting()
+        defer { bound.open() }
+        let old = HeldSendConnection()
+        let (generation, last) = try await joinWithHeldFrame(f, old)
+        // The first decision: A's final frame and its plain close, behind the held frame (the
+        // post-flip inbound overflow's call; A is still a member). Then A2 supersedes A.
+        await f.adapter.sendFinalFrameAndClose(error, kind: .text, to: a, generation: generation)
+        try await f.join(a2, ca2, HeldSendConnection(), flushes: false)
+        await f.adapter.waitForOutboundIdleForTesting()
+        #expect(await old.closes.isEmpty)
+
+        await old.releaseSends()
+        #expect(await old.closedSignal.waitForArrivals(1))
+        let events = await old.events
+        #expect(events.suffix(3) == [.sent(last), .sent(error), .closed(1000)], "\(events.suffix(3))")
+        #expect(await old.closes == [1000], "one close, the first decided")
+        await f.keeper.forceShutdown()
+    }
+
+    @Test("A stale final frame and disconnect, with an older connection's generation, leave a replacement under the ID joined and open")
+    func staleCallbackSparesARegisteredReplacement() async throws {
+        let f = await SupersedeFixture()
+        let first = HeldSendConnection()
+        let oldGeneration = try await f.join(a, ca, first)
+        // A's connection goes, and a new one registers under the same ID.
+        await f.transport.handleDisconnection(sessionID: a)
+        await f.adapter.onDisconnect(sessionID: a, clientID: ca)
+        let replacement = HeldSendConnection()
+        let newGeneration = try await f.join(a, ca, replacement)
+        #expect(newGeneration != oldGeneration)
+
+        // A router callback for the old connection, late: its final frame, then its cleanup.
+        await f.adapter.sendFinalFrameAndClose(error, kind: .text, to: a, generation: oldGeneration)
+        await f.adapter.onDisconnect(sessionID: a, clientID: ca, generation: oldGeneration)
+        await f.adapter.waitForOutboundIdleForTesting()
+        #expect(await f.adapter.isJoined(sessionID: a), "the replacement lost its membership")
+        // The replacement still gets its frames through the adapter's send path, whose
+        // ended-session filter would drop them had the stale call marked the ID ended, and isn't
+        // closed. (The writer alone doesn't check that filter.)
+        #expect(await !f.adapter.endedSessions.contains(a), "the stale final frame marked the replacement ended")
+        let hello = Data("hello".utf8)
+        let frame = await f.adapter.sessionFrame(hello, kind: .text, to: a)
+        await f.adapter.enqueueFrames([frame])
+        await f.adapter.waitForOutboundIdleForTesting()
+        await f.transport.flushSessionQueues()
+        let events = await replacement.events, closes = await replacement.closes
+        #expect(events.contains(.sent(hello)), "\(events)")
+        #expect(!events.contains(.sent(error)))
+        #expect(closes.isEmpty, "\(closes)")
+        await f.keeper.forceShutdown()
+    }
+
+    @Test("An at-once close preempts a pending ordered one: a member's pending final frame, then the land failure's 4016")
+    func landFailurePreemptsAPendingFinalFrame() async throws {
+        let f = await SupersedeFixture()
+        let bound = await f.transport.holdBoundClosesForTesting()
+        defer { bound.open() }
+        let old = HeldSendConnection()
+        let (generation, _) = try await joinWithHeldFrame(f, old)
+        // The first decision, as the post-flip inbound overflow makes it: A stays a member.
+        await f.adapter.sendFinalFrameAndClose(error, kind: .text, to: a, generation: generation)
+        #expect(await f.adapter.isJoined(sessionID: a), "the staged first decision must leave A a member")
+        // The second, at once: every session the adapter holds, A included.
+        await f.adapter.closeSessionsForLandFailure(
+            LandFailure(kind: .syncPlan, detail: "#911's F3", position: LandFailurePosition(stage: .syncPhase))
+        )
+        #expect(await old.closes == [SessionClose.Code.landFailed], "4016 while A's frame is held")
+        await old.releaseSends()
+        await f.adapter.waitForOutboundIdleForTesting()
+        #expect(await !old.events.contains(.sent(error)), "the error went out after the 4016")
+        #expect(await old.closes == [SessionClose.Code.landFailed])
+        await f.keeper.forceShutdown()
+    }
+}

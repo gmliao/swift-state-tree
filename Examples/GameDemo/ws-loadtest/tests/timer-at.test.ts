@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { timerAt, untilWallClock } from "../src/timer-at";
+import { timerAt, untilWallClock, waitForStartAt } from "../src/timer-at";
 
 describe("timerAt", () => {
     it("re-arms when the timer fires before the wall-clock target", () => {
@@ -42,5 +42,25 @@ describe("timerAt", () => {
             await untilWallClock(target);
             expect(Date.now()).toBeGreaterThanOrEqual(target);
         }
+    });
+
+    it("waitForStartAt does not resolve when its timer fires 1 ms early (#916)", async () => {
+        let now = 1000;
+        const armed: Array<() => void> = [];
+        let resolvedAt: number | undefined;
+        const waiting = waitForStartAt(1010, () => now, (fn) => armed.push(fn)).then(() => (resolvedAt = now));
+        now = 1009; // the timer fires 1 ms before the wall-clock target
+        armed[0]();
+        await Promise.resolve();
+        expect(resolvedAt).toBeUndefined();
+        expect(armed).toHaveLength(2); // re-armed for the remaining millisecond
+        now = 1010;
+        armed[1]();
+        await waiting;
+        expect(resolvedAt).toBe(1010);
+    });
+
+    it("waitForStartAt refuses a time already past", async () => {
+        await expect(waitForStartAt(990, () => 1000)).rejects.toThrow("--start-at 990 is 10 ms in the past once the workers are up");
     });
 });

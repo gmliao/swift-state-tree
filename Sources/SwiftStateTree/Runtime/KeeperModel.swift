@@ -45,6 +45,12 @@ struct KeeperModel<State: StateNodeProtocol> {
     var initializationFailure: FailureID?
     /// Mints failure IDs. Keeper-local: never reset, never restored from a record.
     var failureIDs: EpochCounter = EpochCounter()
+    /// The input and output sequence numbers (#700 K1b-5 D15.3). A handler step lends it to the
+    /// step's contexts (`KeeperSequenceLease`) and takes it back when the step ends.
+    var sequence: KeeperSequenceCounter = KeeperSequenceCounter()
+    /// The sync requests per tick. A handler step's requests are staged in the lease and ORed
+    /// in when the step ends.
+    var syncRequestsByTick: [Int64: KeeperSyncRequests] = [:]
     var actionJobs: [Int64: KeeperActionJob<State>] = [:]
     var actionSlots: [Int64: KeeperActionSlot] = [:]
     /// Tickless jobs whose in-flight work (`debugBeginWork` at intake) ends when their slot is
@@ -226,6 +232,36 @@ struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
     let reentrySentinel: KeeperReentrySentinel
 }
 
+/// What the behavior's fixed fields decide (#700 K1b-5 move, step 1): the reads a turn body made
+/// through the actor, now on the behavior it is lent.
+extension KeeperBehavior {
+    /// A land without a tick handler: every turn records under one tick id.
+    var isTickless: Bool { definition.lifetimeHandlers.tickHandler == nil }
+    /// Live keepers' inputs, ticks and initialization run as turns (#546 L2d).
+    var routesThroughTurn: Bool { config.mode == .live }
+    /// Something reads input records: a recorder, or a replay.
+    var recordsInputs: Bool { reevaluationRecorder != nil || config.mode != .live }
+    /// Whether passes are numbered: a tickless land that records (live, with a recorder) or
+    /// replays.
+    var countsPasses: Bool { isTickless && (reevaluationRecorder != nil || config.mode == .reevaluation) }
+    /// Whether the land syncs on its own (a tick loop or a sync loop); mirrors the loop setup in
+    /// `performInitialization`.
+    var hasPeriodicSync: Bool {
+        guard config.autoStartLoops else { return false }
+        let handlers = definition.lifetimeHandlers
+        let tickLoop = handlers.tickInterval != nil && handlers.tickHandler != nil
+        let syncLoop = handlers.syncInterval != nil || handlers.tickInterval != nil
+        return tickLoop || syncLoop
+    }
+    /// The coincident-sync window: min(5 ms, tick / 4, sync / 4).
+    var coincidentSyncWindow: Duration {
+        var window = Duration.milliseconds(5)
+        if let tick = definition.lifetimeHandlers.tickInterval { window = min(window, tick / 4) }
+        if let sync = definition.lifetimeHandlers.syncInterval { window = min(window, sync / 4) }
+        return window
+    }
+}
+
 /// The re-entry sentinel's state (#865): the body depth the guarded entries read, the refusals
 /// they counted and the gate the first refusal closed. Used on the keeper's executor only.
 final class KeeperReentrySentinel: @unchecked Sendable {
@@ -282,7 +318,7 @@ struct KeeperConfig: Sendable {
 /// (`ReevaluationEngine`, `ReevaluationRunnerImpl`); a live keeper keeps the defaults. Not plain:
 /// it holds the source, the sink and an observer closure. #612 removes the group with the replay
 /// land's owner.
-struct ReplayFields<State: StateNodeProtocol> {
+struct ReplayFields {
     /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
     var reevaluationSource: (any ReevaluationSource)?
     /// Optional sink for emitting recorded outputs during re-evaluation.
@@ -297,9 +333,6 @@ struct ReplayFields<State: StateNodeProtocol> {
     /// `validate` passed, so the replay contradicts it: `ReevaluationEngine.verifyInitialize`
     /// reports `.failed`. Nothing was written, as live.
     var replayedInitializeRefusal: String?
-    /// Re-evaluation: called after each replayed tickless pass with its ordinal and the state after
-    /// it (#563), so the sync-output check locates what the record read after that pass.
-    var replayPassObserver: (@Sendable (Int64, State) async -> Void)?
     /// Re-evaluation: where the recorded failure ended its turn among its inputs
     /// (`LandFailurePosition.endsInputs`): the tick (a tick land's tick handler is skipped and
     /// its events dropped) or, tickless, the pass whose events are dropped. Replay doesn't end
@@ -392,4 +425,32 @@ struct KeeperActionJob<State: StateNodeProtocol>: Sendable {
 @PlainData
 struct KeeperActionSlot: Sendable {
     var result: InputResult?
+}
+
+/// The keeper's sequence counter: one number per input and per emitted event, in order.
+@PlainData
+struct KeeperSequenceCounter: Sendable, Equatable {
+    var next: Int64 = 0
+    /// Re-evaluation only: a take past `Int64.max` stops the replay instead of the process (#741).
+    /// A live counter starts at 0 and traps first, so the live path keeps the plain increment.
+    var checksOverflow: Bool = false
+    /// Set by the first take that found no number left; read at the run's step boundaries.
+    var exhausted: Bool = false
+
+    mutating func take() -> Int64 {
+        let s = next
+        guard checksOverflow else {
+            next += 1
+            return s
+        }
+        let (following, overflow) = s.addingReportingOverflow(1)
+        if overflow {
+            // The counter stays at Int64.max and the number repeats: the run ends at its next
+            // step boundary (`replaySequenceExhausted()`), and what it computed meanwhile is dropped.
+            exhausted = true
+        } else {
+            next = following
+        }
+        return s
+    }
 }
