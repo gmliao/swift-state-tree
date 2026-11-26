@@ -738,7 +738,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func failInitialization(with error: any Error) {
         // Minting the ID writes the model. A plain assignment evaluates its right side first, so
         // this split is a precaution, kept in the shape of the slot fill's (`fillActionSlot`).
-        let failure = recordFailure(&model, LandInitializationError(underlying: error))
+        let failure = recordFailure(&model, &turnSide, LandInitializationError(underlying: error))
         model.initializationFailure = failure
         checkActionTables(&model, &turnSide, #function)
     }
@@ -888,20 +888,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// input drain's end ("input-drain-end"), intake points ("action-queued", "input-held-frozen"),
     /// the forced shutdown's steps ("force-shutdown-joined", "shutdown-stop-gate",
     /// "shutdown-queued") and labels passed to `recordInTurnProbeForTesting`.
-    private var inTurnProbeForTesting: (@Sendable (String) -> Void)?
 
     /// Tests only (the probe's negative control): one `await Task.yield()` inside the tick turn,
     /// after "turn-begin" and before the synchronous core.
     private var inTurnYieldForTesting = false
 
-    /// Installs `inTurnProbeForTesting` (tests only).
+    /// Installs the side's probe (tests only).
     func setInTurnProbeForTesting(_ probe: (@Sendable (String) -> Void)?) {
-        inTurnProbeForTesting = probe
+        turnSide.probe = probe
     }
 
     /// Tests only: a job on this keeper's executor that records `label`.
     func recordInTurnProbeForTesting(_ label: String) {
-        inTurnProbeForTesting?(label)
+        turnSide.probe?(label)
     }
 
 
@@ -1011,7 +1010,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Tickless inputs waiting for `debugResume()`.
     private var debugHeldInputs: [CheckedContinuation<Void, Never>] = []
     /// `debugFreeze` callers waiting for the drain, by waiter ID (resumed on drain, release or deadline).
-    private var debugDrainWaiters: [UInt64: CheckedContinuation<Void, Never>] = [:]
 
 
     /// Initializes a new LandKeeper with the given definition and initial state.
@@ -1725,7 +1723,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 await self?.debugWakeDrainWaiter(waiterID)
             }
             await withCheckedContinuation { continuation in
-                debugDrainWaiters[waiterID] = continuation
+                turnSide.debugDrainWaiters[waiterID] = continuation
                 let watchers = freezeWaitWatchersForTesting
                 freezeWaitWatchersForTesting.removeAll()
                 watchers.forEach { $0.resume() }
@@ -1747,8 +1745,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         debugHeldInputs.removeAll()
         held.forEach { $0.resume() }
         // Waiters of this generation re-check and return false.
-        let waiters = debugDrainWaiters
-        debugDrainWaiters.removeAll()
+        let waiters = turnSide.debugDrainWaiters
+        turnSide.debugDrainWaiters.removeAll()
         waiters.values.forEach { $0.resume() }
     }
 
@@ -1855,7 +1853,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return .refused(.notCurrent)
         }
         _ = bindSyncRequester(&m, port)
-        inTurnProbeForTesting?("turn-begin")
+        side.probe?("turn-begin")
         m.inTurnSyncTurnKind = .syncOnly
         defer { m.inTurnSyncTurnKind = .tick }
         let mark = m.recorderSubmissionCount
@@ -1867,7 +1865,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         switch callOut(&m, &side, &outputs, { m in inTurnSyncRecording(m) }) {
         case .refused(let refused):
             enqueueTicklessTurnEnd(&m, since: mark)
-            inTurnProbeForTesting?("turn-end")
+            side.probe?("turn-end")
             return .failed(failure ?? refused)
         case .answered(let answer):
             recording = answer
@@ -1905,7 +1903,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A tickless land's sync-only turn is its own turn record (#327); a tick land's settle
         // output stays with the last committed tick's.
         enqueueTicklessTurnEnd(&m, since: mark)
-        inTurnProbeForTesting?("turn-end")
+        side.probe?("turn-end")
         return outcome
     }
 
@@ -1915,7 +1913,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         while model.debugFrozen, !isDraining {
             await withCheckedContinuation { continuation in
                 debugHeldInputs.append(continuation)
-                inTurnProbeForTesting?("input-held-frozen")
+                turnSide.probe?("input-held-frozen")
             }
         }
     }
@@ -1931,19 +1929,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// `debugEndWork(_:)` for a caller outside a turn body.
     private func debugEndWork() {
-        debugEndWork(&model)
+        debugEndWork(&model, &turnSide)
     }
 
-    private func debugEndWork(_ m: inout KeeperModel<State>) {
+    private func debugEndWork(_ m: inout KeeperModel<State>, _ side: inout KeeperTurnSide) {
         m.debugInFlightWork -= 1
-        guard m.debugInFlightWork == 0, !debugDrainWaiters.isEmpty else { return }
-        let waiters = debugDrainWaiters
-        debugDrainWaiters.removeAll()
+        guard m.debugInFlightWork == 0, !side.debugDrainWaiters.isEmpty else { return }
+        let waiters = side.debugDrainWaiters
+        side.debugDrainWaiters.removeAll()
         waiters.values.forEach { $0.resume() }
     }
 
     private func debugWakeDrainWaiter(_ waiterID: UInt64) {
-        debugDrainWaiters.removeValue(forKey: waiterID)?.resume()
+        turnSide.debugDrainWaiters.removeValue(forKey: waiterID)?.resume()
     }
 
     // MARK: - Player Lifecycle
@@ -2484,13 +2482,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// recorded watermarks.
     private func deliverResolvedAction(
         _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
         _ item: PendingActionItem,
         ticket: KeeperActionTicket,
         input: String
     ) throws {
         try validateDelivery(&m, of: item, ticket: ticket, input: input)
         m.pendingItems.append(.action(item.with(heldResolverOutputs: item.heldResolverOutputs, resolvedAtTick: m.lastCommittedTickId)))
-        inTurnProbeForTesting?("action-queued")
+        side.probe?("action-queued")
     }
 
     /// The delivery checks (`deliverResolvedAction`): the land isn't draining, and the sender's
@@ -2515,28 +2514,32 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - The failure table (#700 K1b-2). Outside the model: `any Error` isn't plain.
 
-    /// Errors held for callers that haven't read them, by the ID the model holds.
-    private var failures: [FailureID: any Error] = [:]
     /// Where a failure is read from, for the miss's log.
     private enum FailurePath: String {
         case slot, inputTurn, initialization
     }
 
-    private func recordFailure(_ m: inout KeeperModel<State>, _ error: any Error) -> FailureID {
+    private func recordFailure(_ m: inout KeeperModel<State>, _ side: inout KeeperTurnSide, _ error: any Error) -> FailureID {
         let id = FailureID(m.failureIDs.next())
-        failures[id] = error
+        side.failures[id] = error
         return id
     }
 
     /// Removes the entry and returns its error; a miss returns `FailureTableMiss`, logged and counted.
-    private func takeFailure(_ m: inout KeeperModel<State>, _ id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
-        if let error = failures.removeValue(forKey: id) { return error }
+    private func takeFailure(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ id: FailureID,
+        path: FailurePath,
+        sequence: Int64?
+    ) -> any Error {
+        if let error = side.failures.removeValue(forKey: id) { return error }
         return noteFailureMiss(&m, id, path: path, sequence: sequence)
     }
 
     /// Returns the entry's error and leaves it; a miss as `takeFailure`.
     private func failure(for id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
-        if let error = failures[id] { return error }
+        if let error = turnSide.failures[id] { return error }
         return noteFailureMiss(&model, id, path: path, sequence: sequence)
     }
 
@@ -2554,31 +2557,42 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The result to hold: a success as is, a failure recorded in the table.
-    private func held(_ m: inout KeeperModel<State>, _ result: Result<InputOutcome, any Error>) -> InputResult {
+    private func held(_ m: inout KeeperModel<State>, _ side: inout KeeperTurnSide, _ result: Result<InputOutcome, any Error>) -> InputResult {
         switch result {
         case .success(let outcome): return .outcome(outcome)
-        case .failure(let error): return .failed(recordFailure(&m, error))
+        case .failure(let error): return .failed(recordFailure(&m, &side, error))
         }
     }
 
     /// The held result as its caller gets it, taking the failure out of the table.
-    private func taken(_ m: inout KeeperModel<State>, _ held: InputResult, path: FailurePath, sequence: Int64) -> Result<InputOutcome, any Error> {
+    private func taken(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ held: InputResult,
+        path: FailurePath,
+        sequence: Int64
+    ) -> Result<InputOutcome, any Error> {
         switch held {
         case .outcome(let outcome): return .success(outcome)
-        case .failed(let id): return .failure(takeFailure(&m, id, path: path, sequence: sequence))
+        case .failed(let id): return .failure(takeFailure(&m, &side, id, path: path, sequence: sequence))
         }
     }
 
     /// Sets `inputTurnResults[sequence]`, taking out of the table any failure the write displaces.
     /// Live sequencing never displaces one; a manual replay step (`stepTickOnce` has no
     /// single-flight) could, so the setter is safe anyway.
-    private func setInputTurnResult(_ m: inout KeeperModel<State>, _ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
+    private func setInputTurnResult(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ sequence: Int64,
+        _ result: Result<InputOutcome, any Error>?
+    ) {
         if case .failed(let displaced)? = m.inputTurnResults[sequence] {
-            failures.removeValue(forKey: displaced)
+            side.failures.removeValue(forKey: displaced)
         }
         // `held` writes the m. Split as a precaution, in the shape of the slot fill's
         // (`fillActionSlot`); whether a subscript set begins its access first is unproven.
-        let entry = result.map { held(&m, $0) }
+        let entry = result.map { held(&m, &side, $0) }
         m.inputTurnResults[sequence] = entry
     }
 
@@ -2588,7 +2602,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// waiters, and the failure table and the IDs the model holds. Each call site logs and counts
     /// what this returns: an assertion inside a function a mutant changes would trap before a test
     /// could observe it.
-    private func actionTableViolations(_ m: KeeperModel<State>, _ actions: KeeperActionTables) -> [String] {
+    private func actionTableViolations(_ m: KeeperModel<State>, _ side: KeeperTurnSide) -> [String] {
+        let actions = side.actions
         var violations: [String] = []
         if Set(actions.jobTasks.keys) != Set(m.actionJobs.keys) {
             violations.append("job tasks \(actions.jobTasks.keys.sorted()) != jobs \(m.actionJobs.keys.sorted())")
@@ -2602,8 +2617,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         for slot in m.actionSlots.values { if case .failed(let id)? = slot.result { owners[id, default: 0] += 1 } }
         for result in m.inputTurnResults.values { if case .failed(let id) = result { owners[id, default: 0] += 1 } }
         for (id, count) in owners where count > 1 { violations.append("\(id) has \(count) owners") }
-        for id in owners.keys where failures[id] == nil { violations.append("\(id) has no table entry") }
-        for id in failures.keys where owners[id] == nil { violations.append("\(id) has no owner") }
+        for id in owners.keys where side.failures[id] == nil { violations.append("\(id) has no table entry") }
+        for id in side.failures.keys where owners[id] == nil { violations.append("\(id) has no owner") }
         return violations
     }
 
@@ -2611,7 +2626,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// turned it on. In production it reads one flag and returns.
     private func checkActionTables(_ m: inout KeeperModel<State>, _ side: inout KeeperTurnSide, _ site: StaticString) {
         guard side.actions.auditOn else { return }
-        let violations = actionTableViolations(m, side.actions)
+        let violations = actionTableViolations(m, side)
         guard !violations.isEmpty else { return }
         m.alignmentViolations += violations.count
         behavior.logger.error("The keeper's action tables don't line up", metadata: [
@@ -2620,12 +2635,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         ])
     }
 
-    package func failureTableCountForTesting() -> Int { failures.count }
+    package func failureTableCountForTesting() -> Int { turnSide.failures.count }
     package func failureTableMissesForTesting() -> Int { model.failureTableMisses }
     package func alignmentViolationsForTesting() -> Int { model.alignmentViolations }
     /// Turns the alignment check at the call sites on or off (off by default).
     package func setActionTableAuditForTesting(_ enabled: Bool) { turnSide.actions.auditOn = enabled }
-    package func actionTableViolationsForTesting() -> [String] { actionTableViolations(model, turnSide.actions) }
+    package func actionTableViolationsForTesting() -> [String] { actionTableViolations(model, turnSide) }
 
     // MARK: - The player-services table (#700 K1b-4)
 
@@ -2669,7 +2684,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         ]
     }
     package func setInputTurnResultForTesting(_ sequence: Int64, _ result: Result<InputOutcome, any Error>?) {
-        setInputTurnResult(&model, sequence, result)
+        setInputTurnResult(&model, &turnSide, sequence, result)
     }
     /// This land's abandoned resolver groups still running, per kind (#364). Shared by its
     /// groups' abandonments, which update it inside their transitions; read at intake.
@@ -2776,7 +2791,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case .success(let resolverOutputs):
             let item = job.item
             do {
-                try deliverResolvedAction(&m,
+                try deliverResolvedAction(&m, &side,
                     item.with(heldResolverOutputs: resolverOutputs, resolvedAtTick: item.resolvedAtTick),
                     ticket: job.ticket,
                     input: job.input
@@ -2907,7 +2922,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         resume: (@escaping () -> Void) -> Void
     ) {
         if m.ticklessJobWork.remove(sequence) != nil {
-            debugEndWork(&m)
+            debugEndWork(&m, &side)
         }
         rememberFilledSlotForAssert(&m, sequence)
         guard m.actionSlots[sequence] != nil else { return }
@@ -2919,7 +2934,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else {
             // `held` writes the model, and an optional-chain assignment begins its access to the
             // model before it evaluates its right side: run it first, or the two accesses overlap.
-            let result = held(&m, outcome)
+            let result = held(&m, &side, outcome)
             m.actionSlots[sequence]?.result = result
         }
         checkActionTables(&m, &side, #function)
@@ -2953,7 +2968,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
                 if let result = slot.result {
                     model.actionSlots.removeValue(forKey: sequence)
-                    let taken = taken(&model, result, path: .slot, sequence: sequence)
+                    let taken = taken(&model, &turnSide, result, path: .slot, sequence: sequence)
                     // After both the removal and the take.
                     checkActionTables(&model, &turnSide, #function)
                     continuation.resume(with: taken)
@@ -3024,7 +3039,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Test hook, observation only: returns once a freeze is waiting for in-flight work (it
     /// registered its waiter, in the same segment that checked the work).
     package func waitUntilFreezeWaitsForTesting() async {
-        guard debugDrainWaiters.isEmpty else { return }
+        guard turnSide.debugDrainWaiters.isEmpty else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             freezeWaitWatchersForTesting.append(continuation)
         }
@@ -3289,7 +3304,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let flight = forceShutdownFlight.flight(for: 0) { _ in
             Task { () async throws -> Void in await self.runForceShutdown() }
         }
-        inTurnProbeForTesting?("force-shutdown-joined")
+        turnSide.probe?("force-shutdown-joined")
         _ = try? await SingleFlight<Int, Void>.value(of: flight)
         await holds.at(.forceShutdownReturn)
     }
@@ -3315,7 +3330,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         endDebugFreezeForShutdown()
         if definition.lifetimeHandlers.tickHandler != nil {
             model.shutdownRequested = true
-            inTurnProbeForTesting?("shutdown-stop-gate")
+            turnSide.probe?("shutdown-stop-gate")
             await waitForTickInFlight()
             // If the empty-room drain started during the wait, it is awaited instead.
             if drainTask == nil, !isDraining {
@@ -3324,7 +3339,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else {
             let sequence = outputCollector.takeNextSequence()
             model.pendingItems.append(.shutdown(PendingShutdownItem(sequence: sequence, resolvedAtTick: model.lastCommittedTickId)))
-            inTurnProbeForTesting?("shutdown-queued")
+            turnSide.probe?("shutdown-queued")
             scheduleInputDrain()
             // Until the turn has applied, or an empty-room drain that started first has dropped
             // the input (that drain is awaited below).
@@ -3351,8 +3366,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let held = debugHeldInputs
         debugHeldInputs.removeAll()
         held.forEach { $0.resume() }
-        let waiters = debugDrainWaiters
-        debugDrainWaiters.removeAll()
+        let waiters = turnSide.debugDrainWaiters
+        turnSide.debugDrainWaiters.removeAll()
         waiters.values.forEach { $0.resume() }
     }
 
@@ -3525,7 +3540,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // delivered action's after its input turn (the driver).
             return request
         } catch {
-            debugEndWork(&m)
+            debugEndWork(&m, &side)
             throw error
         }
     }
@@ -3650,7 +3665,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return .done(.pending(sequence: sequence))
         }
 
-        try deliverResolvedAction(&m,
+        try deliverResolvedAction(&m, &side,
             PendingActionItem(
                 sequence: sequence,
                 decoded: .value(decodedAction),
@@ -3719,8 +3734,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // The intake's segment (C1), in the same actor segment as the wait above.
-        let awaited = try withTurn { m, _, _ in
-            try clientEventIntake(&m, event, playerID: playerID, clientID: clientID, sessionID: sessionID)
+        let awaited = try withTurn { m, side, _ in
+            try clientEventIntake(&m, &side, event, playerID: playerID, clientID: clientID, sessionID: sessionID)
         }
         // A tickless land applies the event now, in an input turn the caller waits for, as an
         // action's caller does (#55): it returns once the event is applied, or throws the
@@ -3739,6 +3754,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// and returns the sequence the driver waits for; nil on a tick land.
     private func clientEventIntake(
         _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
         _ event: AnyClientEvent,
         playerID: PlayerID,
         clientID: ClientID,
@@ -3831,7 +3847,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // started by another input can't apply the event before anyone waits for it. The probe
         // is synchronous: a test learns the event is queued without a suspension between the
         // append and the waiter's registration.
-        inTurnProbeForTesting?("client-event-queued")
+        side.probe?("client-event-queued")
         return sequence
     }
 
@@ -5054,7 +5070,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // No tick body starts while frozen; a body already running is drained by `debugFreeze`.
         guard !model.debugFrozen else { return }
         debugBeginWork()
-        defer { debugEndWork(&model) }
+        defer { debugEndWork(&model, &turnSide) }
 
         // A tickless land in re-evaluation still steps through the recorded ticks: each step
         // applies that tick's recorded inputs and flushes their events under it (#268).
@@ -5105,7 +5121,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Every live tick is a turn (inputs, tick handler, events, and with a port the sync plan,
         // commit and writer enqueue), with no suspension point; the recorder follows the turn.
         if routesThroughTurn, let handler = tickHandler {
-            inTurnProbeForTesting?("turn-begin")
+            turnSide.probe?("turn-begin")
             if inTurnYieldForTesting {
                 // Negative control (tests only): a suspension point inside the turn, which the
                 // reentrancy probe must detect.
@@ -5559,7 +5575,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             m.inTurnSyncDue = false
             m.joinSyncWaitsForCommit = false
-            inTurnProbeForTesting?("sync-committed")
+            side.probe?("sync-committed")
             // Joins left over a commit's budget: the next sync-only turn completes them.
             if !hasPeriodicSync {
                 guard let awaiting = joinsAwaitingSync(&m, &side) else { return }
@@ -5722,7 +5738,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else if let transport {
             runTurnOutputs(&m, &side, &outputs, transport: transport, events: emitted, wantsSync: cadenceSync || joinSync, joinSyncOnly: joinSync)
         }
-        inTurnProbeForTesting?("turn-end")
+        side.probe?("turn-end")
 
         var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: emitted)
         record.stateHash = stateHash
@@ -6282,7 +6298,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             model.debugNextWaiterID &+= 1
             let waiterID = model.debugNextWaiterID
             await withCheckedContinuation { continuation in
-                debugDrainWaiters[waiterID] = continuation
+                turnSide.debugDrainWaiters[waiterID] = continuation
             }
         }
         await recorderSubmissions.waitForAll()
@@ -6380,7 +6396,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return .landFailed(failure)
         }
         return withTurn { m, side, outputs in
-            inTurnProbeForTesting?("turn-begin")
+            side.probe?("turn-begin")
             m.inTurnSyncTurnKind = .syncOnly
             defer { m.inTurnSyncTurnKind = .tick }
             let mark = m.recorderSubmissionCount
@@ -6444,7 +6460,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // The common tail, on every path. A tickless land's sync-only turn is its own turn
             // record (#327); a tick land's sync outputs stay with the current tick's.
             enqueueTicklessTurnEnd(&m, since: mark)
-            inTurnProbeForTesting?("turn-end")
+            side.probe?("turn-end")
             if let reentry { return .landFailed(failure ?? reentry) }
             return result
         }
@@ -7014,7 +7030,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await Task.yield()
         }
         model.inputDrainScheduled = false
-        inTurnProbeForTesting?("input-drain-end")
+        turnSide.probe?("input-drain-end")
         let idleWaiters = inputDrainIdleWaitersForTesting
         inputDrainIdleWaitersForTesting.removeAll()
         idleWaiters.forEach { $0.resume() }
@@ -7061,8 +7077,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         removingFromQueue: Bool,
         preparedRecordBytes: [Int64: Result<Data, any Error>]
     ) -> InputTurnOutcome {
-        inTurnProbeForTesting?("turn-begin")
-        inTurnProbeForTesting?("input-batch-\(batch.count)")
+        side.probe?("turn-begin")
+        side.probe?("input-batch-\(batch.count)")
         let failedBefore = failure != nil
         let executingTickId = executingTickIdForPendingItems(&m)
         let sequenceBefore = outputCollector.nextSequence
@@ -7106,13 +7122,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
             }
         }
-        inTurnProbeForTesting?("turn-end")
+        side.probe?("turn-end")
         // A turn that ended the land answers every consumed caller with `landClosed`, a caller
         // whose handler threw included: none of the turn's outputs went out, so a success would
         // promise effects the land never sends (#704, #716). The failure item has no caller.
         let endedInTurn = !failedBefore && failure != nil
         for item in consumedItems {
-            setInputTurnResult(&m, item.sequence, endedInTurn
+            setInputTurnResult(&m, &side, item.sequence, endedInTurn
                 ? .failure(LandInputRejection.landClosed)
                 : application.outcomes[item.sequence])
         }
@@ -7131,7 +7147,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         for item in batch {
             // The result, and its error, are taken before the branch.
             let result: Result<InputOutcome, any Error> = model.inputTurnResults.removeValue(forKey: item.sequence)
-                .map { taken(&model, $0, path: .inputTurn, sequence: item.sequence) } ?? .success(.none)
+                .map { taken(&model, &turnSide, $0, path: .inputTurn, sequence: item.sequence) } ?? .success(.none)
             if model.ticklessJobTurns.remove(item.sequence) != nil {
                 // No waiter on the slot yet: held under a fresh ID.
                 fillActionSlot(&model, &turnSide, item.sequence, with: result)

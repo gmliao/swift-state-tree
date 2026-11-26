@@ -63,6 +63,15 @@ package struct KeeperTurnSide {
     /// The action flow's tables (#700 K1b-5 rev 2.3 D11): job handles, slot waiters, test
     /// waiters and watchers.
     var actions = KeeperActionTables()
+    /// Errors held for callers that haven't read them, by the ID the model holds (`InputResult`'s
+    /// `.failed`): a value the model's results name, beside it until K2 (#700).
+    var failures: [FailureID: any Error] = [:]
+    /// The callers of `debugFreeze` and `waitForInFlightWorkForTesting`, woken when the in-flight
+    /// work count reaches zero.
+    var debugDrainWaiters: [UInt64: CheckedContinuation<Void, Never>] = [:]
+    /// Tests only: called at the probe labels ("turn-begin", "turn-end", ...) on the keeper's
+    /// executor.
+    var probe: (@Sendable (String) -> Void)?
 
     package init(submissions: ReevaluationSubmissionTracker) {
         self.submissions = submissions

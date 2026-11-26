@@ -27,7 +27,7 @@ enum KeeperFieldHome: Hashable, CustomStringConvertible {
     case container
 
     enum OutsideGroup: String {
-        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable, turnSide, stepScope
+        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, turnSide, stepScope
     }
 
     var description: String {
@@ -63,18 +63,15 @@ enum KeeperCensus {
             "actor.appliedTickPhaseOffset": .outside(.loopDriver),
             "actor.behavior": .container,
             "actor.boundSyncRequesterObject": .outside(.bindingToken),
-            "actor.debugDrainWaiters": .replaced(by: "K7"),
             "actor.debugHeldInputs": .replaced(by: "K7"),
             "actor.destroyTask": .replaced(by: "K7"),
             "actor.drainFlag": .outside(.drainFlag),
             "actor.drainStartedWaitersForTesting": .replaced(by: "K2"),
             "actor.drainTask": .replaced(by: "K7"),
             "actor.failureWaitersForTesting": .replaced(by: "K2"),
-            "actor.failures": .outside(.failureTable),
             "actor.forceShutdownFlight": .replaced(by: "K7"),
             "actor.freezeWaitWatchersForTesting": .replaced(by: "K2"),
             "actor.holds": .testHook,
-            "actor.inTurnProbeForTesting": .testHook,
             "actor.inTurnYieldForTesting": .testHook,
             "actor.initializationTask": .replaced(by: "K5"),
             "actor.initializationWaitWatchers": .replaced(by: "K2"),
