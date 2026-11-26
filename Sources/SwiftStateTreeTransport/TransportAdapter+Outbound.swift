@@ -90,10 +90,15 @@ extension TransportAdapter {
     /// The frame and every close carry the session's connection generation, `generation` or else
     /// the one recorded for it, so none of them reaches a later connection that reuses the ID
     /// (#531). With neither, they act by ID.
+    ///
+    /// A session that has already ended gets no frame. Its close still goes through the writer,
+    /// behind what is queued (#911): the first close decided for the connection is the one it
+    /// gets, so an ordered close already pending (a supersede's 4017) keeps its frames and its
+    /// code, and after an at-once close or a disconnect there is nothing left to close.
     func sendFinalFrameAndClose(_ data: Data, kind: WebSocketFrameKind, to sessionID: SessionID, generation: UInt64? = nil) {
         let generation = generation ?? connectionGenerations[sessionID]
         guard !endedSessions.contains(sessionID) else {
-            closeSessionDetached(sessionID, generation: generation)
+            closeSessionBehindQueuedFrames(sessionID, generation: generation, with: .normal)
             return
         }
         let frame = SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation, kind: kind)

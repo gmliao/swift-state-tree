@@ -1543,7 +1543,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Closes `sessionID` behind every frame already queued for it in the outbound writer, with
     /// `close`, only while its connection is the one with `generation` (nil: any), so a frame
     /// queued before the decision reaches the client before the close (#909). The session must
-    /// already be ended, so nothing is queued for it after the close.
+    /// already be ended, so nothing is queued for it after the close. When an ordered close is
+    /// already pending for the connection, the transport ignores this one: the first close
+    /// decided is the one the client gets (#911).
     ///
     /// Synchronous, and must stay so: the enqueue, the check of its result and the fallback run
     /// in one segment, so no frame is queued for the session and no generation changes between
