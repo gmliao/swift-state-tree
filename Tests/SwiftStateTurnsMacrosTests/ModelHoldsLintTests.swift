@@ -1525,7 +1525,13 @@ struct ModelHoldsLintTests {
         let files = try keeperFiles()
         // A path change that finds nothing would pass vacuously.
         try #require(files.contains { $0.path == "Sources/SwiftStateTree/Runtime/LandKeeper.swift" })
+        // The turn machine's file (#700 K2-1): in scope by its `extension KeeperModel`, and its
+        // steps are holders of the model.
+        let machine = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
+        try #require(files.contains { $0.path == machine })
         let report = ModelHoldsLint.check(files)
+        #expect(report.holders.contains { $0.path == machine && $0.name == "handle" },
+                "holders in \(machine): \(report.holders.filter { $0.path == machine }.map(\.name))")
         // Each family of closure holders is found: every member that gives a closure the model
         // has at least one, and `withHandlerStep` (every handler) has one per handler kind.
         let families = Dictionary(grouping: report.holders.filter { $0.name.contains(" body in ") }) {

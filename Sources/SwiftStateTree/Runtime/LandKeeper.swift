@@ -1907,7 +1907,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
 
     /// What a join carries from its insert to its OnJoin append (G2 → G4, J3 → J4).
-    fileprivate struct OnJoinCapture {
+    struct OnJoinCapture: Sendable {
         let playerID: PlayerID
         let clientID: ClientID
         let sessionID: SessionID
@@ -2057,7 +2057,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The reporting join's requests (#700 K1b-5b §4.1): each segment returns the await it needs.
-    fileprivate enum JoinRequest {
+    enum JoinRequest: Sendable {
         case runCanJoinResolvers(ResolverContext, LandContext)
         /// J2 decided and reserved: the driver ends the reservation on every exit, runs the
         /// `.join` hold, then J2b.
@@ -2073,7 +2073,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The reporting join's call.
-    fileprivate struct JoinCall {
+    struct JoinCall: Sendable {
         let session: PlayerSession
         let clientID: ClientID
         let sessionID: SessionID
@@ -2082,7 +2082,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// What the reporting join carries from J2's decision on.
-    fileprivate struct JoinDecided {
+    struct JoinDecided: Sendable {
         let call: JoinCall
         let decision: JoinDecision
         let playerID: PlayerID
@@ -2444,7 +2444,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The leave flow's requests (#700 K1b-5b §4.3): each segment returns the await it needs.
-    fileprivate enum LeaveRequest {
+    enum LeaveRequest: Sendable {
         case runOnLeaveResolvers(LeaveCapture, ResolverContext, LandContext)
         /// The OnLeave input's turn, on a tickless land; L3 follows it.
         case awaitInputTurn(sequence: Int64)
@@ -2452,7 +2452,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// What the leave carries across its awaits: the outgoing entry, read in L1.
-    fileprivate struct LeaveCapture {
+    struct LeaveCapture: Sendable {
         let playerID: PlayerID
         let clientID: ClientID
         let sessionID: SessionID
@@ -2733,7 +2733,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// What the action intake's segment hands its driver (#700 K1b-5b, plan §4.4).
-    fileprivate enum ActionIntakeRequest {
+    enum ActionIntakeRequest {
         /// Tickless and delivered: the driver awaits the input turn that applies it, then ends
         /// the work count the segment began.
         case awaitInputTurn(sequence: Int64)
