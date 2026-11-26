@@ -29,10 +29,19 @@ package final class LateStepOutputCounter: @unchecked Sendable {
 ///
 /// The gate's lock is held while an output runs, so an output and the close never overlap:
 /// an output that finds the scope open completes before the close returns, and one that
-/// comes after finds it closed. While the scope is open the keeper is inside the handler call
-/// (synchronous, never nested), so an output under the lock is the only access to the keeper's
-/// output collector; this keeps an event's number at emit time, which the body around the
-/// handler reads (the tick body's watermarks, K2 plan §4.4).
+/// comes after finds it closed. An open output goes where it goes today, numbered at emit
+/// time, which the body around the handler reads (the tick body's watermarks, K2 plan §4.4).
+///
+/// The lock orders an output against its own scope's close only; it doesn't make the output
+/// the only access to the keeper's output collector, which has no lock of its own. For a
+/// synchronous handler the keeper is inside the call while the scope is open, so nothing else
+/// reaches the collector then. AfterFinalize is async: while it awaits, the keeper runs other
+/// work, which can emit through its own scope (another lock), so an emit of AfterFinalize's
+/// after an await can race with it on the collector. That race predates the scope (#893).
+///
+/// The boundary is the keeper's close: for a synchronous handler, its return; for
+/// AfterFinalize, the keeper's `defer` after the awaited handler, so an emit the handler makes
+/// after an internal await still passes.
 package final class StepScope: @unchecked Sendable {
     /// The service the call draws from (`LandContext.random`).
     let random: DeterministicRngService
