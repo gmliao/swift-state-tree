@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import Logging
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 
 // MARK: - Test ResolverOutput Types
 
@@ -58,6 +59,36 @@ struct UserProfileResolver: ContextResolver {
             email: "test@example.com",
             level: 10
         )
+    }
+}
+
+// MARK: - Gated Resolvers (concurrency proof)
+
+/// The gate the two gated resolvers below enter. Only `testParallelResolverExecutionAsyncLet`
+/// uses these types, so one shared slot is enough; the test sets it before it runs them.
+enum ResolverEntryGate {
+    nonisolated(unsafe) static var gate = TestGate()
+}
+
+/// Like `ProductInfoResolver`, but it signals that it has entered and then waits for the gate to
+/// open, instead of sleeping. A resolver that never starts can't signal.
+struct GatedProductInfoResolver: ContextResolver {
+    typealias Output = ProductInfo
+
+    static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
+        await ResolverEntryGate.gate.arrive()
+        let action = ctx.actionPayload as? ResolverTestAction
+        return ProductInfo(id: action?.productID ?? "default-product", name: "Test Product", priceCents: 9999, stock: 100)
+    }
+}
+
+/// Like `UserProfileResolver`, gated in the same way.
+struct GatedUserProfileResolver: ContextResolver {
+    typealias Output = UserProfileInfo
+
+    static func resolve(ctx: ResolverContext) async throws -> UserProfileInfo {
+        await ResolverEntryGate.gate.arrive()
+        return UserProfileInfo(userID: ctx.playerID.rawValue, name: "Test User", email: "test@example.com", level: 10)
     }
 }
 
@@ -237,42 +268,25 @@ func testParallelResolverExecutionAsyncLet() async throws {
         currentState: state
     )
 
-    let serialStart = ContinuousClock.now
-    _ = try await ProductInfoResolver.resolve(ctx: resolverContext)
-    _ = try await UserProfileResolver.resolve(ctx: resolverContext)
-    let serialDuration = ContinuousClock.now - serialStart
-
-    let parallelStart = ContinuousClock.now
-    let (productInfo, userProfile) = try await executeResolversInParallel(
-        ProductInfoResolver.self,
-        UserProfileResolver.self,
-        ctx: resolverContext
-    )
-    let parallelDuration = ContinuousClock.now - parallelStart
-
-    // Both resolvers should complete, and total time should be approximately
-    // the max of individual resolver times (not the sum), since they run in parallel
-    // ProductInfoResolver: 10ms, UserProfileResolver: 15ms
-    // Serial execution would take ~25ms (10 + 15)
-    // Parallel execution should ideally take ~15ms (max of the two)
-    // However, we allow significant overhead for:
-    // - Task creation and scheduling overhead
-    // - System load variations (CI environments can be slow)
-    // - Clock precision and measurement overhead
-    // - Context switching and thread pool management
-    // - Swift runtime overhead for async/await
-    let serialMs = Double(serialDuration.components.seconds) * 1000.0
-        + Double(serialDuration.components.attoseconds) / 1_000_000_000_000_000.0
-    let parallelMs = Double(parallelDuration.components.seconds) * 1000.0
-        + Double(parallelDuration.components.attoseconds) / 1_000_000_000_000_000.0
-
-    // Lower bound: should be at least as long as the shorter resolver (10ms)
-    // Allow some measurement variance
-    #expect(parallelMs >= 8.0)
-
-    // Upper bound: should not be significantly slower than serial execution.
-    // Use a ratio to reduce flakiness in noisy CI environments.
-    #expect(parallelMs <= serialMs * 1.5)
+    // Concurrency is proved by events, not by elapsed time: each resolver signals that it has
+    // entered the gate and waits there. The test opens the gate only once both have entered.
+    // Run one after the other, the first resolver would wait at the gate for good and the second
+    // would never enter, so the second arrival never comes and the deadline fails the test.
+    let gate = TestGate()
+    ResolverEntryGate.gate = gate
+    let run = Task {
+        try await executeResolversInParallel(
+            GatedProductInfoResolver.self,
+            GatedUserProfileResolver.self,
+            ctx: resolverContext
+        )
+    }
+    let bothEntered = await withinCancellingDeadline("both resolvers entered before either finished") {
+        await gate.waitForArrivals(2)
+    }
+    gate.open()
+    #expect(bothEntered == true)
+    let (productInfo, userProfile) = try await run.value
 
     #expect(productInfo.id == "product-123")
     #expect(userProfile.userID == "player-1")
