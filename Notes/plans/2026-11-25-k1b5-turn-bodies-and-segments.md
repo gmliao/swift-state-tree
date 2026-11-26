@@ -1,6 +1,6 @@
 # K1b-5: turn bodies on the model, and the named segments (#700)
 
-**Status:** rev 2.2, plan only, for Review: the K1b-5b half (§4, §6 commits 4–7) brought up to date with K1b-1 to K1b-4, #862 and #865. Rev 2.1 was read at #853's head a87e0278 (K1b-3, on #835's K1a), the base K1b-4's rev 2.1 names. The reach-out census of §3 and the re-entry audit of §3.5 come from a script over the call graph (`func` bodies by brace matching, sync callees only) and from grep over `Sources/`. They are **not LSP-verified**: the language server's index on the working clone was stale (its `workspaceSymbol` placed `submitSyncStream` 137 lines off, and `findReferences` there returned another symbol's uses). K1b-5 re-takes both with `findReferences` and `outgoingCalls` on its own base, after a build. K1b-5 needs K1b-4.
+**Status:** rev 2.3, plan only, for Review. Rev 2.3 adds §3.1's missing rows (D11–D14, below) and the move commit (§6, 2b). Rev 2.2: the K1b-5b half (§4, §6 commits 4–7) brought up to date with K1b-1 to K1b-4, #862 and #865. Rev 2.1 was read at #853's head a87e0278 (K1b-3, on #835's K1a), the base K1b-4's rev 2.1 names. The reach-out census of §3 and the re-entry audit of §3.5 come from a script over the call graph (`func` bodies by brace matching, sync callees only) and from grep over `Sources/`. They are **not LSP-verified**: the language server's index on the working clone was stale (its `workspaceSymbol` placed `submitSyncStream` 137 lines off, and `findReferences` there returned another symbol's uses). K1b-5 re-takes both with `findReferences` and `outgoingCalls` on its own base, after a build. K1b-5 needs K1b-4.
 
 **Inputs:**
 - the parent plan `2026-11-22-keeper-on-turncore.md` rev 5.8: A.6's F6 to F8 and A.8;
@@ -29,6 +29,17 @@
 | D8 | §4.5 | S1's frozen branch holds the input outside the queue and returns `.accepted` with no kick. |
 | D9 | §4.1, §4.2 | **J4 has no generation re-check before its append** (nor G4). Rev 2.1's J4 row named one. The missing check is #860's fix, out of K1b-5b's pure move. |
 | D10 | §3.1 | K1b-4 keeps `playerServices` on the actor. It moves into `KeeperTurnSide` in K1b-5a step 2, or in K1b-5b's first commit if step 2 doesn't move it. |
+
+**Rev 2.2 → rev 2.3** (the move onto the model; Review, 2026-11-26). #884 (K1b-5a step 2) landed the bodies as actor methods that take `_ m: inout KeeperModel<State>`, reviewed as a stand-in for commit 2's `mutating` methods. K2-1's `handle` is a nonisolated method on the model, so it can't call them (K2 plan §6, condition 1). The move is now its own commit (§6, 2b), and §3.1 gets the rows the stand-in still reads from the actor. Anchors: `LK` at 5be6faab (#884's head 3e33ab18 plus this slice's flows 1 and 2), grep, unverified.
+
+| # | Where | Change |
+|---|---|---|
+| D11 | §3.1, §3.3 | **`actionJobTasks` and `actionJobRemovalWaiters`** (LK:2556, :2737) move into the side. `startActionJob` (:2761, :2781), `completeActionBody` (:2809) and `removeActionJob` (:2855–2856) reach them through side methods. `cancelActionJob` (:3042) still reads the job's handle inline, through a side read, before its slot fill and its `cancel()` (§3.3's ordered cancel). `actionSlotWaiters` was already a §3.3 table. |
+| D12 | §3.1 | **`reevaluationRecorder`** (LK:502), read by the six recording helpers (`recordSyncStream` :6082, `recordSyncOutput` :6102, `recordSyncMarker` :6128, `enqueueRecorderSubmission` :6140, `enqueueTicklessTurnEnd` :6151, `stageRecorderSubmission` :6198). It is written once, in `init` (:1212), so it becomes a `let` in `KeeperBehavior`, and `recordsSyncStream` (:5813) and `recordsInputs` (:506) read it there. The submissions themselves stay staged (§3.2). |
+| D13 | §3.1, §3.5 | **The re-entry sentinel and `callOut`.** `bodyDepth`, `reentryViolations`, `reentryFailure`, `closingGateForReentry`, `reentryGateClosed`, `reentryClosedGate` and `lateReentriesApplied` (LK:896–913) move into one final class, `KeeperReentrySentinel`, held as a `let` in `KeeperBehavior`, the shape K2 draft 7 §4.2 takes. So K2-1 doesn't move them again. The bodies that read the count (`settleBody` :1929–1931, `runTurnOutputs` :5474–5476, `applyReentryFailure` :5980–5988, `failLand` :6774) read it through `behavior`. `callOut` becomes a side method, `side.callOut(&m, &outputs, call)`, with today's flush → check → call → check order. The refusing entries (`noteReentry`) and `withTurn`'s depth count write the sentinel from the actor, as today. |
+| D14 | §3.2, §4 | **Hold points.** A body awaits no hold: holds are driver steps (§4). Three bodies start a `Task` whose first await is a hold: `startActionJob` (:2766, `.actionJobStart`), `kickServerInputTurn` (:3980, `.serverInputKick`) and `failLand` (:6778, `.landFailedTeardown`). Each `Task` start becomes a staged effect, and the hold stays the task's first await. On the model, a body can't capture the actor, so the flush starts the task, and for the job it installs the handle (`actionJobTasks[seq].task`). The flush runs before the segment's first suspension, so no `cancelActionJob` can read the handle in between. This replaces flows 1 and 2's inline start, which was right only while the bodies were actor methods. No body calls `holds.at` synchronously; the grep's one other hit (`actionTableViolations` :2649) is the word in a string. |
+
+Anything the move finds that can be neither a side method nor a behavior field stops the commit, and goes to the maintainer.
 
 Anchors at K4 | 865 (grep, unverified): `join(playerID:…)` 1874 | 1996; `joinReportingAdmission` 2021 | 2142; `admitJoiningInTurn` 2233 | 2354; `leave(…sessionID:)` 2969 | 3111; `startActionJob` 2576 | 2720; `completeAction` 2617 | 2761; `fillActionSlot` 2737 | 2881; `awaitActionResult` 2763 | 2905; `cancelActionJob` 2815 | 2957; `submit` 3264 | 3405; `handleClientEvent` 3461 | 3602; `submitServerInputErased` 3597 | 3738; `kickServerInputTurn` 3673 | 3817; `awaitInputTurn` 6086 | 6599; `endRejoinReservation` 1283 | 1406; `debugWaitWhileFrozen` 1837 | 1959. TA (the same at both): the clear's `submitSyncStream` 3986, `recordsSyncStream` 3831, the `.legacyCycle` submit 3859, `supersedeSessions` 1935, `admitJoiningSessionIsolated` 1984.
 
@@ -101,6 +112,9 @@ A body is synchronous, but today its sync callees reach actor-side state. The sc
 | `noteReplayRejected(sequence:)` | turn-local, then staged | `applyInputs` writes, `takeReplayRejected` reads in the same turn. The body accumulates in a local that the turn's record reads, as today, and the side hands the list to `replay` after. Nothing on a live keeper |
 | `recordFailure(_:) -> FailureID` | the ID from the model's counter, the error staged into the table | K1b-2's table |
 | `probe(_:)` | direct | `inTurnProbeForTesting`. It must not call back into the keeper (§3.5) |
+| `jobTask(_:)`, `insertJobTask(…)`, `removeJobTask(_:) -> [removal waiters]` (D11) | read; inline write; the waiters' resume staged | `actionJobTasks`, `actionJobRemovalWaiters` (LK:2556, :2737) |
+| `callOut(&m, &outputs, call)` (D13) | direct: flush → check → call → check | `callOut` (LK:5922); the counters in `behavior.reentrySentinel` |
+| `startTask(…)` (D14) | staged | the three `Task` starts whose first await is a hold (LK:2766, :3980, :6778) |
 
 **The clock read stays where it is** (S2). The tick turn reads the time after it consumes the pending fold and checks `inTurnSyncDue`, the test override included, and the body keeps that point through `side.now()`. Reading it earlier, in the driver, can change the reported duration or cross the strict `>` lateness threshold with no interleaving at all. K2's input timestamp is a stated behavior change at the cut-over, not part of K1b-5.
 
@@ -331,7 +345,8 @@ A job's slot fill ends its freeze work (`ticklessJobWork`), on every path.
 ## 6. Commits
 
 1. **`KeeperTurnSide` and `TurnOutputs`.** The side's methods and storage, the census paths updated, the re-entry sentinel (§3.5). No body changes yet.
-2. **The bodies of §2,** each a `mutating` method with its staged outputs under §3.2's rule. `failLand` splits; its outside callers get their flush wrappers.
+2. **The bodies of §2,** each a `mutating` method with its staged outputs under §3.2's rule. `failLand` splits; its outside callers get their flush wrappers. Rev 2.3: #884 landed this half as actor methods over `inout KeeperModel`; 2b finishes it.
+2b. **The move** (rev 2.3): every body and segment, part 2's (initialization, tick) and flows 1 and 2's included, becomes a `mutating` method on `KeeperModel` that takes the behavior and `inout KeeperTurnSide`, with D11–D14's rows. Stacked after #884, part 2 and flows 1+2; flows 3+4 (joins, leave) are written in this shape. A pure move: the same statements, the same staging order, every HoldPoints test green.
 3. **The input drain and the tick driver** call the bodies.
 4. **The action flow's requests and segments** (§4.4), and the worker.
 5. **The client-event and server-input intakes** (§4.5).
