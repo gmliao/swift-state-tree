@@ -2434,7 +2434,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Execute handler synchronously (resolvers already executed above). CanJoin isn't
             // repeated from the record (a viewer joining a reevaluation keeper runs it live), so
             // its draws come from a copy of the land's generator, never written back.
-            let (scoped, scope) = openStepScope(ctx, random: detachedRandom(m))
+            let (scoped, scope) = openStepScope(ctx, random: detachedRandom(m), droppingInto: readOnlyHandlerOutputsDropped)
             defer { scope.close() }
             decision = try canJoinHandler(m.state, call.session, scoped)
         }
@@ -4510,12 +4510,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) rethrows -> R {
         switch random {
         case .detached(let service):
-            let (bound, scope) = openStepScope(ctx, random: service, dropsOutputs: dropsOutputs)
+            let (bound, scope) = openStepScope(ctx, random: service, droppingInto: dropsOutputs ? destroyHandlerOutputsDropped : nil)
             defer { scope.close() }
             return try body(&m, bound)
         case .step:
             let service = DeterministicRngService(continuing: m.landRandom, seed: behavior.config.landRandomSeed)
-            let (bound, scope) = openStepScope(ctx, random: service, dropsOutputs: dropsOutputs)
+            let (bound, scope) = openStepScope(ctx, random: service, droppingInto: dropsOutputs ? destroyHandlerOutputsDropped : nil)
             // After the body's access to the model ends: it doesn't overlap.
             defer {
                 scope.close()
@@ -4528,18 +4528,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Opens a handler call's scope (#700 K2-E) and binds it to a copy of `ctx`; the caller
     /// closes it when the handler returns. Outputs made through the copy before the close go
     /// where they go today, numbered at emit time; later ones are dropped and counted in
-    /// `lateStepOutputs`. With `dropsOutputs` (a destroy handler, #893), every output is dropped
-    /// and counted in `destroyHandlerOutputsDropped`.
+    /// `lateStepOutputs`. With `droppingInto`, every output is dropped and counted there: a
+    /// destroy handler's in `destroyHandlerOutputsDropped` (#893), CanJoin's and the sync
+    /// handler's in `readOnlyHandlerOutputsDropped` (#700 K2-E2).
     private func openStepScope(
         _ ctx: LandContext,
         random: DeterministicRngService,
-        dropsOutputs: Bool = false
+        droppingInto dropped: LateStepOutputCounter? = nil
     ) -> (LandContext, StepScope) {
         let scope = StepScope(
             random: random,
             late: lateStepOutputs,
             assertsOnLateOutput: lateStepOutputAssertsForTesting,
-            dropsOutputs: dropsOutputs ? destroyHandlerOutputsDropped : nil
+            dropsOutputs: dropped
         )
         var bound = ctx
         bound.stepScope = scope
@@ -4553,6 +4554,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// dropped (#893). They run after the drain began, when no tick, sync or input turn will
     /// take an event or a sync request again.
     package nonisolated let destroyHandlerOutputsDropped = LateStepOutputCounter()
+
+    /// CanJoin's and the sync handler's outputs, all dropped (#700 K2-E2). Both get the state by
+    /// value, and replay reruns neither, so an output of theirs could only be sent unrecorded;
+    /// keyed on `lastCommittedTickId`, it was taken by no turn and stayed in the tables (#66).
+    package nonisolated let readOnlyHandlerOutputsDropped = LateStepOutputCounter()
 
     /// Whether a late output stops a debug build. Tests that pin the drop turn it off.
     private var lateStepOutputAssertsForTesting = true
@@ -7628,7 +7634,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             // The sync handler isn't repeated from the record, so it draws from a copy of the
             // land's generator, never written back.
-            let (scoped, scope) = openStepScope(ctx, random: detachedRandom())
+            let (scoped, scope) = openStepScope(ctx, random: detachedRandom(), droppingInto: readOnlyHandlerOutputsDropped)
             defer { scope.close() }
             // Pass state as value (read-only) to emphasize that it should not be modified
             handler(model.state, scoped)
@@ -7826,7 +7832,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             // Its outputs are dropped: nothing takes them after the drain began, and one made
             // after an internal await would reach the collector off the keeper (#893).
-            let (scoped, scope) = openStepScope(ctx, random: drainRandom, dropsOutputs: true)
+            let (scoped, scope) = openStepScope(ctx, random: drainRandom, droppingInto: destroyHandlerOutputsDropped)
             defer { scope.close() }
             await afterFinalizeHandler(snapshot, scoped)
         }
