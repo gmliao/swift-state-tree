@@ -57,6 +57,7 @@ Sources/SwiftStateTreeTransport/TransportAdapter.swift 3 the adapter submits syn
 # Test files that carry allow markers, with their counts.
 ALLOW_MARKERS='
 Tests/SwiftStateTurnsTests/Support/DemoActor.swift 6 the runtime stops (reentry, a replaced core, a class machine and its checks)
+Tests/SwiftStateTreeTests/KeeperReentryTrapTests.swift 1 a handler that re-enters its keeper, to show the exclusivity trap of the model access (LandKeeper.withHandlerStep)
 Tests/SwiftStateTreeTests/DecimalRegistrationTests.swift 1 a Decimal in state for the registration walk (#597), which keeps guarding hand-written witnesses
 Tests/SwiftStateTreeTests/NestedNodePolicyTests.swift 1 a class in state for the runtime walk (#464), which keeps guarding hand-written witnesses
 Tests/SwiftStateTreeTests/SyncRegistrationTests.swift 3 a class, open types and an Any in state for the runtime walks (#464, #535), which keep guarding hand-written witnesses

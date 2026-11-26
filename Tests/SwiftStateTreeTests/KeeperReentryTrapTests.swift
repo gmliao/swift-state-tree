@@ -44,7 +44,7 @@ struct KeeperReentryTrapTests {
                     guard let keeper = box.keeper.withLock({ $0 }) else { return }
                     // On the keeper's executor, while `&model.state` is held: the read of
                     // `model.players` overlaps the handler's access.
-                    state.players = keeper.assumeIsolated { $0.playerCount() }
+                    state.players = keeper.assumeIsolated { $0.playerCount() } // lint-allow: turns-isolated: the re-entry the contract refuses, shown trapping
                 }
             }
         }
