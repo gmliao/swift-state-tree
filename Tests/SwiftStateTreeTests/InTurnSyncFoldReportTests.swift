@@ -29,6 +29,22 @@ private func foldReportLand() -> LandDefinition<FoldReportState> {
     }
 }
 
+/// `foldReportLand` with an OnJoin: a join queues its OnJoin input, which the next tick turn
+/// applies.
+private func foldReportLandWithOnJoin() -> LandDefinition<FoldReportState> {
+    Land("fold-report-test", using: FoldReportState.self) {
+        Rules {
+            OnJoin { _, _ in }
+        }
+        Lifetime {
+            Tick(every: .seconds(3600)) { state, _ in
+                state.ticks += 1
+            }
+            StateSync(every: .seconds(3600)) { _, _ in }
+        }
+    }
+}
+
 /// In-turn transport that records the folds it is told about.
 final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
     /// The port call of a tick turn that calls back into the keeper, once armed (#700 K1b-5a
@@ -88,12 +104,16 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
     var reenteredAtNth: Bool { lock.withLock { reenteredNth } }
 
     /// Counts a port call made during a turn body, and re-enters at the armed one.
-    private func noteCall() {
+    /// The port method of the call that re-entered, for the loop's pin.
+    var reenteredCall: String? { lock.withLock { reenteredName } }
+    private var reenteredName: String?
+
+    private func noteCall(_ name: String = #function) {
         guard let keeper = lock.withLock({ reentry == .nthCallInBody ? self.keeper : nil }) else { return }
         guard keeper.assumeIsolated({ $0.bodyDepthForTesting > 0 }) else { return } // lint-allow: turns-isolated: the fake counts only the calls a body makes
         let due = lock.withLock {
             callsInBody += 1
-            if callsInBody == nthTarget { reenteredNth = true }
+            if callsInBody == nthTarget { reenteredNth = true; reenteredName = name }
             return callsInBody == nthTarget
         }
         if due { keeper.assumeIsolated { $0.submitSyncStream([]) } } // lint-allow: turns-isolated: the synchronous callback the sentinel refuses
@@ -222,11 +242,11 @@ private let window = Duration.milliseconds(5)
 
 @Suite("In-turn sync: folds reported to the transport", .timeLimit(.minutes(1)))
 struct InTurnSyncFoldReportTests {
-    private func makeKeeper(_ transport: FoldRecordingTransport) async throws -> LandKeeper<FoldReportState> {
+    private func makeKeeper(_ transport: FoldRecordingTransport, onJoin: Bool = false) async throws -> LandKeeper<FoldReportState> {
         let signal = FirstTickSleepSignal()
         let keeper = TickLoopClock.$forNewKeepers.withValue(signal.tickLoopClock) {
             LandKeeper<FoldReportState>(
-                definition: foldReportLand(),
+                definition: onJoin ? foldReportLandWithOnJoin() : foldReportLand(),
                 initialState: FoldReportState(),
                 enableLoopPhaseOffset: false,
                 transport: transport
@@ -328,15 +348,20 @@ struct InTurnSyncFoldReportTests {
     /// Every port call a tick turn's body makes goes through `callOut`: the fake re-enters at the
     /// nth call it gets during a body, for each n until the body makes no more, and each re-entry
     /// ends the land in that call; the late backstop applies none. Run on a folded tick (the
-    /// fold report and a cadence sync) and on a join-sync tick (the joins read, its count note,
-    /// and the joins' sync).
-    @Test("a re-entry at any port call of a tick turn ends the land in that call", arguments: [true, false])
-    func tickTurnReentryAtEveryPortCall(folded: Bool) async throws {
+    /// fold report and a cadence sync), on a join-sync tick (the joins read, its count note, and
+    /// the joins' sync), and on a tick that applies a join's OnJoin (the join report).
+    enum TickKind: CaseIterable { case folded, joinSync, appliesJoin }
+
+    @Test("a re-entry at any port call of a tick turn ends the land in that call", arguments: TickKind.allCases)
+    func tickTurnReentryAtEveryPortCall(kind: TickKind) async throws {
+        let folded = kind == .folded
         var reentered: [Int] = []
+        var calls: [String] = []
         for n in 1...30 {
             let transport = FoldRecordingTransport(records: true)
-            let keeper = try await makeKeeper(transport)
-            transport.armNthCallInBody(n, keeper: keeper, joinsWait: !folded)
+            // With OnJoin, the setup's join queues its input for the tick below.
+            let keeper = try await makeKeeper(transport, onJoin: kind == .appliesJoin)
+            transport.armNthCallInBody(n, keeper: keeper, joinsWait: kind == .joinSync)
             let deadline = ContinuousClock.now
             if folded {
                 await keeper.setNextTickDeadlineForTesting(deadline)
@@ -349,6 +374,7 @@ struct InTurnSyncFoldReportTests {
                 break
             }
             reentered.append(n)
+            calls.append(transport.reenteredCall ?? "?")
             #expect(keeper.failure?.kind == .keeperReentry, "call \(n)")
             #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
             #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
@@ -356,8 +382,14 @@ struct InTurnSyncFoldReportTests {
             #expect(await keeper.bodyDepthForTesting == 0, "call \(n)")
         }
         // Folded: the fold report and the phase. Join sync: the in-turn check and the joins read,
-        // the join-sync count note, and the phase. With no recorder, the recording reads no port.
-        #expect(reentered == Array(1...(folded ? 2 : 4)), "calls that re-entered: \(reentered)")
+        // the join-sync count note, and the phase. Applies a join: the join report (its witness,
+        // then the report), the joins read (its witness, then the read), and the phase, which
+        // syncs the join. With no recorder, the recording reads no port.
+        let expected: [TickKind: Int] = [.folded: 2, .joinSync: 4, .appliesJoin: 5]
+        #expect(reentered == Array(1...expected[kind]!), "calls that re-entered: \(reentered) \(calls)")
+        if kind == .appliesJoin {
+            #expect(calls.count > 1 && calls[1] == "noteJoinInputsConsumed(_:)", "the tick's join report: \(calls)")
+        }
     }
 
     @Test("a sync-only turn when the tick is far away is not a fold")
