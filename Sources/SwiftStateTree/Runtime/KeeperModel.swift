@@ -40,6 +40,36 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// Tests: alignment violations the call sites logged.
     var alignmentViolations: Int = 0
 
+    // Sync bindings and sync output.
+    /// Bumped when the binding changes (`setTransport` with a transport, or the first requester
+    /// bound): a follow-up or a delayed request armed under an older binding is stale, so
+    /// A → B → A doesn't make an old request from A current again.
+    var syncBinding: KeeperSyncBinding = KeeperSyncBinding()
+    /// Interim (#700, #702): the follow-up slots below (this retry, the join-sync turn, the
+    /// after-turn request) each keep the binding ticket they were armed under, and each job
+    /// checks and retires only its own. That is TurnCore's request-per-key shape (#700), with the
+    /// per-slot coalescing of a pending request per key (#702), kept by hand until the keeper's
+    /// turns run on TurnCore. Known gap until then (#702 closes a superseded binding's follow-up
+    /// at once): after a rebind, an older binding's retry still waiting on its writer outlives a
+    /// teardown that reaches only the new binding's writer, and stays counted.
+    ///
+    /// A land without periodic sync: a sync-only turn waits for the writer to drain, at most one
+    /// per binding. The binding generation it was armed under: a retry armed under an older binding
+    /// neither blocks the current binding's nor clears its mark.
+    var inTurnDrainRetryBinding: SyncTurnTicket?
+    /// A sync-only turn for waiting joins is scheduled: the binding generation it was scheduled
+    /// under (at most one per binding, as the drain retry).
+    var joinSyncTurnBinding: SyncTurnTicket?
+    /// The last recorded output's `observedTickId` and how many outputs were recorded after it
+    /// (`ReevaluationRecordedSyncOutput.index`).
+    var syncOutputIndexCursor: SyncOutputIndexCursor = SyncOutputIndexCursor(observedTickId: nil, count: 0)
+    /// The kind of turn whose sync phase is running, for the sync outputs it records.
+    var inTurnSyncTurnKind: ReevaluationRecordedSyncOutput.TurnKind = .tick
+    /// Position of the next sync-stream entry (output or marker). Advanced only while the land
+    /// records its sync stream (a recorder and in-turn sync), in the same synchronous segment as
+    /// the entry it numbers; replay orders the stream by it.
+    var syncStreamCounter: UInt64 = 0
+
     // Counters and flags.
     var stateHashUnavailableTotal: Int = 0
     /// Server inputs submitted and not yet applied (`SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND`).
