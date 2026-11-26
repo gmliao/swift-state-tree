@@ -1393,9 +1393,22 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             failure = .onJoinFailed
         }
         guard isCurrent(sessionID, attempt: attempt) else { return }
+        // The connection this failure is about, read in the segment of the check: the final
+        // frame's close below must not reach a later connection under the same ID. A supersede
+        // before it removes the adapter's own record of the generation (#911).
+        let connectionGeneration = sessionToConnectionGeneration[sessionID]
         // Same segment as the check: unbind, so the disconnect the close causes doesn't reach
         // the adapter again; the cases below clean it up themselves.
         endAttempt(sessionID)
+        // A failure that closes the session (below, or the supersede's 4017) is the session's
+        // close decision, and the router must see it in this segment (#912): `endAttempt` puts
+        // the session back in the handshake, where each later frame would be refused and
+        // counted, and the budget's 1008 would overtake the error still in the writer. As for a
+        // refused session, every later frame is dropped until the close is reported.
+        if failure.closesSession {
+            refusedSessions.insert(sessionID)
+        }
+        await holds.at(.flipFailed)
         logger.warning(failure == .timeout ? "Join timed out" : "Join failed before it completed", metadata: [
             "sessionID": .string(sessionID.rawValue),
             "reason": .string("\(failure)"),
@@ -1424,16 +1437,18 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // the close behind it, so the close can't overtake it (handed to the connection
             // within `JoinFlipConfig.finalFrameCloseTimeout`).
             if let errorData = joinErrorData(requestID: requestID, code: code, message: message) {
-                await pending.adapter.sendFinalFrameAndClose(errorData, kind: .text, to: sessionID)
+                await pending.adapter.sendFinalFrameAndClose(errorData, kind: .text, to: sessionID, generation: connectionGeneration)
             } else {
-                await transport.closeSession(sessionID)
+                await transport.closeSession(sessionID, with: .normal, generation: connectionGeneration)
             }
             // The adapter's cleanup (membership, slot, joining record, and the keeper's player
             // through `keeper.leave`) runs here, through its membership queue: the session is
             // unbound above, so the disconnect the close causes doesn't reach the adapter. A
-            // retry is a new session.
-            await pending.adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+            // retry is a new session. With the connection's generation: a later connection the
+            // adapter registered under the ID keeps its state (#911).
+            await pending.adapter.onDisconnect(sessionID: sessionID, clientID: clientID, generation: connectionGeneration)
         }
+        await holds.at(.flipFailureHandled)
     }
 
     /// Whether the session's in-turn join is admitted and waiting for its flip (tests).
@@ -1785,6 +1800,13 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     /// A flip wait after its join flipped (the JoinResponse is sent), before the phase becomes
     /// `.joined` (#69).
     case flipWaitResumed
+    /// A flip wait whose join failed, after it read the connection generation and ended the
+    /// attempt, before it sends the failure (#911): another join of the player can supersede
+    /// the session, and its client reconnect under the ID, before the final frame goes out.
+    case flipFailed
+    /// A flip wait whose join failed, after its failure was sent and its adapter cleanup
+    /// returned (#911): the event that the failure path of that session is done.
+    case flipFailureHandled
     /// The join budget's timer fired, before it checks the attempt (#104).
     case joinBudgetExpired
     /// A join after its land was looked up or created, before the attempt binds the session
@@ -1815,4 +1837,16 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     /// One session's leave in a land stop, before its adapter's `onDisconnect`: the leaves run
     /// concurrently, so a test orders them here, before they enter the membership queue (#555).
     case stopLeave(SessionID)
+}
+
+extension JoinFlipError {
+    /// Whether the failure ends with the session's connection closed by the server: the
+    /// router's final error frame and its close, or the supersede's 4017. A disconnected
+    /// session is gone already, and a land that closed leaves the connection open for a retry.
+    fileprivate var closesSession: Bool {
+        switch self {
+        case .superseded, .timeout, .onJoinFailed, .eventOverflow, .inboundOverflow: true
+        case .disconnected, .landClosed: false
+        }
+    }
 }

@@ -8,7 +8,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
@@ -29,10 +29,41 @@ private actor AttemptConnection: WebSocketConnection {
 
     private(set) var frames: [Data] = []
     private(set) var closed = false
+    /// Close codes, in order: 1000 for a plain `close()`.
+    private(set) var closeCodes: [UInt16] = []
+    private(set) var sendAttempts = 0
+    private var holding = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    /// Arrives once per send attempt, before the hold (`holdSends`); open, so a send never
+    /// waits on it.
+    let attempted: TestGate = {
+        let gate = TestGate()
+        gate.open()
+        return gate
+    }()
+    /// Arrives once per close; open, so a close never waits on it (`waitUntilClosed`).
+    private let closeSignal: TestGate = {
+        let gate = TestGate()
+        gate.open()
+        return gate
+    }()
     private var frameWaiters: [Int: FrameWaiter] = [:]
     private var nextWaiterID = 0
 
+    /// Holds every send from now on, until `releaseSends`.
+    func holdSends() { holding = true }
+
+    func releaseSends() {
+        holding = false
+        let resumed = held
+        held = []
+        for continuation in resumed { continuation.resume() }
+    }
+
     func send(_ data: Data, kind: WebSocketFrameKind) async throws {
+        sendAttempts += 1
+        await attempted.arrive()
+        if holding { await withCheckedContinuation { held.append($0) } }
         frames.append(data)
         let sent = messages
         for (id, waiter) in frameWaiters where waiter.condition(sent) {
@@ -41,7 +72,20 @@ private actor AttemptConnection: WebSocketConnection {
         }
     }
 
-    func close() async throws { closed = true }
+    func close() async throws { await recordClose(1000) }
+    func close(with close: SessionClose) async throws { await recordClose(close.code) }
+
+    private func recordClose(_ code: UInt16) async {
+        closed = true
+        closeCodes.append(code)
+        await closeSignal.arrive()
+    }
+
+    /// Waits for the connection's close, on the event, not by polling. `false` after the
+    /// gate's hang bound.
+    func waitUntilClosed() async -> Bool {
+        await closeSignal.waitForArrivals(1)
+    }
 
     var messages: [TransportMessage] {
         frames.compactMap { try? JSONDecoder().decode(TransportMessage.self, from: $0) }
@@ -530,5 +574,110 @@ struct LandRouterJoinAttemptTests {
         #expect(!(await newerConnection.closed))
         #expect(await h.players == ["p1"])
         #expect(await h.keeper.playerCount() == 1)
+    }
+}
+
+@Suite("LandRouter: a failed join's final frame carries its connection (#911)", .timeLimit(.minutes(1)))
+struct LandRouterFlipFailureGenerationTests {
+    @Test("A superseded failed join's final frame doesn't close a new connection that took its ID")
+    func finalFrameSparesAReusedID() async throws {
+        let h = try await AttemptHarness.make()
+        let a = SessionID("s-a"), a2 = SessionID("s-a2")
+        // A's join stays pending (no flip), and its second deferred frame fails it. No flip
+        // timer: A2's join, held the same way, doesn't fail on its own.
+        await h.adapter.setJoinFlipHeldForTesting(true)
+        await h.adapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
+        await h.adapter.setDeferredInboundLimitForTesting(count: 1, bytes: 1 << 20)
+        let first = await h.connect(a)
+        let oldGeneration = try #require(await h.transport.connectionGeneration(for: a))
+        // The router returns after the admission; the flip wait runs in a Task of its own.
+        try await h.startJoin(a, requestID: "join-a", player: "p1").value
+        #expect(await h.router.isJoinPending(a), "admitted, waiting for its flip")
+
+        // The failure path is held at its start, and its end (A's, the only join that fails
+        // here) is the event the test waits for.
+        let failed = TestGate(), handled = TestGate()
+        handled.open()
+        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.flipFailed, arrival: 1) { await failed.arrive() }
+            .on(.flipFailureHandled, arrival: 1) { await handled.arrive() }
+            .hook)
+        let action = try anyAction()
+        await h.router.onMessage(action, from: a)
+        await h.router.onMessage(action, from: a)
+        #expect(await failed.waitForArrivals(1), "A's join failed (inbound overflow) and its flip wait is held")
+
+        // While the router holds A's failure: a newer join of p1 supersedes A, A's 4017 goes
+        // out, A's client goes, and a new connection takes the ID before the router sends.
+        // A's close is the test's precondition: A must be ended when the router sends, so
+        // its final frame takes the ended branch (F1 pins the 4017's order).
+        _ = await h.connect(a2)
+        try await h.startJoin(a2, requestID: "join-a2", player: "p1").value
+        #expect(await first.waitUntilClosed(), "A was closed by its supersede")
+        await h.transport.handleDisconnection(sessionID: a)
+        let reused = AttemptConnection()
+        #expect(await h.transport.handleConnection(sessionID: a, connection: reused, authInfo: nil) == .accepted)
+        let reusedGeneration = try #require(await h.transport.connectionGeneration(for: a))
+        #expect(reusedGeneration != oldGeneration)
+
+        // The router sends A's JOIN_INBOUND_OVERFLOW and its close, for A's old connection,
+        // then A's adapter cleanup. (A2's flip stays held, so a wait for no pending flip
+        // wouldn't return.)
+        failed.open()
+        #expect(await handled.waitForArrivals(1), "the router's failure path for A ended")
+        await h.adapter.waitForOutboundIdleForTesting()
+        // No close marker is on the new connection's queue: a frame for it still goes out.
+        let dropsBefore = await h.transport.framesDroppedAfterCloseMarker
+        await h.transport.sendSessionFrames([SessionFrame(data: Data("hello".utf8), sessionID: a, connectionGeneration: reusedGeneration)])
+        #expect(await h.transport.framesDroppedAfterCloseMarker == dropsBefore, "the old connection's close reached the new one")
+        await h.transport.flushSessionQueues()
+        #expect(await reused.frames == [Data("hello".utf8)])
+        #expect(await !reused.closed, "the old connection's close closed the new one")
+        await h.router.installHolds(nil)
+        await h.keeper.forceShutdown()
+    }
+
+    @Test("A failed join's later frames are dropped: its error and 1000 aren't overtaken by the refused-frame budget's 1008 (#912)")
+    func failedJoinDropsLaterFrames() async throws {
+        let h = try await AttemptHarness.make()
+        let a = SessionID("s-a")
+        await h.adapter.setJoinFlipHeldForTesting(true)
+        await h.adapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
+        await h.adapter.setDeferredInboundLimitForTesting(count: 1, bytes: 1 << 20)
+        let connection = await h.connect(a)
+        try await h.startJoin(a, requestID: "join-a", player: "p1").value
+        #expect(await h.router.isJoinPending(a), "admitted, waiting for its flip")
+
+        // The connection's sends are held, so the failure's error stays queued while the
+        // client keeps sending. Its send attempt is the event that the failure reached the
+        // writer: the router decided it, in the segment that ended the attempt.
+        await connection.holdSends()
+        let before = await connection.sendAttempts
+        let action = try anyAction()
+        await h.router.onMessage(action, from: a)
+        await h.router.onMessage(action, from: a)
+        #expect(await connection.attempted.waitForArrivals(before + 1), "A's JOIN_INBOUND_OVERFLOW reached the connection's send")
+
+        // More frames than the pre-join refusal budget (8): none is refused or counted.
+        let dropsBefore = await h.router.framesDroppedAfterRefusalForTesting
+        for _ in 0..<(HandshakeFrameLimit.defaultMaxRefusedFrames + 2) {
+            await h.router.onMessage(action, from: a)
+        }
+        #expect(await h.router.framesDroppedAfterRefusalForTesting == dropsBefore + HandshakeFrameLimit.defaultMaxRefusedFrames + 2)
+
+        await connection.releaseSends()
+        #expect(await connection.waitUntilClosed())
+        await h.adapter.waitForOutboundIdleForTesting()
+        await h.transport.flushSessionQueues()
+        let errorCodes = await connection.errorCodes, closeCodes = await connection.closeCodes
+        #expect(errorCodes == [ErrorCode.joinInboundOverflow.rawValue], "\(errorCodes)")
+        #expect(closeCodes == [1000], "\(closeCodes)")
+        await h.keeper.forceShutdown()
+    }
+
+    private func anyAction() throws -> Data {
+        try JSONEncoder().encode(TransportMessage.action(
+            requestID: "act", action: ActionEnvelope(typeIdentifier: "Anything", payload: AnyCodable([String: Int]()))
+        ))
     }
 }

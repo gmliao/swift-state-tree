@@ -10,6 +10,13 @@ extension TransportAdapter {
         await _onDisconnectImpl(sessionID: sessionID, clientID: clientID)
     }
 
+    /// `onDisconnect` for the connection of `generation` only (#911): when the adapter has
+    /// registered another connection under the ID since, nothing changes. Checked in the
+    /// membership queue, in the segment that acts. With `nil`, it acts by ID.
+    func onDisconnect(sessionID: SessionID, clientID: ClientID, generation: UInt64?) async {
+        await _onDisconnectImpl(sessionID: sessionID, clientID: clientID, generation: generation)
+    }
+
     /// Registers a joined session directly, without the admission (`performJoin` does both).
     /// Use it only for a session whose keeper join the caller already did.
     ///
