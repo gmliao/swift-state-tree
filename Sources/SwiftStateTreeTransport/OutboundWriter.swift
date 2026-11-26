@@ -86,6 +86,9 @@ struct ClosingSession: Sendable, Equatable {
 private final class OutboundWriterCounters: @unchecked Sendable {
     let lock = NSLock()
     var elements = 0
+    /// Queued elements that carry frames (a subset of `elements`): a close-only element
+    /// (`enqueueClose`) carries none, so it doesn't take the empty-backlog allowance away (#909).
+    var frameElements = 0
     var bytes = 0
     var dropped = 0
     var droppedAfterFinish = 0
@@ -106,9 +109,10 @@ private final class OutboundWriterCounters: @unchecked Sendable {
     /// Set when the consumer task ended; later waits return at once.
     var consumerEnded = false
 
-    func sent(bytes sentBytes: Int, isSyncCycle: Bool) {
+    func sent(bytes sentBytes: Int, isSyncCycle: Bool, carriesFrames: Bool) {
         lock.lock()
         elements -= 1
+        if carriesFrames { frameElements -= 1 }
         bytes -= sentBytes
         var waiters: [CheckedContinuation<Void, Never>] = []
         if elements == 0, !idleWaiters.isEmpty {
@@ -167,8 +171,8 @@ private final class OutboundWriterCounters: @unchecked Sendable {
 /// The backlog is bounded by `maxBytes`: an element that would push it over is dropped, counted
 /// and logged, and `enqueue` returns `.droppedOverCeiling` so the adapter disconnects the
 /// sessions it addressed (a dropped frame must never leave a client silently on wrong state).
-/// An element larger than the whole ceiling is still accepted when the backlog is empty, so a
-/// single large frame cannot wedge a land.
+/// An element larger than the whole ceiling is still accepted when the backlog holds no frames
+/// (only close-only elements, or nothing), so a single large frame cannot wedge a land.
 ///
 /// The ceiling measures only the writer→transport handoff. `WebSocketTransport.sendSessionFrames`
 /// yields into each session's own stream and returns, so socket backpressure from a slow client
@@ -211,7 +215,11 @@ final class OutboundWriter: @unchecked Sendable {
                     await transport.closeSessionAfterQueuedFrames(closing.sessionID, generation: closing.generation, with: closing.close)
                 }
                 onSent?(ContinuousClock.now - start, element.frames.count)
-                counters.sent(bytes: element.frames.reduce(0) { $0 + $1.data.count }, isSyncCycle: element.isSyncCycle)
+                counters.sent(
+                    bytes: element.frames.reduce(0) { $0 + $1.data.count },
+                    isSyncCycle: element.isSyncCycle,
+                    carriesFrames: !element.frames.isEmpty
+                )
             }
             counters.releaseWaiters()
         }
@@ -237,7 +245,9 @@ final class OutboundWriter: @unchecked Sendable {
             return .droppedAfterFinish
         }
         counters.lock.lock()
-        if counters.elements > 0, counters.bytes + bytes > maxBytes {
+        // The allowance for an empty backlog counts only elements with frames: a queued
+        // close-only element holds no bytes (#909).
+        if counters.frameElements > 0, counters.bytes + bytes > maxBytes {
             counters.dropped += 1
             let now = ContinuousClock.now
             let shouldLog = counters.lastCeilingLogAt.map { now - $0 >= Self.ceilingLogInterval } ?? true
@@ -255,6 +265,7 @@ final class OutboundWriter: @unchecked Sendable {
             return .droppedOverCeiling
         }
         counters.elements += 1
+        counters.frameElements += 1
         counters.bytes += bytes
         if isSyncCycle { counters.syncCycleElements += 1 }
         counters.lock.unlock()
@@ -283,6 +294,13 @@ final class OutboundWriter: @unchecked Sendable {
         counters.lock.unlock()
         continuation.yield(OutboundElement(frames: [], isSyncCycle: false, closingSessions: closingSessions))
         return .accepted
+    }
+
+    /// Queued close-only elements (`enqueueClose`), not yet handed to the transport (tests).
+    var closeOnlyElements: Int {
+        counters.lock.lock()
+        defer { counters.lock.unlock() }
+        return counters.elements - counters.frameElements
     }
 
     var backlog: OutboundBacklog {

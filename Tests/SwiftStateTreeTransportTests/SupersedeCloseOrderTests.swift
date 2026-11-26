@@ -6,6 +6,7 @@
 // retires the session's queue at once and drops a frame still in it.
 
 import Foundation
+import Logging
 import Testing
 @testable import SwiftStateTree
 import SwiftStateTreeTestSupport
@@ -130,6 +131,61 @@ private actor OrderedCloseRecordingTransport: Transport {
     }
 }
 
+/// Records the writer's calls in order, as "frame <session>" and "ordered <session>:<code>".
+/// A `sendSessionFrames` with a frame for a held session waits at the gate, and so does the
+/// ordered close while closes are held: the writer's consumer stops inside that element.
+private actor GatedWriterTransport: Transport {
+    var delegate: TransportDelegate?
+    private(set) var events: [String] = []
+    private var heldSessions: Set<SessionID> = []
+    private var holdsCloses = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    /// Arrives when a held call starts waiting.
+    let entered = TestGate()
+    /// Arrives once per close, ordered or at once.
+    let closeSignal = TestGate()
+
+    init() {
+        entered.open()
+        closeSignal.open()
+    }
+
+    func hold(_ sessionID: SessionID) { heldSessions.insert(sessionID) }
+    func holdCloses() { holdsCloses = true }
+
+    func release() {
+        heldSessions = []
+        holdsCloses = false
+        let resumed = held
+        held = []
+        for continuation in resumed { continuation.resume() }
+    }
+
+    private func wait() async {
+        await entered.arrive()
+        await withCheckedContinuation { held.append($0) }
+    }
+
+    func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
+    func start() async throws {}
+    func stop() async throws {}
+    func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) {}
+    func sendSessionFrames(_ frames: [SessionFrame]) async {
+        if frames.contains(where: { heldSessions.contains($0.sessionID) }) { await wait() }
+        events += frames.map { "frame \($0.sessionID.rawValue)" }
+    }
+    func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose) async {
+        if holdsCloses { await wait() }
+        events.append("ordered \(sessionID.rawValue):\(close.code)")
+        await closeSignal.arrive()
+    }
+    func closeSession(_ sessionID: SessionID, with close: SessionClose, generation: UInt64?) async {
+        events.append("at once \(sessionID.rawValue):\(close.code)")
+        await closeSignal.arrive()
+    }
+    nonisolated var supportsCloseSession: Bool { true }
+}
+
 /// A transport written before #909: only the two-argument ordered close, and the at-once one.
 private actor TwoArgumentOrderedTransport: Transport {
     var delegate: TransportDelegate?
@@ -237,6 +293,69 @@ struct SupersedeCloseOrderTests {
         await olderExistential.closeSessionAfterQueuedFrames(a, generation: 1, with: .normal)
         await olderExistential.closeSessionAfterQueuedFrames(a, generation: 1, with: .superseded)
         #expect(await older.calls == ["ordered", "at once \(SessionClose.Code.superseded)"])
+    }
+
+    @Test("The close waits in the writer behind A's held frame element, and reaches the transport after it")
+    func closeWaitsInTheWriter() async throws {
+        let definition = Land("supersede-close-order", using: RegisterSessionTestState.self) { Rules {} }
+        let transport = GatedWriterTransport()
+        let keeper = LandKeeper(definition: definition, initialState: RegisterSessionTestState(), autoStartLoops: false)
+        let adapter = TransportAdapter<RegisterSessionTestState>(keeper: keeper, transport: transport, landID: "supersede-close-order")
+        await transport.setDelegate(adapter)
+        await keeper.setTransport(adapter)
+        func join(_ session: SessionID, _ client: ClientID, generation: UInt64) async throws {
+            _ = try await keeper.join(
+                session: PlayerSession(playerID: "p1", deviceID: "dev", metadata: [:]),
+                clientID: client, sessionID: session, services: LandServices()
+            )
+            await adapter.onConnect(sessionID: session, clientID: client)
+            await adapter.registerSession(sessionID: session, clientID: client, playerID: PlayerID("p1"), authInfo: nil, connectionGeneration: generation)
+        }
+        try await join(a, ca, generation: 5)
+        await adapter.waitForOutboundIdleForTesting()
+
+        // The writer's consumer stops inside the element with A's last frame.
+        await transport.hold(a)
+        let frame = await adapter.sessionFrame(Data("a's last frame".utf8), kind: .text, to: a)
+        let writer = await adapter.outboundWriter
+        #expect(writer.enqueue([frame]) == .accepted)
+        #expect(await transport.entered.waitForArrivals(1))
+
+        // A2 supersedes A. The close is a writer element behind the held one: it hasn't reached
+        // the transport. (A close sent to the transport around the writer has no element here.)
+        try await join(a2, ca2, generation: 6)
+        await adapter.waitForDetachedClosesForTesting()
+        #expect(writer.closeOnlyElements == 1, "the close isn't queued in the writer")
+        #expect(await !transport.events.contains { $0.hasPrefix("ordered") || $0.hasPrefix("at once") })
+
+        await transport.release()
+        #expect(await transport.closeSignal.waitForArrivals(1))
+        await adapter.waitForOutboundIdleForTesting()
+        let events = await transport.events
+        let lastFrame = try #require(events.lastIndex(of: "frame a"))
+        let close = try #require(events.firstIndex(of: "ordered a:\(SessionClose.Code.superseded)"), "\(events)")
+        #expect(lastFrame < close, "\(events)")
+        await keeper.forceShutdown()
+    }
+
+    @Test("A queued close-only element leaves the empty-backlog allowance to the next large frame")
+    func closeOnlyElementKeepsTheAllowance() async throws {
+        let transport = GatedWriterTransport()
+        await transport.holdCloses()
+        let writer = OutboundWriter(transport: transport, maxBytes: 4, logger: Logger(label: "supersede-close-order"))
+        #expect(writer.enqueueClose([ClosingSession(sessionID: a, generation: 1, close: .superseded)]) == .accepted)
+        // The consumer is inside the close: the element is still queued.
+        #expect(await transport.entered.waitForArrivals(1))
+        #expect(writer.closeOnlyElements == 1)
+        #expect(writer.backlog.elements == 1)
+        // Over the ceiling, but no frame is queued: accepted. The next one isn't.
+        let large = SessionFrame(data: Data(count: 16), sessionID: a2, connectionGeneration: nil)
+        #expect(writer.enqueue([large]) == .accepted)
+        #expect(writer.enqueue([large]) == .droppedOverCeiling)
+        await transport.release()
+        await writer.waitForIdle()
+        #expect(writer.closeOnlyElements == 0)
+        #expect(await transport.events == ["ordered a:\(SessionClose.Code.superseded)", "frame a2"])
     }
 
     @Test("With the writer finished, the supersede still closes the old session, at once")
