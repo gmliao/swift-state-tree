@@ -94,19 +94,24 @@ jobs:
         if-no-files-found: ignore
 
     - name: Build DemoServer
+      if: ${{ !cancelled() }}
       working-directory: Examples/Demo
       run: swift build --product DemoServer
 
+    # These steps run after a failed Tests step too (not after a cancel), so a flaky unit test does not
+    # hide the E2E result; the failed step still fails the job.
     # E2E against the DemoServer.exe built above, in the three encodings (as e2e-tests.yml does on
     # Linux). The npm scripts `test:e2e:*` start with a POSIX `VAR=value npm run ...` prefix, which
     # npm runs through cmd.exe on Windows and which fails there, so the tsx commands of those scripts
     # are called directly.
     - name: Set up Node.js
+      if: ${{ !cancelled() }}
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: 20
 
     - name: Build the SDK and the CLI
+      if: ${{ !cancelled() }}
       shell: bash
       run: |
         set -e
@@ -114,6 +119,7 @@ jobs:
         (cd Tools/CLI && npm ci && npm run build && npm run test:cli:unit)
 
     - name: E2E tests
+      if: ${{ !cancelled() }}
       shell: bash
       timeout-minutes: 25
       env:
