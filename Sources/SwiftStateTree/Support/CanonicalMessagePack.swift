@@ -26,7 +26,11 @@ import Foundation
 ///
 /// The decoder is strict: a value decodes only into a matching type (an integer doesn't decode
 /// into `Double`), with one widening rule: a float64 decodes into `Float` only when it converts
-/// back to the same `Double`. Duplicate map keys and trailing bytes are rejected.
+/// back to the same `Double`. Duplicate map keys and trailing bytes are rejected. Two keys of one
+/// map are duplicates when their bytes are equal, and also when Swift's `String ==` equates them
+/// (canonical equivalence: an NFC and an NFD spelling, or "K" and U+212A KELVIN SIGN): a Swift
+/// dictionary or a keyed container would keep only one of their values. The encoder refuses to
+/// write such a map too, at every depth (#805).
 public enum CanonicalMessagePack {
     /// The deepest nesting of arrays and maps the decoder reads, so input from a file can't
     /// overflow the stack; the encoder refuses deeper values too, so it never writes what the
@@ -193,7 +197,8 @@ public enum CanonicalMessagePackError: Error, Equatable, CustomStringConvertible
 // MARK: - Value tree
 
 /// A map key, equal and hashed by its UTF-8 bytes (Swift `String` equality treats an NFC and an
-/// NFD spelling as one key; the format doesn't).
+/// NFD spelling as one key; the format doesn't). A map whose keys differ in bytes but not under
+/// `String ==` is refused on both sides (`firstEquivalentDuplicate(in:)`).
 struct CanonicalKey: Hashable {
     /// Compared and hashed by its UTF-8 bytes (not by `String`'s canonical equivalence), without
     /// copying them: a decoder looks up every field by a new key.
@@ -206,6 +211,36 @@ struct CanonicalKey: Hashable {
     }
 
     var utf8: [UInt8] { Array(string.utf8) }
+
+    /// Whether every byte is ASCII.
+    var isASCII: Bool { string.utf8.allSatisfy { $0 < 0x80 } }
+
+    /// The first key, in byte order, that `String ==` equates with a key before it (#805), or nil.
+    /// Such keys are distinct for the format but not for a Swift dictionary or a keyed container,
+    /// which would keep one of the two values, so the writer and the reader refuse the map as a
+    /// duplicate key. Equivalence comes from the standard library's Unicode data; Unicode's
+    /// normalization stability policy keeps assigned characters' decompositions fixed, so a map
+    /// accepted today stays accepted by a later toolchain. Keys that are all ASCII skip the check:
+    /// two ASCII strings are equal only when their bytes are. When any key isn't ASCII, every key
+    /// is checked, ASCII ones included ("K" and U+212A).
+    static func firstEquivalentDuplicate<Keys: Collection>(in keys: Keys) -> String? where Keys.Element == CanonicalKey {
+        guard keys.contains(where: { !$0.isASCII }) else { return nil }
+        var seen = Set<String>(minimumCapacity: keys.count)
+        for key in keys.sorted(by: { $0.utf8.lexicographicallyPrecedes($1.utf8) }) where !seen.insert(key.string).inserted {
+            return key.string
+        }
+        return nil
+    }
+
+    /// Throws `duplicateKey` for the first equivalent duplicate among `keys`. Out of line, so the
+    /// recursive reader's and writer's frames hold none of the check's locals: the stack a value
+    /// at the depth limit takes stays within its budget (#802).
+    @inline(never)
+    static func refuseEquivalentDuplicates(in keys: Dictionary<CanonicalKey, CanonicalNode>.Keys) throws {
+        if let duplicate = firstEquivalentDuplicate(in: keys) {
+            throw CanonicalMessagePackError.duplicateKey(duplicate)
+        }
+    }
 
     static func == (lhs: CanonicalKey, rhs: CanonicalKey) -> Bool {
         var left = lhs.string
@@ -811,6 +846,8 @@ private struct CanonicalWriter {
         case .map(let entries):
             try enter()
             defer { depth -= 1 }
+            // Refused, not normalized: the reader refuses it the same way (#805).
+            try CanonicalKey.refuseEquivalentDuplicates(in: entries.keys)
             try writeHeader(count: entries.count, fix: 0x80, fixMax: 15, u8: nil, u16: 0xde, u32: 0xdf)
             let sorted = entries.map { (key: $0.key.utf8, value: $0.value) }
                 .sorted { $0.key.lexicographicallyPrecedes($1.key) }
@@ -1005,6 +1042,8 @@ private struct CanonicalReader {
                 throw CanonicalMessagePackError.duplicateKey(key)
             }
         }
+        // Distinct bytes, and distinct under `String ==` too (#805).
+        try CanonicalKey.refuseEquivalentDuplicates(in: entries.keys)
         return .map(entries)
     }
 }

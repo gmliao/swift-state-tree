@@ -245,7 +245,7 @@ struct CanonicalAnyCodablePathTests {
             ("nested", ["list": [1, "two", ["three": 3.0]] as [Any], "empty": [Any](), "none": [String: Any]()] as [String: Any]),
             ("an optional inside an array", [Optional<Int>.none as Any, 1]),
             ("Int-keyed dictionary, through Encodable", [1: "one", 2: "two"]),
-            ("two spellings of one key", TwoSpellings()),
+            ("error: two spellings of one key", TwoSpellings()),
             ("error: NSNull", nsNull),
             ("error: NSNull in an array", [1, nsNull]),
             ("error: Set", set),
@@ -341,18 +341,18 @@ struct CanonicalAnyCodablePathTests {
         #expect(results.contains { $0.refused })
     }
 
-    @Test("A map with two spellings of one key decodes to one entry holding one of the two values, on both paths")
+    @Test("Two spellings of one key are refused on both paths, written and read (#805)")
     func twoSpellingsOfOneKey() throws {
-        // `Dictionary.init(from:)` keeps whichever spelling the map yields last, and a map's
-        // iteration order differs between dictionaries: neither path determines which.
-        let bytes = try CanonicalMessagePack.encode(TwoSpellings())
-        for base in [
-            try CanonicalMessagePack.decode(AnyCodable.self, from: bytes).base,
-            try generic { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes).base },
-        ] {
-            let map = try #require(base as? [String: Any])
-            #expect(map.count == 1)
-            #expect([1, 2].contains(map["\u{E9}"] as? Int ?? 0))
+        // Written: both paths end in the writer, which refuses the pair as a duplicate key.
+        let written = Outcome { try CanonicalMessagePack.encode(AnyCodable(TwoSpellings())) }
+        let writtenGeneric = generic { Outcome { try CanonicalMessagePack.encode(AnyCodable(TwoSpellings())) } }
+        // Read: a map holding both, by hand ("e"+U+0301 then U+00E9, in byte order).
+        let bytes: [UInt8] = [0x82, 0xa3, 0x65, 0xcc, 0x81, 0x02, 0xa2, 0xc3, 0xa9, 0x01]
+        let read = Outcome { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes).base }
+        let readGeneric = generic { Outcome { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes).base } }
+        let refusal = "CanonicalMessagePackError: \(CanonicalMessagePackError.duplicateKey("\u{E9}"))"
+        for outcome in [written.description, writtenGeneric.description, read.description, readGeneric.description] {
+            #expect(outcome == refusal || outcome.hasSuffix(refusal), "\(outcome)")
         }
     }
 
@@ -464,11 +464,13 @@ struct CanonicalAnyCodablePathTests {
     /// (the encoder, the tree's finish and the writer; the reader and the decoder), against fixed
     /// budgets, so a regression fails here instead of overflowing a pool thread.
     ///
-    /// Measured on macOS, Swift 6.4, debug, `maxDepth` (128) nested maps:
-    /// - the generic `AnyCodable` paths: encode 601 KB, decode 551 KB, each more than a whole
+    /// Measured on macOS, Swift 6.4, debug, `maxDepth` (128) nested maps (2026-11-26):
+    /// - the generic `AnyCodable` paths: encode 652 KB, decode 584 KB, each more than a whole
     ///   544 KiB Darwin pool thread;
-    /// - the direct paths: encode 194 KB (about 1.5 KB per level), decode 285 KB, most of it the
-    ///   reader (about 2.2 KB per level), which both paths share.
+    /// - the direct paths: encode 194 KB (about 1.5 KB per level), decode 322 KB, most of it the
+    ///   reader (about 2.5 KB per level), which both paths share. The equivalent-key check
+    ///   (#805) added 6 KB to the decode (316 KB before it); it runs out of line so that the
+    ///   recursive frames don't hold its locals.
     /// Budgets: encode 256 KiB, decode 320 KiB, leaving at least 224 KiB of a 544 KiB thread to the
     /// frames above. Release builds take far less.
     /// The same chain with an `AnyCodable` at every level, as a tree built from `AnyCodable`
