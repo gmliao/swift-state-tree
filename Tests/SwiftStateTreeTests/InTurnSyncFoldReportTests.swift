@@ -29,6 +29,26 @@ private func foldReportLand() -> LandDefinition<FoldReportState> {
     }
 }
 
+@Payload
+struct FoldTickEvent: ServerEventPayload {
+    let ticks: Int
+}
+
+/// `foldReportLand` whose tick handler emits an event: a replay that runs a tick the live
+/// keeper skipped shows it as a server-event mismatch.
+private func foldReportLandEmitting() -> LandDefinition<FoldReportState> {
+    Land("fold-report-test", using: FoldReportState.self) {
+        ServerEvents { Register(FoldTickEvent.self) }
+        Lifetime {
+            Tick(every: .seconds(3600)) { state, ctx in
+                state.ticks += 1
+                ctx.emitEvent(FoldTickEvent(ticks: state.ticks), to: .all)
+            }
+            StateSync(every: .seconds(3600)) { _, _ in }
+        }
+    }
+}
+
 /// `foldReportLand` with an OnJoin: a join queues its OnJoin input, which the next tick turn
 /// applies.
 private func foldReportLandWithOnJoin() -> LandDefinition<FoldReportState> {
@@ -242,15 +262,37 @@ private let window = Duration.milliseconds(5)
 
 @Suite("In-turn sync: folds reported to the transport", .timeLimit(.minutes(1)))
 struct InTurnSyncFoldReportTests {
-    private func makeKeeper(_ transport: FoldRecordingTransport, onJoin: Bool = false) async throws -> LandKeeper<FoldReportState> {
+    private func makeKeeper(
+        _ transport: FoldRecordingTransport,
+        onJoin: Bool = false,
+        definition: LandDefinition<FoldReportState>? = nil,
+        recording: Bool = false
+    ) async throws -> LandKeeper<FoldReportState> {
         let signal = FirstTickSleepSignal()
+        let definition = definition ?? (onJoin ? foldReportLandWithOnJoin() : foldReportLand())
+        // One land ID per recording keeper: parallel tests must not share a recorder spool.
+        let landID = recording ? "\(definition.id):\(UUID().uuidString)" : nil
         let keeper = TickLoopClock.$forNewKeepers.withValue(signal.tickLoopClock) {
             LandKeeper<FoldReportState>(
-                definition: onJoin ? foldReportLandWithOnJoin() : foldReportLand(),
+                definition: definition,
                 initialState: FoldReportState(),
+                enableLiveStateHashRecording: recording,
                 enableLoopPhaseOffset: false,
+                landID: landID,
                 transport: transport
             )
+        }
+        if recording, let landID {
+            let recorder = try #require(await keeper.getReevaluationRecorder())
+            await recorder.setMetadata(ReevaluationRecordMetadata(
+                landID: landID,
+                landType: definition.id,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                metadata: [:],
+                landDefinitionID: definition.id,
+                rngSeed: DeterministicSeed.fromLandID(landID),
+                version: ReevaluationRecordVersion.current
+            ))
         }
         #expect(await keeper.isUsingInTurnSync())
         try await Self.waitForLoops(keeper, signal)
@@ -342,7 +384,55 @@ struct InTurnSyncFoldReportTests {
         // The fold is reported before the inputs: the land ends there, and the tick handler
         // doesn't run. The join-sync calls come after the handler.
         #expect(await keeper.currentState().ticks == ticksBefore + (reentry == .foldNote ? 0 : 1))
+        // So the fold's refusal ended the tick's inputs (replay skips its handler too); the
+        // join-sync ones came after the handler.
+        #expect((keeper.failure?.position.endsInputs == true) == (reentry == .foldNote))
+        #expect(keeper.failure?.position.pass == nil)
         await keeper.forceShutdown()
+    }
+
+    /// A recorded tick that a port call's re-entry ends (#891 review): the record holds the
+    /// terminal entry, then the tick's own record, and the failure's position says whether the
+    /// tick's inputs ended (the fold report, before the handler) or not (the joins read, after
+    /// it). Replay then runs the handler only where live did: no server-event mismatch.
+    @Test("a recorded tick ended by a port call's re-entry replays as it ran", arguments: [
+        FoldRecordingTransport.Reentry.foldNote, .joinsRead,
+    ])
+    func recordedTickRefusalReplays(_ reentry: FoldRecordingTransport.Reentry) async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("fold-refusal-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let transport = FoldRecordingTransport(records: true)
+        let keeper = try await makeKeeper(transport, definition: foldReportLandEmitting(), recording: true)
+        let deadline = ContinuousClock.now
+        // One ordinary tick first, so the record has a handler's event to compare.
+        await keeper.stepTickOnceForTesting(at: deadline)
+        transport.arm(reentry, keeper: keeper, joinsWait: reentry != .foldNote)
+        if reentry == .foldNote {
+            await keeper.setNextTickDeadlineForTesting(deadline + .seconds(1))
+            await keeper.runSyncLoopIterationForTesting(at: deadline + .seconds(1) - .milliseconds(1))
+        }
+        let tracker = await keeper.recorderSubmissionsForTesting
+        tracker.startTraceForTesting()
+        await keeper.stepTickOnceForTesting(at: deadline + .seconds(1) + .milliseconds(1))
+
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect((keeper.failure?.position.endsInputs == true) == (reentry == .foldNote))
+        #expect(await keeper.currentState().ticks == (reentry == .foldNote ? 1 : 2))
+        await keeper.waitForRecorderSubmissionsForTesting()
+        // The terminal entry, then the tick's own record (no sync phase ran, so no sync-stream
+        // entry precedes them).
+        #expect(tracker.traceForTesting == ["terminal", "turn-record"], "\(tracker.traceForTesting)")
+
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        try await recorder.save(to: path)
+        await keeper.forceShutdown()
+        let result = try await ReevaluationEngine.run(
+            definition: foldReportLandEmitting(),
+            initialState: FoldReportState(),
+            recordFilePath: path
+        )
+        #expect(result.serverEventMismatches.isEmpty, "\(result.serverEventMismatches.map(\.tickId))")
+        #expect(result.serverEventVerification == .passed)
     }
 
     /// Every port call a tick turn's body makes goes through `callOut`: the fake re-enters at the
@@ -357,6 +447,7 @@ struct InTurnSyncFoldReportTests {
         let folded = kind == .folded
         var reentered: [Int] = []
         var calls: [String] = []
+        var endedInputs: [Bool] = []
         for n in 1...30 {
             let transport = FoldRecordingTransport(records: true)
             // With OnJoin, the setup's join queues its input for the tick below.
@@ -375,6 +466,7 @@ struct InTurnSyncFoldReportTests {
             }
             reentered.append(n)
             calls.append(transport.reenteredCall ?? "?")
+            endedInputs.append(keeper.failure?.position.endsInputs == true)
             #expect(keeper.failure?.kind == .keeperReentry, "call \(n)")
             #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
             #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
@@ -390,6 +482,14 @@ struct InTurnSyncFoldReportTests {
         if kind == .appliesJoin {
             #expect(calls.count > 1 && calls[1] == "noteJoinInputsConsumed(_:)", "the tick's join report: \(calls)")
         }
+        // A refusal before the handler (the fold report, the join report) ended the tick's
+        // inputs, so replay skips the handler as live did; the ones after the handler didn't.
+        let ended: [TickKind: [Bool]] = [
+            .folded: [true, false],
+            .joinSync: [false, false, false, false],
+            .appliesJoin: [true, true, false, false, false],
+        ]
+        #expect(endedInputs == ended[kind]!, "\(calls)")
     }
 
     @Test("a sync-only turn when the tick is far away is not a fold")

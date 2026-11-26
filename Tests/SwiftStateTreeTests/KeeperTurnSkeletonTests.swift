@@ -35,6 +35,17 @@ private func turnSkeletonLandWithOnJoin() -> LandDefinition<TurnSkeletonState> {
     }
 }
 
+/// With a Tick and an OnInitialize: the loops start after the initialization's turn.
+private func turnSkeletonTickLandWithOnInitialize() -> LandDefinition<TurnSkeletonState> {
+    Land("turn-skeleton", using: TurnSkeletonState.self) {
+        Lifetime {
+            OnInitialize { state, _ in state.value += 1 }
+            Tick(every: .seconds(3600)) { _, _ in }
+            StateSync(every: .seconds(3600)) { _, _ in }
+        }
+    }
+}
+
 /// Tickless, with an OnInitialize: the keeper's initialization is a turn body.
 private func turnSkeletonLandWithOnInitialize() -> LandDefinition<TurnSkeletonState> {
     Land("turn-skeleton", using: TurnSkeletonState.self) {
@@ -679,6 +690,33 @@ struct KeeperTurnSkeletonTests {
         #expect(await keeper.reentriesAppliedInCallForTesting == 1)
         #expect(await keeper.lateReentriesAppliedForTesting == 0)
         #expect(await keeper.currentState().value == 1, "the OnJoin applied before the failure item")
+    }
+
+    /// A refusal in initialization's turn fails the land, and the keeper starts no tick or sync
+    /// loop on it (#891 review): the drain may already have run, and a loop started after it
+    /// would keep the keeper alive. Unarmed, the same land starts both.
+    @Test("A land whose initialization was refused starts no loops", arguments: [false, true])
+    func refusedInitializationStartsNoLoops(refused: Bool) async throws {
+        let keeper = LandKeeper<TurnSkeletonState>(
+            definition: turnSkeletonTickLandWithOnInitialize(),
+            initialState: TurnSkeletonState(),
+            enableLiveStateHashRecording: true,
+            autoStartLoops: true,
+            enableLoopPhaseOffset: false,
+            landID: "turn-skeleton:loops"
+        )
+        let transport = TurnSkeletonReenteringTransport(reenter: .nthCallInBody, joinsWait: false)
+        transport.attach(keeper)
+        await keeper.setTransport(transport)
+        if refused { transport.armNthCallInBody(1) }
+
+        await keeper.awaitInitialization()
+
+        #expect(transport.reenteredAtNth == refused)
+        #expect((keeper.failure?.kind == .keeperReentry) == refused)
+        #expect((await keeper.appliedTickPhaseOffset == nil) == refused, "the tick loop")
+        #expect((await keeper.appliedSyncPhaseOffset == nil) == refused, "the sync loop")
+        await keeper.forceShutdown()
     }
 
     /// Every port call a requested sync-only turn makes goes through `callOut`, as the input
