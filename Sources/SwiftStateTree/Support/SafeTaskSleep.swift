@@ -71,3 +71,27 @@ public func safeTaskSleep(for duration: Duration) async throws {
     // Use Task.sleep(nanoseconds:) instead of Task.sleep(for:)
     try await Task.sleep(nanoseconds: totalNanos)
 }
+
+/// The longest single sleep of `safeTaskSleep(until:)`: one hour. A longer wait sleeps in chunks
+/// and reads the clock between them, so no sleep is given a length near the range's end.
+private let longestDeadlineSleepChunk: Duration = .seconds(3600)
+
+/// Sleeps until `deadline` on the continuous clock, without `Task.sleep(until:clock:)`.
+///
+/// **DO NOT use `Task.sleep(until:clock:)` directly in library code**, for the same reason as
+/// `Task.sleep(for:)`: it was not shown safe against the macOS release-build crash.
+///
+/// It returns at once for a deadline that has already passed. Otherwise it sleeps the time left
+/// with `safeTaskSleep(for:)` and reads the clock again after each wake, so a timed sleep that
+/// wakes early sleeps on for what is left (as `SystemTurnClock` does). It returns only once the
+/// clock has reached `deadline`, unless the task is cancelled.
+///
+/// - Parameter deadline: The instant on `ContinuousClock` to sleep until.
+/// - Throws: `CancellationError` if the task is cancelled during sleep.
+package func safeTaskSleep(until deadline: ContinuousClock.Instant) async throws {
+    while true {
+        let remaining = deadline - ContinuousClock.now
+        guard remaining > .zero else { return }
+        try await safeTaskSleep(for: min(remaining, longestDeadlineSleepChunk))
+    }
+}
