@@ -96,6 +96,9 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
         case nestedSettle
         /// `submitSyncStream` from a draft factory the settle phase returned.
         case settleDraftFactory
+        /// `submitSyncStream` from the nth port call made during a turn body, armed by
+        /// `armNthCallInBody(_:)`: any call of this port, wherever the body makes it.
+        case nthCallInBody
     }
 
     private let lock = NSLock()
@@ -111,6 +114,9 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     private var joinsAsked = 0
     private var settleCheckArmed = false
     private var settlePhases = 0
+    private var nthTarget = 0
+    private var callsInBody = 0
+    private var reenteredNth = false
 
     init(reenter: Where, joinsWait: Bool = false) {
         self.reenter = reenter
@@ -130,6 +136,30 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     var settlePhaseCount: Int { lock.withLock { settlePhases } }
     /// From now on, `.settleCheck` re-enters from `runsSyncPhaseInTurn`.
     func armSettleCheck() { lock.withLock { settleCheckArmed = true } }
+    /// From now on, `.nthCallInBody` counts the port calls made during a turn body and re-enters
+    /// at the `n`th.
+    func armNthCallInBody(_ n: Int) {
+        lock.withLock {
+            nthTarget = n
+            callsInBody = 0
+        }
+    }
+    /// Whether the armed nth call was made, and re-entered.
+    var reenteredAtNth: Bool { lock.withLock { reenteredNth } }
+
+    /// `.nthCallInBody`: counts a port call made during a turn body; re-enters at the armed one.
+    private func noteCall() {
+        guard reenter == .nthCallInBody, let keeper = lock.withLock({ self.keeper }) else { return }
+        guard keeper.assumeIsolated({ $0.bodyDepthForTesting > 0 }) else { return } // lint-allow: turns-isolated: the fake counts only the calls a body makes
+        let due = lock.withLock {
+            guard nthTarget > 0 else { return false }
+            callsInBody += 1
+            return callsInBody == nthTarget
+        }
+        guard due else { return }
+        lock.withLock { reenteredNth = true }
+        reenterNow()
+    }
 
     private func reenterNow() {
         guard let keeper = lock.withLock({ self.keeper }) else { return }
@@ -144,7 +174,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
                 keeper.markDrainingForTesting(cause: .forceShutdown)
                 keeper.submitSyncStream([outputDraft(99)])
             case .phase, .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .settleCheck, .settlePhase,
-                 .settleDraftFactory, .nowhere:
+                 .settleDraftFactory, .nthCallInBody, .nowhere:
                 keeper.submitSyncStream([outputDraft(99)])
             }
         }
@@ -161,6 +191,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     /// Answers true when it re-enters, so a follow-up would be scheduled if the refused answer
     /// were read.
     var hasJoinsAwaitingSync: Bool {
+        noteCall()
         lock.withLock { joinsAsked += 1 }
         guard reenter == .joinsAwaitingSync else {
             return lock.withLock {
@@ -178,6 +209,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     func onLandDestroyed() async {}
     /// Read before the phase too (`inTurnSyncRecording`); re-enters only once the phase returned.
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool {
+        noteCall()
         if reenter == .runsSyncPhaseWitness, lock.withLock({ phaseReturned }) { reenterNow() }
         if reenter == .settleCheck, lock.withLock({ settleCheckArmed }) { reenterNow() }
         return true
@@ -188,10 +220,11 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
         includeSync: Bool,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
+        noteCall()
         switch reenter {
         case .phase, .phaseRequestingSyncTurn, .phaseOnDrainingLand: reenterNow()
         case .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .settleCheck, .settlePhase, .nestedSettle,
-             .settleDraftFactory, .nowhere: break
+             .settleDraftFactory, .nthCallInBody, .nowhere: break
         }
         defer { lock.withLock { phaseReturned = true } }
         // Otherwise a success, so only the re-entry can fail the turn. Kept events would ask
@@ -199,7 +232,9 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
         return InTurnSyncOutput(
             .committed(clearDirtyFlags: false),
             syncStream: reenter == .draftFactory ? [reenteringDraft(), outputDraft(2)] : [outputDraft(1)],
-            keepsEvents: reenter != .nowhere
+            // `.nthCallInBody` keeps none: a follow-up turn would make further calls in a body
+            // after the input turn ended.
+            keepsEvents: reenter != .nowhere && reenter != .nthCallInBody
         )
     }
 
@@ -208,6 +243,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
         settle: InTurnSettle,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
+        noteCall()
         lock.withLock { settlePhases += 1 }
         if reenter == .settlePhase || reenter == .nestedSettle { reenterNow() }
         let drafts = reenter == .settleDraftFactory ? [reenteringDraft()] : [outputDraft(3)]
@@ -224,6 +260,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
             )
         }))
     }
+    func noteJoinInputsConsumed(_ results: [JoinInputResult]) { noteCall() }
     func waitForWriterDrainForInTurnSync() async {}
 }
 
@@ -503,15 +540,82 @@ struct KeeperTurnSkeletonTests {
 
         // The join's OnJoin is applied by an input turn, whose phase returns the re-entering
         // factory.
-        await #expect(throws: (any Error).self) {
+        await #expect(throws: LandInputRejection.landClosed) {
             try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
         }
 
         #expect(keeper.failure?.kind == .keeperReentry)
         #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(await keeper.lateReentriesAppliedForTesting == 0, "applied by the backstop, not in the turn")
         #expect(transport.closeCount == 1)
         #expect(await keeper.bodyDepthForTesting == 0)
         #expect(await keeper.currentState().value == 1, "the OnJoin applied before the phase")
+    }
+
+    /// Every port call an input turn's body makes goes through `callOut`: the fake re-enters at
+    /// the nth port call made during a body, for each n until the body makes no more, and each
+    /// re-entry ends the land in that call, before the body reads the call's answer. The late
+    /// backstop applies none.
+    @Test("A re-entry at any port call of an input turn ends the land in that call")
+    func inputTurnReentryAtEveryPortCall() async throws {
+        var reentered: [Int] = []
+        for n in 1...30 {
+            let (keeper, transport, _) = await attachedKeeper(.nthCallInBody, onJoin: true)
+            await keeper.awaitInitialization()
+            transport.armNthCallInBody(n)
+            var rejection: (any Error)?
+            do {
+                try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
+            } catch {
+                rejection = error
+            }
+            guard transport.reenteredAtNth else {
+                #expect(rejection == nil && keeper.failure == nil, "past the last call (\(n)): \(String(describing: rejection))")
+                break
+            }
+            reentered.append(n)
+            #expect(rejection as? LandInputRejection == .landClosed, "call \(n): \(String(describing: rejection))")
+            #expect(keeper.failure?.kind == .keeperReentry, "call \(n)")
+            #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
+            #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
+            #expect(transport.closeCount == 1, "call \(n)")
+            #expect(await keeper.bodyDepthForTesting == 0, "call \(n)")
+        }
+        // The calls of an OnJoin's input turn on a land without periodic sync: the consumed
+        // join's report (its witness, then the report), the turn's in-turn check, the recording's
+        // witness, the joins read before the phase (its witness, then the read), the phase, and
+        // the joins read after the committed phase (its witness, then the read).
+        #expect(reentered == Array(1...9), "calls that re-entered: \(reentered)")
+    }
+
+    /// Every port call the settle makes goes through `callOut`, as the input turn's do; the
+    /// terminal entry is recorded before the turn's end.
+    @Test("A re-entry at any port call of the settle ends the land in that call")
+    func settleReentryAtEveryPortCall() async throws {
+        var reentered: [Int] = []
+        for n in 1...30 {
+            let (keeper, transport, tracker) = await attachedKeeper(.nthCallInBody)
+            await keeper.awaitInitialization()
+            #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(10)))
+            transport.armNthCallInBody(n)
+            let outcome = await keeper.settleTurn(via: transport, fence: turnSkeletonSettleFence)
+            guard transport.reenteredAtNth else {
+                #expect(keeper.failure == nil, "past the last call (\(n)): \(outcome)")
+                break
+            }
+            reentered.append(n)
+            guard case .failed(let reported) = outcome else {
+                Issue.record("call \(n): expected the settle to end the land, got \(outcome)")
+                continue
+            }
+            #expect(reported.kind == .keeperReentry, "call \(n)")
+            #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
+            #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
+            #expect(transport.closeCount == 1, "call \(n)")
+            #expect(tracker.traceForTesting.suffix(2) == ["terminal", "endTurn"], "call \(n): \(tracker.traceForTesting)")
+        }
+        // The in-turn check, the recording's witness, and the settle phase.
+        #expect(reentered == Array(1...3), "calls that re-entered: \(reentered)")
     }
 
     /// The body applies `.failed` while it holds the keeper's model: `failLand` runs inside the
