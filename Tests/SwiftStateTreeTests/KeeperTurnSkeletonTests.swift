@@ -35,9 +35,27 @@ private func turnSkeletonLandWithOnJoin() -> LandDefinition<TurnSkeletonState> {
     }
 }
 
-private func makeKeeper(recording: Bool, onJoin: Bool = false) -> LandKeeper<TurnSkeletonState> {
+/// With a Tick and an OnInitialize: the loops start after the initialization's turn.
+private func turnSkeletonTickLandWithOnInitialize() -> LandDefinition<TurnSkeletonState> {
+    Land("turn-skeleton", using: TurnSkeletonState.self) {
+        Lifetime {
+            OnInitialize { state, _ in state.value += 1 }
+            Tick(every: .seconds(3600)) { _, _ in }
+            StateSync(every: .seconds(3600)) { _, _ in }
+        }
+    }
+}
+
+/// Tickless, with an OnInitialize: the keeper's initialization is a turn body.
+private func turnSkeletonLandWithOnInitialize() -> LandDefinition<TurnSkeletonState> {
+    Land("turn-skeleton", using: TurnSkeletonState.self) {
+        Lifetime { OnInitialize { state, _ in state.value += 1 } }
+    }
+}
+
+private func makeKeeper(recording: Bool, onJoin: Bool = false, onInitialize: Bool = false) -> LandKeeper<TurnSkeletonState> {
     LandKeeper<TurnSkeletonState>(
-        definition: onJoin ? turnSkeletonLandWithOnJoin() : turnSkeletonLand(),
+        definition: onInitialize ? turnSkeletonLandWithOnInitialize() : onJoin ? turnSkeletonLandWithOnJoin() : turnSkeletonLand(),
         initialState: TurnSkeletonState(),
         enableLiveStateHashRecording: recording,
         autoStartLoops: false,
@@ -352,9 +370,10 @@ private struct BodyError: Error {}
 private func attachedKeeper(
     _ reenter: TurnSkeletonReenteringTransport.Where,
     joinsWait: Bool = false,
-    onJoin: Bool = false
+    onJoin: Bool = false,
+    onInitialize: Bool = false
 ) async -> (LandKeeper<TurnSkeletonState>, TurnSkeletonReenteringTransport, ReevaluationSubmissionTracker) {
-    let keeper = makeKeeper(recording: true, onJoin: onJoin)
+    let keeper = makeKeeper(recording: true, onJoin: onJoin, onInitialize: onInitialize)
     let transport = TurnSkeletonReenteringTransport(reenter: reenter, joinsWait: joinsWait)
     transport.attach(keeper)
     await keeper.setTransport(transport)
@@ -559,6 +578,7 @@ struct KeeperTurnSkeletonTests {
     @Test("A re-entry at any port call of an input turn ends the land in that call")
     func inputTurnReentryAtEveryPortCall() async throws {
         var reentered: [Int] = []
+        var passes: [Int?] = []
         for n in 1...30 {
             let (keeper, transport, _) = await attachedKeeper(.nthCallInBody, onJoin: true)
             await keeper.awaitInitialization()
@@ -583,12 +603,151 @@ struct KeeperTurnSkeletonTests {
             #expect(await keeper.reentriesAppliedInCallForTesting == 1, "call \(n): not applied by its call's callOut")
             #expect(transport.closeCount == 1, "call \(n)")
             #expect(await keeper.bodyDepthForTesting == 0, "call \(n)")
+            passes.append(keeper.failure?.position.pass)
         }
-        // The calls of an OnJoin's input turn on a land without periodic sync: the consumed
-        // join's report (its witness, then the report), the turn's in-turn check, the recording's
-        // witness, the joins read before the phase (its witness, then the read), the phase, and
-        // the joins read after the committed phase (its witness, then the read).
+        // The calls of an OnJoin's input turn on a land without periodic sync, in order: the
+        // consumed join's report (its witness, then the report), the turn's in-turn check, the
+        // joins read before the phase (its witness, then the read), the recording's witness, the
+        // phase, and the joins read after the committed phase (its witness, then the read).
         #expect(reentered == Array(1...9), "calls that re-entered: \(reentered)")
+        // Each failure names the turn's own pass, the join report's (before the pass is
+        // numbered) included.
+        #expect(passes.first != nil && passes.allSatisfy { $0 == passes.first }, "the failures' passes: \(passes)")
+    }
+
+    /// Initialization is a turn body (#700 K1b-5a step 2): every port call it makes goes through
+    /// `callOut`. A refusal ends the land in that call; OnInitialize had applied, and no output
+    /// step follows.
+    @Test("A re-entry at any port call of the initialization ends the land in that call")
+    func initializationReentryAtEveryPortCall() async throws {
+        var reentered: [Int] = []
+        for n in 1...30 {
+            let (keeper, transport, _) = await attachedKeeper(.nthCallInBody, onInitialize: true)
+            transport.armNthCallInBody(n)
+            await keeper.awaitInitialization()
+            guard transport.reenteredAtNth else {
+                #expect(keeper.failure == nil, "past the last call (\(n))")
+                break
+            }
+            reentered.append(n)
+            #expect(keeper.failure?.kind == .keeperReentry, "call \(n)")
+            #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
+            #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
+            #expect(await keeper.reentriesAppliedInCallForTesting == 1, "call \(n): not applied by its call's callOut")
+            #expect(transport.closeCount == 1, "call \(n)")
+            #expect(await keeper.bodyDepthForTesting == 0, "call \(n)")
+            #expect(await keeper.currentState().value == 1, "call \(n): OnInitialize applied before the calls")
+        }
+        // The initialize marker's witness, the in-turn check, the joins read before the phase
+        // (its witness, then the read), the recording's witness, the phase, and the joins read
+        // after the committed phase (its witness, then the read).
+        #expect(reentered == Array(1...8), "calls that re-entered: \(reentered)")
+    }
+
+    /// `submitSyncStream`'s own body checks its drafts' factories (#884's second track): a factory
+    /// that re-enters ends the land in that body, not in the backstop.
+    @Test("A draft factory that re-enters during submitSyncStream ends the land in its body")
+    func submitSyncStreamFactoryReentryEndsTheLand() async throws {
+        let (keeper, transport, _) = await attachedKeeper(.nowhere)
+        await keeper.awaitInitialization()
+        let draft = SyncStreamDraft(.output(observedTickId: 0, make: { [weak keeper] streamIndex, index in
+            keeper?.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: a draft factory that calls back into its keeper
+            return ReevaluationRecordedSyncOutput(
+                index: index, turnKind: .syncOnly, observedTickId: 0,
+                streamIndex: streamIndex, sequence: Int64(streamIndex), broadcastHash: 0xbeef_0007
+            )
+        }))
+
+        await keeper.submitSyncStream([draft])
+
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(await keeper.lateReentriesAppliedForTesting == 0, "applied by the backstop, not in the body")
+        #expect(transport.closeCount == 1)
+    }
+
+    /// A batch's queued failure is applied before its join report (#884's second track), so a
+    /// re-entry refused in that report can't take its place as the cause.
+    @Test("A queued failure in the batch stays the cause when the join report re-enters", arguments: [1, 2])
+    func queuedFailureOutranksAJoinReportReentry(at call: Int) async throws {
+        let (keeper, transport, _) = await attachedKeeper(.nthCallInBody, onJoin: true)
+        await keeper.awaitInitialization()
+        // The report's witness (1) or the report (2).
+        transport.armNthCallInBody(call)
+        let join = LandKeeper<TurnSkeletonState>.PendingItem.lifecycle(LandKeeper<TurnSkeletonState>.PendingLifecycleItem(
+            sequence: 1_000, kind: .join, playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"),
+            deviceID: nil, isGuest: nil, metadata: [:], resolverOutputs: [:], resolvedAtTick: 0
+        ))
+        let queued = LandKeeper<TurnSkeletonState>.PendingItem.landFailure(LandKeeper<TurnSkeletonState>.PendingLandFailureItem(
+            sequence: 1_001, resolvedAtTick: 0, failure: TurnSkeletonFailingPhaseTransport.failure
+        ))
+
+        _ = await keeper.runInputTurnForTesting([join, queued])
+
+        #expect(transport.reenteredAtNth, "the report wasn't made")
+        #expect(keeper.failure?.kind == TurnSkeletonFailingPhaseTransport.failure.kind, "the cause: \(String(describing: keeper.failure))")
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(await keeper.reentriesAppliedInCallForTesting == 1)
+        #expect(await keeper.lateReentriesAppliedForTesting == 0)
+        #expect(await keeper.currentState().value == 1, "the OnJoin applied before the failure item")
+    }
+
+    /// A refusal in initialization's turn fails the land, and the keeper starts no tick or sync
+    /// loop on it (#891 review): the drain may already have run, and a loop started after it
+    /// would keep the keeper alive. Unarmed, the same land starts both.
+    @Test("A land whose initialization was refused starts no loops", arguments: [false, true])
+    func refusedInitializationStartsNoLoops(refused: Bool) async throws {
+        let keeper = LandKeeper<TurnSkeletonState>(
+            definition: turnSkeletonTickLandWithOnInitialize(),
+            initialState: TurnSkeletonState(),
+            enableLiveStateHashRecording: true,
+            autoStartLoops: true,
+            enableLoopPhaseOffset: false,
+            landID: "turn-skeleton:loops"
+        )
+        let transport = TurnSkeletonReenteringTransport(reenter: .nthCallInBody, joinsWait: false)
+        transport.attach(keeper)
+        await keeper.setTransport(transport)
+        if refused { transport.armNthCallInBody(1) }
+
+        await keeper.awaitInitialization()
+
+        #expect(transport.reenteredAtNth == refused)
+        #expect((keeper.failure?.kind == .keeperReentry) == refused)
+        #expect((await keeper.appliedTickPhaseOffset == nil) == refused, "the tick loop")
+        #expect((await keeper.appliedSyncPhaseOffset == nil) == refused, "the sync loop")
+        await keeper.forceShutdown()
+    }
+
+    /// Every port call a requested sync-only turn makes goes through `callOut`, as the input
+    /// turn's do.
+    @Test("A re-entry at any port call of a sync-only turn ends the land in that call")
+    func syncOnlyReentryAtEveryPortCall() async throws {
+        var reentered: [Int] = []
+        for n in 1...30 {
+            let (keeper, transport, tracker) = await attachedKeeper(.nthCallInBody)
+            await keeper.awaitInitialization()
+            transport.armNthCallInBody(n)
+            let result = await keeper.syncTurnNow(via: transport, reason: .syncNow)
+            guard transport.reenteredAtNth else {
+                #expect(keeper.failure == nil, "past the last call (\(n)): \(result)")
+                break
+            }
+            reentered.append(n)
+            guard case let .landFailed(reported) = result else {
+                Issue.record("call \(n): the turn returned \(result), not .landFailed")
+                continue
+            }
+            #expect(reported.kind == .keeperReentry, "call \(n)")
+            #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
+            #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
+            #expect(await keeper.reentriesAppliedInCallForTesting == 1, "call \(n): not applied by its call's callOut")
+            #expect(transport.closeCount == 1, "call \(n)")
+            #expect(tracker.traceForTesting.suffix(2) == ["terminal", "endTurn"], "call \(n): \(tracker.traceForTesting)")
+        }
+        // The recording's witness, the phase, and the joins read after the committed phase (its
+        // witness, then the read).
+        #expect(reentered == Array(1...4), "calls that re-entered: \(reentered)")
     }
 
     /// Every port call the settle makes goes through `callOut`, as the input turn's do; the

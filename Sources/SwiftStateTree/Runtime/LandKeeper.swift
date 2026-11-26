@@ -1564,12 +1564,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
             }
 
-            do {
-                // `invoke` throws only from `validate`, before `apply` writes (#593).
-                try withHandlerStep(&model, ctx) { m, ctx in
-                    try handler.invoke(&m.state, ctx)
-                }
-            } catch {
+            // OnInitialize's step through its output step is one turn body (#700 K1b-5a step 2).
+            let initialized = withTurn { m, side, outputs in
+                initializeTurnBody(&m, &side, &outputs, handler: handler, ctx: ctx, sequence: sequence)
+            }
+            let initializeRecord: ReevaluationRecordedInitialize?
+            let initializeMarker: ReevaluationRecordedSyncMarker?
+            switch initialized {
+            case let .failure(error):
                 // A refusal fails the initialization, as a resolver failure with `.failLand`
                 // does: nothing was written, `validate` emitted nothing, and nothing is recorded.
                 behavior.logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
@@ -1578,28 +1580,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 failInitialization(with: error)
                 Task { await self.tearDownAfterFailedInitialization() }
                 return
-            }
-            // Recorded in the same synchronous segment as the state write: sync outputs before
-            // this point read the state before OnInitialize, outputs after it the state after.
-            let initializeRecord = reevaluationRecorder == nil ? nil : makeInitializeRecord(
-                sequence: sequence,
-                tickId: ctx.tickId ?? model.lastCommittedTickId
-            )
-            let initializeMarker = recordsSyncStream
-                ? ReevaluationRecordedSyncMarker(
-                    kind: .initialize, streamIndex: takeSyncStreamIndex(&model), sequence: sequence,
-                    afterPass: isTickless ? model.passOrdinal : nil
-                )
-                : nil
-            // OnInitialize is a turn on every live keeper: its events and sync request are taken
-            // here, after its record read them. With a port they go out in this turn; without one
-            // (not attached yet) they are delivered nowhere (#546 L2d).
-            if routesThroughTurn {
-                let emitted = takeEmittedEvents(&model, forTick: ctx.tickId ?? model.lastCommittedTickId)
-                let wantsSync = takeSyncRequest(forTick: ctx.tickId ?? model.lastCommittedTickId, applied: nil)
-                if syncsInTurn, let transport {
-                    runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
-                }
+            case let .success(output):
+                initializeRecord = output.record
+                initializeMarker = output.marker
             }
 
             if let recorder = reevaluationRecorder {
@@ -1639,8 +1622,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        // Then, start tick and sync loops if configured (only after OnInitialize completes)
-        guard behavior.config.autoStartLoops else { return }
+        // Then, start tick and sync loops if configured (only after OnInitialize completes). Not on
+        // a land that is ending: a refusal in initialization's turn failed it, or a drain began
+        // during the record's await, and the drain has stopped (or will not see) the loops.
+        guard behavior.config.autoStartLoops, !isDraining else { return }
         let tickInterval = definition.lifetimeHandlers.tickInterval
         let syncInterval = definition.lifetimeHandlers.syncInterval
 
@@ -2375,18 +2360,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Reports the join inputs a turn applied to an in-turn transport (`noteJoinInputsConsumed`),
     /// in the segment that applied them. Live keepers only: re-evaluation feeds recorded joins.
     private func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
-        guard !results.isEmpty, syncsInTurn, behavior.config.mode == .live, let transport else { return }
+        guard !results.isEmpty, behavior.config.mode == .live, syncsInTurn, let transport else { return }
         transport.noteJoinInputsConsumed(results)
     }
 
-    /// `applyInputs`' join report outside a turn body. The caller's `&model` is held across the
-    /// port call, so a port that reads back into the keeper here traps.
+    /// `applyInputs`' join report outside a turn body: only re-evaluation's paths
+    /// (`processPendingActions`, the replay passes), where `noteJoinInputsConsumed` returns before
+    /// the port. Every live path applies inputs in a turn body (`reportJoinsInTurn`).
     private func reportJoinsOutsideTurn(_ m: inout KeeperModel<State>, _ results: [JoinInputResult]) {
-        noteJoinInputsConsumed(results) // lint-allow: bare-port: outside a turn body (init, the tick turn, the shutdown turn between ticks) until K1b-5a part 2 routes it through callOut
+        noteJoinInputsConsumed(results) // lint-allow: bare-port: re-evaluation only; noteJoinInputsConsumed returns before the port on a keeper that isn't live
     }
 
     /// `applyInputs`' join report in a turn body: through `callOut`, so a re-entry from the port
-    /// ends the land in that call (the inputs after it in `applyInputs` then see the failure).
+    /// ends the land in that call. The report comes after the pass applied its joins and before
+    /// its number is taken, so a refusal names the pass in progress.
     private func reportJoinsInTurn(
         _ m: inout KeeperModel<State>,
         _ side: inout KeeperTurnSide,
@@ -2394,7 +2381,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         _ results: [JoinInputResult]
     ) {
         guard !results.isEmpty else { return }
-        _ = callOut(&m, &side, &outputs, { _ in noteJoinInputsConsumed(results) })
+        // Non-empty results: the pass applied at least one join before the report.
+        _ = callOut(&m, &side, &outputs, endsInputs: true, appliedInputs: true, { _ in noteJoinInputsConsumed(results) })
     }
 
     /// Whether the transport has joins that wait for a committed sync phase, read in a turn.
@@ -2431,6 +2419,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// per registration.
     private var periodicJoinSyncAllowed: Bool {
         hasPeriodicSync && !isDraining && !model.joinSyncWaitsForCommit && transportHasJoinsAwaitingSync
+    }
+
+    /// `periodicJoinSyncAllowed` in a turn body, with the joins read through `callOut`. Nil when
+    /// that read was refused (the land ended in it). `transport` is the turn's port, nil when
+    /// this keeper's turns don't run the phase, where the read is false.
+    private func periodicJoinSyncAllowed(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        transport: (any LandKeeperTransport)?
+    ) -> Bool? {
+        guard hasPeriodicSync, !isDraining, !m.joinSyncWaitsForCommit, let transport else { return false }
+        return joinsAwaitingSync(&m, &side, &outputs, transport: transport)
     }
 
 
@@ -3343,20 +3344,37 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// flight. It is a frame of its own, the tick ID the next tick would have taken, holding
     /// only the shutdown. The turn changes no land state, so its state hash is the last tick's.
     private func applyShutdownTurnBetweenTicks() async {
-        let tickId = model.nextTickId
-        model.nextTickId += 1
+        let record = withTurn { m, side, outputs in
+            shutdownTurnBetweenTicksBody(&m, &side, &outputs)
+        }
+        guard let record else { return }
+        await submitTurnRecord(record)
+    }
+
+    /// `applyShutdownTurnBetweenTicks`' turn body (#700 K1b-5a step 2). Its record, when this
+    /// keeper records.
+    private func shutdownTurnBetweenTicksBody(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> ReevaluationTickRecord? {
+        let tickId = m.nextTickId
+        m.nextTickId += 1
         let item = PendingItem.shutdown(PendingShutdownItem(
             sequence: outputCollector.takeNextSequence(),
-            resolvedAtTick: model.lastCommittedTickId
+            resolvedAtTick: m.lastCommittedTickId
         ))
-        let applied = applyInputs(&model, [item], executingTickId: tickId, reportJoins: reportJoinsOutsideTurn).applied
-        model.lastCommittedTickId = tickId
-        guard reevaluationRecorder != nil else { return }
+        // A shutdown alone: no join to report.
+        let applied = applyInputs(&m, [item], executingTickId: tickId, reportJoins: { m, results in
+            reportJoinsInTurn(&m, &side, &outputs, results)
+        }).applied
+        m.lastCommittedTickId = tickId
+        guard reevaluationRecorder != nil else { return nil }
         var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: [])
         if behavior.config.enableLiveStateHashRecording {
-            record.stateHash = liveStateHash(tickId: tickId).hash
+            record.stateHash = liveStateHash(&m, tickId: tickId).hash
         }
-        await submitTurnRecord(record)
+        return record
     }
 
     // MARK: - Action & Event Handling
@@ -4150,9 +4168,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// The pending items ready to execute (`resolvedAtTick < nextTickId`), in execution order:
     /// by `resolvedAtTick`, then by sequence.
-    private func readyPendingItemsInOrder() -> [PendingItem] {
-        model.pendingItems
-            .filter { $0.resolvedAtTick < model.nextTickId }
+    private func readyPendingItemsInOrder(_ m: KeeperModel<State>) -> [PendingItem] {
+        m.pendingItems
+            .filter { $0.resolvedAtTick < m.nextTickId }
             .sorted { lhs, rhs in
                 if lhs.resolvedAtTick != rhs.resolvedAtTick {
                     return lhs.resolvedAtTick < rhs.resolvedAtTick
@@ -4521,7 +4539,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func processPendingActions() async {
         let executingTickId = executingTickIdForPendingItems(&model)
         beginPass(&model)
-        let application = applyInputs(&model, readyPendingItemsInOrder(), executingTickId: executingTickId, reportJoins: reportJoinsOutsideTurn)
+        let application = applyInputs(&model, readyPendingItemsInOrder(model), executingTickId: executingTickId, reportJoins: reportJoinsOutsideTurn)
         let applied = application.applied
         // Numbered in the apply segment, before any read after it (#563).
         _ = takePassOrdinal(&model, applied: applied)
@@ -4637,14 +4655,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
         if removingFromQueue { removePendingItems(&m, Array(items.prefix(consumed))) }
-        // A port call: in a turn body the caller reports through `callOut` (`reportJoinsInTurn`).
-        reportJoins(&m, joinResults)
-        if appliedShutdown { completeShutdownTurn(&m) }
         // A failure noted on the mailbox came first, even when another closer's submit queued its
-        // item ahead of the noted one's (#704): the noted failure stays the cause.
+        // item ahead of the noted one's (#704): the noted failure stays the cause. Applied before
+        // the join report, so a re-entry refused in that report can't outrank it. (A batch holds
+        // a failure item or a shutdown, never both: each ends it.)
         if let appliedFailure {
             failLand(&m, pendingTransportFailure.failure ?? appliedFailure, endsInputs: true, appliedInputs: !applied.appliedOrder.isEmpty)
         }
+        // A port call: in a turn body the caller reports through `callOut` (`reportJoinsInTurn`).
+        // After a failure item the gate is closed already; the report still goes to the
+        // transport, which only marks the joins consumed.
+        reportJoins(&m, joinResults)
+        if appliedShutdown { completeShutdownTurn(&m) }
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount, consumed: consumed)
     }
 
@@ -4674,7 +4696,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if case let .lifecycle(lifecycle) = item, lifecycle.kind == .initialize { return true }
             return false
         }
-        let initializeItems = readyPendingItemsInOrder().filter(isInitialize)
+        let initializeItems = readyPendingItemsInOrder(model).filter(isInitialize)
         model.pendingItemScans += model.pendingItems.count
         let inputs = model.pendingItems.filter { !isInitialize($0) }.sorted { $0.sequence < $1.sequence }
 
@@ -5222,7 +5244,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 key: EnvKeys.Runtime.stateSnapshotRecording,
                 defaultValue: false
             )
-            let (hash, snapshot) = liveStateHash(tickId: tickId)
+            let (hash, snapshot) = liveStateHash(&model, tickId: tickId)
             await recorder.setStateHash(tickId: tickId, stateHash: hash)
             if enableStateSnapshotRecording {
                 await recorder.recordStateSnapshot(tickId: tickId, stateSnapshot: snapshot)
@@ -5357,34 +5379,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return awaiting
     }
 
-    private func runTurnOutputs(
-        transport: any LandKeeperTransport,
-        events: [EmittedEvent],
-        wantsSync: Bool,
-        joinSyncOnly: Bool = false
-    ) {
-        // A failure a transport noted since this turn's apply ended ends the land here, as a
-        // failed phase would (#704): no event and no phase.
-        guard !applyPendingTransportFailure() else { return }
-        // A land without periodic sync runs the phase for joins waiting on it (#69): the turn
-        // that consumed a join's input completes it in its own output step.
-        let includeSync = wantsSync || (!hasPeriodicSync && transportHasJoinsAwaitingSync)
-        let output = transport.runSyncPhaseInTurn(
-            state: model.state,
-            events: events.map { InTurnServerEvent(event: $0.event, target: $0.target, sequence: $0.sequence) },
-            includeSync: includeSync,
-            recording: inTurnSyncRecording(model)
-        )
-        recordSyncStream(&model, output.syncStream)
-        applyInTurnSyncResult(
-            &model,
-            output.result,
-            transport: transport,
-            joinSyncOnly: joinSyncOnly,
-            keepsEvents: output.keepsEvents,
-            joinsAwaitingSync: { _ in transportHasJoinsAwaitingSync } // lint-allow: bare-port: outside a turn body (init, the tick turn, the shutdown turn between ticks) until K1b-5a part 2 routes it through callOut
-        )
-    }
 
     /// Applies what an in-turn sync phase did, in the same turn.
     ///
@@ -5470,38 +5464,58 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         tickId: Int64,
         transport: (any LandKeeperTransport)?
     ) -> TickTurnOutput {
+        withTurn { m, side, outputs in
+            tickTurnBody(&m, &side, &outputs, handler: handler, tickId: tickId, transport: transport)
+        }
+    }
+
+    /// `runTickTurn`'s body, on the model the turn holds (#700 K1b-5a step 2). The tick handler
+    /// runs in the hold, as an input's handler does (`withHandlerStep`); so does the state hash,
+    /// whose conversion is the sync phase's.
+    private func tickTurnBody(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        handler: (inout State, LandContext) -> Void,
+        tickId: Int64,
+        transport: (any LandKeeperTransport)?
+    ) -> TickTurnOutput {
         // No port: no fold to report and no sync phase; the tick's events and sync request are
         // still taken below and recorded, so the collector is drained (#546 L2d). A sync folded
         // into this tick ends with it: kept, it would be reported, and its due sync run, by the
         // first tick turn after a later attach, as that turn's.
+        // A refused fold report ends the land in the call; its inputs are dropped then, so the
+        // failure branch below records the tick with none.
         if let transport {
-            takePendingFold(transport: transport)
+            takePendingFold(&m, &side, &outputs, transport: transport)
         } else {
             pendingFold = nil
-            model.inTurnSyncDue = false
+            m.inTurnSyncDue = false
         }
         // Sequence watermark W1 (before inputs).
         let sequenceBeforeInputs = outputCollector.nextSequence
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
-        let applied = applyInputs(&model, readyPendingItemsInOrder(), executingTickId: tickId, reportJoins: reportJoinsOutsideTurn).applied
+        let applied = applyInputs(&m, readyPendingItemsInOrder(m), executingTickId: tickId, reportJoins: { m, results in
+            reportJoinsInTurn(&m, &side, &outputs, results)
+        }).applied
         // A failure a transport noted outside the turn ends this tick's inputs here, before the
         // handler (#704), as a failure item in the batch does: the record then matches what replay
         // does at a failure that ended a tick's inputs, which skips the handler.
-        if failure == nil { _ = finishApply(&model, appliedInputs: !applied.appliedOrder.isEmpty) }
+        if failure == nil { _ = finishApply(&m, appliedInputs: !applied.appliedOrder.isEmpty) }
         if failure != nil {
             // The land failed in this batch (#535): no tick handler, no events, no sync. The
             // inputs applied before it are recorded; no state hash and no W2 (it never ran).
-            model.lastCommittedTickId = tickId
+            m.lastCommittedTickId = tickId
             // The prefix's events and sync requests are taken and not sent: no output after a
             // failure (§3.2 step 4).
-            _ = takeEmittedEvents(&model, forTick: tickId)
+            _ = takeEmittedEvents(&m, forTick: tickId)
             _ = takeSyncRequest(forTick: tickId, applied: applied)
             var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: [])
             record.sequenceBeforeInputs = sequenceBeforeInputs
             return TickTurnOutput(record: record)
         }
 
-        let ctx = makeContext(&model,
+        let ctx = makeContext(&m,
             playerID: behavior.config.systemPlayerID,
             clientID: behavior.config.systemClientID,
             sessionID: behavior.config.systemSessionID,
@@ -5509,22 +5523,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         // Sequence watermark W2 (before the tick handler).
         let sequenceBeforeTickHandler = outputCollector.nextSequence
-        withHandlerStep(&model, ctx) { m, ctx in
+        withHandlerStep(&m, ctx) { m, ctx in
             handler(&m.state, ctx)
         }
-        model.lastCommittedTickId = tickId
+        m.lastCommittedTickId = tickId
 
         var stateHash: String?
         var stateSnapshot: StateSnapshot?
         if behavior.config.enableLiveStateHashRecording, reevaluationRecorder != nil {
-            let (hash, snapshot) = liveStateHash(tickId: tickId)
+            let (hash, snapshot) = liveStateHash(&m, tickId: tickId)
             stateHash = hash
             if EnvHelpers.getEnvBool(key: EnvKeys.Runtime.stateSnapshotRecording, defaultValue: false) {
                 stateSnapshot = snapshot
             }
         }
 
-        let emitted = takeEmittedEvents(&model, forTick: tickId)
+        let emitted = takeEmittedEvents(&m, forTick: tickId)
         // Always take this tick's requests, so a folded sync does not leave them in the collector.
         let requested = takeSyncRequest(forTick: tickId, applied: applied)
         // A join this turn made ready (its OnJoin consumed, its session registered) flips in
@@ -5532,16 +5546,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // then waits for the tick that applies OnJoin only. The turn's sync is a full one, so
         // the members get this turn's changes now too, one sync earlier than the cadence.
         // (A land without periodic sync runs the phase for joins anyway: `runTurnOutputs`.)
-        let cadenceSync = model.inTurnSyncDue || requested
-        let joinSync = !cadenceSync && periodicJoinSyncAllowed
+        let cadenceSync = m.inTurnSyncDue || requested
+        // A refused port call ends the land in that call: no output step follows, as after a
+        // failed phase. The tick's events are recorded, taken and not sent.
+        var refused = false
+        var joinSync = false
+        if !cadenceSync {
+            if let allowed = periodicJoinSyncAllowed(&m, &side, &outputs, transport: transport) {
+                joinSync = allowed
+            } else {
+                refused = true
+            }
+        }
         if joinSync {
             // Tick and sync work in one turn that is not a fold: counted apart, so turn timing
             // can tell these turns from folded ones.
-            model.joinSyncTicks += 1
-            if model.transportRecordsFolds { transport?.noteInTurnJoinSyncTick() }
+            m.joinSyncTicks += 1
+            if m.transportRecordsFolds, let transport,
+               case .refused = callOut(&m, &side, &outputs, { _ in transport.noteInTurnJoinSyncTick() }) {
+                refused = true
+            }
         }
-        if let transport {
-            runTurnOutputs(transport: transport, events: emitted, wantsSync: cadenceSync || joinSync, joinSyncOnly: joinSync)
+        if refused {
+            m.inTurnSyncDue = false
+        } else if let transport {
+            runTurnOutputs(&m, &side, &outputs, transport: transport, events: emitted, wantsSync: cadenceSync || joinSync, joinSyncOnly: joinSync)
         }
         inTurnProbeForTesting?("turn-end")
 
@@ -5556,18 +5585,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// At a tick turn's start: the fold it carries, if any, with how late the turn started
     /// against the deadline the sync folded on (#232). Once per turn. A fold whose sync already
     /// ran in a sync-only turn (`inTurnSyncDue` cleared) is not this turn's and is dropped.
-    private func takePendingFold(transport: any LandKeeperTransport) {
+    private func takePendingFold(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        transport: any LandKeeperTransport
+    ) {
         guard let fold = pendingFold else { return }
         pendingFold = nil
-        guard model.inTurnSyncDue else { return }
+        guard m.inTurnSyncDue else { return }
         let start = tickClockForTesting ?? ContinuousClock.now
         let report = InTurnSyncFold(
             overdueAtFold: fold.overdueAtFold,
             tickLateness: start - fold.deadline,
             coincidentWindow: coincidentSyncWindow
         )
-        if report.isLate { model.lateFoldedSyncs += 1 }
-        if model.transportRecordsFolds { transport.noteInTurnSyncFold(report) }
+        if report.isLate { m.lateFoldedSyncs += 1 }
+        // A refusal ends the land in the call (`callOut`), before the tick's inputs: the caller's
+        // failure branch skips them and the handler, so the position says the failure ended
+        // the tick's inputs (`endsInputs`), with none applied, and replay skips them too.
+        if m.transportRecordsFolds {
+            _ = callOut(&m, &side, &outputs, endsInputs: true, appliedInputs: false, { _ in transport.noteInTurnSyncFold(report) })
+        }
     }
 
     /// After a tick turn: one recorder submission with everything the turn recorded. Live mode
@@ -5603,9 +5642,74 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
     }
 
+    /// What initialization's turn body leaves for the work after it.
+    private struct InitializeTurnOutput {
+        let record: ReevaluationRecordedInitialize?
+        let marker: ReevaluationRecordedSyncMarker?
+    }
+
+    /// Initialization's turn, from OnInitialize's step through its output step, on the model the
+    /// turn holds (#700 K1b-5a step 2). The failure is the error `validate` threw: nothing was
+    /// written then. Each port call goes through `callOut`; a refusal ends the land in that call,
+    /// and the turn then runs no output step, as after a failed phase.
+    private func initializeTurnBody(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        handler: InitializeHandler<State>,
+        ctx: LandContext,
+        sequence: Int64
+    ) -> Result<InitializeTurnOutput, any Error> {
+        do {
+            // `invoke` throws only from `validate`, before `apply` writes (#593).
+            try withHandlerStep(&m, ctx) { m, ctx in
+                try handler.invoke(&m.state, ctx)
+            }
+        } catch {
+            return .failure(error)
+        }
+        let tickId = ctx.tickId ?? m.lastCommittedTickId
+        // Recorded in the same synchronous segment as the state write: sync outputs before
+        // this point read the state before OnInitialize, outputs after it the state after.
+        let record = reevaluationRecorder == nil ? nil : makeInitializeRecord(&m, sequence: sequence, tickId: tickId)
+        // The marker reads the port's witness (`recordsSyncStream`).
+        var refused = false
+        var marker: ReevaluationRecordedSyncMarker?
+        switch callOut(&m, &side, &outputs, { _ in recordsSyncStream }) {
+        case .refused:
+            refused = true
+        case .answered(true):
+            marker = ReevaluationRecordedSyncMarker(
+                kind: .initialize, streamIndex: takeSyncStreamIndex(&m), sequence: sequence,
+                afterPass: isTickless ? m.passOrdinal : nil
+            )
+        case .answered(false):
+            break
+        }
+        // OnInitialize is a turn on every live keeper: its events and sync request are taken
+        // here, after its record read them. With a port they go out in this turn; without one
+        // (not attached yet) they are delivered nowhere (#546 L2d).
+        if routesThroughTurn {
+            let emitted = takeEmittedEvents(&m, forTick: tickId)
+            let wantsSync = takeSyncRequest(forTick: tickId, applied: nil)
+            if !refused, let transport {
+                switch callOut(&m, &side, &outputs, { _ in syncsInTurn }) {
+                case .refused:
+                    refused = true
+                case .answered(true):
+                    runTurnOutputs(&m, &side, &outputs, transport: transport, events: emitted, wantsSync: wantsSync)
+                case .answered(false):
+                    break
+                }
+            }
+            if refused { m.inTurnSyncDue = false }
+        }
+        return .success(InitializeTurnOutput(record: record, marker: marker))
+    }
+
     /// What OnInitialize did, read right after it: the server events emitted for `tickId` after
     /// its lifecycle `sequence` (not removed from the collector) and the state hash.
-    private func makeInitializeRecord(sequence: Int64, tickId: Int64) -> ReevaluationRecordedInitialize {
+    private func makeInitializeRecord(_ m: inout KeeperModel<State>, sequence: Int64, tickId: Int64) -> ReevaluationRecordedInitialize {
         let events = outputCollector.emittedEvents
             .filter { $0.tickId == tickId && $0.sequence > sequence }
             .sorted { $0.sequence < $1.sequence }
@@ -5621,7 +5725,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     target: ReevaluationEventTargetRecord.from(item.target)
                 )
             },
-            stateHash: behavior.config.enableLiveStateHashRecording ? liveStateHash(tickId: tickId).hash : nil
+            stateHash: behavior.config.enableLiveStateHashRecording ? liveStateHash(&m, tickId: tickId).hash : nil
         )
     }
 
@@ -5632,14 +5736,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The full-state hash of the current state for live recording (#180). A conversion that
     /// throws never stops the tick: the hash is recorded as unavailable, logged and counted, and
     /// replay reports that tick as unverifiable.
-    private func liveStateHash(tickId: Int64) -> (hash: String, snapshot: StateSnapshot) {
-        let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(model.state)
+    private func liveStateHash(_ m: inout KeeperModel<State>, tickId: Int64) -> (hash: String, snapshot: StateSnapshot) {
+        let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(m.state)
         if ReevaluationEngine.isUnavailableHash(hash) {
-            model.stateHashUnavailableTotal += 1
+            m.stateHashUnavailableTotal += 1
             behavior.logger.error("State hash unavailable; tick recorded without a hash", metadata: [
                 "tickId": .stringConvertible(tickId),
                 "reason": .string(hash),
-                "unavailableCount": .stringConvertible(model.stateHashUnavailableTotal),
+                "unavailableCount": .stringConvertible(m.stateHashUnavailableTotal),
             ])
         }
         return (hash, snapshot)
@@ -5695,7 +5799,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// What the sync stream records of the current turn's sync phase, nil when it isn't
     /// recorded: the turn's kind (`tick` or `syncOnly`) and where the phase reads the state.
     private func inTurnSyncRecording(_ m: KeeperModel<State>) -> InTurnSyncRecording? {
-        guard recordsSyncStream else { return nil } // lint-allow: bare-port: a body calls this only inside callOut; the old runTurnOutputs outside a body until part 2
+        guard recordsSyncStream else { return nil } // lint-allow: bare-port: every caller calls this inside callOut
         return InTurnSyncRecording(turnKind: m.inTurnSyncTurnKind, position: syncReadPosition(m))
     }
 
@@ -5770,18 +5874,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         _ m: inout KeeperModel<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
+        endsInputs: Bool = false,
+        appliedInputs: Bool = false,
         _ call: (KeeperModel<State>) -> Answer
     ) -> CallOutcome<Answer> {
         let before = reentryViolations
         side.flush(&outputs)
         guard reentryViolations == before else {
             reentriesAppliedInCall += 1
-            return .refused(applyReentryFailure(&m))
+            return .refused(applyReentryFailure(&m, endsInputs: endsInputs, appliedInputs: appliedInputs))
         }
         let answer = call(m)
         guard reentryViolations == before else {
             reentriesAppliedInCall += 1
-            return .refused(applyReentryFailure(&m))
+            return .refused(applyReentryFailure(&m, endsInputs: endsInputs, appliedInputs: appliedInputs))
         }
         return .answered(answer)
     }
@@ -5829,7 +5935,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// a transport noted one before it). Returns the failure to report: the land's, or the
     /// sentinel's on a land that was already draining (`failLand` keeps the first cause, so
     /// `failure` stays nil there; the gate is closed all the same).
-    private func applyReentryFailure(_ m: inout KeeperModel<State>) -> LandFailure {
+    /// `endsInputs` and `appliedInputs` are `failLand`'s: the refusal ended its turn's inputs
+    /// (the fold report, before them; the join report, after the pass applied its joins), and
+    /// whether inputs were applied before it, so the position says what replay must skip.
+    private func applyReentryFailure(_ m: inout KeeperModel<State>, endsInputs: Bool = false, appliedInputs: Bool = false) -> LandFailure {
         let reported = reentryFailure ?? LandFailure(
             kind: .keeperReentry,
             detail: "a call was refused while a turn body ran",
@@ -5841,7 +5950,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             "gateClosed": .stringConvertible(reentryGateClosed),
         ])
         if failure == nil {
-            failLand(&m, pendingTransportFailure.failure ?? reported)
+            failLand(&m, pendingTransportFailure.failure ?? reported, endsInputs: endsInputs, appliedInputs: appliedInputs)
         }
         return failure ?? reported
     }
@@ -5928,7 +6037,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return
         }
         withTurn { m, _, _ in
+            // The drafts' factories run here; one that re-entered ends the land in this body.
+            let before = reentryViolations
             recordSyncStream(&m, drafts, outsideTurn: outsideTurn)
+            if reentryViolations != before { _ = applyReentryFailure(&m) }
         }
     }
 
@@ -6716,7 +6828,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runInputDrain() async {
         await holds.at(.inputDrain)
         while true {
-            let batch = Array(readyPendingItemsInOrder().prefix(Self.inputTurnBatchLimit))
+            let batch = Array(readyPendingItemsInOrder(model).prefix(Self.inputTurnBatchLimit))
             if batch.isEmpty { break }
             let mark = model.recorderSubmissionCount
             let outcome = runInputTurn(batch)

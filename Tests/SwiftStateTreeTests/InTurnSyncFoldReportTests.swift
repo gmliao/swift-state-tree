@@ -29,17 +29,136 @@ private func foldReportLand() -> LandDefinition<FoldReportState> {
     }
 }
 
+@Payload
+struct FoldTickEvent: ServerEventPayload {
+    let ticks: Int
+}
+
+/// `foldReportLand` whose tick handler emits an event: a replay that runs a tick the live
+/// keeper skipped shows it as a server-event mismatch.
+private func foldReportLandEmitting() -> LandDefinition<FoldReportState> {
+    Land("fold-report-test", using: FoldReportState.self) {
+        ServerEvents { Register(FoldTickEvent.self) }
+        Lifetime {
+            Tick(every: .seconds(3600)) { state, ctx in
+                state.ticks += 1
+                ctx.emitEvent(FoldTickEvent(ticks: state.ticks), to: .all)
+            }
+            StateSync(every: .seconds(3600)) { _, _ in }
+        }
+    }
+}
+
+/// `foldReportLand` with an OnJoin: a join queues its OnJoin input, which the next tick turn
+/// applies.
+private func foldReportLandWithOnJoin() -> LandDefinition<FoldReportState> {
+    Land("fold-report-test", using: FoldReportState.self) {
+        Rules {
+            OnJoin { _, _ in }
+        }
+        Lifetime {
+            Tick(every: .seconds(3600)) { state, _ in
+                state.ticks += 1
+            }
+            StateSync(every: .seconds(3600)) { _, _ in }
+        }
+    }
+}
+
 /// In-turn transport that records the folds it is told about.
-private final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
+final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
+    /// The port call of a tick turn that calls back into the keeper, once armed (#700 K1b-5a
+    /// step 2).
+    enum Reentry {
+        case none
+        /// `noteInTurnSyncFold`, at the tick turn's start.
+        case foldNote
+        /// `hasJoinsAwaitingSync`, the tick's join-sync read.
+        case joinsRead
+        /// `noteInTurnJoinSyncTick`, once the tick counted a join sync.
+        case joinSyncTickNote
+        /// The nth port call made during a turn body, whichever it is (`armNthCallInBody`).
+        case nthCallInBody
+    }
+
     private let lock = NSLock()
     private var notes: [InTurnSyncFold] = []
     private var deferNextSyncs = 0
     private var syncPhases: [InTurnSyncResult] = []
+    private var phasesRun = 0
+    private var reentry = Reentry.none
+    private var joinsWait = false
+    private var nthTarget = 0
+    private var callsInBody = 0
+    private var reenteredNth = false
+    private weak var keeper: LandKeeper<FoldReportState>?
     let records: Bool
 
     init(records: Bool) { self.records = records }
 
     var folds: [InTurnSyncFold] { lock.withLock { notes } }
+    /// How many sync phases the keeper ran, requested or not.
+    var phaseCount: Int { lock.withLock { phasesRun } }
+
+    /// From now on `reentry`'s call re-enters once, and joins wait when `joinsWait`.
+    func arm(_ reentry: Reentry, keeper: LandKeeper<FoldReportState>, joinsWait: Bool) {
+        lock.withLock {
+            self.reentry = reentry
+            self.keeper = keeper
+            self.joinsWait = joinsWait
+        }
+    }
+
+    /// From now on the `n`th port call made during a turn body re-enters, and joins wait when
+    /// `joinsWait`.
+    func armNthCallInBody(_ n: Int, keeper: LandKeeper<FoldReportState>, joinsWait: Bool) {
+        lock.withLock {
+            reentry = .nthCallInBody
+            self.keeper = keeper
+            self.joinsWait = joinsWait
+            nthTarget = n
+            callsInBody = 0
+        }
+    }
+    /// Whether the armed nth call was made, and re-entered.
+    var reenteredAtNth: Bool { lock.withLock { reenteredNth } }
+
+    /// Counts a port call made during a turn body, and re-enters at the armed one.
+    /// The port method of the call that re-entered, for the loop's pin.
+    var reenteredCall: String? { lock.withLock { reenteredName } }
+    private var reenteredName: String?
+
+    private func noteCall(_ name: String = #function) {
+        guard let keeper = lock.withLock({ reentry == .nthCallInBody ? self.keeper : nil }) else { return }
+        guard keeper.assumeIsolated({ $0.bodyDepthForTesting > 0 }) else { return } // lint-allow: turns-isolated: the fake counts only the calls a body makes
+        let due = lock.withLock {
+            callsInBody += 1
+            if callsInBody == nthTarget { reenteredNth = true; reenteredName = name }
+            return callsInBody == nthTarget
+        }
+        if due { keeper.assumeIsolated { $0.submitSyncStream([]) } } // lint-allow: turns-isolated: the synchronous callback the sentinel refuses
+    }
+
+    /// The synchronous callback the sentinel refuses, if `call` is the armed one (one-shot).
+    private func reenter(at call: Reentry) {
+        let keeper: LandKeeper<FoldReportState>? = lock.withLock {
+            guard reentry == call else { return nil }
+            reentry = .none
+            return self.keeper
+        }
+        keeper?.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the synchronous callback the sentinel refuses
+    }
+
+    var hasJoinsAwaitingSync: Bool {
+        noteCall()
+        reenter(at: .joinsRead)
+        return lock.withLock { joinsWait }
+    }
+    func noteInTurnJoinSyncTick() {
+        noteCall()
+        reenter(at: .joinSyncTickNote)
+    }
+    func noteJoinInputsConsumed(_ results: [JoinInputResult]) { noteCall() }
     /// What each sync phase the keeper ran returned.
     var syncResults: [InTurnSyncResult] { lock.withLock { syncPhases } }
 
@@ -50,16 +169,25 @@ private final class FoldRecordingTransport: LandKeeperTransport, @unchecked Send
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async {}
-    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool {
+        noteCall()
+        return true
+    }
     var recordsInTurnSyncFolds: Bool { records }
-    func noteInTurnSyncFold(_ fold: InTurnSyncFold) { lock.withLock { notes.append(fold) } }
+    func noteInTurnSyncFold(_ fold: InTurnSyncFold) {
+        noteCall()
+        lock.withLock { notes.append(fold) }
+        reenter(at: .foldNote)
+    }
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
         includeSync: Bool,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
-        InTurnSyncOutput(syncPhaseResult(state: state, events: events, includeSync: includeSync))
+        noteCall()
+        lock.withLock { phasesRun += 1 }
+        return InTurnSyncOutput(syncPhaseResult(state: state, events: events, includeSync: includeSync))
     }
 
     private func syncPhaseResult<S: StateNodeProtocol>(
@@ -134,15 +262,37 @@ private let window = Duration.milliseconds(5)
 
 @Suite("In-turn sync: folds reported to the transport", .timeLimit(.minutes(1)))
 struct InTurnSyncFoldReportTests {
-    private func makeKeeper(_ transport: FoldRecordingTransport) async throws -> LandKeeper<FoldReportState> {
+    private func makeKeeper(
+        _ transport: FoldRecordingTransport,
+        onJoin: Bool = false,
+        definition: LandDefinition<FoldReportState>? = nil,
+        recording: Bool = false
+    ) async throws -> LandKeeper<FoldReportState> {
         let signal = FirstTickSleepSignal()
+        let definition = definition ?? (onJoin ? foldReportLandWithOnJoin() : foldReportLand())
+        // One land ID per recording keeper: parallel tests must not share a recorder spool.
+        let landID = recording ? "\(definition.id):\(UUID().uuidString)" : nil
         let keeper = TickLoopClock.$forNewKeepers.withValue(signal.tickLoopClock) {
             LandKeeper<FoldReportState>(
-                definition: foldReportLand(),
+                definition: definition,
                 initialState: FoldReportState(),
+                enableLiveStateHashRecording: recording,
                 enableLoopPhaseOffset: false,
+                landID: landID,
                 transport: transport
             )
+        }
+        if recording, let landID {
+            let recorder = try #require(await keeper.getReevaluationRecorder())
+            await recorder.setMetadata(ReevaluationRecordMetadata(
+                landID: landID,
+                landType: definition.id,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                metadata: [:],
+                landDefinitionID: definition.id,
+                rngSeed: DeterministicSeed.fromLandID(landID),
+                version: ReevaluationRecordVersion.current
+            ))
         }
         #expect(await keeper.isUsingInTurnSync())
         try await Self.waitForLoops(keeper, signal)
@@ -207,6 +357,139 @@ struct InTurnSyncFoldReportTests {
         #expect(counters.overdueFoldedSyncs == 3)
         #expect(counters.lateFoldedSyncs == 2)
         await keeper.forceShutdown()
+    }
+
+    /// The tick turn is a turn body (#700 K1b-5a step 2): its port calls go through `callOut`,
+    /// so a synchronous callback from one ends the land in that tick, with no output step.
+    @Test("a callback from a tick turn's port call ends the land in that tick", arguments: [
+        FoldRecordingTransport.Reentry.foldNote, .joinsRead, .joinSyncTickNote,
+    ])
+    func tickTurnReentryEndsTheLand(_ reentry: FoldRecordingTransport.Reentry) async throws {
+        let transport = FoldRecordingTransport(records: true)
+        let keeper = try await makeKeeper(transport)
+        transport.arm(reentry, keeper: keeper, joinsWait: reentry != .foldNote)
+        let deadline = ContinuousClock.now
+        if reentry == .foldNote {
+            await keeper.setNextTickDeadlineForTesting(deadline)
+            await keeper.runSyncLoopIterationForTesting(at: deadline - .milliseconds(1))
+        }
+        let ticksBefore = await keeper.currentState().ticks
+        let phasesBefore = transport.phaseCount
+        await keeper.stepTickOnceForTesting(at: deadline + .milliseconds(1))
+
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(await keeper.bodyDepthForTesting == 0)
+        #expect(transport.phaseCount == phasesBefore, "an output step ran after the refusal")
+        // The fold is reported before the inputs: the land ends there, and the tick handler
+        // doesn't run. The join-sync calls come after the handler.
+        #expect(await keeper.currentState().ticks == ticksBefore + (reentry == .foldNote ? 0 : 1))
+        // So the fold's refusal ended the tick's inputs (replay skips its handler too); the
+        // join-sync ones came after the handler.
+        #expect((keeper.failure?.position.endsInputs == true) == (reentry == .foldNote))
+        #expect(keeper.failure?.position.pass == nil)
+        await keeper.forceShutdown()
+    }
+
+    /// A recorded tick that a port call's re-entry ends (#891 review): the record holds the
+    /// terminal entry, then the tick's own record, and the failure's position says whether the
+    /// tick's inputs ended (the fold report, before the handler) or not (the joins read, after
+    /// it). Replay then runs the handler only where live did: no server-event mismatch.
+    @Test("a recorded tick ended by a port call's re-entry replays as it ran", arguments: [
+        FoldRecordingTransport.Reentry.foldNote, .joinsRead,
+    ])
+    func recordedTickRefusalReplays(_ reentry: FoldRecordingTransport.Reentry) async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("fold-refusal-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let transport = FoldRecordingTransport(records: true)
+        let keeper = try await makeKeeper(transport, definition: foldReportLandEmitting(), recording: true)
+        let deadline = ContinuousClock.now
+        // One ordinary tick first, so the record has a handler's event to compare.
+        await keeper.stepTickOnceForTesting(at: deadline)
+        transport.arm(reentry, keeper: keeper, joinsWait: reentry != .foldNote)
+        if reentry == .foldNote {
+            await keeper.setNextTickDeadlineForTesting(deadline + .seconds(1))
+            await keeper.runSyncLoopIterationForTesting(at: deadline + .seconds(1) - .milliseconds(1))
+        }
+        let tracker = await keeper.recorderSubmissionsForTesting
+        tracker.startTraceForTesting()
+        await keeper.stepTickOnceForTesting(at: deadline + .seconds(1) + .milliseconds(1))
+
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect((keeper.failure?.position.endsInputs == true) == (reentry == .foldNote))
+        #expect(await keeper.currentState().ticks == (reentry == .foldNote ? 1 : 2))
+        await keeper.waitForRecorderSubmissionsForTesting()
+        // The terminal entry, then the tick's own record (no sync phase ran, so no sync-stream
+        // entry precedes them).
+        #expect(tracker.traceForTesting == ["terminal", "turn-record"], "\(tracker.traceForTesting)")
+
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        try await recorder.save(to: path)
+        await keeper.forceShutdown()
+        let result = try await ReevaluationEngine.run(
+            definition: foldReportLandEmitting(),
+            initialState: FoldReportState(),
+            recordFilePath: path
+        )
+        #expect(result.serverEventMismatches.isEmpty, "\(result.serverEventMismatches.map(\.tickId))")
+        #expect(result.serverEventVerification == .passed)
+    }
+
+    /// Every port call a tick turn's body makes goes through `callOut`: the fake re-enters at the
+    /// nth call it gets during a body, for each n until the body makes no more, and each re-entry
+    /// ends the land in that call; the late backstop applies none. Run on a folded tick (the
+    /// fold report and a cadence sync), on a join-sync tick (the joins read, its count note, and
+    /// the joins' sync), and on a tick that applies a join's OnJoin (the join report).
+    enum TickKind: CaseIterable { case folded, joinSync, appliesJoin }
+
+    @Test("a re-entry at any port call of a tick turn ends the land in that call", arguments: TickKind.allCases)
+    func tickTurnReentryAtEveryPortCall(kind: TickKind) async throws {
+        let folded = kind == .folded
+        var reentered: [Int] = []
+        var calls: [String] = []
+        var endedInputs: [Bool] = []
+        for n in 1...30 {
+            let transport = FoldRecordingTransport(records: true)
+            // With OnJoin, the setup's join queues its input for the tick below.
+            let keeper = try await makeKeeper(transport, onJoin: kind == .appliesJoin)
+            transport.armNthCallInBody(n, keeper: keeper, joinsWait: kind == .joinSync)
+            let deadline = ContinuousClock.now
+            if folded {
+                await keeper.setNextTickDeadlineForTesting(deadline)
+                await keeper.runSyncLoopIterationForTesting(at: deadline - .milliseconds(1))
+            }
+            await keeper.stepTickOnceForTesting(at: deadline + .milliseconds(1))
+            defer { Task { await keeper.forceShutdown() } }
+            guard transport.reenteredAtNth else {
+                #expect(keeper.failure == nil, "past the last call (\(n))")
+                break
+            }
+            reentered.append(n)
+            calls.append(transport.reenteredCall ?? "?")
+            endedInputs.append(keeper.failure?.position.endsInputs == true)
+            #expect(keeper.failure?.kind == .keeperReentry, "call \(n)")
+            #expect(await keeper.reentryViolationsForTesting == 1, "call \(n)")
+            #expect(await keeper.lateReentriesAppliedForTesting == 0, "call \(n): applied by the backstop, not in the call")
+            #expect(await keeper.reentriesAppliedInCallForTesting == 1, "call \(n): not applied by its call's callOut")
+            #expect(await keeper.bodyDepthForTesting == 0, "call \(n)")
+        }
+        // Folded: the fold report and the phase. Join sync: the in-turn check and the joins read,
+        // the join-sync count note, and the phase. Applies a join: the join report (its witness,
+        // then the report), the joins read (its witness, then the read), and the phase, which
+        // syncs the join. With no recorder, the recording reads no port.
+        let expected: [TickKind: Int] = [.folded: 2, .joinSync: 4, .appliesJoin: 5]
+        #expect(reentered == Array(1...expected[kind]!), "calls that re-entered: \(reentered) \(calls)")
+        if kind == .appliesJoin {
+            #expect(calls.count > 1 && calls[1] == "noteJoinInputsConsumed(_:)", "the tick's join report: \(calls)")
+        }
+        // A refusal before the handler (the fold report, the join report) ended the tick's
+        // inputs, so replay skips the handler as live did; the ones after the handler didn't.
+        let ended: [TickKind: [Bool]] = [
+            .folded: [true, false],
+            .joinSync: [false, false, false, false],
+            .appliesJoin: [true, true, false, false, false],
+        ]
+        #expect(endedInputs == ended[kind]!, "\(calls)")
     }
 
     @Test("a sync-only turn when the tick is far away is not a fold")
