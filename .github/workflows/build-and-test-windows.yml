@@ -94,16 +94,18 @@ jobs:
         if-no-files-found: ignore
 
     - name: Build DemoServer
+      id: demoserver
       if: ${{ !cancelled() }}
       working-directory: Examples/Demo
       run: swift build --product DemoServer
 
     # These steps run after a failed Tests step too (not after a cancel), so a flaky unit test does not
-    # hide the E2E result; the failed step still fails the job.
+    # hide the E2E result; the failed step still fails the job. The E2E step itself needs the
+    # DemoServer build and the CLI build to have succeeded.
     # E2E against the DemoServer.exe built above, in the three encodings (as e2e-tests.yml does on
-    # Linux). The npm scripts `test:e2e:*` start with a POSIX `VAR=value npm run ...` prefix, which
-    # npm runs through cmd.exe on Windows and which fails there, so the tsx commands of those scripts
-    # are called directly.
+    # Linux). The leaf scripts of Tools/CLI/package.json are called (`test:e2e:counter` and so on), not
+    # the composite `test:e2e:<encoding>` ones: those start with a POSIX `VAR=value npm run ...`
+    # prefix, which npm runs through cmd.exe on Windows and which fails there.
     - name: Set up Node.js
       if: ${{ !cancelled() }}
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -111,6 +113,7 @@ jobs:
         node-version: 20
 
     - name: Build the SDK and the CLI
+      id: cli
       if: ${{ !cancelled() }}
       shell: bash
       run: |
@@ -119,9 +122,9 @@ jobs:
         (cd Tools/CLI && npm ci && npm run build && npm run test:cli:unit)
 
     - name: E2E tests
-      if: ${{ !cancelled() }}
+      if: ${{ !cancelled() && steps.demoserver.outcome == 'success' && steps.cli.outcome == 'success' }}
       shell: bash
-      timeout-minutes: 25
+      timeout-minutes: 30
       env:
         HOST: 127.0.0.1
         PORT: "8080"
@@ -138,14 +141,41 @@ jobs:
         bin=$(cd Examples/Demo && swift build --show-bin-path)
         exe="$(cygpath -u "$bin")/DemoServer.exe"
         echo "DemoServer: $exe"
-        ws=ws://localhost:8080/game
         failed=0
+        # Seconds each encoding may use in all; a hang in one cannot starve the next (3 x 8 min fits
+        # the step's 30 min). One command gets at most 240 s.
+        budget=480
+
+        listening() { netstat -ano | grep LISTENING | grep -q ":$PORT "; }
+
+        # Stops any DemoServer and waits until the port is free: a server left on the port would
+        # answer the readiness check of the next one.
+        stop_server() {
+          taskkill //F //IM DemoServer.exe >/dev/null 2>&1 || true
+          for _ in $(seq 1 20); do
+            listening || return 0
+            sleep 1
+          done
+          echo "FAIL  port $PORT is still in use 20 s after the server was stopped"
+          return 1
+        }
+
+        # limit: seconds the next command may use (0 when this encoding's budget is used up).
+        set_limit() {
+          local left=$((deadline - SECONDS))
+          if [ "$left" -gt 240 ]; then limit=240; elif [ "$left" -gt 0 ]; then limit=$left; else limit=0; fi
+        }
 
         # check NAME COMMAND...: runs in Tools/CLI, keeps the output, counts a failure.
         check() {
           local name=$1; shift
           local log="$logs/${enc}-${name//[^A-Za-z0-9._-]/_}.log"
-          if (cd Tools/CLI && timeout 240 "$@") >"$log" 2>&1; then
+          set_limit
+          if [ "$limit" = 0 ]; then
+            echo "FAIL  $enc  $name  (not run: the $budget s budget of this encoding is used up)"
+            failed=$((failed + 1)); return
+          fi
+          if (cd Tools/CLI && timeout "$limit" "$@") >"$log" 2>&1; then
             echo "PASS  $enc  $name"
           else
             echo "FAIL  $enc  $name  (exit $?)"; tail -n 20 "$log"; failed=$((failed + 1))
@@ -160,34 +190,46 @@ jobs:
           esac
           echo "::group::DemoServer $enc"
           start=$SECONDS
+          deadline=$((SECONDS + budget))
+          if ! stop_server; then
+            failed=$((failed + 1)); echo "::endgroup::"; continue
+          fi
           (cd Examples/Demo && TRANSPORT_ENCODING=$enc "$exe") >"$logs/server-$enc.log" 2>&1 &
+          pid=$!
           up=0
           for _ in $(seq 1 60); do
-            if curl -s -o /dev/null http://localhost:8080/schema; then up=1; break; fi
+            # A server that exited cannot be the one that answers.
+            kill -0 "$pid" 2>/dev/null || break
+            if curl -s --max-time 2 -o /dev/null "http://$HOST:$PORT/schema"; then up=1; break; fi
             sleep 1
           done
           if [ "$up" != 1 ]; then
-            echo "FAIL  $enc  the server did not start within 60 s"; cat "$logs/server-$enc.log"
-            failed=$((failed + 1)); taskkill //F //IM DemoServer.exe >/dev/null 2>&1 || true
+            echo "FAIL  $enc  the server did not come up within 60 s"; cat "$logs/server-$enc.log"
+            failed=$((failed + 1)); stop_server || true
             echo "::endgroup::"; continue
           fi
 
           if [ "$enc" = json ]; then
-            check protocol-mixed-encoding npx tsx scripts/internal/test-mixed-encoding.ts --url $ws/counter
-            check protocol-packet-encoding npx tsx scripts/internal/test-packet-encoding.ts --url $ws/counter
-            check protocol-encoding-integration npx tsx scripts/internal/test-encoding-integration.ts
-            check protocol-server-opcode-decoding npx tsx scripts/internal/test-server-opcode-decoding.ts --url $ws/counter
+            check protocol-mixed-encoding npm run test-mixed-encoding
+            check protocol-packet-encoding npm run test-packet-encoding
+            check protocol-encoding-integration npm run test-encoding-integration
+            check protocol-server-opcode-decoding npm run test-server-opcode-decoding
           fi
-          check counter npx tsx src/cli.ts script -u $ws/counter -l counter -s scenarios/counter/ --state-update-encoding "$se"
-          check cookie npx tsx src/cli.ts script -u $ws/cookie -l cookie -s scenarios/cookie/ --state-update-encoding "$se"
-          check cookie-multi npx tsx src/cli.ts script -u $ws/cookie -l cookie -s scenarios/cookie/test-cookie.json --clients 2 --state-update-encoding "$se"
-          check reevaluation npx tsx src/reevaluation-e2e.ts --ws-url $ws/counter --admin-url http://localhost:8080 --land-type counter --state-update-encoding "$se"
+          check counter npm run test:e2e:counter -- --state-update-encoding "$se"
+          check cookie npm run test:e2e:cookie -- --state-update-encoding "$se"
+          check cookie-multi npm run test:e2e:cookie:multi -- --state-update-encoding "$se"
+          check reevaluation npm run test:e2e:reevaluation -- --state-update-encoding "$se"
 
           if [ "$enc" = messagepack ]; then
-            # The dropped patch must be caught: this run has to fail with a /count mismatch.
+            # The dropped patch must be caught: this run has to fail with a /count mismatch. No leaf
+            # script runs it, so the CLI is called here.
             # MSYS_NO_PATHCONV: Git Bash would turn the argument /count into a Windows path.
             flog="$logs/messagepack-fault-injection.log"
-            if (cd Tools/CLI && MSYS_NO_PATHCONV=1 timeout 240 npx tsx src/cli.ts script -u $ws/counter -l counter -s scenarios/fault/counter-drop-one-patch.json --state-update-encoding messagepack --fault-drop-patch /count --convergence-gating) >"$flog" 2>&1; then
+            set_limit
+            if [ "$limit" = 0 ]; then
+              echo "FAIL  messagepack  fault-injection (not run: the $budget s budget of this encoding is used up)"
+              failed=$((failed + 1))
+            elif (cd Tools/CLI && MSYS_NO_PATHCONV=1 timeout "$limit" npx tsx src/cli.ts script -u "ws://$HOST:$PORT/game/counter" -l counter -s scenarios/fault/counter-drop-one-patch.json --state-update-encoding messagepack --fault-drop-patch /count --convergence-gating) >"$flog" 2>&1; then
               echo "FAIL  messagepack  fault-injection passed, it must fail"; failed=$((failed + 1))
             elif grep -q 'CONVERGENCE MISMATCH (gating) fault-drop-one-patch' "$flog" && grep -q '^  /count: client=' "$flog"; then
               echo "PASS  messagepack  fault-injection (failed with a /count mismatch, as required)"
@@ -196,8 +238,7 @@ jobs:
             fi
           fi
 
-          taskkill //F //IM DemoServer.exe >/dev/null 2>&1 || true
-          sleep 2
+          stop_server || failed=$((failed + 1))
           echo "$enc took $((SECONDS - start)) s"
           echo "::endgroup::"
         done
