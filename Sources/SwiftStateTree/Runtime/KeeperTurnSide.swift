@@ -69,10 +69,6 @@ package struct KeeperTurnSide {
     /// The callers of `debugFreeze` and `waitForInFlightWorkForTesting`, woken when the in-flight
     /// work count reaches zero.
     var debugDrainWaiters: [UInt64: CheckedContinuation<Void, Never>] = [:]
-    /// Each player's services (#700 K1b-4; moved here by the move, D10): `LandServices` holds
-    /// references. Written in the same synchronous segment as every insert and removal of the
-    /// model's `players`, keyed by the entry's generation, so a late writer never removes a newer
-    /// entry's services. K2 replaces it with the turn core's table.
     /// Tickless lands: callers waiting for their input's turn, by input sequence. Actions get
     /// their own response; other inputs get an empty one (or the handler's error).
     var inputTurnWaiters: [Int64: CheckedContinuation<InputOutcome, any Error>] = [:]
@@ -91,11 +87,18 @@ package struct KeeperTurnSide {
     /// newer binding replaces it (the scheduled task reads the slot when it runs), and an outside
     /// request through the same port consumes it.
     var pendingSyncTurnAfterTurn: SyncTurnFollowUp?
+    /// Server inputs in flight a land accepts (#387), from the environment at init; tests set it.
+    /// Host configuration, not keeper state: off the model, as it was off the actor's.
+    var serverInputMaxInFlight: Int = ServerInputLimits.maxInFlightPerLand()
     /// `forceShutdown` callers waiting for the shutdown turn (or for a drain that dropped its
     /// input), resumed when it completes.
     var shutdownTurnWaiters: [CheckedContinuation<Void, Never>] = []
     /// The empty-land destroy timer's ticket (D15.1, D16), beside the job handles.
     var destroyTicket: DestroyTicket?
+    /// Each player's services (#700 K1b-4; moved here by the move, D10): `LandServices` holds
+    /// references. Written in the same synchronous segment as every insert and removal of the
+    /// model's `players`, keyed by the entry's generation, so a late writer never removes a newer
+    /// entry's services. K2 replaces it with the turn core's table.
     var playerServices: [PlayerID: (generation: Epoch, services: LandServices)] = [:]
     /// Tests only: called at the probe labels ("turn-begin", "turn-end", ...) on the keeper's
     /// executor.
@@ -256,7 +259,8 @@ package struct KeeperTurnSide {
     }
 
     /// The transport's refusal of a stale join by its resolved player, only on the in-turn path
-    /// (the keeper's `refusesResolvedJoinInTurn`). A port call: a body makes it inside `callOut`.
+    /// as the keeper's `admitJoiningInTurn`; off that path the transport keeps its check by the
+    /// requested player alone. A port call: a body makes it inside `callOut`.
     func refusesResolvedJoinInTurn<State>(_ behavior: KeeperBehavior<State>, playerID: PlayerID, sessionID: SessionID) -> Bool {
         guard syncsInTurn(behavior), let transport = attachedTransport else { return false }
         return transport.refusesResolvedJoin(playerID: playerID, sessionID: sessionID)
@@ -328,9 +332,6 @@ final class KeeperBoundRequester: @unchecked Sendable {
     var port: (any LandKeeperTransport)? { object as? any LandKeeperTransport }
 }
 
-/// The keeper's drain in progress (single-flight). A box the keeper and its side share, used
-/// on the keeper's executor only, so `failLand`'s staged start installs the handle from a body
-/// and the keeper's async entries read it.
 /// The model's sequence counter, lent to a handler step's contexts while the handler runs
 /// (#700 K1b-5 D15.3). The handler holds only `&m.state`, so the counter leaves the model for the
 /// step and comes back when it ends, in the step's `defer`: an emit takes its number at emit
@@ -400,6 +401,9 @@ final class KeeperSequenceLease: @unchecked Sendable {
     var unlentCount: Int { lock.withLock { unlent } }
 }
 
+/// The keeper's drain in progress (single-flight). A box the keeper and its side share, used
+/// on the keeper's executor only, so `failLand`'s staged start installs the handle from a body
+/// and the keeper's async entries read it.
 final class KeeperDrainHandle: @unchecked Sendable {
     var task: Task<Void, Never>?
 }

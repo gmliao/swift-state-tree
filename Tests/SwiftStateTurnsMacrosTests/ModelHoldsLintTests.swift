@@ -168,8 +168,10 @@ enum ModelHoldsLint {
         report.graph = graph
         var findings: Set<Finding> = []
         for holder in report.holders {
+            let sideNames = graph.sideNames(in: holder.scope, owner: holder.owner)
             let uses = UseVisitor(graph: graph, holdNames: holder.holdNames, root: holder.body,
-                                  portNames: PortNames.of(holder.scope, properties: graph.portProperties(of: holder.owner)),
+                                  portNames: PortNames.of(holder.scope, properties: graph.portProperties(of: holder.owner, sideNames: sideNames)),
+                                  sideNames: sideNames,
                                   portMarked: portMarked[holder.path] ?? [], converter: holder.converter, owner: holder.owner)
             uses.walk(holder.body)
             for model in uses.modelReferences {
@@ -268,6 +270,10 @@ struct KeeperMember {
     /// The function-typed parameters that take a `KeeperModel`, by argument label: the index of
     /// that argument among the closure's parameters. A closure passed to one holds the model.
     let givesHold: [(label: String, index: Int)]
+    /// The same for `KeeperTurnSide`: a closure passed there is given the side at that index.
+    let givesSide: [(label: String, index: Int)]
+    /// The parameters of type `KeeperTurnSide`: the names the side goes by in this member.
+    let sideParameters: Set<String>
     /// A stored or computed property of a port type.
     let isPort: Bool
     /// The declaration, for the names bound in it (parameters, locals).
@@ -291,6 +297,12 @@ struct KeeperMember {
                   let index = Array(function.parameters).firstIndex(where: { isKeeperModel($0.type) }) else { return nil }
             return (parameter.firstName.text, index)
         }
+        givesSide = parameters.compactMap { parameter -> (label: String, index: Int)? in
+            guard let function = unwrap(parameter.type).as(FunctionTypeSyntax.self),
+                  let index = Array(function.parameters).firstIndex(where: { isKeeperTurnSide($0.type) }) else { return nil }
+            return (parameter.firstName.text, index)
+        }
+        sideParameters = Set(parameters.filter { isKeeperTurnSide($0.type) }.map { ($0.secondName ?? $0.firstName).text })
     }
 
     init(property: String, body: Syntax?, isPort: Bool, scope: Syntax, path: String, converter: SourceLocationConverter,
@@ -303,6 +315,8 @@ struct KeeperMember {
         self.converter = converter
         holdNames = []
         givesHold = []
+        givesSide = []
+        sideParameters = []
     }
 }
 
@@ -315,6 +329,10 @@ private func unwrap(_ type: TypeSyntax) -> TypeSyntax {
 
 private func isKeeperModel(_ type: TypeSyntax) -> Bool {
     unwrap(type).as(IdentifierTypeSyntax.self)?.name.text == "KeeperModel"
+}
+
+private func isKeeperTurnSide(_ type: TypeSyntax) -> Bool {
+    unwrap(type).as(IdentifierTypeSyntax.self)?.name.text == "KeeperTurnSide"
 }
 
 /// The members, which of them reach the model, and how.
@@ -337,7 +355,7 @@ final class MemberGraph {
     /// The names that hold a port in a member of `owner`, before its locals: the owner's own
     /// port properties, the side's reached through the side (`side.attachedTransport`), and
     /// the bound requester's port (`….sharedBoundRequester.port`).
-    func portProperties(of owner: KeeperOwner) -> Set<String> {
+    func portProperties(of owner: KeeperOwner, sideNames: Set<String>) -> Set<String> {
         var names: Set<String> = ["sharedBoundRequester.port"]
         switch owner {
         case .keeper: names.formUnion(portProperties)
@@ -345,7 +363,7 @@ final class MemberGraph {
         case .model: break
         }
         for name in sidePortProperties {
-            for side in PortNames.sideNames { names.insert("\(side).\(name)") }
+            for side in sideNames { names.insert("\(side).\(name)") }
         }
         return names
     }
@@ -401,8 +419,10 @@ final class MemberGraph {
     }
 
     func useVisitor(member: KeeperMember, body: Syntax, holdNames: Set<String>) -> UseVisitor {
-        UseVisitor(graph: self, holdNames: holdNames, root: body,
-                   portNames: PortNames.of(member.scope, properties: portProperties(of: member.key.owner)),
+        let sideNames = sideNames(in: member.scope, owner: member.key.owner)
+        return UseVisitor(graph: self, holdNames: holdNames, root: body,
+                   portNames: PortNames.of(member.scope, properties: portProperties(of: member.key.owner, sideNames: sideNames)),
+                   sideNames: sideNames,
                    portMarked: portMarked[member.path] ?? [], converter: member.converter, owner: member.key.owner)
     }
 
@@ -479,6 +499,28 @@ final class MemberGraph {
 
     /// The closure parameters a member gives the model to, by argument label; nil when it gives
     /// none.
+    func givesSide(_ name: String) -> [(label: String, index: Int)]? {
+        let given = byName[name]?.flatMap(\.givesSide) ?? []
+        return given.isEmpty ? nil : given
+    }
+
+    /// The names the turn side goes by in a member, found by type, not by spelling (#914
+    /// review): its `KeeperTurnSide` parameters, the closure parameters a member that gives the
+    /// side binds it to, and on the keeper its stored `turnSide`. Flow-insensitive, as
+    /// `PortNames.of`.
+    func sideNames(in scope: Syntax, owner: KeeperOwner) -> Set<String> {
+        var names: Set<String> = owner == .keeper ? ["turnSide"] : []
+        if let function = scope.as(FunctionDeclSyntax.self) {
+            for parameter in function.signature.parameterClause.parameters where isKeeperTurnSide(parameter.type) {
+                names.insert((parameter.secondName ?? parameter.firstName).text)
+            }
+        }
+        let finder = SideClosureFinder(graph: self)
+        finder.walk(scope)
+        names.formUnion(finder.names)
+        return names
+    }
+
     func givesHold(_ name: String) -> [(label: String, index: Int)]? {
         let given = byName[name]?.flatMap(\.givesHold) ?? []
         return given.isEmpty ? nil : given
@@ -598,6 +640,30 @@ private final class HoldClosureFinder: SyntaxVisitor {
     }
 }
 
+/// The closure parameters bound to the side: a closure passed to a member that gives it the
+/// side, at that parameter's index.
+private final class SideClosureFinder: SyntaxVisitor {
+    let graph: MemberGraph
+    var names: Set<String> = []
+
+    init(graph: MemberGraph) {
+        self.graph = graph
+        super.init(viewMode: .sourceAccurate)
+    }
+
+    override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
+        let name = calleeName(node.calledExpression)
+            ?? node.calledExpression.as(MemberAccessExprSyntax.self)?.declName.baseName.text
+        if let name, let given = graph.givesSide(name) {
+            for (label, closure) in labelledClosures(of: node) {
+                let parameter = given.last { $0.label == label } ?? (label == nil ? given.last : nil)
+                if let parameter { names.insert(closureParameterName(closure, at: parameter.index)) }
+            }
+        }
+        return .visitChildren
+    }
+}
+
 /// One use of a member in a body.
 struct MemberUse {
     let at: Syntax
@@ -613,6 +679,8 @@ final class UseVisitor: SyntaxVisitor {
     let root: Syntax
     /// The names that hold a port in this body (see `PortNames`).
     let portNames: Set<String>
+    /// The names the turn side goes by in this body (`MemberGraph.sideNames(in:owner:)`).
+    let sideNames: Set<String>
     /// Lines a bare-port marker allows.
     let portMarked: Set<Int>
     let converter: SourceLocationConverter
@@ -627,9 +695,10 @@ final class UseVisitor: SyntaxVisitor {
     /// turn side `withTurn` passes beside it. A keeper member only.
     var heldStorage: Set<String> { owner == .keeper ? ["model", "turnSide"] : [] }
 
-    init(graph: MemberGraph, holdNames: Set<String>, root: Syntax, portNames: Set<String>,
+    init(graph: MemberGraph, holdNames: Set<String>, root: Syntax, portNames: Set<String>, sideNames: Set<String>,
          portMarked: Set<Int>, converter: SourceLocationConverter, owner: KeeperOwner = .keeper) {
         self.owner = owner
+        self.sideNames = sideNames
         self.graph = graph
         self.holdNames = holdNames
         self.root = root
@@ -720,7 +789,7 @@ final class UseVisitor: SyntaxVisitor {
             guard let base = member.base?.as(DeclReferenceExprSyntax.self) else { return .visitChildren }
             if base.baseName.tokenKind == .keyword(.self) {
                 use = Syntax(member)
-            } else if PortNames.sideNames.contains(base.baseName.text) {
+            } else if sideNames.contains(base.baseName.text) {
                 use = Syntax(member)
                 target = .side
             } else {
@@ -762,9 +831,6 @@ final class UseVisitor: SyntaxVisitor {
 /// access on one is a call out of the keeper (the port may call back in), which a holder makes
 /// only through `callOut`.
 enum PortNames {
-    /// The names the turn side goes by in a body (`side`, the keeper's `turnSide`).
-    static let sideNames: Set<String> = ["side", "turnSide"]
-
     static func isPortType(_ syntax: some SyntaxProtocol) -> Bool {
         syntax.tokens(viewMode: .sourceAccurate).contains { token in
             guard case .identifier(let text) = token.tokenKind else { return false }
@@ -1285,6 +1351,33 @@ struct ModelHoldsLintTests {
         let path = "Sources/SwiftStateTree/Runtime/KeeperModelBodies.swift"
         #expect(ModelHoldsLint.inScope(path, model))
         let report = ModelHoldsLint.check(Self.ownerFiles + [(path: path, source: model)])
+        #expect(report.findings.count == expected, "\(report.findings.joined(separator: "\n"))")
+    }
+
+    /// The side is found by its type, not by its name (#914 review): a side parameter named
+    /// anything, and a call-out closure's side parameter, whatever it's called.
+    @Test("The side by type", arguments: [
+        ("_ = s.attachedTransport?.count", 1),
+        ("s.notes()", 1),
+        ("_ = s.plain()", 0),
+        // A closure given the model and the side: its side parameter, by the giver's type. Found
+        // in the closure's hold and in the method's, which holds `self` around it.
+        ("step { _, t in _ = t.attachedTransport?.count }", 2),
+        ("step { _, t in t.notes() }", 2),
+        ("_ = callOut { _, t in t.notes() }", 0),
+        ("let other = 0\n_ = other", 0),
+    ])
+    func sideByType(body: String, expected: Int) {
+        let model = """
+        extension KeeperModel {
+            mutating func callOut<A>(_ call: (KeeperModel<State>, KeeperTurnSide) -> A) -> A { fatalError() }
+            mutating func step(_ body: (inout KeeperModel<State>, inout KeeperTurnSide) -> Void) {}
+            mutating func body(_ s: inout KeeperTurnSide) {
+        \(body)
+            }
+        }
+        """
+        let report = ModelHoldsLint.check(Self.ownerFiles + [(path: "Sources/SwiftStateTree/Runtime/KeeperModelBodies.swift", source: model)])
         #expect(report.findings.count == expected, "\(report.findings.joined(separator: "\n"))")
     }
 

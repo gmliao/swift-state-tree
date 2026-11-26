@@ -11,8 +11,6 @@ import SwiftStateTurns
 /// it as `model`; field names are the ones the keeper's stored properties had.
 @PlainData
 struct KeeperModel<State: StateNodeProtocol> {
-    /// Server inputs in flight a land accepts (#387), from the environment at init; tests set it.
-    var serverInputMaxInFlight: Int = ServerInputLimits.maxInFlightPerLand()
     /// The land's generator: keeper state, advanced by the handlers that replay repeats from the
     /// record (#700 K1b-3, #765).
     var landRandom: DeterministicRng

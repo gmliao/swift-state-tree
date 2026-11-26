@@ -616,6 +616,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The destruction in progress (single-flight): `shutdownIfIdle` runs it once. Held in a box
     /// the side shares, so `failLand`'s staged start installs it from a body.
     private nonisolated let drainHandle: KeeperDrainHandle
+    /// The task in `drainHandle`.
     private var drainTask: Task<Void, Never>? {
         get { drainHandle.task }
         set { drainHandle.task = newValue }
@@ -2102,20 +2103,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return transport.admitJoiningSession(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: joinSequence)
     }
 
-    /// The transport's refusal of a stale join by its resolved player, only on the in-turn path,
-    /// as `admitJoiningInTurn`. Off that path the transport keeps its check by the requested
-    /// player alone.
-    private func refusesResolvedJoinInTurn(playerID: PlayerID, sessionID: SessionID) -> Bool {
-        guard syncsInTurn, let transport else { return false }
-        return transport.refusesResolvedJoin(playerID: playerID, sessionID: sessionID)
-    }
-
-    /// Reports the join inputs a turn applied to an in-turn transport (`noteJoinInputsConsumed`),
-    /// in the segment that applied them. Live keepers only: re-evaluation feeds recorded joins.
-    private func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
-        guard !results.isEmpty, behavior.config.mode == .live, syncsInTurn, let transport else { return }
-        transport.noteJoinInputsConsumed(results)
-    }
 
 
 
@@ -2159,24 +2146,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
 
 
-    /// Intake check for actions and client events (#92, newest wins): rejects a sender only when
-    /// the player has an entry and that entry is another client or session, i.e. a newer join
-    /// of the player replaced the sender's session. Called on `.live` keepers only (the intake
-    /// returns earlier otherwise), at intake. An action's resolvers lie between its intake and
-    /// its append; its delivery checks the entry's generation instead (`deliverResolvedAction`).
-    ///
-    /// Unchanged: a player with no entry (direct callers that send before or without a join),
-    /// the system player and client, and a sender matching the entry (a join, then sends with the
-    /// same client and session).
-    /// `rejectSenderIfSuperseded(_:…)` for a caller outside a turn body.
-    private func rejectSenderIfSuperseded(
-        playerID: PlayerID,
-        clientID: ClientID,
-        sessionID: SessionID,
-        input: String
-    ) throws {
-        try model.rejectSenderIfSuperseded(behavior, playerID: playerID, clientID: clientID, sessionID: sessionID, input: input)
-    }
 
 
     /// Intake (and delivery) check: once the drain has started (`isDraining`, set in the same
@@ -2778,14 +2747,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// registration hand it to the job (`ticklessJobWork`).
 
 
-    /// Generate action ID for matching (same format as schema generation).
-    ///
-    /// Converts type name to camelCase action ID format (without "Action" suffix).
-    /// Example: "AddGoldAction" -> "AddGold"
-    private func generateActionIDForMatching(from actionType: Any.Type) -> String {
-        // The schema's action rule (#521): one definition, so the IDs can't drift apart.
-        payloadActionName(for: actionType)
-    }
 
     /// Handles a client event from a player.
     ///
@@ -2907,7 +2868,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tests only: overrides `SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND` for this keeper.
     package func setServerInputMaxInFlightForTesting(_ limit: Int) {
-        model.serverInputMaxInFlight = limit
+        turnSide.serverInputMaxInFlight = limit
     }
 
     /// Tests only: server inputs submitted and not yet applied.
@@ -2915,14 +2876,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         model.serverInputsInFlight
     }
 
-    /// The submitter handed to handlers in `LandContext.serverInputs`: it holds this keeper
-    /// weakly, so a submit after the keeper is gone is refused instead of keeping it alive.
-    private nonisolated var serverInputSubmitter: ServerInputSubmitter {
-        ServerInputSubmitter { [weak self] input in
-            guard let self else { return .refused(.draining) }
-            return await self.submitServerInputErased(input)
-        }
-    }
 
     // MARK: - Helpers
 
@@ -3354,13 +3307,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Sets `replayRecordsPassOrdinals` from the record's version (re-evaluation only).
     package func setReplayRecordsPassOrdinals(_ value: Bool) {
-        turnSide.replay!.replayRecordsPassOrdinals = value
+        // `?`: a live keeper has no replay fields, and the call writes nothing there, as before the move.
+        turnSide.replay?.replayRecordsPassOrdinals = value
     }
 
 
     /// Sets `replayRecordsRejected` from the record's version (re-evaluation only).
     package func setReplayRecordsRejected(_ value: Bool) {
-        turnSide.replay!.replayRecordsRejected = value
+        turnSide.replay?.replayRecordsRejected = value
     }
 
 
@@ -3398,7 +3352,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Installs `replayFailureEnd` (re-evaluation only).
     package func setReplayFailureEnd(tickId: Int64, pass: Int64?) {
-        turnSide.replay!.replayFailureEnd = ReplayFailureEnd(tickId: tickId, pass: pass)
+        turnSide.replay?.replayFailureEnd = ReplayFailureEnd(tickId: tickId, pass: pass)
     }
 
     /// Re-evaluation only: whether a take found the sequence counter at `Int64.max` (#741). The run
@@ -3415,7 +3369,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Re-evaluation: takes why `tickId`'s recorded passes didn't match its inputs, if they didn't.
     package func takeRecordedPassMismatch(for tickId: Int64) -> String? {
-        turnSide.replay!.recordedPassMismatches.removeValue(forKey: tickId)
+        turnSide.replay?.recordedPassMismatches.removeValue(forKey: tickId)
     }
 
     /// Re-evaluation only: move the shared sequence counter forward to a recorded watermark.
@@ -3841,10 +3795,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         transport: (any LandKeeperTransport)?
     ) -> TickTurnOutput {
         // The fold and the turn's start are taken here, as the turn starts: actor state the body
-        // can't reach (the loop driver's).
+        // can't reach (the loop driver's). The clock is read only for a fold.
         let fold = pendingFold
         pendingFold = nil
-        let foldStart = tickClockForTesting ?? ContinuousClock.now
+        let foldStart = fold.map { _ in tickClockForTesting ?? ContinuousClock.now }
         return withTurn { m, side, outputs in
             m.tickTurnBody(behavior, &side, &outputs, handler: handler, tickId: tickId, transport: transport, fold: fold, foldStart: foldStart)
         }
@@ -4789,6 +4743,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// A reevaluation keeper skips all destroy handlers and goes straight to transport notification
     /// (#826): the record holds no finalize event, so there is nothing to verify them against, and
     /// their resolvers and AfterFinalize could reach outside services.
+    /// A failed land's teardown task (#535): tells the transport, then drains. Keeper-isolated,
+    /// so it starts only after the failing turn's synchronous segment ends, as when the task was
+    /// created in a keeper method.
+    fileprivate func runFailureTeardown(_ failure: LandFailure, transport: (any LandKeeperTransport)?) async {
+        await holds.at(.landFailedTeardown)
+        if let transport { await transport.landDidFail(failure) }
+        await drainAfterIdleCheck()
+    }
+
     fileprivate func drainAfterIdleCheck() async {
         await holds.at(.drainStart)
         // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting
@@ -5114,12 +5077,13 @@ extension KeeperModel {
             ])
             return .refused(.unencodable)
         }
-        if serverInputMaxInFlight > 0, serverInputsInFlight >= serverInputMaxInFlight {
+        let maxInFlight = side.serverInputMaxInFlight
+        if maxInFlight > 0, serverInputsInFlight >= maxInFlight {
             serverInputCapRejections += 1
             behavior.logger.debug("Server input refused: the land's in-flight limit is reached", metadata: [
                 "landID": .string(behavior.config.actualLandID ?? definition.id),
                 "inputType": .string(typeIdentifier),
-                "limit": .stringConvertible(serverInputMaxInFlight),
+                "limit": .stringConvertible(maxInFlight),
             ])
             return .refused(.overCap)
         }
@@ -5262,6 +5226,15 @@ extension KeeperModel {
         return sequence
     }
 
+    /// Intake check for actions and client events (#92, newest wins): rejects a sender only when
+    /// the player has an entry and that entry is another client or session, i.e. a newer join
+    /// of the player replaced the sender's session. Called on `.live` keepers only (the intake
+    /// returns earlier otherwise), at intake. An action's resolvers lie between its intake and
+    /// its append; its delivery checks the entry's generation instead (`deliverResolvedAction`).
+    ///
+    /// Unchanged: a player with no entry (direct callers that send before or without a join),
+    /// the system player and client, and a sender matching the entry (a join, then sends with the
+    /// same client and session).
     mutating func rejectSenderIfSuperseded(
         _ behavior: KeeperBehavior<State>,
         playerID: PlayerID,
@@ -5732,7 +5705,7 @@ extension KeeperModel {
         if case .failed(let displaced)? = inputTurnResults[sequence] {
             side.failures.removeValue(forKey: displaced)
         }
-        // `held` writes the  Split as a precaution, in the shape of the slot fill's
+        // `held` writes the model. Split as a precaution, in the shape of the slot fill's
         // (`fillActionSlot`); whether a subscript set begins its access first is unproven.
         let entry = result.map { held(&side, $0) }
         inputTurnResults[sequence] = entry
@@ -6685,16 +6658,15 @@ extension KeeperModel {
         // The waiters leave inline; their resume is staged after the start (§3.3).
         let drainHandle = side.sharedDrainHandle
         let keeperReference = side.keeperReference
-        let holds = side.holdPoints
         let drainStarted = side.takeDrainStartedWaitersForTesting()
         let failureWaiters = side.takeFailureWaitersForTesting()
         outputs.stage { [weak keeperReference] in
             if let keeper = keeperReference?.keeper as? LandKeeper<State> {
-                drainHandle.task = Task {
-                    await holds.at(.landFailedTeardown)
-                    if let transport { await transport.landDidFail(failure) }
-                    await keeper.drainAfterIdleCheck()
-                }
+                // The task's first step is a keeper-isolated call. This closure runs at the flush,
+                // from a nonisolated model method, so a body here would not run on the keeper
+                // (SE-0420): `landDidFail` could reach an off-executor transport while the failing
+                // turn still makes its port calls (the join report after the flush).
+                drainHandle.task = Task { await keeper.runFailureTeardown(failure, transport: transport) }
             }
             drainStarted.forEach { $0.resume() }
             failureWaiters.forEach { $0.resume(returning: true) }
@@ -7152,21 +7124,23 @@ extension KeeperModel {
         switch random {
         case .detached(let service):
             let (bound, scope) = side.openStepScope(ctx, random: service, droppingInto: dropsOutputs ? side.sharedDestroyHandlerOutputsDropped : nil)
+            let lentAt = sequence.next
             lease?.lend(sequence)
             defer {
                 scope.close()
-                endLease(lease)
+                endLease(lease, lentAt: lentAt)
             }
             return try body(&self, bound)
         case .step:
             let service = DeterministicRngService(continuing: landRandom, seed: behavior.config.landRandomSeed)
             let (bound, scope) = side.openStepScope(ctx, random: service, droppingInto: dropsOutputs ? side.sharedDestroyHandlerOutputsDropped : nil)
+            let lentAt = sequence.next
             lease?.lend(sequence)
             // After the body's access to the model ends: it doesn't overlap. The scope closes
             // first, so no output runs after the counter is back.
             defer {
                 scope.close()
-                endLease(lease)
+                endLease(lease, lentAt: lentAt)
                 landRandom = service.generator
             }
             return try body(&self, bound)
@@ -7174,9 +7148,12 @@ extension KeeperModel {
     }
 
     /// Takes the counter back from a step's lease and ORs the step's staged sync requests into
-    /// the table, before the body reads them (`takeSyncRequest`).
-    private mutating func endLease(_ lease: KeeperSequenceLease?) {
+    /// the table, before the body reads them (`takeSyncRequest`). `lentAt` is the model's
+    /// counter when it was lent: a take from the model's own copy while lent would be lost when
+    /// the lease's counter replaces it, so it is asserted against (#914 review).
+    private mutating func endLease(_ lease: KeeperSequenceLease?, lentAt: Int64) {
         guard let lease else { return }
+        assert(sequence.next == lentAt, "the model's sequence counter was taken from while lent to a handler step")
         let (counter, requests) = lease.end()
         sequence = counter
         for (tickId, staged) in requests {
@@ -7607,7 +7584,7 @@ extension KeeperModel {
         tickId: Int64,
         transport: (any LandKeeperTransport)?,
         fold: PendingFold?,
-        foldStart: ContinuousClock.Instant
+        foldStart: ContinuousClock.Instant?
     ) -> TickTurnOutput {
         // No port: no fold to report and no sync phase; the tick's events and sync request are
         // still taken below and recorded, so the collector is drained (#546 L2d). A sync folded
@@ -7718,10 +7695,10 @@ extension KeeperModel {
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         fold: PendingFold?,
-        start: ContinuousClock.Instant,
+        start: ContinuousClock.Instant?,
         transport: any LandKeeperTransport
     ) {
-        guard let fold else { return }
+        guard let fold, let start else { return }
         guard inTurnSyncDue else { return }
         let report = InTurnSyncFold(
             overdueAtFold: fold.overdueAtFold,

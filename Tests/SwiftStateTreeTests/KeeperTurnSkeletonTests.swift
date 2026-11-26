@@ -168,6 +168,11 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     private var nthTarget = 0
     private var callsInBody = 0
     private var reenteredNth = false
+    private var portOrder: [String] = []
+    private var reportWaits = false
+    private let teardownStarted = DispatchSemaphore(value: 0)
+    /// Yields once `landDidFail` has been recorded.
+    let teardownReached = AsyncStream<Void>.makeStream()
 
     init(reenter: Where, joinsWait: Bool = false) {
         self.reenter = reenter
@@ -197,6 +202,17 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
     }
     /// Whether the armed nth call was made, and re-entered.
     var reenteredAtNth: Bool { lock.withLock { reenteredNth } }
+    /// The join report and the teardown's `landDidFail`, in the order they reached the port.
+    var reportAndTeardownOrder: [String] { lock.withLock { portOrder } }
+    /// From now on, the join report waits up to half a second for `landDidFail` to start, so a
+    /// teardown that can run during the failing turn does so before the report returns.
+    func armReportWaitsForTeardown() { lock.withLock { reportWaits = true } }
+
+    func landDidFail(_ failure: LandFailure) async {
+        lock.withLock { portOrder.append("landDidFail") }
+        teardownStarted.signal()
+        teardownReached.continuation.yield()
+    }
 
     /// `.nthCallInBody`: counts a port call made during a turn body; re-enters at the armed one.
     private func noteCall() {
@@ -315,7 +331,13 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
             )
         }))
     }
-    func noteJoinInputsConsumed(_ results: [JoinInputResult]) { noteCall() }
+    func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
+        noteCall()
+        // wall-clock: the bound on a teardown that can't start during the turn; the fixed keeper
+        // waits it out, the broken one returns as soon as the teardown runs.
+        if lock.withLock({ reportWaits }) { _ = teardownStarted.wait(timeout: .now() + .milliseconds(500)) }
+        lock.withLock { portOrder.append("joinReport") }
+    }
     func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool {
         noteCall()
         return false
@@ -771,6 +793,29 @@ struct KeeperTurnSkeletonTests {
         #expect(await keeper.reentriesAppliedInCallForTesting == 1)
         #expect(await keeper.lateReentriesAppliedForTesting == 0)
         #expect(await keeper.currentState().value == 1, "the OnJoin applied before the failure item")
+    }
+
+    /// A failure in the batch stages the drain, and the join report's call-out flushes it while the
+    /// turn goes on. The teardown's first step runs on the keeper, so the transport hears
+    /// `landDidFail` after the failing turn's last port call, as before the move (#914 review).
+    @Test("A failed land's teardown starts after the failing turn's join report")
+    func teardownWaitsForTheFailingTurn() async throws {
+        let (keeper, transport, _) = await attachedKeeper(.nowhere, onJoin: true)
+        await keeper.awaitInitialization()
+        transport.armReportWaitsForTeardown()
+        let join = LandKeeper<TurnSkeletonState>.PendingItem.lifecycle(LandKeeper<TurnSkeletonState>.PendingLifecycleItem(
+            sequence: 1_000, kind: .join, playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"),
+            deviceID: nil, isGuest: nil, metadata: [:], resolverOutputs: [:], resolvedAtTick: 0
+        ))
+        let queued = LandKeeper<TurnSkeletonState>.PendingItem.landFailure(LandKeeper<TurnSkeletonState>.PendingLandFailureItem(
+            sequence: 1_001, resolvedAtTick: 0, failure: TurnSkeletonFailingPhaseTransport.failure
+        ))
+
+        _ = await keeper.runInputTurnForTesting([join, queued])
+        // The suite's time limit bounds the wait.
+        for await _ in transport.teardownReached.stream { break }
+
+        #expect(transport.reportAndTeardownOrder == ["joinReport", "landDidFail"])
     }
 
     /// A refusal in initialization's turn fails the land, and the keeper starts no tick or sync
