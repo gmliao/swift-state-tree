@@ -4,7 +4,7 @@ A lobby that loads each player's profile before seating them, one load at a time
 
 ## The machine
 
-The machine's state is three dictionaries and a count, and `@PlainData` checks each field's type. Each player has a binding, the key `.player(id)`. A join is admitted behind a second key, `.store`. While one join's load holds the store, the next join queues until that load closes.
+The machine's state is three dictionaries, a count and the load deadline, and `@PlainData` checks each field's type. Each player has a binding, the key `.player(id)`. A join is admitted behind a second key, `.store`. While one join's load holds the store, the next join queues until that load closes.
 
 ```swift
 /// Where profiles come from: a service in production, a held fake in a test.
@@ -100,7 +100,7 @@ enum LobbyError: Error {
 
 In `handle(.join)`, the step starts the player's key and makes the load a request owned by that key. The request holds the store with ``Hold/untilRequestCloses(_:deadline:)``. The deadline is part of the hold, so a holding request can't be written without one. The step stores the request's ID and the caller, and returns. Nothing waits.
 
-The deadline is the machine's `loadDeadline`, two seconds by default. The example under "Using it" passes a long one, so a slow machine can't run out the deadline before the load returns.
+The deadline is the machine's `loadDeadline`, two seconds by default. The example under "Using it" passes a long one, a deadline no test run reaches.
 
 The load's result arrives as `.loaded`, in a later step, and only while its request is open. That step changes the state, emits an output and answers the caller. The other cases:
 
