@@ -326,14 +326,17 @@ struct LandKeeperDebugFreezeTests {
         try await keeper.join(playerID: player, clientID: client, sessionID: session)
 
         #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(10)))
-        // Past the driver's check, held at the freeze.
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
         let event = Task { [player, client, session] in
             try await keeper.handleClientEvent(
                 AnyClientEvent(DebugFreezeBumpEvent(amount: 3)),
                 playerID: player, clientID: client, sessionID: session
             )
         }
-        await settleScheduler()
+        // Past the driver's check and held at the freeze: the hold's probe, not a timing guess,
+        // so the driver's own check can't be the one that refuses it.
+        #expect(await signals.wait(for: "input-held-frozen"))
         // The land closes while the event waits; the intake's own segment must see it.
         await keeper.markDrainingForTesting(cause: .forceShutdown)
         await keeper.debugResume(generation: 1)
