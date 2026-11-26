@@ -449,6 +449,36 @@ struct TicklessActionJobTests {
         #expect(await keeper.debugInFlightWorkForTesting() == 0)
     }
 
+    /// `failLand` drops the pending inputs while it holds the keeper's model (#700 K1b-5a), so
+    /// the slot fill for a delivered job runs inside that hold: this path traps if it reaches
+    /// `self.model`.
+    @Test("A land failure between a job's delivery and its apply answers the job with landClosed", arguments: [true, false])
+    func landFailureBetweenDeliveryAndApply(withPort: Bool) async throws {
+        let keeper = try await makeKeeper(withPort: withPort)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let k = TicklessJobGates.freshKey()
+        let sequence = try await submitPending(keeper, key: k, tag: "A")
+        guard await TicklessJobGates.gate(k).waitUntilEntered() else { return }
+        // The completion delivers A; the input drain that would apply it is held first.
+        let applyHold = WatermarkGate()
+        let held = TicklessJobFlag()
+        await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>.at(.inputDrain) {
+            if held.setOnce() { await applyHold.enterAndWait() }
+        })
+        TicklessJobGates.gate(k).release()
+        guard await applyHold.waitUntilEntered() else { return }
+        #expect(await !keeper.actionSlotIsFilledForTesting(sequence))
+        // The land fails in that window: A is dropped and its slot answered.
+        await keeper.failLandForTesting(LandFailure(kind: .syncPlan, detail: "test", position: LandFailurePosition(stage: .syncPhase)))
+        #expect(await keeper.actionSlotIsFilledForTesting(sequence), "the failure answered the delivered job")
+        applyHold.release()
+        let result = try await readResult(keeper, sequence)
+        #expect(throws: LandInputRejection.landClosed) { try result?.get() }
+        await keeper.waitForInFlightWorkForTesting()
+        #expect(await keeper.currentState().log == ["join:p1"], "A was never applied")
+        #expect(await keeper.debugInFlightWorkForTesting() == 0)
+    }
+
     @Test("A resolver failure answers with its error and ends the job's work", arguments: [true, false])
     func resolverFailureEndsTheWork(withPort: Bool) async throws {
         let keeper = try await makeKeeper(withPort: withPort)

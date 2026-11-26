@@ -187,6 +187,14 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
 /// record order of a failing phase can be pinned.
 final class TurnSkeletonFailingPhaseTransport: LandKeeperTransport, @unchecked Sendable {
     static let failure = LandFailure(kind: .syncPlan, detail: "the stub's failing plan", position: LandFailurePosition(stage: .syncPhase))
+    /// `.landFailed(failure)` by default; `.failed` reports a thrown plan without its failure.
+    let result: InTurnSyncResult
+    let drafts: [SyncStreamDraft]
+
+    init(result: InTurnSyncResult = .landFailed(TurnSkeletonFailingPhaseTransport.failure), drafts: [SyncStreamDraft]? = nil) {
+        self.result = result
+        self.drafts = drafts ?? [outputDraft(1), outputDraft(2)]
+    }
 
     var hasJoinsAwaitingSync: Bool { false }
     func closeOutputs(for failure: LandFailure) {}
@@ -201,7 +209,7 @@ final class TurnSkeletonFailingPhaseTransport: LandKeeperTransport, @unchecked S
         includeSync: Bool,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
-        InTurnSyncOutput(.landFailed(Self.failure), syncStream: [outputDraft(1), outputDraft(2)], keepsEvents: false)
+        InTurnSyncOutput(result, syncStream: drafts, keepsEvents: false)
     }
     func waitForWriterDrainForInTurnSync() async {}
 }
@@ -407,6 +415,28 @@ struct KeeperTurnSkeletonTests {
         let outputs = await recorder.getAllFrames().flatMap(\.syncOutputs)
         #expect(outputs.map(\.broadcastHash) == [0xbeef_0001, 0xbeef_0002])
         #expect(outputs.map(\.streamIndex) == [counterBefore, counterBefore + 1])
+    }
+
+    /// The body applies `.failed` while it holds the keeper's model: `failLand` runs inside the
+    /// hold, so this path traps if it reaches `self.model`.
+    @Test("A sync phase that reports a failed plan without its failure ends the land in that turn")
+    func failedPlanWithoutItsFailureEndsTheLand() async throws {
+        let keeper = makeKeeper(recording: true)
+        let transport = TurnSkeletonFailingPhaseTransport(result: .failed, drafts: [])
+        await keeper.setTransport(transport)
+        let tracker = await keeper.recorderSubmissionsForTesting
+        tracker.startTraceForTesting()
+
+        let result = await keeper.syncTurnNow(via: transport, reason: .syncNow)
+
+        #expect(result == .failed)
+        let failure = try #require(keeper.failure)
+        #expect(failure.kind == .syncPlan)
+        #expect(failure.detail == "the transport reported a failed sync plan")
+        #expect(tracker.traceForTesting == ["terminal", "endTurn"])
+        #expect(await keeper.inTurnSyncDueForTesting == false)
+        #expect(await withinHangBound { await keeper.waitUntilDrainStartedForTesting() })
+        await keeper.waitUntilDrained()
     }
 
     @Test("A tickless input batch that holds only a failure ends its trace with the turn's end")
