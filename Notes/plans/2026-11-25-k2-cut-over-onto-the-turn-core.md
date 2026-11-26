@@ -1,6 +1,11 @@
 # K2: the keeper's cut-over onto the turn core (#700)
 
-**Status:** draft 6, for Review. Draft 6 answers Review's NOT GO on draft 5 (3 must-fix, 3 should, 3 nits):
+**Status:** draft 7, for Review. It is a small delta on draft 6, answering Review's verdict on it (1 must-fix, 6 should, 3 nits):
+- The sentinel now has one route that every step has, `turn.behavior` (§4.2).
+- K2-1 pins a core-driven step that carries no binding token (§4.2).
+- The shoulds and nits are tracked as the K2-1 PR checklist (§16).
+
+§17 lists the changes. Draft 6 answered Review's NOT GO on draft 5 (3 must-fix, 3 should, 3 nits):
 - K2-Q3's recommended option now has a mechanism and a probe (§4.2, P5).
 - There is an entry matrix (§4.2).
 - Events keep the in-phase batch (§4.4).
@@ -78,7 +83,7 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
 
 Each row of parent §3.3's table becomes one forwarding method on the facade. The table is the contract, and §6.2's K2 tests pin each row. Three notes for the implementation:
 - **Re-entry: two stops, one to choose (K2-Q3, new in draft 5).** Two mechanisms stop a re-entry today, and they act differently:
-  - **The core's borrow rule** (TurnCore.swift:115–129, `read` at :476–477). A `read` or a `query` inside a step stops the process with a generic message ("TurnCore: the machine was read from inside its own step"), in release too. So does a step inside a step. A `send` made during a step is not a step entry: the core defers it, and it steps after the current step ends.
+  - **The core's borrow rule** (TurnCore.swift:115–129, `read` at :476–477). A `read` or a `query` inside a step stops the process with a generic message, in release too: "TurnCore: the machine was read from inside its own step" (`read`, TurnCore.swift:477); "TurnCore: query was called from inside a step" (`stepAnswer`, :644); "TurnCore: a step was entered from inside a step" and "… while a read is open" (`enterStep`, :580–581). So does a step inside a step. A `send` made during a step is not a step entry: the core defers it, and it steps after the current step ends.
   - **#865's sentinel.** A guarded entry called during a body changes nothing, closes the output gate, and the land ends in that turn. The process keeps running. The matrix below shows which entries have it today.
 
   K2-Q3 asks which behavior K2 keeps:
@@ -96,16 +101,37 @@ Each row of parent §3.3's table becomes one forwarding method on the facade. Th
      - it closes the output gate itself, under #865's recursion guard (`closingGateForReentry`);
      - it returns the entry's refusal result (the matrix below).
 
-     The count, the mailbox and the guard live in a sentinel object outside the model. It is a final class held by `LiveLandTurns` and used on the shared executor only, the same shape as #865's actor fields. Each step reaches it through its input's binding token.
-  3. **How the running step sees it.** `callOut` compares the violation count before and after each port call, as #865 does. It does so inside the step. On a change, the step ends the land through its own borrowed model (`self`), before it reads the call's answer. The refusing entry never touches the model. So a refusal changes land state only in the running step, which fits the turn rule.
-  4. **The factory guard and the backstop, in order.** Draft factories run inside the step: the step makes the plain entries, as `recordSyncStream` does today, and only the made entries leave as outputs. So a factory that re-enters is refused like a port callback. The step's last action, before it returns its outputs, is the backstop: a count that changed since the step began, but that no `callOut` applied, ends the land there. The core's flush after the step (TurnActor.swift:904) then carries that turn's outputs, with the failure applied. A staged action that re-enters during the core's flush runs after the step, with `borrows` back at 0, so it isn't refused. That matches #865, where actions at a body's end run after the depth drops.
+     The count, the mailbox and the guard live in a sentinel object outside the model. It is a final class held by `LiveLandTurns` and used on the shared executor only, the same shape as #865's actor fields.
+
+     **How each step reaches it (draft 7; Review's MF on draft 6).** Not through a binding token: a token rides only the inputs that need a port. These steps carry no token:
+     - a timer, which steps its stored input (TurnActor.swift:572–577);
+     - an effect completion, which steps its returned input (TurnActor.swift:406–425);
+     - a query, which runs `answer` with no `KeeperInput`;
+     - an abandonment (`handleAbandoned`), which has no input;
+     - K4's mail, which is a `MailTurn` (TurnCore.swift:609–651).
+
+     What all of them have is the behavior: `handle`, `handleAbandoned` and `handleLateResult` get a `Turn` with `turn.behavior`, `answer` gets a `Turn`, and `handleMail` gets a `MailTurn` with `MailTurn.behavior` (Machine.swift:27–28, :47–56). So `KeeperBehavior` holds the sentinel as a `let` reference, fixed at `TurnCore.init`.
+
+     This is a stated exception to the behavior contract's advice to keep a behavior to values and functions (Machine.swift:32–35; the compiler doesn't enforce it). The exception is bounded in three ways:
+     - the sentinel is used on the shared executor only;
+     - its fields are written only by a refusing entry, which changes no model field;
+     - a step reads it only to end the land through its own model.
+
+     #773's behavior lint lists it as the one allowed reference field. The other route, a trip count owned by the core and read through `Turn`, would put keeper policy into the core's API, so draft 7 doesn't take it.
+  3. **The tokenless step, pinned in K2-1** (draft 7). The test drives a core-driven step whose input carries no binding token: a timer's `.tickDue`, or an effect completion. During the step, a callback reaches a guarded entry, for example through a draft factory or a staged call reached without `callOut`.
+     - The step's backstop, which reads the sentinel through `turn.behavior`, ends the land in that same step.
+     - The test reads the result after the step (`failure`, `destructionCause`, and the count).
+
+     P5's core-driven case doesn't cover this: its step reads `sentinel` through the same actor helper the facade-entered step uses.
+  4. **How the running step sees it.** `callOut` compares the violation count before and after each port call, as #865 does. It does so inside the step. On a change, the step ends the land through its own borrowed model (`self`), before it reads the call's answer. The refusing entry never touches the model. So a refusal changes land state only in the running step, which fits the turn rule.
+  5. **The factory guard and the backstop, in order.** Draft factories run inside the step: the step makes the plain entries, as `recordSyncStream` does today, and only the made entries leave as outputs. So a factory that re-enters is refused like a port callback. The step's last action, before it returns its outputs, is the backstop: a count that changed since the step began, but that no `callOut` applied, ends the land there. The core's flush after the step (TurnActor.swift:904) then carries that turn's outputs, with the failure applied. A staged action that re-enters during the core's flush runs after the step, with `borrows` back at 0, so it isn't refused. That matches #865, where actions at a body's end run after the depth drops.
 
   **The entry matrix.** "Sync callback" means the entry is reached synchronously from a port call during a step. "Awaited" means it is only reached through `await`, as a separate job, so never during a step.
 
   | Entry | Reached in production | Today, during a body | K2 under (a) |
   |---|---|---|---|
   | `submitSyncStream` | sync callback (TA:3859, the `.legacyCycle` branch; TA:3986, `recordSyncStreamClear`) | refused: nothing recorded, the land ends | refused through `isStepping`, with the entry's name |
-  | `recordsSyncStream` (a read) | sync callback (TA:3831, `keeperRecordsSyncStream`) | no refusal: it reads `reevaluationRecorder` | a step-local answer. The step that reaches the port puts the flag on the binding token, so the callback reads the token, not the model. Through the facade it would hit the core's `read` stop, and the audit (§4.5) makes sure nothing does |
+  | `recordsSyncStream` (a read) | sync callback (TA:3831, `keeperRecordsSyncStream`) | no refusal: it reads `behavior.config`, the recorder and the transport, and no model field (LK:5435, :807) | a facade read of the same non-model fields, which never reaches `core.read`, so it is answered during a step too. The admission path passes the flag in anyway (§4.5) |
   | `syncTurnNow` | awaited (TA:3158, :3211, :3231, :3524, :5134) | nested: `.skipped`, and the outer turn returns `.landFailed` | the same, through `isStepping` (the tests reach it synchronously) |
   | `syncTurnTicket`, `settleTurn` | awaited (TA:3227, :3519; the freeze settle) | no refusal result | keeps the core's stop: a query inside a step. Unreachable during a step in production; a test pins that |
   | `currentState()`, `playerCount()` | awaited (LandManager:95, :104) | no refusal result | keeps the core's stop (`read`) |
@@ -178,7 +204,7 @@ K1b-5's request cases are of three kinds, and K2 maps each kind differently:
 
 - **The admission clear** takes a package path, `admitJoiningSessionInStep(…, recordsSyncStream:) -> (JoinAdmission, [SyncStreamDraft])`, so no port call reaches back into the keeper during a step.
 - **The callback audit, in K2-1 or before it** (Review's condition 3), not inside K2-2: grep the adapter for every `keeper.assumeIsolated` and list each with the path that reaches it. At e18e70c0 there are three: TA:3831, :3859 and :3986. A callback a step can reach must have a row in §4.2's matrix with a refusal or a step-local answer; one without such a row is a stop, and it moves the plan before the big PR is written. The audit also covers code the core runs during its own accesses, which the borrow rule doesn't stop (§7.2): `KeeperKey`'s `==` and `hash(into:)`, and the deinits of what the core drops from `KeeperInput` and `KeeperKey` payloads (`LandServices`, the binding token, draft factories, carried errors). None of them may call into the keeper.
-- **The admission path** (draft 6 names it, should 3). The keeper's admission of a joining session (`admitJoiningInTurn`, LK:2259) calls the adapter's `admitJoiningSessionIsolated` (TA:1984). On a superseded session, that runs `applySessionPerPlayerPolicy` (TA:1571) → `supersedeSessions` (TA:1935) → `recordSyncStreamClear` (TA:1966 → :3981). That is two callbacks into the keeper: the recording-flag read (`keeperRecordsSyncStream`, TA:3831) and the draft submission (`submitSyncStream`, TA:3986). Inside a step both would be refused, and every recorded supersede would end the land (K1b-5 rev 2.2 D2). The package path `admitJoiningSessionInStep(…, recordsSyncStream:) -> (JoinAdmission, [SyncStreamDraft])` avoids both: the step passes the flag in, and the clear's drafts come back as the call's result, which the step records itself.
+- **The admission path** (draft 6 names it, should 3). The keeper's admission of a joining session (`admitJoiningInTurn`, LK:2259) calls the adapter's `admitJoiningSessionIsolated` (TA:1984). On a superseded session, that runs `applySessionPerPlayerPolicy` (TA:1571) → `supersedeSessions` (TA:1935) → `recordSyncStreamClear` (TA:1966 → :3981). That is two callbacks into the keeper: the recording-flag read (`keeperRecordsSyncStream`, TA:3831) and the draft submission (`submitSyncStream`, TA:3986). Inside a step both would be refused, and every recorded supersede would end the land (K1b-5 plan rev 2.2 D2, on branch `docs/k1b5-plan-rev-2.2` at 8e65c987; the plan file on main at 19fe61e5 is still rev 2.1). The package path `admitJoiningSessionInStep(…, recordsSyncStream:) -> (JoinAdmission, [SyncStreamDraft])` avoids both: the step passes the flag in, and the clear's drafts come back as the call's result, which the step records itself.
   - The `.legacyCycle` branch (TA:3858–3859) submits outside any keeper step. It is reached from `_syncStateForNewPlayer` (TA:5228): the adapter's initial sync reads `await keeper.currentStateLocated()` (TA:5247), and after that hop it commits in its own segment. The keeper isn't running a step there, so the submission goes in as an ordinary entry.
   - The disconnect's clear, `recordSyncStreamClear(outsideTurn: true)` (TA:1358, in `handleDisconnectQueued` after `await keeper.leave`), is outside a step for the same reason.
 - **The per-player services table** lives on `LiveLandTurns`, keyed by `(PlayerID, EntryID)`, the same key as K1b-4's `playerServices` (`EntryID` is the entry generation). K1b-4 stores it as `[PlayerID: (generation: Epoch, services: LandServices)]`, one entry per player. An entry whose generation differs from the player's current entry is never read, and a removal checks the generation. `LiveLandTurns` keeps that shape. The 10 write sites K1b-4 lists (#877's audit) become the outputs `flush` applies. `KeeperPlayerServicesTests` pins them, and K2-2 runs it against the facade unchanged. `flush` writes it from the join step's output and removes it on the leave step's output. The queued OnLeave handler's lookup at apply time (K1b-4 §3.3) reads the current entry's overrides, which the tick driver attaches to `.tickDue`'s input.
@@ -258,7 +284,7 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
   - A handler that reaches the model some other way, which the facade doesn't offer, would not be caught.
 
   K2-2 points `KeeperReentryTrapTests` at K2's stops. The refused entry is observed by a count, with no crash, so it runs in the normal suite. The core's stop runs one case per process in the cloud. Both need the `isDebugBuild` gate removed, so that they run in debug and in release. The contract docs that K1b-4 wrote (runtime.md, both languages; `LandContext`'s doc; `clearDirty()`'s doc) name K2's stops instead of Swift's check.
-- **Assignments into the model.** K1b-4 found that an optional-chain assignment into the model begins its access before it evaluates the call on its right side (`Notes/solutions/2026-11-26-assignment-into-a-struct-field-begins-its-access-before-the-call-on-the-right.md`). In a step, `self` is the model, so a mutating call on the right that reaches `self` is a compile-time overlap, not a run-time one. K2-1's `handle` is written with locals first, as K1b-4's three sites are.
+- **Assignments into the model.** K1b-4 found that an optional-chain assignment into the model begins its access before it evaluates the call on its right side (`Notes/solutions/2026-11-26-assignment-into-a-struct-field-begins-its-access-before-the-call-on-the-right.md`). In a step, `self` is the model. So the optional-chain form, with a mutating call on the right that reaches `self`, is a compile-time overlap, not a run-time one (P6). The plain subscript and plain field forms compile. K2-1's `handle` is written with locals first, as K1b-4's three sites are.
 - **The per-message cost.** A query intake's cost is not established (parent §3.8). K2-2's A/B measures it on tick actions with and without resolvers and on tickless client events. Over budget means a core fix (G5 #761), not a keeper shortcut.
 - **G3 (#760, step-path specialization)** is checked before K2-2's A/B is read. A generic machine in another module that isn't specialized could show up as a regression that isn't the keeper's.
 - **A missed callback.** A port call that reaches back into the keeper during a step is refused (a matrix row) or stops the process (a row that keeps the core's stop). The audit (§4.5) and the debug check (§4.2) find it before the cut-over, and the full E2E in three encodings exercises it.
@@ -354,3 +380,30 @@ What the probes don't cover:
 | Nits | The fixed-offset claim cites the cloud's count. P4 is labelled as K1b-4's evidence. Anchors corrected: TurnActor.swift:904 (the flush call; :897 is `drainProducts`), TA:113 (`unownedExecutor`) | §2, §3, §4.4, §4.5, §12 |
 
 TA anchors in draft 6 are at e18e70c0 (main's `TransportAdapter.swift` is the same file), found by grep, not by the LSP.
+
+## 16. K2-1 PR checklist (Review's shoulds and nits on draft 6)
+
+Each line is checked in K2-1's PR body, with its anchor at the PR's base. The anchors below are Review's, at e18e70c0 / 19fe61e5.
+
+1. **P5's claim.** Case 2 reuses `live`, which case 1 left with `failed = true`, so `failed=true` in case 2 proves nothing new. K2-1 reruns P5 with a fresh model per case, or narrows the claim to the counts (`violations`, `gateCloses`).
+2. **`callOut`'s order.** K2-1 keeps #865's flush → check → call → check (LK:5544–5554). The sync-only turn checks once, after the whole draft batch and before the phase result applies (LK:5889–5935). `KeeperTurnSkeletonTests` pins the trace `sync-output, sync-output, terminal, endTurn`. The backstop is only for late trips. The same-gate skip (`reentryClosedGate`) carries over.
+3. **`markFailedFirst`.** Today `drainFlag.setFailed` publishes `failure`, `isDraining` and `destructionCause` before `failLand` closes the gate (LK:621–630, :6342–6376). K2-1 either sets the atomic directly in the step, as it does the close, or pins what the port sees at the gate close.
+4. **The matrix, completed** (§4.2):
+   - add `setTransport`, `debugResume`, `submitLandFailure`, `currentStateLocated`, `entrySession` and `syncReadPosition`;
+   - split the "send entries" row: several are `sendAndWait` or queries, not sends;
+   - name where `isStepping` refuses more than `bodyDepth` does today: `settleTurn`'s port call runs outside `withTurn` (LK:6082–6100; K1b-5a step 2 moves it inside), and `syncTurnNow`'s port witness runs before its guarded body;
+   - add the freeze settle (TA:6264) and the resume's `syncTurnNow` (TA:6415).
+5. **The core's flush.** A query made from the flush is answered in place, and a send is queued (TurnActor.swift:88–103, :810–835). K2-1 lists what a staged action may call. The differential gets one case that submits and then queries from one flush.
+6. **`recordSyncStreamClear`'s other callers.** It is also called from standalone registration and from the fallback admission (TA:1601, :2283–2291). K2-1 keeps the helper that runs outside a step, and keeps both removals from the tracking set.
+7. **Nit:** the `recordsSyncStream` row now says it reads no model field (§4.2). Done in draft 7.
+8. **Nit:** the core's stop messages are cited, at TurnCore.swift:477, :644 and :580–581 (§4.2). Done in draft 7.
+9. **Nit:** §7.2's overlap wording is limited to the optional-chain form, and the citation of K1b-5's D2 names its branch and commit. Done in draft 7.
+
+## 17. Draft 6 → draft 7
+
+| Finding | Change | Where |
+|---|---|---|
+| MF: a tokenless step can't reach the sentinel | The sentinel is a `let` reference in `KeeperBehavior`, reached through `turn.behavior` / `MailTurn.behavior` by every step kind. It is a stated exception to Machine.swift's advice, listed for #773. K2-1 pins a tokenless core-driven step whose backstop ends the land in that step | §4.2 |
+| 6 shoulds, 3 nits | Tracked as the K2-1 PR checklist; the three nits are fixed here | §16, §4.2, §7.2 |
+
+**Probes:** none new. The MF is about routing: which step kinds receive `turn.behavior` is in the core's signatures (Machine.swift:47–56), not a Swift-semantics question. K2-1's tokenless-step test is the evidence.
