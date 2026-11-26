@@ -95,7 +95,12 @@ extension TransportAdapter {
     /// behind what is queued (#911): the first close decided for the connection is the one it
     /// gets, so an ordered close already pending (a supersede's 4017) keeps its frames and its
     /// code, and after an at-once close or a disconnect there is nothing left to close.
+    ///
+    /// A `generation` other than the one recorded for the session is an older connection's: a
+    /// later connection the adapter registered under the ID took over, so nothing here is for
+    /// it, and no adapter state changes (#911).
     func sendFinalFrameAndClose(_ data: Data, kind: WebSocketFrameKind, to sessionID: SessionID, generation: UInt64? = nil) {
+        if let generation, let current = connectionGenerations[sessionID], current != generation { return }
         let generation = generation ?? connectionGenerations[sessionID]
         guard !endedSessions.contains(sessionID) else {
             closeSessionBehindQueuedFrames(sessionID, generation: generation, with: .normal)

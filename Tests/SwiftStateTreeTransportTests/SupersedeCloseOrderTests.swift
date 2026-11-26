@@ -484,6 +484,36 @@ struct CloseDecisionOrderTests {
         await f.keeper.forceShutdown()
     }
 
+    @Test("A stale final frame and disconnect, with an older connection's generation, leave a replacement under the ID joined and open")
+    func staleCallbackSparesARegisteredReplacement() async throws {
+        let f = await SupersedeFixture()
+        let first = HeldSendConnection()
+        let oldGeneration = try await f.join(a, ca, first)
+        // A's connection goes, and a new one registers under the same ID.
+        await f.transport.handleDisconnection(sessionID: a)
+        await f.adapter.onDisconnect(sessionID: a, clientID: ca)
+        let replacement = HeldSendConnection()
+        let newGeneration = try await f.join(a, ca, replacement)
+        #expect(newGeneration != oldGeneration)
+
+        // A router callback for the old connection, late: its final frame, then its cleanup.
+        await f.adapter.sendFinalFrameAndClose(error, kind: .text, to: a, generation: oldGeneration)
+        await f.adapter.onDisconnect(sessionID: a, clientID: ca, generation: oldGeneration)
+        await f.adapter.waitForOutboundIdleForTesting()
+        #expect(await f.adapter.isJoined(sessionID: a), "the replacement lost its membership")
+        // The replacement still gets its frames, and isn't closed.
+        let hello = Data("hello".utf8)
+        let frame = await f.adapter.sessionFrame(hello, kind: .text, to: a)
+        #expect(await f.adapter.outboundWriter.enqueue([frame]) == .accepted)
+        await f.adapter.waitForOutboundIdleForTesting()
+        await f.transport.flushSessionQueues()
+        let events = await replacement.events, closes = await replacement.closes
+        #expect(events.contains(.sent(hello)), "\(events)")
+        #expect(!events.contains(.sent(error)))
+        #expect(closes.isEmpty, "\(closes)")
+        await f.keeper.forceShutdown()
+    }
+
     @Test("An at-once close preempts a pending ordered one: a member's pending final frame, then the land failure's 4016")
     func landFailurePreemptsAPendingFinalFrame() async throws {
         let f = await SupersedeFixture()

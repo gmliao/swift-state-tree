@@ -592,8 +592,16 @@ struct InboundBacklogPendingJoinTests {
 
         // The adapter's pending-join bound (256 frames) ends the join: its error, then the close
         // behind it (#911, #912). Each outbound write is awaited, up to the close frame: a slow
-        // runner waits (the suite's time limit bounds a hang), and an error that was lost shows
-        // as a close frame with no overflow error before it.
+        // runner waits, and an error that was lost shows as a close frame with no overflow
+        // error before it. A write that never comes is bounded by `testHangBound`: the watchdog
+        // closes the channel, which ends the parked wait (`ioOnClosedChannel`), since the wait
+        // itself has no cancellation.
+        let watchdog = Task { [channel] in
+            try? await safeTaskSleep(for: testHangBound)
+            guard !Task.isCancelled else { return }
+            try? await channel.close()
+        }
+        defer { watchdog.cancel() }
         var codes: [String] = []
         var closeCode: WebSocketErrorCode?
         while closeCode == nil {

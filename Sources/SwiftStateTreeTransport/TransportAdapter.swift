@@ -1279,10 +1279,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    func _onDisconnectImpl(sessionID: SessionID, clientID: ClientID) async {
+    func _onDisconnectImpl(sessionID: SessionID, clientID: ClientID, generation: UInt64? = nil) async {
         do {
             try await enqueueMembership {
-                await self.handleDisconnectQueued(sessionID: sessionID, clientID: clientID)
+                await self.handleDisconnectQueued(sessionID: sessionID, clientID: clientID, generation: generation)
             }
         } catch {
             logger.error("❌ Membership queue failed during disconnect", metadata: [
@@ -1292,7 +1292,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    private func handleDisconnectQueued(sessionID: SessionID, clientID: ClientID) async {
+    private func handleDisconnectQueued(sessionID: SessionID, clientID: ClientID, generation: UInt64? = nil) async {
+        // A later connection under the ID took over: this disconnect is an older one's, and
+        // changes nothing (#911). In the segment that acts.
+        if let generation, let current = connectionGenerations[sessionID], current != generation { return }
         profilerCounters?.incrementDisconnects()
         // Late frames for this connection (e.g. an action response still in flight) are dropped,
         // so they cannot reach a later connection that reuses the SessionID.
