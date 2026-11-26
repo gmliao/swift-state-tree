@@ -633,6 +633,54 @@ struct KeeperTurnSkeletonTests {
         #expect(reentered == Array(1...8), "calls that re-entered: \(reentered)")
     }
 
+    /// `submitSyncStream`'s own body checks its drafts' factories (#884's second track): a factory
+    /// that re-enters ends the land in that body, not in the backstop.
+    @Test("A draft factory that re-enters during submitSyncStream ends the land in its body")
+    func submitSyncStreamFactoryReentryEndsTheLand() async throws {
+        let (keeper, transport, _) = await attachedKeeper(.nowhere)
+        await keeper.awaitInitialization()
+        let draft = SyncStreamDraft(.output(observedTickId: 0, make: { [weak keeper] streamIndex, index in
+            keeper?.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: a draft factory that calls back into its keeper
+            return ReevaluationRecordedSyncOutput(
+                index: index, turnKind: .syncOnly, observedTickId: 0,
+                streamIndex: streamIndex, sequence: Int64(streamIndex), broadcastHash: 0xbeef_0007
+            )
+        }))
+
+        await keeper.submitSyncStream([draft])
+
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(await keeper.lateReentriesAppliedForTesting == 0, "applied by the backstop, not in the body")
+        #expect(transport.closeCount == 1)
+    }
+
+    /// A batch's queued failure is applied before its join report (#884's second track), so a
+    /// re-entry refused in that report can't take its place as the cause.
+    @Test("A queued failure in the batch stays the cause when the join report re-enters", arguments: [1, 2])
+    func queuedFailureOutranksAJoinReportReentry(at call: Int) async throws {
+        let (keeper, transport, _) = await attachedKeeper(.nthCallInBody, onJoin: true)
+        await keeper.awaitInitialization()
+        // The report's witness (1) or the report (2).
+        transport.armNthCallInBody(call)
+        let join = LandKeeper<TurnSkeletonState>.PendingItem.lifecycle(LandKeeper<TurnSkeletonState>.PendingLifecycleItem(
+            sequence: 1_000, kind: .join, playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"),
+            deviceID: nil, isGuest: nil, metadata: [:], resolverOutputs: [:], resolvedAtTick: 0
+        ))
+        let queued = LandKeeper<TurnSkeletonState>.PendingItem.landFailure(LandKeeper<TurnSkeletonState>.PendingLandFailureItem(
+            sequence: 1_001, resolvedAtTick: 0, failure: TurnSkeletonFailingPhaseTransport.failure
+        ))
+
+        _ = await keeper.runInputTurnForTesting([join, queued])
+
+        #expect(transport.reenteredAtNth, "the report wasn't made")
+        #expect(keeper.failure?.kind == TurnSkeletonFailingPhaseTransport.failure.kind, "the cause: \(String(describing: keeper.failure))")
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(await keeper.reentriesAppliedInCallForTesting == 1)
+        #expect(await keeper.lateReentriesAppliedForTesting == 0)
+        #expect(await keeper.currentState().value == 1, "the OnJoin applied before the failure item")
+    }
+
     /// Every port call a requested sync-only turn makes goes through `callOut`, as the input
     /// turn's do.
     @Test("A re-entry at any port call of a sync-only turn ends the land in that call")
