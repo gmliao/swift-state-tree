@@ -185,8 +185,9 @@ jobs:
 
           if [ "$enc" = messagepack ]; then
             # The dropped patch must be caught: this run has to fail with a /count mismatch.
+            # MSYS_NO_PATHCONV: Git Bash would turn the argument /count into a Windows path.
             flog="$logs/messagepack-fault-injection.log"
-            if (cd Tools/CLI && timeout 240 npx tsx src/cli.ts script -u $ws/counter -l counter -s scenarios/fault/counter-drop-one-patch.json --state-update-encoding messagepack --fault-drop-patch /count --convergence-gating) >"$flog" 2>&1; then
+            if (cd Tools/CLI && MSYS_NO_PATHCONV=1 timeout 240 npx tsx src/cli.ts script -u $ws/counter -l counter -s scenarios/fault/counter-drop-one-patch.json --state-update-encoding messagepack --fault-drop-patch /count --convergence-gating) >"$flog" 2>&1; then
               echo "FAIL  messagepack  fault-injection passed, it must fail"; failed=$((failed + 1))
             elif grep -q 'CONVERGENCE MISMATCH (gating) fault-drop-one-patch' "$flog" && grep -q '^  /count: client=' "$flog"; then
               echo "PASS  messagepack  fault-injection (failed with a /count mismatch, as required)"
