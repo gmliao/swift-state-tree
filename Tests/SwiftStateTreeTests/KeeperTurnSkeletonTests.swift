@@ -77,8 +77,9 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
 
     private let lock = NSLock()
     private let reenter: Where
-    /// Joins wait on a committed phase without a re-entry (`.nowhere` only).
-    private let joinsWait: Bool
+    /// Joins wait on the first committed phase without a re-entry (`.nowhere` only), then no
+    /// longer: one-shot, so the scheduled follow-up finds none and retires at its guard.
+    private var joinsWait: Bool
     private weak var keeper: LandKeeper<TurnSkeletonState>?
     private var closes = 0
     private var closedAtReentry: Bool?
@@ -129,7 +130,12 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     /// were read.
     var hasJoinsAwaitingSync: Bool {
         lock.withLock { joinsAsked += 1 }
-        guard reenter == .joinsAwaitingSync else { return joinsWait }
+        guard reenter == .joinsAwaitingSync else {
+            return lock.withLock {
+                defer { joinsWait = false }
+                return joinsWait
+            }
+        }
         reenterNow()
         return true
     }
@@ -375,7 +381,8 @@ struct KeeperTurnSkeletonTests {
         let (keeper, transport, _) = await attachedKeeper(.nowhere, joinsWait: true)
 
         #expect(await keeper.syncTurnNow(via: transport, reason: .syncNow) == .committed(clearDirtyFlags: false))
-        #expect(transport.joinsAskedCount == 1)
+        // The follow-up may already have asked again (and found none), so at least once.
+        #expect(transport.joinsAskedCount >= 1)
         #expect(await keeper.joinSyncTurnsScheduledForTesting == 1)
         #expect(keeper.failure == nil)
     }
