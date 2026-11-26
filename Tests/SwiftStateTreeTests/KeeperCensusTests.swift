@@ -27,7 +27,7 @@ enum KeeperFieldHome: Hashable, CustomStringConvertible {
     case container
 
     enum OutsideGroup: String {
-        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable, turnSide, reentrySentinel, stepScope
+        case bindingToken, recorder, drainFlag, loopDriver, resolverAbandonment, serverInputCap, playerServices, failureTable, turnSide, stepScope
     }
 
     var description: String {
@@ -66,9 +66,7 @@ enum KeeperCensus {
             "actor.appliedSyncPhaseOffset": .outside(.loopDriver),
             "actor.appliedTickPhaseOffset": .outside(.loopDriver),
             "actor.behavior": .container,
-            "actor.bodyDepth": .outside(.reentrySentinel),
             "actor.boundSyncRequesterObject": .outside(.bindingToken),
-            "actor.closingGateForReentry": .outside(.reentrySentinel),
             "actor.debugDrainWaiters": .replaced(by: "K7"),
             "actor.debugHeldInputs": .replaced(by: "K7"),
             "actor.destroyTask": .replaced(by: "K7"),
@@ -87,11 +85,9 @@ enum KeeperCensus {
             "actor.initializationWaits": .replaced(by: "K2"),
             "actor.inputDrainIdleWaitersForTesting": .replaced(by: "K2"),
             "actor.inputTurnWaiters": .replaced(by: "K2"),
-            "actor.lateReentriesApplied": .outside(.reentrySentinel),
             "actor.lateStepOutputAssertsForTesting": .testHook,
             "actor.lateStepOutputs": .outside(.stepScope),
             "actor.destroyHandlerOutputsDropped": .outside(.stepScope),
-            "actor.reentriesAppliedInCall": .outside(.reentrySentinel),
             "actor.model": .container,
             "actor.nextDrainStartedWaiterForTesting": .replaced(by: "K2"),
             "actor.nextFailureWaiterForTesting": .replaced(by: "K2"),
@@ -103,11 +99,6 @@ enum KeeperCensus {
             "actor.pendingTransportFailure": .replaced(by: "K4"),
             "actor.playerServices": .outside(.playerServices),
             "actor.recorderSubmissions": .outside(.recorder),
-            "actor.reentryClosedGate": .outside(.reentrySentinel),
-            "actor.reentryFailure": .outside(.reentrySentinel),
-            "actor.reentryGateClosed": .outside(.reentrySentinel),
-            "actor.reentryViolations": .outside(.reentrySentinel),
-            "actor.reevaluationRecorder": .outside(.recorder),
             "actor.releasedTransport": .outside(.bindingToken),
             "actor.replay": .container,
             "actor.requestedSyncWorkWaitersForTesting": .replaced(by: "K2"),
@@ -139,6 +130,9 @@ enum KeeperCensus {
             "behavior.payloadDecoders": .behavior,
             "behavior.resolverServices": .behavior,
             "behavior.services": .behavior,
+            // The sentinel's fields live in the class it references (#700 K1b-5 rev 2.3 D13).
+            "behavior.reentrySentinel": .behavior,
+            "behavior.reevaluationRecorder": .behavior,
             "model.actionJobs": .model,
             "model.actionJobsStarted": .model,
             "model.actionSlots": .model,
@@ -226,6 +220,12 @@ enum KeeperCensus {
         .init(
             fields: ["actor.nextTickDeadline", "actor.pendingFold", "actor.tickLoopConfiguredAt", "actor.tickLoopClock"],
             home: .outside(.loopDriver), why: "F4: instants", endsIn: "K2"
+        ),
+        // D13: the behavior holds one reference with mutable state, the re-entry sentinel, used on
+        // the keeper's executor only. K2 draft 7 keeps it there; #773's behavior lint allows it.
+        .init(
+            fields: ["behavior.reentrySentinel"],
+            home: .behavior, why: "D13: the re-entry sentinel, a reference", endsIn: "#773"
         ),
         // S3 (F8): `runSync` writes these outside a turn, until K2's `.syncDue` step.
         .init(

@@ -217,6 +217,44 @@ struct KeeperBehavior<State: StateNodeProtocol>: Sendable {
     /// keeper doesn't use them.
     let payloadDecoders: RecordPayloadDecoders
     let logger: Logger
+    /// The live keeper's recorder, when recording is on (#700 K1b-5 rev 2.3 D12). Fixed at init.
+    let reevaluationRecorder: ReevaluationRecorder?
+    /// The re-entry sentinel (#865; #700 K1b-5 rev 2.3 D13). A reference, the one the behavior
+    /// contract's advice (values and functions) makes an exception for: it is used on the
+    /// keeper's executor only, written by the refusing entries and `withTurn`'s depth count, and
+    /// read by a body only to end the land through its own model.
+    let reentrySentinel: KeeperReentrySentinel
+}
+
+/// The re-entry sentinel's state (#865): the body depth the guarded entries read, the refusals
+/// they counted and the gate the first refusal closed. Used on the keeper's executor only.
+final class KeeperReentrySentinel: @unchecked Sendable {
+    /// Turn bodies running now (0 or 1; `withTurn` doesn't nest). The adapter-facing entries
+    /// read it to refuse a synchronous re-entry during a body (`noteReentry`). Kept outside
+    /// the turn side, which the body has borrowed.
+    var bodyDepth = 0
+    /// Re-entries refused so far (`noteReentry`). A call out of the keeper compares it before
+    /// and after (`callOut`).
+    var reentryViolations = 0
+    /// The failure the first refused re-entry reported.
+    var reentryFailure: LandFailure?
+    /// Set while the sentinel closes the output gate, so a gate whose close calls back into the
+    /// keeper can't recurse into it.
+    var closingGateForReentry = false
+    /// Whether the sentinel closed a gate (none is attached on a land without a transport).
+    var reentryGateClosed = false
+    /// The gate the sentinel closed, when it is a class instance (`gateObject`), held weakly, so
+    /// `failLand` skips only that gate's second close: a transport attached after the sentinel
+    /// closed the bound requester still gets its close, and a freed gate's address reused by a
+    /// new transport can't match it.
+    weak var reentryClosedGate: AnyObject?
+    /// Refused re-entries the backstop applied (tests).
+    var lateReentriesApplied = 0
+    /// How many refused re-entries a `callOut` applied in its own call (tests: a bare port call's
+    /// refusal is applied by a later mailbox check or the backstop instead, and isn't counted).
+    var reentriesAppliedInCall = 0
+
+    init() {}
 }
 
 /// The keeper's own configuration, fixed at init. Internal: the public `LandConfig` is the DSL's
