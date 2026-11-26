@@ -398,6 +398,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The keeper's plain state (#700 K1b-4): every field a turn reads or writes. A step takes
     /// it with one `inout` access and reaches each field through that binding.
     private var model = KeeperModel<State>()
+    /// Each player's services (#700 K1b-4), beside the model: `LandServices` holds references.
+    /// Written in the same synchronous segment as every insert and removal of `model.players`,
+    /// keyed by the entry's generation, so a late writer never removes a newer entry's services.
+    /// K2 replaces it with the turn core's table.
+    private var playerServices: [PlayerID: (generation: Epoch, services: LandServices)] = [:]
 
     // The model's fields that tests and diagnostics read, under their old names.
     /// Server inputs refused because the in-flight cap was reached.
@@ -420,18 +425,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     public nonisolated var definition: LandDefinition<State> { behavior.definition }
 
     private var state: State
-    private var players: [PlayerID: InternalPlayerSession] = [:]
-    /// Mints `InternalPlayerSession.generation`: every insert of a player entry gets a new one.
-    private var entryGenerations = EpochCounter()
 
-    /// Places reserved for duplicate logins that are between their cap check and their insert
-    /// (#852): one reservation per pending attempt, not one per player. The kick of the old
-    /// session awaits and the player's entry is gone meanwhile; a reservation keeps its place, so a
-    /// newcomer can't take it. Overlapping logins of one player each hold their own, so the end of
-    /// one never frees the place another still waits for. Only `joinReportingAdmission` reserves
-    /// (the legacy `join(playerID:…)` has no kick and no cap check); teardown clears them all.
-    private var rejoinReservations: [PlayerID: Set<Epoch>] = [:]
-    private var rejoinReservationEpochs = EpochCounter()
     /// The land's generator: keeper state, advanced by the handlers that replay repeats from the
     /// record (#700 K1b-3, #765).
     private var landRandom: DeterministicRng
@@ -1301,9 +1295,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Ends one attempt's reservation; idempotent, and it leaves the player's other attempts' ones.
     private func endRejoinReservation(_ reservation: Epoch, of playerID: PlayerID) {
-        guard var epochs = rejoinReservations[playerID] else { return }
+        guard var epochs = model.rejoinReservations[playerID] else { return }
         epochs.remove(reservation)
-        rejoinReservations[playerID] = epochs.isEmpty ? nil : epochs
+        model.rejoinReservations[playerID] = epochs.isEmpty ? nil : epochs
     }
 
     /// Tears the land down after its initialization failed (#104): the normal drain, without the
@@ -1311,8 +1305,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// in a Task of its own: the drain's `forceShutdown` path would otherwise wait for the
     /// initialization it is part of.
     private func tearDownAfterFailedInitialization() async {
-        players.removeAll()
-        rejoinReservations.removeAll()
+        model.players.removeAll()
+        playerServices.removeAll()
+        model.rejoinReservations.removeAll()
         dropPendingInputs(reason: "initialization failed")
         await shutdownIfIdle(cause: .initializationFailed)
     }
@@ -1653,14 +1648,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// refuse a registration whose session the entry doesn't name (#531), by the rule of
     /// `rejectSenderIfSuperseded`.
     package func entrySession(for playerID: PlayerID) -> (clientID: ClientID?, sessionID: SessionID?)? {
-        players[playerID].map { (clientID: $0.clientID, sessionID: $0.lastSessionID) }
+        model.players[playerID].map { (clientID: $0.clientID, sessionID: $0.lastSessionID) }
     }
 
     /// Returns the current number of players in the land.
     ///
     /// This counts unique players (not connections), as a player can have multiple connections.
     public func playerCount() -> Int {
-        players.count
+        model.players.count
     }
 
     /// Get the ReevaluationRecorder instance (for testing/debugging).
@@ -1899,25 +1894,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try await ensureInitializedForJoin()
         await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
-        if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
+        if let existingSession = model.players[playerID], let oldClientID = existingSession.clientID {
             behavior.logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
             // Kick old connection by calling leave
             // This will call OnLeave handler and clean up state
             try await leave(playerID: playerID, clientID: oldClientID, sessionID: existingSession.lastSessionID)
         }
 
-        var session = players[playerID] ?? InternalPlayerSession(services: services)
+        var session = model.players[playerID] ?? KeeperPlayerEntry()
         let isFirst = session.clientID == nil
 
         session.clientID = clientID
         session.lastSessionID = sessionID
-        session.services = services
         // Checked in the same synchronous segment as the insert: a destruction that started
         // during this join's awaits must not get a player after it stopped the loops.
         guard !isDraining else { throw JoinError.landShuttingDown }
-        let entryGeneration = entryGenerations.next()
+        let entryGeneration = model.entryGenerations.next()
         session.generation = entryGeneration
-        players[playerID] = session
+        model.players[playerID] = session
+        playerServices[playerID] = (generation: entryGeneration, services: services)
 
         destroyTask?.cancel()
         destroyTask = nil
@@ -1963,8 +1958,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // inserted goes too (if it is still this join's), so `players` doesn't keep a player
         // that never joined.
         guard !isDraining else {
-            if players[playerID]?.generation == entryGeneration {
-                players.removeValue(forKey: playerID)
+            if model.players[playerID]?.generation == entryGeneration {
+                model.players.removeValue(forKey: playerID)
+                removePlayerServices(of: playerID, generation: entryGeneration)
             }
             throw JoinError.landShuttingDown
         }
@@ -2095,12 +2091,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
         // Skip check if player is already in the room (reconnection scenario)
         // A player whose old session is being kicked has no entry for a while, but still has a reservation.
-        let isReconnection = players[playerID] != nil || !(rejoinReservations[playerID]?.isEmpty ?? true)
+        let isReconnection = model.players[playerID] != nil || !(model.rejoinReservations[playerID]?.isEmpty ?? true)
 
         if let maxPlayers = definition.config.maxPlayers, !isReconnection {
             // Reserved places count too: their owners are about to come back with a new connection.
-            let reservedPlaces = rejoinReservations.reduce(0) { $0 + ($1.value.isEmpty || players[$1.key] != nil ? 0 : 1) }
-            let currentPlayerCount = players.count + reservedPlaces
+            let reservedPlaces = model.rejoinReservations.reduce(0) { $0 + ($1.value.isEmpty || model.players[$1.key] != nil ? 0 : 1) }
+            let currentPlayerCount = model.players.count + reservedPlaces
             guard currentPlayerCount < maxPlayers else {
                 behavior.logger.info("Join rejected: room is full", metadata: [
                     "currentPlayers": .stringConvertible(currentPlayerCount),
@@ -2112,13 +2108,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Reserve the returning player's place until its entry is back or this join fails. Each
         // attempt ends only its own reservation, at the insert and on every other exit.
-        let reservation = isReconnection ? rejoinReservationEpochs.next() : nil
-        if let reservation { rejoinReservations[playerID, default: []].insert(reservation) }
+        let reservation = isReconnection ? model.rejoinReservationEpochs.next() : nil
+        if let reservation { model.rejoinReservations[playerID, default: []].insert(reservation) }
         defer { if let reservation { endRejoinReservation(reservation, of: playerID) } }
 
         await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
-        if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
+        if let existingSession = model.players[playerID], let oldClientID = existingSession.clientID {
             behavior.logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
             // Kick old connection by calling leave
             // This will call OnLeave handler and clean up state
@@ -2126,8 +2122,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // Proceed with join
-        var playerSession = players[playerID] ?? InternalPlayerSession(
-            services: services,
+        var playerSession = model.players[playerID] ?? KeeperPlayerEntry(
             deviceID: session.deviceID,
             isGuest: session.isGuest,
             metadata: session.metadata
@@ -2136,7 +2131,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         playerSession.clientID = clientID
         playerSession.lastSessionID = sessionID
-        playerSession.services = services
         // Update deviceID, isGuest, and metadata if provided (for reconnection scenarios)
         if let deviceID = session.deviceID {
             playerSession.deviceID = deviceID
@@ -2148,9 +2142,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Checked in the same synchronous segment as the insert: a destruction that started
         // during this join's awaits must not get a player after it stopped the loops.
         guard !isDraining else { throw JoinError.landShuttingDown }
-        let entryGeneration = entryGenerations.next()
+        let entryGeneration = model.entryGenerations.next()
         playerSession.generation = entryGeneration
-        players[playerID] = playerSession
+        model.players[playerID] = playerSession
+        playerServices[playerID] = (generation: entryGeneration, services: services)
         if let reservation { endRejoinReservation(reservation, of: playerID) }
 
         destroyTask?.cancel()
@@ -2203,8 +2198,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // inserted goes too (if it is still this join's), so `players` doesn't keep a player
         // that never joined.
         guard !isDraining else {
-            if players[playerID]?.generation == entryGeneration {
-                players.removeValue(forKey: playerID)
+            if model.players[playerID]?.generation == entryGeneration {
+                model.players.removeValue(forKey: playerID)
+                removePlayerServices(of: playerID, generation: entryGeneration)
             }
             throw JoinError.landShuttingDown
         }
@@ -2323,7 +2319,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         input: String
     ) throws {
         guard playerID != behavior.config.systemPlayerID, clientID != behavior.config.systemClientID,
-              let entry = players[playerID] else { return }
+              let entry = model.players[playerID] else { return }
         let otherClient = entry.clientID.map { $0 != clientID } ?? false
         let otherSession = entry.lastSessionID.map { $0 != sessionID } ?? false
         guard otherClient || otherSession else { return }
@@ -2350,7 +2346,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard playerID != behavior.config.systemPlayerID, clientID != behavior.config.systemClientID else {
             return KeeperActionTicket(entryGeneration: nil)
         }
-        return KeeperActionTicket(entryGeneration: players[playerID]?.generation)
+        return KeeperActionTicket(entryGeneration: model.players[playerID]?.generation)
     }
 
     /// Delivers an action whose resolvers finished: the only code that runs after their
@@ -2382,7 +2378,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func validateDelivery(of item: PendingActionItem, ticket: KeeperActionTicket, input: String) throws {
         // The land started draining during the resolvers: nothing is appended any more.
         try rejectIfLandClosed()
-        if let generation = ticket.entryGeneration, players[item.playerID]?.generation != generation {
+        if let generation = ticket.entryGeneration, model.players[item.playerID]?.generation != generation {
             model.supersededSenderRejections += 1
             behavior.logger.warning("Action rejected at delivery: the sender's entry ended during its resolvers", metadata: [
                 "playerID": .string(item.playerID.rawValue),
@@ -2533,6 +2529,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Turns the alignment check at the call sites on or off (off by default).
     package func setActionTableAuditForTesting(_ enabled: Bool) { actionTableAuditForTesting = enabled }
     package func actionTableViolationsForTesting() -> [String] { actionTableViolations() }
+
+    // MARK: - The player-services table (#700 K1b-4)
+
+    /// The services of `playerID`'s current entry: the table's entry whose generation is the
+    /// player's entry's. Nil when the player has no entry.
+    private func currentPlayerServices(of playerID: PlayerID) -> LandServices? {
+        guard let entry = playerServices[playerID], entry.generation == model.players[playerID]?.generation else { return nil }
+        return entry.services
+    }
+
+    /// Removes `playerID`'s services if they are the entry of `generation`'s: a newer entry's
+    /// stay.
+    private func removePlayerServices(of playerID: PlayerID, generation: Epoch) {
+        if playerServices[playerID]?.generation == generation {
+            playerServices.removeValue(forKey: playerID)
+        }
+    }
+
+    /// The player-services table's generations, and the player table's (tests: they must match).
+    package func playerServiceGenerationsForTesting() -> (services: [PlayerID: Epoch], players: [PlayerID: Epoch]) {
+        (playerServices.mapValues(\.generation), model.players.mapValues(\.generation))
+    }
 
     /// The stored labels of the keeper and of each container it holds, by storage path, for the
     /// census test (#700 K1b-4). Read inside the keeper's isolation: a `Mirror`'s children load
@@ -2964,7 +2982,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     public func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?) async throws {
         try await ensureInitialized()
         await holds.at(.leave)
-        guard let session = players[playerID] else {
+        guard let session = model.players[playerID] else {
             if behavior.logger.logLevel <= .debug {
                 behavior.logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
             }
@@ -2993,7 +3011,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let deviceID = session.deviceID
         let isGuest = session.isGuest
         let metadata = session.metadata
-        players.removeValue(forKey: playerID)
+        // The OnLeave resolvers get the outgoing entry's services, read before it goes.
+        let outgoingServices = currentPlayerServices(of: playerID) ?? LandServices()
+        model.players.removeValue(forKey: playerID)
+        removePlayerServices(of: playerID, generation: session.generation)
         // Its pending actions can't be delivered any more (the ticket names this entry).
         cancelActionJobs(ofEntryGeneration: session.generation)
 
@@ -3018,7 +3039,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: session.lastSessionID ?? behavior.config.systemSessionID,
-                servicesOverride: session.services,
+                servicesOverride: outgoingServices,
                 deviceID: deviceID,
                 isGuest: isGuest,
                 metadata: metadata
@@ -3124,8 +3145,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // (#104), or in re-evaluation: as before, the players are cleared and the drain runs or
         // is awaited.
         guard drainTask == nil, !isDraining, model.initializationFailure == nil, behavior.config.mode == .live else {
-            players.removeAll()
-            rejoinReservations.removeAll()
+            model.players.removeAll()
+            playerServices.removeAll()
+            model.rejoinReservations.removeAll()
             dropPendingInputs(reason: "forceShutdown")
             await shutdownIfIdle(cause: .forceShutdown)
             return
@@ -3732,13 +3754,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         resolverOutputs: [String: HeldResolverOutput] = [:]
     ) -> LandContext {
         let baseServices = servicesOverride ?? LandServices()
-        let playerServices = players[playerID]?.services
+        let playerServices = currentPlayerServices(of: playerID)
         // A `DeterministicRngService` registered in an override or in a player's services is
         // removed too, so no context or resolver reaches an RNG instance: handlers draw from the
         // one `withHandlerStep` binds.
         let resolvedServices = behavior.services.merging(baseServices).merging(playerServices ?? LandServices())
             .removing(DeterministicRngService.self)
-        let playerSession = players[playerID]
+        let playerSession = model.players[playerID]
         // Use actual land instance ID if available, otherwise fall back to definition.id (land type)
         let landID = behavior.config.actualLandID ?? definition.id
         let eventRecordingTickId = tickId ?? model.lastCommittedTickId
@@ -4208,7 +4230,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recorded.sequence)
             // In re-evaluation `players` holds the replay's viewers: the shutdown only ends the
             // replay (`completeShutdownTurn`).
-            if behavior.config.mode == .live { players.removeAll(); rejoinReservations.removeAll() }
+            if behavior.config.mode == .live { model.players.removeAll(); playerServices.removeAll(); model.rejoinReservations.removeAll() }
 
         case let .lifecycle(lifecycleItem):
             applyLifecycleItem(lifecycleItem, executingTickId: executingTickId, into: &applied)
@@ -6021,8 +6043,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         cancelAllActionJobs()
         releaseHeldInputsForDrain()
         resumeShutdownTurnWaiters()
-        players.removeAll()
-        rejoinReservations.removeAll()
+        model.players.removeAll()
+        playerServices.removeAll()
+        model.rejoinReservations.removeAll()
         // A keeper never attached reaches the adapter bound by its first sync request (#546 L2a).
         let transport = self.transport ?? boundSyncRequester
         // The output gate closes in the mark: no new state or event frame from here (§3.2 step 4).
@@ -6341,8 +6364,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 abandonment: resolverAbandonment(.onJoin)
             )
         } catch {
-            if players[playerID]?.generation == entryGeneration {
-                players.removeValue(forKey: playerID)
+            if model.players[playerID]?.generation == entryGeneration {
+                model.players.removeValue(forKey: playerID)
+                removePlayerServices(of: playerID, generation: entryGeneration)
                 scheduleDestroyIfNeeded()
             }
             throw error
@@ -6350,7 +6374,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private func scheduleDestroyIfNeeded() {
-        guard players.isEmpty, let delay = definition.config.destroyWhenEmptyAfter else { return }
+        guard model.players.isEmpty, let delay = definition.config.destroyWhenEmptyAfter else { return }
 
         destroyTask?.cancel()
         destroyTask = Task { [weak self] in
@@ -6371,7 +6395,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await drainTask.value
             return
         }
-        guard players.isEmpty else { return }
+        guard model.players.isEmpty else { return }
         // Same synchronous segment as the emptiness check: joins from now on are rejected.
         drainFlag.set(cause: cause)
         releaseHeldInputsForDrain()
@@ -6576,31 +6600,6 @@ public enum LandDestructionCause: String, Codable, Sendable, Hashable {
     /// A failure it couldn't recover from ended it (#535, `LandKeeper.failure`): its sessions
     /// closed with 4016, and no OnLeave ran.
     case failed
-}
-
-private struct InternalPlayerSession: Sendable {
-    var clientID: ClientID?
-    var lastSessionID: SessionID?
-    /// This entry's generation, new on every insert (`LandKeeper.entryGenerations`). Client and
-    /// session IDs can repeat across joins of the same player, so work that awaits after
-    /// reading the entry compares this instead: a join whose resolvers end after the land started
-    /// draining removes only its own entry, and an action is delivered only to the entry it was
-    /// sent to (`deliverResolvedAction`).
-    var generation = Epoch(rawValue: 0)
-    var services: LandServices
-    // PlayerSession info (from join request)
-    var deviceID: String?
-    var isGuest: Bool
-    var metadata: [String: String]
-
-    init(services: LandServices, deviceID: String? = nil, isGuest: Bool = false, metadata: [String: String] = [:]) {
-        clientID = nil
-        lastSessionID = nil
-        self.services = services
-        self.deviceID = deviceID
-        self.isGuest = isGuest
-        self.metadata = metadata
-    }
 }
 
 extension LandKeeper.PendingItem {

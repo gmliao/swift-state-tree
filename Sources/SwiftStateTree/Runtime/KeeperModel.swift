@@ -10,6 +10,21 @@ import SwiftStateTurns
 /// it as `model`; field names are the ones the keeper's stored properties had.
 @PlainData
 struct KeeperModel<State: StateNodeProtocol> {
+    // The player table.
+    /// The players in the land. Their services are beside the model, in the keeper's
+    /// `playerServices`.
+    var players: [PlayerID: KeeperPlayerEntry] = [:]
+    /// Mints `KeeperPlayerEntry.generation`: every insert of a player entry gets a new one.
+    var entryGenerations: EpochCounter = EpochCounter()
+    /// Places reserved for duplicate logins that are between their cap check and their insert
+    /// (#852): one reservation per pending attempt, not one per player. The kick of the old
+    /// session awaits and the player's entry is gone meanwhile; a reservation keeps its place, so a
+    /// newcomer can't take it. Overlapping logins of one player each hold their own, so the end of
+    /// one never frees the place another still waits for. Only `joinReportingAdmission` reserves
+    /// (the legacy `join(playerID:…)` has no kick and no cap check); teardown clears them all.
+    var rejoinReservations: [PlayerID: Set<Epoch>] = [:]
+    var rejoinReservationEpochs: EpochCounter = EpochCounter()
+
     // Queues, jobs and results.
     var pendingItems: [LandKeeper<State>.PendingItem] = []
     /// Server inputs accepted during a debug freeze, in submission order: queued at the resume
@@ -210,6 +225,32 @@ struct KeeperConfig: Sendable {
 }
 
 // MARK: - The keeper's nested types the model holds (were private to `LandKeeper.swift`)
+
+/// A player's entry in the land (was `InternalPlayerSession`), without its services: those are
+/// references, so they live in the keeper's `playerServices`, keyed by this entry's generation.
+@PlainData
+struct KeeperPlayerEntry: Sendable {
+    var clientID: ClientID?
+    var lastSessionID: SessionID?
+    /// This entry's generation, new on every insert (`KeeperModel.entryGenerations`). Client and
+    /// session IDs can repeat across joins of the same player, so work that awaits after
+    /// reading the entry compares this instead: a join whose resolvers end after the land started
+    /// draining removes only its own entry, and an action is delivered only to the entry it was
+    /// sent to (`LandKeeper.deliverResolvedAction`).
+    var generation: Epoch = Epoch(rawValue: 0)
+    // PlayerSession info (from join request)
+    var deviceID: String?
+    var isGuest: Bool
+    var metadata: [String: String]
+
+    init(deviceID: String? = nil, isGuest: Bool = false, metadata: [String: String] = [:]) {
+        clientID = nil
+        lastSessionID = nil
+        self.deviceID = deviceID
+        self.isGuest = isGuest
+        self.metadata = metadata
+    }
+}
 
 /// The keeper's sync binding as a generation: each bind or rebind issues a new ticket, and a
 /// ticket from an earlier binding is never current again (also after A → B → A).
