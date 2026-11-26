@@ -176,6 +176,8 @@ struct KeeperModel<State: StateNodeProtocol> {
     var joinSyncRequestTurnsForTesting: Int = 0
     /// Sync-only turns run for waiting joins (tests).
     var joinSyncTurnsForTesting: Int = 0
+    /// Join sync turns scheduled after a committed phase (tests; #700 K1b-5a).
+    var joinSyncTurnsScheduledForTesting: Int = 0
     /// Requests by reason, made so far (tests and diagnostics).
     var requestedSyncTurnsForTesting: [SyncTurnReason: Int] = [:]
 #if DEBUG
