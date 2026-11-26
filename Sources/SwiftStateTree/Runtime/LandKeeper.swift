@@ -3770,6 +3770,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await debugWaitWhileFrozen()
         }
 
+        // The intake's segment (C1), in the same actor segment as the wait above.
+        let awaited = try withTurn { m, _, _ in
+            try clientEventIntake(&m, event, playerID: playerID, clientID: clientID, sessionID: sessionID)
+        }
+        // A tickless land applies the event now, in an input turn the caller waits for, as an
+        // action's caller does (#55): it returns once the event is applied, or throws the
+        // handler's error. The segment registered the event and began its work count; the
+        // count ends after the turn, on success and on a throw.
+        if let sequence = awaited {
+            defer { debugEndWork() }
+            _ = try await awaitInputTurn(sequence: sequence)
+        }
+        // A tick land applies the event in its next tick.
+    }
+
+    /// The client event intake's segment (C1): the descriptor, the decode, the bytes, the sender
+    /// check, the sequence and the append. On a tickless land it begins the event's work count
+    /// and returns the sequence the driver waits for; nil on a tick land.
+    private func clientEventIntake(
+        _ m: inout KeeperModel<State>,
+        _ event: AnyClientEvent,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) throws -> Int64? {
         // Check if event is registered in the client event registry
         guard let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type) else {
             behavior.logger.error(
@@ -3827,13 +3852,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         try rejectIfLandClosed()
-        try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: event.type)
+        try rejectSenderIfSuperseded(&m, playerID: playerID, clientID: clientID, sessionID: sessionID, input: event.type)
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
         let sequence = outputCollector.takeNextSequence()
 
         // Bind event to lastCommittedTickId for replay logging
-        let resolvedAtTick = model.lastCommittedTickId
+        let resolvedAtTick = m.lastCommittedTickId
 
         // Create pending item and add to queue
         let pendingItem = PendingItem.clientEvent(
@@ -3848,25 +3873,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolvedAtTick: resolvedAtTick
             )
         )
-        model.pendingItems.append(pendingItem)
+        m.pendingItems.append(pendingItem)
 
-        // A tickless land applies the event now, in an input turn the caller waits for.
-        if definition.lifetimeHandlers.tickHandler == nil {
-            // Counted as in-flight from now until the event is applied, so `debugFreeze` drains it.
-            debugBeginWork()
-            // An input turn applies it, and the caller waits for that turn as an action's caller
-            // does (#55): it returns once the event is applied, or throws the handler's error.
-            // The waiter is registered in this segment, the append's, so a drain started by
-            // another input can't apply the event before anyone waits for it. The probe is
-            // synchronous: a test learns the event is queued without a suspension between the
-            // append and the waiter's registration.
-            inTurnProbeForTesting?("client-event-queued")
-            defer { debugEndWork(&model) }
-            _ = try await awaitInputTurn(sequence: sequence)
-            return
-        }
-
-        // A tick land applies the event in its next tick.
+        guard definition.lifetimeHandlers.tickHandler == nil else { return nil }
+        // Counted as in-flight from now until the event is applied, so `debugFreeze` drains it.
+        debugBeginWork(&m)
+        // The waiter is registered right after this segment, before any suspension, so a drain
+        // started by another input can't apply the event before anyone waits for it. The probe
+        // is synchronous: a test learns the event is queued without a suspension between the
+        // append and the waiter's registration.
+        inTurnProbeForTesting?("client-event-queued")
+        return sequence
     }
 
     // MARK: - Server inputs (#387)
@@ -3894,7 +3911,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } catch {
             return .refused(.draining)
         }
-        // From here to the append, one synchronous segment.
+        // From here to the append, one synchronous segment (S1).
+        return withTurn { m, _, _ in serverInputIntake(&m, input) }
+    }
+
+    /// The server input intake's segment (S1): the checks, the decode, the sequence and the
+    /// append, or the hold while frozen. Exempt from the freeze; its kick starts the turn.
+    private func serverInputIntake(_ m: inout KeeperModel<State>, _ input: any ServerInputPayload) -> ServerInputOutcome {
         guard behavior.config.mode == .live else { return .refused(.notLive) }
         let typeIdentifier = String(describing: type(of: input))
         // Declared by identity, not by name alone: a same-named type from another module or
@@ -3915,8 +3938,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             ])
             return .refused(.unencodable)
         }
-        if serverInputMaxInFlight > 0, model.serverInputsInFlight >= serverInputMaxInFlight {
-            model.serverInputCapRejections += 1
+        if serverInputMaxInFlight > 0, m.serverInputsInFlight >= serverInputMaxInFlight {
+            m.serverInputCapRejections += 1
             behavior.logger.debug("Server input refused: the land's in-flight limit is reached", metadata: [
                 "landID": .string(behavior.config.actualLandID ?? definition.id),
                 "inputType": .string(typeIdentifier),
@@ -3945,18 +3968,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             typeIdentifier: typeIdentifier,
             bytes: bytes,
             decoded: .value(decoded),
-            resolvedAtTick: model.lastCommittedTickId
+            resolvedAtTick: m.lastCommittedTickId
         ))
-        model.serverInputsInFlight += 1
+        m.serverInputsInFlight += 1
         // A debug freeze doesn't refuse: the input keeps its sequence and waits outside the
         // queue until the resume. In the queue, a drain or pass already running would apply it
         // (they apply every ready input and don't stop for a freeze).
-        if model.debugFrozen {
-            model.serverInputsHeldWhileFrozen.append(item)
+        if m.debugFrozen {
+            m.serverInputsHeldWhileFrozen.append(item)
             return .accepted(sequence: sequence)
         }
-        model.pendingItems.append(item)
-        kickServerInputTurn(upTo: sequence)
+        m.pendingItems.append(item)
+        kickServerInputTurn(&m, upTo: sequence)
         return .accepted(sequence: sequence)
     }
 
@@ -3965,8 +3988,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// counted as in-flight work from now (`debugFreeze` drains it), that waits for the turn
     /// applying `sequence`. A tick land's next tick applies them.
     private func kickServerInputTurn(upTo sequence: Int64) {
+        kickServerInputTurn(&model, upTo: sequence)
+    }
+
+    /// `kickServerInputTurn(upTo:)` on the model a turn body holds. The work count begins
+    /// inline; the task starts inline too, as before: it reaches the keeper only through an
+    /// await, so nothing of it runs on the keeper before the segment ends.
+    private func kickServerInputTurn(_ m: inout KeeperModel<State>, upTo sequence: Int64) {
         guard definition.lifetimeHandlers.tickHandler == nil else { return }
-        debugBeginWork()
+        debugBeginWork(&m)
         Task { [weak self] in
             guard let self else { return }
             await self.holds.at(.serverInputKick)
