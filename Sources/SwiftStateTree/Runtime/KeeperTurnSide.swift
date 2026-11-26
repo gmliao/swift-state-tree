@@ -60,6 +60,9 @@ package struct TurnOutputs {
 /// the services, the job handles and `drainTask` move in with the bodies that change them.
 package struct KeeperTurnSide {
     private let submissions: ReevaluationSubmissionTracker
+    /// The action flow's tables (#700 K1b-5 rev 2.3 D11): job handles, slot waiters, test
+    /// waiters and watchers.
+    var actions = KeeperActionTables()
 
     package init(submissions: ReevaluationSubmissionTracker) {
         self.submissions = submissions

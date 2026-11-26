@@ -59,10 +59,6 @@ enum KeeperCensus {
     static let homes: [String: KeeperFieldHome] = {
         var homes: [String: KeeperFieldHome] = [
             "actor.abandonmentCounter": .outside(.resolverAbandonment),
-            "actor.actionJobRemovalWaiters": .replaced(by: "K2"),
-            "actor.actionJobTasks": .replaced(by: "K5"),
-            "actor.actionSlotWaiters": .replaced(by: "K2"),
-            "actor.actionTableAuditForTesting": .testHook,
             "actor.appliedSyncPhaseOffset": .outside(.loopDriver),
             "actor.appliedTickPhaseOffset": .outside(.loopDriver),
             "actor.behavior": .container,
@@ -104,7 +100,6 @@ enum KeeperCensus {
             "actor.requestedSyncWorkWaitersForTesting": .replaced(by: "K2"),
             "actor.serverInputMaxInFlight": .outside(.serverInputCap),
             "actor.shutdownTurnWaiters": .replaced(by: "K2"),
-            "actor.slotWatchersForTesting": .replaced(by: "K2"),
             "actor.syncClockForTesting": .testHook,
             "actor.syncTask": .replaced(by: "K2"),
             "actor.tickClockForTesting": .testHook,
