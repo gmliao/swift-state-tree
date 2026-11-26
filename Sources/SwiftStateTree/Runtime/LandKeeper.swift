@@ -2180,7 +2180,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     // MARK: - The failure table (#700 K1b-2). Outside the model: `any Error` isn't plain.
 
     /// Where a failure is read from, for the miss's log.
-    fileprivate enum FailurePath: String {
+    enum FailurePath: String {
         case slot, inputTurn, initialization
     }
 
@@ -3091,7 +3091,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// turn's recorded actions.
     package func runInputTurnForTesting(_ batch: [PendingItem]) -> [ReevaluationRecordedAction] {
         let outcome = runInputTurn(batch, removingFromQueue: false)
-        resumeInputTurnWaiters(for: outcome.appliedItems)
+        model.resumeInputTurnWaiters(behavior, &turnSide, for: outcome.appliedItems)
         return outcome.record.actions
     }
 
@@ -3302,7 +3302,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 await submitTurnRecord(outcome.record)
             }
             // Replay has no callers; this clears the turn's outcomes (`inputTurnResults`).
-            resumeInputTurnWaiters(for: outcome.appliedItems)
+            model.resumeInputTurnWaiters(behavior, &turnSide, for: outcome.appliedItems)
             // The pass's events reach the sink now, not after the frame's last pass, so the
             // sync-output check sees each pass's events before the outputs read after it.
             await flushOutputs(forTick: tickId)
@@ -3421,8 +3421,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if !allowWhenNoTickTask { nextTickDeadline = nil }
 
         // No tick body starts while frozen; a body already running is drained by `debugFreeze`.
-        guard !model.debugFrozen else { return }
-        debugBeginWork()
+        // Declared first, so it runs last: the in-flight count below ends before the freeze
+        // accounting.
+        guard model.tickAdmit() == .admitted else { return }
         defer { debugEndWork() }
 
         // A tickless land in re-evaluation still steps through the recorded ticks: each step
@@ -3430,8 +3431,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let tickHandler = definition.lifetimeHandlers.tickHandler
         if tickHandler == nil, behavior.config.mode == .live {
             // Tickless: the ready inputs run as input turns (or join the drain in progress).
-            if !model.inputDrainScheduled {
-                model.inputDrainScheduled = true
+            // This path returns after the drain: no tick segment follows it.
+            if model.scheduleInputDrain() {
                 await runInputDrain()
             }
             return
@@ -3452,14 +3453,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         // `shutdownRequested`: a forced shutdown waits for the tick in flight, then applies its
         // turn; no tick starts in between (#382).
-        guard !isDraining, !model.shutdownRequested else { return }
-        model.ticksInFlight += 1
+        // The tick's ID is taken BEFORE processing pending actions, so they can execute in this
+        // tick; it increments with each tick, for deterministic replay.
+        guard let tickId = model.tickStart(turnSide) else { return }
         defer { endTickInFlight() }
-
-        // Use tickId for deterministic replay (increments with each tick)
-        // Increment BEFORE processing pending actions so they can execute in this tick
-        let tickId = model.nextTickId
-        model.nextTickId += 1
 
         // In re-evaluation mode, stop when we exceed the recorded tick range (prevent simulation beyond record)
         if behavior.config.mode == .reevaluation, let source = turnSide.replay?.reevaluationSource {
@@ -4397,8 +4394,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var tickIdleWaiters: [CheckedContinuation<Void, Never>] = []
 
     private func endTickInFlight() {
-        model.ticksInFlight -= 1
-        guard model.ticksInFlight == 0 else { return }
+        guard model.tickEnd() else { return }
         let waiters = tickIdleWaiters
         tickIdleWaiters.removeAll()
         waiters.forEach { $0.resume() }
@@ -4539,7 +4535,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     fileprivate func runInputDrain() async {
         await holds.at(.inputDrain)
         while true {
-            let batch = Array(model.readyPendingItemsInOrder().prefix(Self.inputTurnBatchLimit))
+            let batch = model.nextInputTurnBatch(limit: Self.inputTurnBatchLimit)
             if batch.isEmpty { break }
             let mark = model.recorderSubmissionCount
             let outcome = runInputTurn(batch)
@@ -4548,10 +4544,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             } else {
                 model.enqueueTicklessTurnEnd(behavior, turnSide, since: mark)
             }
-            resumeInputTurnWaiters(for: outcome.appliedItems)
+            model.resumeInputTurnWaiters(behavior, &turnSide, for: outcome.appliedItems)
             await Task.yield()
         }
-        model.inputDrainScheduled = false
+        model.endInputDrain()
         turnSide.probe?("input-drain-end")
         let idleWaiters = inputDrainIdleWaitersForTesting
         inputDrainIdleWaitersForTesting.removeAll()
@@ -4589,23 +4585,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
-
-    /// Resumes the callers of `batch` with their outcomes, after the turn was recorded: a
-    /// response never leaves before its input is recorded.
-    private func resumeInputTurnWaiters(for batch: [PendingItem]) {
-        for item in batch {
-            // The result, and its error, are taken before the branch.
-            let result: Result<InputOutcome, any Error> = model.inputTurnResults.removeValue(forKey: item.sequence)
-                .map { model.taken(behavior, &turnSide, $0, path: .inputTurn, sequence: item.sequence) } ?? .success(.none)
-            if model.ticklessJobTurns.remove(item.sequence) != nil {
-                // No waiter on the slot yet: held under a fresh ID.
-                model.fillActionSlot(behavior, &turnSide, item.sequence, with: result)
-            } else {
-                turnSide.inputTurnWaiters.removeValue(forKey: item.sequence)?.resume(with: result)
-            }
-        }
-        model.checkActionTables(behavior, turnSide, #function)
-    }
 
     private func configureSyncLoop(interval: Duration) async {
         syncTask?.cancel()
@@ -5041,7 +5020,7 @@ extension KeeperModel {
     fileprivate typealias CallOutcome<Answer> = LandKeeper<State>.CallOutcome<Answer>
     fileprivate typealias JoinCall = LandKeeper<State>.JoinCall
     fileprivate typealias AppliedInputs = LandKeeper<State>.AppliedInputs
-    fileprivate typealias FailurePath = LandKeeper<State>.FailurePath
+    typealias FailurePath = LandKeeper<State>.FailurePath
     fileprivate typealias JoinDecided = LandKeeper<State>.JoinDecided
     fileprivate typealias JoinRequest = LandKeeper<State>.JoinRequest
     fileprivate typealias LeaveCapture = LandKeeper<State>.LeaveCapture
@@ -5732,7 +5711,7 @@ extension KeeperModel {
         inputTurnResults[sequence] = entry
     }
 
-    fileprivate mutating func noteFailureMiss(_ behavior: KeeperBehavior<State>, _ id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
+    mutating func noteFailureMiss(_ behavior: KeeperBehavior<State>, _ id: FailureID, path: FailurePath, sequence: Int64?) -> any Error {
         failureTableMisses += 1
         // A miss changes what a client sees (a sentinel takes the generic error frame, where an
         // event's `LandInputRejection` sends none) while the land keeps running: log it.
@@ -5841,7 +5820,7 @@ extension KeeperModel {
     }
 
     /// The held result as its caller gets it, taking the failure out of the table.
-    fileprivate mutating func taken(
+    mutating func taken(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ held: InputResult,

@@ -1529,9 +1529,15 @@ struct ModelHoldsLintTests {
         // steps are holders of the model.
         let machine = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
         try #require(files.contains { $0.path == machine })
+        // The drivers' segments (#700 K2-1): in scope by their `extension KeeperModel`, and each
+        // segment is a holder of the model.
+        let drivers = "Sources/SwiftStateTree/Runtime/KeeperModel+Drivers.swift"
+        try #require(files.contains { $0.path == drivers })
         let report = ModelHoldsLint.check(files)
         #expect(report.holders.contains { $0.path == machine && $0.name == "handle" },
                 "holders in \(machine): \(report.holders.filter { $0.path == machine }.map(\.name))")
+        #expect(report.holders.contains { $0.path == drivers && $0.name == "tickStart" },
+                "holders in \(drivers): \(report.holders.filter { $0.path == drivers }.map(\.name))")
         // Each family of closure holders is found: every member that gives a closure the model
         // has at least one, and `withHandlerStep` (every handler) has one per handler kind.
         let families = Dictionary(grouping: report.holders.filter { $0.name.contains(" body in ") }) {
