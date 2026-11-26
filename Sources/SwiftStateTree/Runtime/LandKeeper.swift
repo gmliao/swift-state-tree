@@ -2448,12 +2448,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // before the player limit, the kick of its old session and the insert (#234). A
         // refused call out ended the land: the drain check below refuses the join.
         if call.admitThroughTransport {
-            // On a tick land before its first tick, the failure's terminal entry goes into
-            // frame 0, whose handler never ran: it must end that tick's inputs, or replay runs
-            // the handler. After a committed tick the frame's handler ran, and the defaults hold.
-            let beforeFirstTick = m.lastCommittedTickId < 0
+            // Before a tick land's first tick, `failLand` ends frame 0's inputs itself (#901).
             let mark = m.recorderSubmissionCount
-            switch callOut(&m, &side, &outputs, endsInputs: beforeFirstTick, { _ in
+            switch callOut(&m, &side, &outputs, { _ in
                 refusesResolvedJoinInTurn(playerID: playerID, sessionID: call.sessionID)
             }) {
             case .answered(true):
@@ -7266,9 +7263,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // failure, else the last one recorded. A pass that applied nothing is never recorded.
         let lastPass: Int64? = m.passOrdinal > 0 ? m.passOrdinal : nil
         let pass: Int? = isTickless ? ((endsInputs && appliedInputs ? m.passInProgress : nil) ?? lastPass).map(Int.init) : nil
+        // The terminal entry's frame: the executing tick's (frame 0 on a tickless land).
+        let frame = isTickless ? 0 : max(m.nextTickId - 1, 0)
+        // A tick land's frame that hasn't committed never ran its handler: a failure before the
+        // first tick, outside any turn, lands in frame 0 and must end its inputs, or replay runs
+        // the handler (#901). Inside a tick turn before its commit, every site passes `true`.
+        let frameUncommitted = !isTickless && m.lastCommittedTickId < frame
         // On a tickless land a failure ends work only in a pass that applied something; on a
         // tick land it also skips the tick handler.
-        let ended = endsInputs && (!isTickless || appliedInputs)
+        let ended = (endsInputs || frameUncommitted) && (!isTickless || appliedInputs)
         let base = reported.position
         let position = LandFailurePosition(
             tickId: base.tickId == nil && base.pass == nil ? (m.lastCommittedTickId >= 0 ? m.lastCommittedTickId : nil) : base.tickId,
@@ -7300,10 +7303,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // The terminal entry (#535 D9), in the failing segment: before every teardown entry. It
         // goes into the frame of the executing tick (frame 0 on a tickless land), where replay
         // stops.
-        enqueueRecorderSubmission(&m, ReevaluationTickRecord(
-            tickId: isTickless ? 0 : max(m.nextTickId - 1, 0),
-            landFailure: failure
-        ))
+        enqueueRecorderSubmission(&m, ReevaluationTickRecord(tickId: frame, landFailure: failure))
         dropPendingInputs(&m, &side, reason: "landFailed")
         cancelAllActionJobs(&m, &side)
         releaseHeldInputsForDrain(&m)

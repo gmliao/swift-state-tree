@@ -83,7 +83,10 @@ public struct LandFailurePosition: Sendable, Equatable, Codable, CustomStringCon
     /// transport reported (`submitLandFailure`), applied as an input, ends the batch there. The
     /// turn then ran no tick handler and sent none of its inputs' events (on a tickless land,
     /// set only when that turn's pass, `pass`, applied inputs before it). Replay ends the
-    /// recorded tick or pass the same way (record format 3.4). Nil otherwise.
+    /// recorded tick or pass the same way (record format 3.4). On a tick land it is also true
+    /// for a failure whose tick hadn't committed, whatever ended the land: before the first
+    /// tick no handler ran in frame 0, where the failure is recorded, so replay runs none
+    /// either (#901). Nil otherwise.
     public let endsInputs: Bool?
 
     public init(tickId: Int64? = nil, pass: Int? = nil, sequence: Int64? = nil, stage: Stage, endsInputs: Bool? = nil) {
