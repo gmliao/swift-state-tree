@@ -77,6 +77,8 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
 
     private let lock = NSLock()
     private let reenter: Where
+    /// Joins wait on a committed phase without a re-entry (`.nowhere` only).
+    private let joinsWait: Bool
     private weak var keeper: LandKeeper<TurnSkeletonState>?
     private var closes = 0
     private var closedAtReentry: Bool?
@@ -84,7 +86,10 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     private var phaseReturned = false
     private var joinsAsked = 0
 
-    init(reenter: Where) { self.reenter = reenter }
+    init(reenter: Where, joinsWait: Bool = false) {
+        self.reenter = reenter
+        self.joinsWait = joinsWait
+    }
 
     func attach(_ keeper: LandKeeper<TurnSkeletonState>) { lock.withLock { self.keeper = keeper } }
 
@@ -124,7 +129,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     /// were read.
     var hasJoinsAwaitingSync: Bool {
         lock.withLock { joinsAsked += 1 }
-        guard reenter == .joinsAwaitingSync else { return false }
+        guard reenter == .joinsAwaitingSync else { return joinsWait }
         reenterNow()
         return true
     }
@@ -212,10 +217,11 @@ private final class OrderLog: @unchecked Sendable {
 private struct BodyError: Error {}
 
 private func attachedKeeper(
-    _ reenter: TurnSkeletonReenteringTransport.Where
+    _ reenter: TurnSkeletonReenteringTransport.Where,
+    joinsWait: Bool = false
 ) async -> (LandKeeper<TurnSkeletonState>, TurnSkeletonReenteringTransport, ReevaluationSubmissionTracker) {
     let keeper = makeKeeper(recording: true)
-    let transport = TurnSkeletonReenteringTransport(reenter: reenter)
+    let transport = TurnSkeletonReenteringTransport(reenter: reenter, joinsWait: joinsWait)
     transport.attach(keeper)
     await keeper.setTransport(transport)
     let tracker = await keeper.recorderSubmissionsForTesting
@@ -361,6 +367,17 @@ struct KeeperTurnSkeletonTests {
         #expect(transport.closeCount == 0)
         #expect(await keeper.reentryViolationsForTesting == 0)
         #expect(tracker.traceForTesting == ["sync-output", "endTurn"])
+    }
+
+    @Test("A committed phase with joins still waiting schedules one join sync turn")
+    func committedPhaseSchedulesAJoinSyncTurn() async throws {
+        // The positive case of the re-entry test's `joinSyncTurnsScheduledForTesting == 0`.
+        let (keeper, transport, _) = await attachedKeeper(.nowhere, joinsWait: true)
+
+        #expect(await keeper.syncTurnNow(via: transport, reason: .syncNow) == .committed(clearDirtyFlags: false))
+        #expect(transport.joinsAskedCount == 1)
+        #expect(await keeper.joinSyncTurnsScheduledForTesting == 1)
+        #expect(keeper.failure == nil)
     }
 
     @Test("The adapter's entries outside a body record, at depth zero", arguments: [false, true])

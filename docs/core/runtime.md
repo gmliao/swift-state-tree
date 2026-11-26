@@ -149,7 +149,7 @@ sequenceDiagram
     Keeper->>Keeper: makeContext(...)
     Keeper->>Resolver: executeResolvers(...)
     Resolver-->>Keeper: Update ctx
-    Keeper->>Handler: invoke(&state, action, ctx)
+    Keeper->>Handler: invoke(&m.state, action, ctx)
     Handler->>State: Modify state
     State-->>Handler: Complete
     Handler-->>Keeper: Return Response
@@ -303,7 +303,7 @@ sequenceDiagram
     Note over Queue: 1. Filter resolvedAtTick < tickId
     Note over Queue: 2. Sort by resolvedAtTick + sequence
     Queue->>Keeper: Execute handlers in order
-    Keeper->>Handler: tickHandler(&state, ctx)
+    Keeper->>Handler: tickHandler(&m.state, ctx)
     Keeper->>Keeper: lastCommittedTickId = tickId
     Keeper->>Output: flushOutputs(tickId)
     Note over Output: Send emitEvent events
@@ -369,7 +369,9 @@ private func runTick() async {
 
     // 2. Execute Tick handler
     if let tickHandler = definition.lifetimeHandlers.tickHandler {
-        tickHandler(&model.state, makeContext(tickId: tickId))
+        withHandlerStep(makeContext(tickId: tickId)) { m, ctx in
+            tickHandler(&m.state, ctx)
+        }
     }
 
     // 3. Update committed tick ID

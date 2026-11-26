@@ -209,7 +209,8 @@ struct KeeperPlayerServicesTests {
         #expect(await keeper.currentState().seen.last == "action:newer")
     }
 
-    // The production join (`join(session:…)`, through `joinReportingAdmission`): the adapter's.
+    // The production join (`join(session:…)`, through `joinReportingAdmission`), the path the
+    // adapter's join takes; these tests call it directly (no transport admission).
 
     @Test("A session join's insert writes the table; the player's action sees its services")
     func sessionJoinThenAction() async throws {
@@ -239,9 +240,15 @@ struct KeeperPlayerServicesTests {
     @Test("A session join whose OnJoin resolver fails rolls the table back with its entry")
     func sessionJoinRollback() async throws {
         let keeper = await makeKeeper("ps-session-rollback")
-        await #expect(throws: (any Error).self) {
+        // The resolver's own error, so a join that fails before its insert doesn't pass.
+        let error = await #expect(throws: (any Error).self) {
             _ = try await keeper.join(session: playerSession(), clientID: client, sessionID: session, services: services("fail"))
         }
+        guard case let .resolverFailed(_, underlying)? = error as? ResolverExecutionError else {
+            Issue.record("expected the OnJoin resolver's failure, got \(String(describing: error))")
+            return
+        }
+        #expect(underlying is PlayerServicesJoinRefused)
         let generations = await keeper.playerServiceGenerationsForTesting()
         #expect(generations.players.isEmpty)
         #expect(generations.services == generations.players)

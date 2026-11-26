@@ -26,7 +26,7 @@ struct ReentryTrapState: StateNodeProtocol {
 }
 
 enum KeeperReentryTrapEnvKeys {
-    /// Set to `1` to run the trap (it ends the test process).
+    /// Set to exactly `1` to run the trap (it ends the test process).
     static let run = "KEEPER_REENTRY_TRAP"
 }
 
@@ -39,7 +39,7 @@ private final class ReentryTrapKeeperBox: Sendable {
 struct KeeperReentryTrapTests {
     @Test(
         "A handler that reads its keeper synchronously stops the process",
-        .enabled(if: isDebugBuild && EnvHelpers.getEnvBool(key: KeeperReentryTrapEnvKeys.run, defaultValue: false))
+        .enabled(if: isDebugBuild && EnvHelpers.getEnvStringOptional(key: KeeperReentryTrapEnvKeys.run) == "1")
     )
     func reentryTraps() async throws {
         let box = ReentryTrapKeeperBox()

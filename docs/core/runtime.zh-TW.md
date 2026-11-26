@@ -149,7 +149,7 @@ sequenceDiagram
     Keeper->>Keeper: makeContext(...)
     Keeper->>Resolver: executeResolvers(...)
     Resolver-->>Keeper: 更新 ctx
-    Keeper->>Handler: invoke(&state, action, ctx)
+    Keeper->>Handler: invoke(&m.state, action, ctx)
     Handler->>State: 修改狀態
     State-->>Handler: 完成
     Handler-->>Keeper: 返回 Response
@@ -303,7 +303,7 @@ sequenceDiagram
     Note over Queue: 1. 過濾 resolvedAtTick < tickId
     Note over Queue: 2. 按 resolvedAtTick + sequence 排序
     Queue->>Keeper: 依序執行 handlers
-    Keeper->>Handler: tickHandler(&state, ctx)
+    Keeper->>Handler: tickHandler(&m.state, ctx)
     Keeper->>Keeper: lastCommittedTickId = tickId
     Keeper->>Output: flushOutputs(tickId)
     Note over Output: 發送 emitEvent 事件
@@ -369,7 +369,9 @@ private func runTick() async {
 
     // 2. 執行 Tick handler
     if let tickHandler = definition.lifetimeHandlers.tickHandler {
-        tickHandler(&model.state, makeContext(tickId: tickId))
+        withHandlerStep(makeContext(tickId: tickId)) { m, ctx in
+            tickHandler(&m.state, ctx)
+        }
     }
 
     // 3. 更新已提交的 tick ID
