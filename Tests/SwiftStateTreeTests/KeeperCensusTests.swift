@@ -5,7 +5,9 @@
 // named group that stays on the actor, a later slice that replaces it, or a test hook. A new field
 // fails this test until it has a row; a row whose field is gone fails it until it is removed.
 // Rows are keyed by storage path (`model.players`, `behavior.config.mode`, `actor.transport`), so
-// a field in the wrong container fails too.
+// a field in the wrong container fails too. A lazy field (label `$__lazy_storage_$_x`) fails even
+// with a row: stricter than the plan's table, on purpose; the keeper has none, and a new one
+// should be placed by hand. A property-wrapped field's label is `_x`, and its row names it so.
 
 import SwiftStateTurns
 import Testing
@@ -249,8 +251,10 @@ struct KeeperCensusTests {
                 stored.append("\(group).\(label)")
             }
         }
-        let duplicates = Dictionary(grouping: stored, by: { $0 }).filter { $0.value.count > 1 }.keys
-        #expect(duplicates.isEmpty, "labels stored twice: \(duplicates.sorted())")
+        // A label stored in two places (`actor.x` beside `model.x`) is one field with two homes.
+        let bareLabel = { (path: String) in String(path.split(separator: ".").last!) }
+        let duplicates = Dictionary(grouping: stored, by: bareLabel).filter { $0.value.count > 1 }
+        #expect(duplicates.isEmpty, "labels stored twice: \(duplicates.values.map { $0.sorted() })")
         #expect(!stored.contains { $0.hasSuffix(".?") }, "an unnamed stored label")
         #expect(!stored.contains { $0.contains(".$") }, "a synthetic label other than the actor's $defaultActor")
 
@@ -258,6 +262,25 @@ struct KeeperCensusTests {
         let rows = Set(KeeperCensus.homes.keys)
         #expect(storedSet.subtracting(rows).isEmpty, "unplaced: \(storedSet.subtracting(rows).sorted())")
         #expect(rows.subtracting(storedSet).isEmpty, "stale rows: \(rows.subtracting(storedSet).sorted())")
+    }
+
+    @Test("Each row's home matches the container its path names")
+    func homesMatchPaths() {
+        for (path, home) in KeeperCensus.homes {
+            let container = path.hasPrefix("behavior.config.") ? "behavior.config" : String(path.prefix { $0 != "." })
+            switch (container, home) {
+            case ("model", .model), ("behavior", .behavior), ("behavior.config", .behavior), ("replay", .replay):
+                continue
+            case ("behavior", .container) where path == "behavior.config":
+                continue
+            case ("actor", .model), ("actor", .behavior), ("actor", .replay):
+                Issue.record("\(path): a \(home) field still on the actor")
+            case ("actor", _):
+                continue
+            default:
+                Issue.record("\(path): home \(home) doesn't match its container")
+            }
+        }
     }
 
     @Test("Each known exception names fields that are still stored in its home")

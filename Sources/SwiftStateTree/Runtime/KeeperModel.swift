@@ -1,7 +1,8 @@
 // Sources/SwiftStateTree/Runtime/KeeperModel.swift
 //
 // The keeper's plain state (#700 K1b-4): every field a turn reads or writes, and nothing that
-// holds a reference, a closure or an existential. `@PlainData` checks that at compile time.
+// holds a reference, a closure or an existential other than `any P` with `P: PlainData` (the
+// queued payloads). `@PlainData` checks that at compile time.
 
 import Logging
 import SwiftStateTurns
@@ -10,9 +11,6 @@ import SwiftStateTurns
 /// it as `model`; field names are the ones the keeper's stored properties had.
 @PlainData
 struct KeeperModel<State: StateNodeProtocol> {
-    /// The land's state. A handler runs on `&model.state`, which is an access to the whole
-    /// model: nothing may read another model field while it runs (one `inout` per step).
-    var state: State
     /// The land's generator: keeper state, advanced by the handlers that replay repeats from the
     /// record (#700 K1b-3, #765).
     var landRandom: DeterministicRng
@@ -187,6 +185,12 @@ struct KeeperModel<State: StateNodeProtocol> {
     var filledActionSlotsOrderForAssert: [Int64] = []
     var filledActionSlotsNextForAssert: Int = 0
 #endif
+
+    /// The land's state. A handler runs on `&model.state`, which is an access to the whole
+    /// model: nothing may read another model field while it runs (one `inout` per step).
+    /// Declared last: its size depends on the land, so a field after it would take its offset
+    /// from the model's generic metadata at run time; before it, every field's offset is fixed.
+    var state: State
 
     init(state: State, landRandom: DeterministicRng) {
         self.state = state

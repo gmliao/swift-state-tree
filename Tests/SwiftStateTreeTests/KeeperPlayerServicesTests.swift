@@ -87,6 +87,10 @@ private let player = PlayerID("p1")
 private let client = ClientID("c1")
 private let session = SessionID("s1")
 
+private func playerSession() -> PlayerSession {
+    PlayerSession(playerID: player.rawValue, deviceID: nil, metadata: [:])
+}
+
 private func action() -> ActionEnvelope {
     ActionEnvelope(typeIdentifier: String(describing: PlayerServicesAction.self), payload: AnyCodable(PlayerServicesAction(n: 1)))
 }
@@ -204,6 +208,58 @@ struct KeeperPlayerServicesTests {
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().seen.last == "action:newer")
     }
+
+    // The production join (`join(session:…)`, through `joinReportingAdmission`): the adapter's.
+
+    @Test("A session join's insert writes the table; the player's action sees its services")
+    func sessionJoinThenAction() async throws {
+        let keeper = await makeKeeper("ps-session-join")
+        _ = try await keeper.join(session: playerSession(), clientID: client, sessionID: session, services: services("player"))
+        await expectAligned(keeper, "joined")
+        _ = try await keeper.handleActionEnvelope(action(), playerID: player, clientID: client, sessionID: session)
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().seen == ["join:player", "action:player"])
+    }
+
+    @Test("A session join that kicks the player's older session (#862): the newer entry's services replace the older's")
+    func sessionKickAndRejoin() async throws {
+        let land = "ps-session-kick"
+        let keeper = await makeKeeper(land)
+        _ = try await keeper.join(session: playerSession(), clientID: ClientID("c-old"), sessionID: SessionID("s-old"), services: services("older"))
+        let older = await keeper.playerServiceGenerationsForTesting().services[player]
+        _ = try await keeper.join(session: playerSession(), clientID: client, sessionID: session, services: services("newer"))
+        await expectAligned(keeper, "rejoined")
+        #expect(await keeper.playerServiceGenerationsForTesting().services[player] != older, "the newer entry's generation")
+        #expect(PlayerServicesLeaveLog.tags(land) == ["older"], "the kick's OnLeave resolvers saw the older services")
+        _ = try await keeper.handleActionEnvelope(action(), playerID: player, clientID: client, sessionID: session)
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().seen.last == "action:newer")
+    }
+
+    @Test("A session join whose OnJoin resolver fails rolls the table back with its entry")
+    func sessionJoinRollback() async throws {
+        let keeper = await makeKeeper("ps-session-rollback")
+        await #expect(throws: (any Error).self) {
+            _ = try await keeper.join(session: playerSession(), clientID: client, sessionID: session, services: services("fail"))
+        }
+        let generations = await keeper.playerServiceGenerationsForTesting()
+        #expect(generations.players.isEmpty)
+        #expect(generations.services == generations.players)
+    }
+
+    @Test("A failed land clears the table, as it clears the player table")
+    func failedLandClearsTheTable() async throws {
+        let keeper = await makeKeeper("ps-fail-land")
+        try await keeper.join(playerID: player, clientID: client, sessionID: session, services: services("player"))
+        await keeper.failLandForTesting(LandFailure(kind: .syncPlan, detail: "test", position: LandFailurePosition(stage: .syncPhase)))
+        let generations = await keeper.playerServiceGenerationsForTesting()
+        #expect(generations.services.isEmpty)
+        #expect(generations.players.isEmpty)
+    }
+
+    // The other sites write the two tables in the same lines as these, and the PR's audit
+    // lists them: the drain rollbacks of both joins (a join whose resolvers end after a drain
+    // began), the failed initialization's clear and a re-evaluation keeper's `forceShutdown`.
 
     @Test("After the land stops, the table is empty, as the player table is")
     func stopClearsTheTable() async throws {

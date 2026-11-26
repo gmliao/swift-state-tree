@@ -114,8 +114,8 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
     let outputs = try await run(resolvers)
 
     // 在之後的 turn 中：handler 以具型別的參數拿到輸出
-    return try withHandlerStep(ctx) { state, ctx in
-        try handler.invoke(&state, action: action, outputs: outputs, ctx: ctx)
+    return try withHandlerStep(ctx) { m, ctx in
+        try handler.invoke(&m.state, action: action, outputs: outputs, ctx: ctx)
     }
 }
 ```
@@ -180,8 +180,8 @@ func handleEvent<E: EventPayload>(_ event: E, ...) {
     let ctx = makeContext(...)
 
     // 執行 handler（無返回值）
-    withHandlerStep(ctx) { state, ctx in
-        handler.invoke(&state, event: event, ctx: ctx)
+    withHandlerStep(ctx) { m, ctx in
+        handler.invoke(&m.state, event: event, ctx: ctx)
     }
 }
 ```
@@ -210,7 +210,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
 
     // 3. 檢查人數上限
     if let maxPlayers = definition.config.maxPlayers {
-        guard players.count < maxPlayers else {
+        guard model.players.count < maxPlayers else {
             throw JoinError.roomIsFull
         }
     }
@@ -219,8 +219,8 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // 執行 Resolver（如果有的話）
         // 執行 handler
-        withHandlerStep(ctx) { state, ctx in
-            onJoinHandler(&state, ctx)
+        withHandlerStep(ctx) { m, ctx in
+            onJoinHandler(&m.state, ctx)
         }
     }
 
@@ -236,13 +236,13 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
 public func leave(playerID: PlayerID, ...) async throws {
     // 執行 OnLeave handler（如果定義）
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
-        withHandlerStep(ctx) { state, ctx in
-            onLeaveHandler(&state, ctx)
+        withHandlerStep(ctx) { m, ctx in
+            onLeaveHandler(&m.state, ctx)
         }
     }
 
     // 清理玩家資料
-    players.removeValue(forKey: playerID)
+    model.players.removeValue(forKey: playerID)
 
     // 檢查是否需要自動銷毀
     checkAutoDestroy()
@@ -369,7 +369,7 @@ private func runTick() async {
 
     // 2. 執行 Tick handler
     if let tickHandler = definition.lifetimeHandlers.tickHandler {
-        tickHandler(&state, makeContext(tickId: tickId))
+        tickHandler(&model.state, makeContext(tickId: tickId))
     }
 
     // 3. 更新已提交的 tick ID
@@ -463,7 +463,7 @@ Lifetime {
 ```swift
 // 玩家離開時檢查
 private func checkAutoDestroy() {
-    if players.isEmpty {
+    if model.players.isEmpty {
         // 啟動銷毀計時器
         destroyTask = Task {
             try? await safeTaskSleep(for: destroyDelay)

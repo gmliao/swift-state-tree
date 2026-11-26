@@ -709,7 +709,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Holds `error` as the initialization's failure, wrapped as every caller gets it (#700 K1b-2).
     private func failInitialization(with error: any Error) {
-        // Minting the ID writes the model: finish it before the assignment's access begins.
+        // Minting the ID writes the model. A plain assignment evaluates its right side first, so
+        // this split is a precaution, kept in the shape of the slot fill's (`fillActionSlot`).
         let failure = recordFailure(LandInitializationError(underlying: error))
         model.initializationFailure = failure
         checkActionTables(#function)
@@ -2466,7 +2467,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if case .failed(let displaced)? = model.inputTurnResults[sequence] {
             failures.removeValue(forKey: displaced)
         }
-        // `held` writes the model: finish it before the subscript's access begins.
+        // `held` writes the model. Split as a precaution, in the shape of the slot fill's
+        // (`fillActionSlot`); whether a subscript set begins its access first is unproven.
         let entry = result.map(held)
         model.inputTurnResults[sequence] = entry
     }
@@ -2521,8 +2523,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The services of `playerID`'s current entry: the table's entry whose generation is the
     /// player's entry's. Nil when the player has no entry.
     private func currentPlayerServices(of playerID: PlayerID) -> LandServices? {
-        guard let entry = playerServices[playerID], entry.generation == model.players[playerID]?.generation else { return nil }
-        return entry.services
+        model.players[playerID].flatMap { currentPlayerServices(of: playerID, entry: $0) }
+    }
+
+    /// The services of `entry`, `playerID`'s entry read by the caller.
+    private func currentPlayerServices(of playerID: PlayerID, entry: KeeperPlayerEntry) -> LandServices? {
+        guard let services = playerServices[playerID], services.generation == entry.generation else { return nil }
+        return services.services
     }
 
     /// Removes `playerID`'s services if they are the entry of `generation`'s: a newer entry's
@@ -2746,7 +2753,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             model.actionSlots.removeValue(forKey: sequence)
             waiter.resume(with: outcome)
         } else {
-            // `held` writes the model: finish it before the slot's access begins.
+            // `held` writes the model, and an optional-chain assignment begins its access to the
+            // model before it evaluates its right side: run it first, or the two accesses overlap.
             let result = held(outcome)
             model.actionSlots[sequence]?.result = result
         }
@@ -3741,13 +3749,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         resolverOutputs: [String: HeldResolverOutput] = [:]
     ) -> LandContext {
         let baseServices = servicesOverride ?? LandServices()
-        let playerServices = currentPlayerServices(of: playerID)
+        // One lookup of the entry: its services are the table's only for its generation.
+        let playerSession = model.players[playerID]
+        let playerServices = playerSession.flatMap { currentPlayerServices(of: playerID, entry: $0) }
         // A `DeterministicRngService` registered in an override or in a player's services is
         // removed too, so no context or resolver reaches an RNG instance: handlers draw from the
         // one `withHandlerStep` binds.
         let resolvedServices = behavior.services.merging(baseServices).merging(playerServices ?? LandServices())
             .removing(DeterministicRngService.self)
-        let playerSession = model.players[playerID]
         // Use actual land instance ID if available, otherwise fall back to definition.id (land type)
         let landID = behavior.config.actualLandID ?? definition.id
         let eventRecordingTickId = tickId ?? model.lastCommittedTickId

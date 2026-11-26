@@ -114,8 +114,8 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
     let outputs = try await run(resolvers)
 
     // In a later turn: the handler gets the outputs as a typed parameter
-    return try withHandlerStep(ctx) { state, ctx in
-        try handler.invoke(&state, action: action, outputs: outputs, ctx: ctx)
+    return try withHandlerStep(ctx) { m, ctx in
+        try handler.invoke(&m.state, action: action, outputs: outputs, ctx: ctx)
     }
 }
 ```
@@ -180,8 +180,8 @@ func handleEvent<E: EventPayload>(_ event: E, ...) {
     let ctx = makeContext(...)
 
     // Execute handler (no return value)
-    withHandlerStep(ctx) { state, ctx in
-        handler.invoke(&state, event: event, ctx: ctx)
+    withHandlerStep(ctx) { m, ctx in
+        handler.invoke(&m.state, event: event, ctx: ctx)
     }
 }
 ```
@@ -210,7 +210,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
 
     // 3. Check player limit
     if let maxPlayers = definition.config.maxPlayers {
-        guard players.count < maxPlayers else {
+        guard model.players.count < maxPlayers else {
             throw JoinError.roomIsFull
         }
     }
@@ -219,8 +219,8 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // Execute Resolver (if any)
         // Execute handler
-        withHandlerStep(ctx) { state, ctx in
-            onJoinHandler(&state, ctx)
+        withHandlerStep(ctx) { m, ctx in
+            onJoinHandler(&m.state, ctx)
         }
     }
 
@@ -236,13 +236,13 @@ When a player leaves, `OnLeave` handler is executed:
 public func leave(playerID: PlayerID, ...) async throws {
     // Execute OnLeave handler (if defined)
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
-        withHandlerStep(ctx) { state, ctx in
-            onLeaveHandler(&state, ctx)
+        withHandlerStep(ctx) { m, ctx in
+            onLeaveHandler(&m.state, ctx)
         }
     }
 
     // Clean up player data
-    players.removeValue(forKey: playerID)
+    model.players.removeValue(forKey: playerID)
 
     // Check if auto-destruction is needed
     checkAutoDestroy()
@@ -369,7 +369,7 @@ private func runTick() async {
 
     // 2. Execute Tick handler
     if let tickHandler = definition.lifetimeHandlers.tickHandler {
-        tickHandler(&state, makeContext(tickId: tickId))
+        tickHandler(&model.state, makeContext(tickId: tickId))
     }
 
     // 3. Update committed tick ID
@@ -463,7 +463,7 @@ Lifetime {
 ```swift
 // Check when player leaves
 private func checkAutoDestroy() {
-    if players.isEmpty {
+    if model.players.isEmpty {
         // Start destruction timer
         destroyTask = Task {
             try? await safeTaskSleep(for: destroyDelay)
