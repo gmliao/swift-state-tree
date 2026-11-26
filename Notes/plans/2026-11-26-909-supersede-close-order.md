@@ -1,6 +1,6 @@
 # #909: a superseded session's close can overtake its last queued frame
 
-**Status:** rev 1, for Review (2026-11-26).
+**Status:** rev 2, for Review (2026-11-26): Review's rev 1 GO with two shoulds and a nit, folded (see Changelog).
 
 ## Problem
 
@@ -39,7 +39,8 @@ The supersede's close goes through the writer, behind every frame already enqueu
    - It adds 0 bytes. It counts as an element, so the backlog's element count and the writer's flush see it.
    - After `finish` it returns `.droppedAfterFinish`, as `enqueue` does.
 2. **The close code travels with it.** `ClosingSession` gains `close: SessionClose` (default `.normal`, so `sendFinalFrameAndClose` is unchanged). The consumer calls `closeSessionAfterQueuedFrames(sessionID, generation:, with: close)`.
-3. **The transport's ordered close takes the code.** `Transport` gains the requirement `closeSessionAfterQueuedFrames(_:generation:with:)`. Its default calls `closeSession(_:with:generation:)` at once, as the other default closes at once today.
+3. **The transport's ordered close takes the code.** `Transport` gains the requirement `closeSessionAfterQueuedFrames(_:generation:with:)`.
+   - **Its default keeps the older ordered closes.** `Transport` already has `closeSessionAfterQueuedFrames(_:)` (Transport.swift:83) and `(_:generation:)` (:88, whose default calls the one-argument one, :116). After step 2 every closing element calls the new three-argument one, `sendFinalFrameAndClose`'s `.normal` included. A default that closed at once would drop the ordering for a conformer that implemented only the one- or two-argument close. So the default forwards to `closeSessionAfterQueuedFrames(_:generation:)` when `close == .normal`, and closes at once with the code (`closeSession(_:with:generation:)`) otherwise. The second branch is today's behavior for the supersede: a transport without the new method closes it at once, as now. P-909-1 checks both branches.
    - `WebSocketTransport`'s existing `package` method of that signature (WebSocketTransport.swift:630) becomes `public`, the witness.
    - Without the requirement, a call through `any Transport` would reach the extension default (the 2026-11-06 lesson). P-909-1 checks this.
    - This is an additive public API change, with a default.
@@ -47,13 +48,15 @@ The supersede's close goes through the writer, behind every frame already enqueu
    - enqueues the close-only element;
    - falls back to `closeSessionDetached` when the writer refuses it (finished, or over its ceiling), as `sendFinalFrameAndClose` does.
 
+   The function is synchronous, and must stay so: the enqueue, the decision to fall back and the fallback run in one segment, with no `await`, so nothing can enqueue for the session or change its generation between them. It runs inside `supersedeSessions`, which is already synchronous.
+
    The generation is the one captured before `connectionGenerations[old]` is removed. #531's rule carries over: the close acts only on that connection (the writer passes it, and the transport's marker and bound both check it).
 
 The rest of the supersede is unchanged. It is still synchronous, and the session is ended in the same segment, so no new frame is enqueued for it after the close element.
 
 **What a client sees.** A superseded client gets the frames that were queued for it, then the 4017 close. A client that stopped reading is closed at the bound, as for a final frame.
 
-**Test support.** The harness waits for "the supersedes' closes" through `waitForDetachedClosesForTesting` (DiffRunner.swift:586). After the change, the close is the writer's. The barrier waits for the writer to drain and for the transport's queue to reach the marker, as `flushOutbound` does. A detached close remains only on the fallback path. The exact wait is chosen in the PR, and the barrier's comment names it.
+**Test support: #908's barrier.** The harness waits for "the supersedes' closes" through `waitForDetachedClosesForTesting` (DiffRunner.swift:586). After the change, the close is the writer's, and the barrier is: **wait until each superseded session's connection has received its 4017 close** (the drain reached the marker and the close ran), through the connection's `waitUntilClosed()` (RecordingConnection.swift:67), and check its code. A wait for the writer to drain is not enough: the writer has then handed the close to the transport, but the transport's per-session queue may not have sent the frames ahead of the marker yet, so the harness could read A's frames before the last one arrives. `waitForDetachedClosesForTesting` stays for the fallback path.
 
 ## The closes, and which go through the writer
 
@@ -75,6 +78,7 @@ The rest of the supersede is unchanged. It is still synchronous, and the session
 
 In `TransportAdapterRegisterSessionTests` or a new `SupersedeCloseOrderTests`, with a `WebSocketTransport` whose connection's `send` waits on a `TestGate`, the shape of `HandshakeFrameLimitTests`:
 - **S1.** Session A is joined. A frame is enqueued for A, and its `send` is held. A second join of A's player supersedes A. While the send is held, no close has reached A's connection. After the release, A's connection has the frame, then the 4017 close. Today the close arrives while the frame is held: S1 fails first.
+  - **The bound can't stand in.** The ordered close is bounded by `JoinFlipConfig.finalFrameCloseTimeout` (1 s by default). While the send is held, that timer would close A at the bound, and "no close while held" would race it. S1 holds the bound's check instead: `setDelayedCloseForTesting` arrives at a `TestGate` on `.willCheck(.bound)`, which S1 never opens before its checks, as `boundClosesAreCounted` (HandshakeFrameLimitTests.swift:427) does. At the end S1 also expects `finalFrameClosesAtBound == 0`: the close ran at the marker, not at the bound.
 - **S2.** The generation pin (#531): A's ordered close, held at the drain, doesn't close a newer connection that reuses the ID. This uses `setDelayedCloseForTesting`, as the 2026-11-18 lesson says.
 - **S3.** The fallback: with the writer finished, the supersede still closes A, at once.
 - **S4.** P-909-1's dispatch, in the suite: through `any Transport`, `WebSocketTransport`'s `closeSessionAfterQueuedFrames(_:generation:with:)` closes with the code it was given (4017), not 1000.
@@ -100,12 +104,33 @@ No `docs/` page describes the supersede's close order. The `Transport` requireme
 
 ## Probes
 
-**P-909-1: the new requirement dispatches to the conformer's method through the existential.** A protocol `Port` with a two-argument requirement and a new `with:` requirement, both defaulted in an extension. An actor conforms with public methods of both signatures; another has none. Calls go through `[any Port]` and through the concrete type. Expected: the conformer's `with:` runs through the existential, and the default runs for the plain one. File: `2026-11-26-909-probe.swift`, next to this plan.
+**P-909-1: the new requirement dispatches to the conformer's method through the existential, and its default keeps an older conformer's ordering.** A protocol `Port` with an at-once close, a two-argument ordered close and the new `with:` ordered close, all defaulted in an extension as step 3 says. Three actors conform:
+- `Concrete` implements both ordered closes (`WebSocketTransport` after #909);
+- `OlderOrdered` implements only the two-argument one (a transport written before #909);
+- `Plain` implements none.
+
+Each gets the new call through `any Port`, with `.normal` and with 4017. Expected:
+- `Concrete` runs its own `with:` both times;
+- `OlderOrdered` gets its two-argument ordered close for `.normal` (rev 1's default would have closed it at once), and the at-once close with 4017;
+- `Plain` gets the at-once close both times.
+
+File: `2026-11-26-909-probe.swift`, next to this plan.
 
 Ran with Apple Swift 6.4.2 (macOS), `swiftc -swift-version 6`:
 ```text
-concrete with: 4017
-default with: 4017
-concrete with: 4017
+-- concrete
+concrete ordered with: 1000
+concrete ordered with: 4017
+-- older
+older ordered 2-arg
+default at once: 4017
+-- plain
+default at once: 1000
+default at once: 4017
 ```
-Through `any Port`, the conformer's `with:` runs, and the default runs only for the type without one. So the requirement makes `WebSocketTransport`'s method reachable from the writer's `any Transport`. Without the requirement, the existential call resolves to the extension's method (the 2026-11-06 lesson); the probe doesn't rerun that negative.
+Each line is what step 3 expects. `OlderOrdered` keeps its ordered close for `.normal` through the new call, which rev 1's default (close at once) would have dropped.
+
+## Changelog
+
+- rev 2: Review's should 1, the default chain: the new requirement's default forwards `.normal` to the two-argument ordered close, and P-909-1 gains a conformer with only that one. The adapter's new function is synchronous (enqueue, decision and fallback in one segment). Should 2: #908's barrier is the superseded connection's 4017, received. The nit: S1 holds the bound's check at a gate, and checks no close ran at the bound.
+- rev 1: P-909-1, the existential dispatch (Apple Swift 6.4.2): `concrete with: 4017 / default with: 4017 / concrete with: 4017`.
