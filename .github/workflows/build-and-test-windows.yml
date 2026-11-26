@@ -1,11 +1,13 @@
-# This workflow builds and tests the Swift package on Windows.
+# This workflow builds and tests the Swift package on Windows, and runs the DemoServer E2E scenarios.
 #
 # Windows is in testing. The job's check shows red when it fails, but it is non-blocking only as long
 # as it is NOT a required check: do not add it to the required checks until it has been green for a
 # while (issue #845).
 #
 # Written from what passes on one Windows 11 host (Swift 6.4.3, VS2022 build tools, default SwiftPM
-# backend), and confirmed on a hosted runner (run 45722997857: windows-2022, green).
+# backend), and the build and test steps are confirmed on a hosted runner (run 45722997857: windows-2022,
+# green). The E2E steps were written from the same host (29 scenarios pass there in each of the three
+# encodings); their first runner run is the test of port 8080 and of the timeouts.
 #
 # SwiftBuild backend and C targets: the default backend failed on any C target (`stdlib.h` not found)
 # ONLY under VS 2019 BuildTools 14.29; under VS 2022 (MSVC 14.42) the default backend and
@@ -91,8 +93,129 @@ jobs:
         retention-days: 3
         if-no-files-found: ignore
 
-    # The Demo server must build. The E2E scenarios (Tools/CLI, npm) are not part of this job: on the
-    # host they run against DemoServer.exe started by a script specific to that machine.
     - name: Build DemoServer
+      if: ${{ !cancelled() }}
       working-directory: Examples/Demo
       run: swift build --product DemoServer
+
+    # These steps run after a failed Tests step too (not after a cancel), so a flaky unit test does not
+    # hide the E2E result; the failed step still fails the job.
+    # E2E against the DemoServer.exe built above, in the three encodings (as e2e-tests.yml does on
+    # Linux). The npm scripts `test:e2e:*` start with a POSIX `VAR=value npm run ...` prefix, which
+    # npm runs through cmd.exe on Windows and which fails there, so the tsx commands of those scripts
+    # are called directly.
+    - name: Set up Node.js
+      if: ${{ !cancelled() }}
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: 20
+
+    - name: Build the SDK and the CLI
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: |
+        set -e
+        (cd sdk/ts && npm ci && npm run build)
+        (cd Tools/CLI && npm ci && npm run build && npm run test:cli:unit)
+
+    - name: E2E tests
+      if: ${{ !cancelled() }}
+      shell: bash
+      timeout-minutes: 25
+      env:
+        HOST: 127.0.0.1
+        PORT: "8080"
+        # assertConverged (#79): DemoServer mounts the debug state routes, the CLI sends the admin key.
+        ENABLE_DEBUG_STATE_ROUTES: "true"
+        E2E_ADMIN_KEY: demo-admin-key
+        # A convergence mismatch fails the run.
+        E2E_CONVERGENCE_GATING: "true"
+        MATCHMAKING_MODE: direct
+      run: |
+        set -u
+        logs="$RUNNER_TEMP/e2e-logs"
+        mkdir -p "$logs"
+        bin=$(cd Examples/Demo && swift build --show-bin-path)
+        exe="$(cygpath -u "$bin")/DemoServer.exe"
+        echo "DemoServer: $exe"
+        ws=ws://localhost:8080/game
+        failed=0
+
+        # check NAME COMMAND...: runs in Tools/CLI, keeps the output, counts a failure.
+        check() {
+          local name=$1; shift
+          local log="$logs/${enc}-${name//[^A-Za-z0-9._-]/_}.log"
+          if (cd Tools/CLI && timeout 240 "$@") >"$log" 2>&1; then
+            echo "PASS  $enc  $name"
+          else
+            echo "FAIL  $enc  $name  (exit $?)"; tail -n 20 "$log"; failed=$((failed + 1))
+          fi
+        }
+
+        for enc in json jsonOpcode messagepack; do
+          case "$enc" in
+            json) se=jsonObject ;;
+            jsonOpcode) se=opcodeJsonArray ;;
+            messagepack) se=messagepack ;;
+          esac
+          echo "::group::DemoServer $enc"
+          start=$SECONDS
+          (cd Examples/Demo && TRANSPORT_ENCODING=$enc "$exe") >"$logs/server-$enc.log" 2>&1 &
+          up=0
+          for _ in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:8080/schema; then up=1; break; fi
+            sleep 1
+          done
+          if [ "$up" != 1 ]; then
+            echo "FAIL  $enc  the server did not start within 60 s"; cat "$logs/server-$enc.log"
+            failed=$((failed + 1)); taskkill //F //IM DemoServer.exe >/dev/null 2>&1 || true
+            echo "::endgroup::"; continue
+          fi
+
+          if [ "$enc" = json ]; then
+            check protocol-mixed-encoding npx tsx scripts/internal/test-mixed-encoding.ts --url $ws/counter
+            check protocol-packet-encoding npx tsx scripts/internal/test-packet-encoding.ts --url $ws/counter
+            check protocol-encoding-integration npx tsx scripts/internal/test-encoding-integration.ts
+            check protocol-server-opcode-decoding npx tsx scripts/internal/test-server-opcode-decoding.ts --url $ws/counter
+          fi
+          check counter npx tsx src/cli.ts script -u $ws/counter -l counter -s scenarios/counter/ --state-update-encoding "$se"
+          check cookie npx tsx src/cli.ts script -u $ws/cookie -l cookie -s scenarios/cookie/ --state-update-encoding "$se"
+          check cookie-multi npx tsx src/cli.ts script -u $ws/cookie -l cookie -s scenarios/cookie/test-cookie.json --clients 2 --state-update-encoding "$se"
+          check reevaluation npx tsx src/reevaluation-e2e.ts --ws-url $ws/counter --admin-url http://localhost:8080 --land-type counter --state-update-encoding "$se"
+
+          if [ "$enc" = messagepack ]; then
+            # The dropped patch must be caught: this run has to fail with a /count mismatch.
+            # MSYS_NO_PATHCONV: Git Bash would turn the argument /count into a Windows path.
+            flog="$logs/messagepack-fault-injection.log"
+            if (cd Tools/CLI && MSYS_NO_PATHCONV=1 timeout 240 npx tsx src/cli.ts script -u $ws/counter -l counter -s scenarios/fault/counter-drop-one-patch.json --state-update-encoding messagepack --fault-drop-patch /count --convergence-gating) >"$flog" 2>&1; then
+              echo "FAIL  messagepack  fault-injection passed, it must fail"; failed=$((failed + 1))
+            elif grep -q 'CONVERGENCE MISMATCH (gating) fault-drop-one-patch' "$flog" && grep -q '^  /count: client=' "$flog"; then
+              echo "PASS  messagepack  fault-injection (failed with a /count mismatch, as required)"
+            else
+              echo "FAIL  messagepack  fault-injection failed for another reason"; tail -n 20 "$flog"; failed=$((failed + 1))
+            fi
+          fi
+
+          taskkill //F //IM DemoServer.exe >/dev/null 2>&1 || true
+          sleep 2
+          echo "$enc took $((SECONDS - start)) s"
+          echo "::endgroup::"
+        done
+
+        echo "failed checks: $failed"
+        [ "$failed" = 0 ]
+
+    # Also after a failure, a timeout or a cancel: a server left running would hold port 8080.
+    - name: Stop DemoServer
+      if: always()
+      shell: bash
+      run: taskkill //F //IM DemoServer.exe >/dev/null 2>&1 || true
+
+    - name: Keep the E2E logs
+      if: ${{ failure() || cancelled() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: windows-e2e-logs
+        path: ${{ runner.temp }}/e2e-logs
+        retention-days: 3
+        if-no-files-found: ignore
