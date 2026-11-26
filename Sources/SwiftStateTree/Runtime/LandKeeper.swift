@@ -1814,55 +1814,98 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The settle's own bookkeeping, not a requested turn's: it doesn't consume the pending
     /// sync-only turn (which runs later, skips as frozen and leaves its sync to the resume),
     /// doesn't reset the sync cadence or the join state, and arms no follow-up (the resume and
-    /// the adapter's kept-events check own those). A plan that throws ends the land in this turn.
+    /// the adapter's kept-events check own those). A plan that throws ends the land in this turn,
+    /// as does a callback into the keeper during the settle's port calls (`.failed`); a settle
+    /// requested from such a callback is refused (#700 K1b-5a).
     package func settleTurn(via port: any LandKeeperTransport, fence: SettleFence) -> SettleTurnOutcome {
-        model.requestedSyncTurnsForTesting[.settle, default: 0] += 1
+        // A settle requested while a turn body runs (a callback during a port call) would nest a
+        // second body: refused, changing nothing here, and the land ends (`noteReentry`).
+        guard bodyDepth == 0 else {
+            noteReentry(through: "settleTurn")
+            return .closed(failure)
+        }
+        return withTurn { m, side, outputs in
+            settleBody(&m, &side, &outputs, port: port, fence: fence)
+        }
+    }
+
+    /// `settleTurn`'s body, on the model the turn holds. Its two port calls (the in-turn check
+    /// and the settle phase) go through `callOut`: a re-entry in either ends the land in that
+    /// call, and its answer is never read.
+    private func settleBody(
+        _ m: inout KeeperModel<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        port: any LandKeeperTransport,
+        fence: SettleFence
+    ) -> SettleTurnOutcome {
+        m.requestedSyncTurnsForTesting[.settle, default: 0] += 1
         guard behavior.config.mode == .live, failure == nil, !isDraining else { return .closed(failure) }
         // A failure a transport noted outside a turn ends the land first (#704): no phase runs,
         // and a tickless land's turn still ends its record, as after a failed phase.
-        let markBeforeNote = model.recorderSubmissionCount
-        if applyPendingTransportFailure(), let failure {
-            enqueueTicklessTurnEnd(&model, since: markBeforeNote)
+        let markBeforeNote = m.recorderSubmissionCount
+        if applyPendingTransportFailure(&m), let failure {
+            enqueueTicklessTurnEnd(&m, since: markBeforeNote)
             return .failed(failure)
         }
         guard ContinuousClock.now < fence.deadline else { return .timedOut }
-        guard model.debugFrozen, model.debugActiveGeneration == fence.generation else { return .released }
+        guard m.debugFrozen, m.debugActiveGeneration == fence.generation else { return .released }
         // The requested turns' rule (`acceptsSyncTurn`): the attached transport or, on a keeper
         // never attached, its sync requester (#546 L2d). Checked without binding; a settle binds
         // the requester only once every check has passed, so a refused one changes nothing.
-        guard port.runsSyncPhaseInTurn(of: self), let settlePort = port as? any LandKeeperSettlePort,
-              isSyncPort(port) else {
+        let markBeforePort = m.recorderSubmissionCount
+        let runsInTurn: Bool
+        switch callOut(&m, &side, &outputs, { _ in port.runsSyncPhaseInTurn(of: self) }) {
+        case .refused(let refused):
+            enqueueTicklessTurnEnd(&m, since: markBeforePort)
+            return .failed(failure ?? refused)
+        case .answered(let answer):
+            runsInTurn = answer
+        }
+        guard runsInTurn, let settlePort = port as? any LandKeeperSettlePort, isSyncPort(m, port) else {
             return .refused(.notCurrent)
         }
-        _ = bindSyncRequester(port)
+        _ = bindSyncRequester(&m, port)
         inTurnProbeForTesting?("turn-begin")
-        model.inTurnSyncTurnKind = .syncOnly
-        defer { model.inTurnSyncTurnKind = .tick }
-        let mark = model.recorderSubmissionCount
-        let copy = model.state
-        let tickId = model.lastCommittedTickId
-        let output = settlePort.runSettlePhaseInTurn(
-            state: copy,
-            settle: InTurnSettle(generation: fence.generation),
-            recording: inTurnSyncRecording(model)
-        )
-        recordSyncStream(&model, output.syncStream)
+        m.inTurnSyncTurnKind = .syncOnly
+        defer { m.inTurnSyncTurnKind = .tick }
+        let mark = m.recorderSubmissionCount
+        let copy = m.state
+        let tickId = m.lastCommittedTickId
+        let recording = inTurnSyncRecording(m)
         let outcome: SettleTurnOutcome
-        switch output.settle ?? .refused(.notCurrent) {
-        case let .committed(membershipEpoch, clearDirtyFlags):
-            if clearDirtyFlags { model.state.clearDirty() }
-            outcome = .settled(state: copy, tickId: tickId, membershipEpoch: membershipEpoch, planned: true)
-        case let .empty(membershipEpoch):
-            outcome = .settled(state: copy, tickId: tickId, membershipEpoch: membershipEpoch, planned: false)
-        case let .refused(refusal):
-            outcome = .refused(refusal)
-        case let .failed(reported):
-            failLand(&model, reported)
-            outcome = .failed(failure ?? reported)
+        switch callOut(&m, &side, &outputs, { _ in
+            settlePort.runSettlePhaseInTurn(state: copy, settle: InTurnSettle(generation: fence.generation), recording: recording)
+        }) {
+        case .refused(let refused):
+            outcome = .failed(failure ?? refused)
+        case .answered(let output):
+            // The transport's draft factories run here, outside any call out: a factory that
+            // re-entered ends the land before the settle's result is applied. The batch is
+            // recorded whole first, as the sync-only turn's is.
+            let beforeRecording = reentryViolations
+            recordSyncStream(&m, output.syncStream)
+            if reentryViolations != beforeRecording {
+                let refused = applyReentryFailure(&m)
+                outcome = .failed(failure ?? refused)
+            } else {
+                switch output.settle ?? .refused(.notCurrent) {
+                case let .committed(membershipEpoch, clearDirtyFlags):
+                    if clearDirtyFlags { m.state.clearDirty() }
+                    outcome = .settled(state: copy, tickId: tickId, membershipEpoch: membershipEpoch, planned: true)
+                case let .empty(membershipEpoch):
+                    outcome = .settled(state: copy, tickId: tickId, membershipEpoch: membershipEpoch, planned: false)
+                case let .refused(refusal):
+                    outcome = .refused(refusal)
+                case let .failed(reported):
+                    failLand(&m, reported)
+                    outcome = .failed(failure ?? reported)
+                }
+            }
         }
         // A tickless land's sync-only turn is its own turn record (#327); a tick land's settle
         // output stays with the last committed tick's.
-        enqueueTicklessTurnEnd(&model, since: mark)
+        enqueueTicklessTurnEnd(&m, since: mark)
         inTurnProbeForTesting?("turn-end")
         return outcome
     }
@@ -5873,8 +5916,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// there is one and the land hasn't failed yet. The failure keeps its own stage
     /// (`actionResponse`, `syncPhase` or `eventFlush`). Returns whether the land has failed.
     private func applyPendingTransportFailure(endsInputs: Bool = false, appliedInputs: Bool = false) -> Bool {
+        applyPendingTransportFailure(&model, endsInputs: endsInputs, appliedInputs: appliedInputs)
+    }
+
+    /// `applyPendingTransportFailure` on the model a turn body holds.
+    private func applyPendingTransportFailure(
+        _ m: inout KeeperModel<State>,
+        endsInputs: Bool = false,
+        appliedInputs: Bool = false
+    ) -> Bool {
         if failure == nil, let noted = pendingTransportFailure.failure {
-            failLand(&model, noted, endsInputs: endsInputs, appliedInputs: appliedInputs)
+            failLand(&m, noted, endsInputs: endsInputs, appliedInputs: appliedInputs)
         }
         return failure != nil
     }
@@ -6046,25 +6098,30 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// requester per keeper at a time. The follow-ups' pending state is kept per binding
     /// generation, so a follow-up armed under an older binding never blocks the current one's.
     private func bindSyncRequester(_ port: any LandKeeperTransport) -> Bool {
+        bindSyncRequester(&model, port)
+    }
+
+    /// `bindSyncRequester` on the model a turn body holds.
+    private func bindSyncRequester(_ m: inout KeeperModel<State>, _ port: any LandKeeperTransport) -> Bool {
         let identity = ObjectIdentifier(port as AnyObject)
         if let transport {
             return ObjectIdentifier(transport as AnyObject) == identity
         }
-        guard !model.hasHeldTransport else { return false }
+        guard !m.hasHeldTransport else { return false }
         if let bound = boundSyncRequesterObject {
             return ObjectIdentifier(bound) == identity
         }
         boundSyncRequesterObject = port as AnyObject
-        model.syncBinding.rebind()
+        m.syncBinding.rebind()
         return true
     }
 
     /// `bindSyncRequester`'s answer without its binding: whether `port` is, or would become, the
     /// port this keeper syncs through.
-    private func isSyncPort(_ port: any LandKeeperTransport) -> Bool {
+    private func isSyncPort(_ m: KeeperModel<State>, _ port: any LandKeeperTransport) -> Bool {
         let identity = ObjectIdentifier(port as AnyObject)
         if let transport { return ObjectIdentifier(transport as AnyObject) == identity }
-        guard !model.hasHeldTransport else { return false }
+        guard !m.hasHeldTransport else { return false }
         guard let bound = boundSyncRequesterObject else { return true }
         return ObjectIdentifier(bound) == identity
     }

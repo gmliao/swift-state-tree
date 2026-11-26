@@ -56,7 +56,12 @@ private func clearDraft() -> SyncStreamDraft {
 /// An in-turn transport that calls back into its keeper synchronously from inside one of the
 /// keeper's synchronous calls, and reads its own gate and the keeper's mailbox right after the
 /// refused call returns.
-final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sendable {
+/// The settle fence the settle cases use: generation 1, a deadline far off.
+let turnSkeletonSettleFence = LandKeeper<TurnSkeletonState>.SettleFence(
+    generation: 1, deadline: ContinuousClock.now + .seconds(3600)
+)
+
+final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Sendable {
     enum Where {
         case nowhere
         /// `submitSyncStream` from the sync phase.
@@ -73,6 +78,13 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
         /// `submitSyncStream` from `runsSyncPhaseInTurn`, armed once the phase returned: the
         /// first of the joins-awaiting-sync read's two witnesses.
         case runsSyncPhaseWitness
+        /// `submitSyncStream` from the settle's in-turn check (`runsSyncPhaseInTurn`), armed by
+        /// `armSettleCheck()` once the keeper is attached and frozen.
+        case settleCheck
+        /// `submitSyncStream` from the settle phase.
+        case settlePhase
+        /// `settleTurn` from the settle phase: a second settle nested in the first.
+        case nestedSettle
     }
 
     private let lock = NSLock()
@@ -86,6 +98,8 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     private var mailboxAtReentry: LandFailure?
     private var phaseReturned = false
     private var joinsAsked = 0
+    private var settleCheckArmed = false
+    private var settlePhases = 0
 
     init(reenter: Where, joinsWait: Bool = false) {
         self.reenter = reenter
@@ -101,6 +115,10 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     var closeCount: Int { lock.withLock { closes } }
     /// How many times `hasJoinsAwaitingSync` was read.
     var joinsAskedCount: Int { lock.withLock { joinsAsked } }
+    /// How many settle phases ran.
+    var settlePhaseCount: Int { lock.withLock { settlePhases } }
+    /// From now on, `.settleCheck` re-enters from `runsSyncPhaseInTurn`.
+    func armSettleCheck() { lock.withLock { settleCheckArmed = true } }
 
     private func reenterNow() {
         guard let keeper = lock.withLock({ self.keeper }) else { return }
@@ -109,10 +127,12 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
             switch entry {
             case .phaseRequestingSyncTurn:
                 _ = keeper.syncTurnNow(via: self, reason: .syncNow)
+            case .nestedSettle:
+                _ = keeper.settleTurn(via: self, fence: turnSkeletonSettleFence)
             case .phaseOnDrainingLand:
                 keeper.markDrainingForTesting(cause: .forceShutdown)
                 keeper.submitSyncStream([outputDraft(99)])
-            case .phase, .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .nowhere:
+            case .phase, .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .settleCheck, .settlePhase, .nowhere:
                 keeper.submitSyncStream([outputDraft(99)])
             }
         }
@@ -147,6 +167,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     /// Read before the phase too (`inTurnSyncRecording`); re-enters only once the phase returned.
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool {
         if reenter == .runsSyncPhaseWitness, lock.withLock({ phaseReturned }) { reenterNow() }
+        if reenter == .settleCheck, lock.withLock({ settleCheckArmed }) { reenterNow() }
         return true
     }
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
@@ -157,7 +178,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
     ) -> InTurnSyncOutput {
         switch reenter {
         case .phase, .phaseRequestingSyncTurn, .phaseOnDrainingLand: reenterNow()
-        case .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .nowhere: break
+        case .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .settleCheck, .settlePhase, .nestedSettle, .nowhere: break
         }
         defer { lock.withLock { phaseReturned = true } }
         // Otherwise a success, so only the re-entry can fail the turn. Kept events would ask
@@ -167,6 +188,16 @@ final class TurnSkeletonReenteringTransport: LandKeeperTransport, @unchecked Sen
             syncStream: reenter == .draftFactory ? [reenteringDraft(), outputDraft(2)] : [outputDraft(1)],
             keepsEvents: reenter != .nowhere
         )
+    }
+
+    func runSettlePhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        settle: InTurnSettle,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        lock.withLock { settlePhases += 1 }
+        if reenter == .settlePhase || reenter == .nestedSettle { reenterNow() }
+        return InTurnSyncOutput(.notRequested, syncStream: [outputDraft(3)], settle: .empty(membershipEpoch: 0))
     }
 
     /// A draft whose factory re-enters when the keeper makes its entry.
@@ -415,6 +446,34 @@ struct KeeperTurnSkeletonTests {
         let outputs = await recorder.getAllFrames().flatMap(\.syncOutputs)
         #expect(outputs.map(\.broadcastHash) == [0xbeef_0001, 0xbeef_0002])
         #expect(outputs.map(\.streamIndex) == [counterBefore, counterBefore + 1])
+    }
+
+    /// The settle is a turn body (#700 K1b-5a step 2): each of its port calls goes through
+    /// `callOut`, and a settle requested from a callback is refused as a nested body.
+    @Test("A re-entry during the settle's port calls ends the land in the settle turn", arguments: [
+        TurnSkeletonReenteringTransport.Where.settleCheck, .settlePhase, .nestedSettle,
+    ])
+    func reentryDuringTheSettleEndsTheLand(at reenter: TurnSkeletonReenteringTransport.Where) async throws {
+        let (keeper, transport, tracker) = await attachedKeeper(reenter)
+        await keeper.awaitInitialization()
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(10)))
+        transport.armSettleCheck()
+
+        let outcome = await keeper.settleTurn(via: transport, fence: turnSkeletonSettleFence)
+
+        guard case .failed(let reported) = outcome else {
+            Issue.record("expected the settle to end the land, got \(outcome)")
+            return
+        }
+        #expect(reported.kind == .keeperReentry)
+        #expect(keeper.failure?.kind == .keeperReentry)
+        #expect(await keeper.reentryViolationsForTesting == 1)
+        #expect(transport.closeCount == 1)
+        #expect(await keeper.bodyDepthForTesting == 0)
+        // A re-entry at the in-turn check ends the land before the phase runs; nothing of the
+        // refused phase is recorded, and the turn ends with the terminal entry.
+        #expect(transport.settlePhaseCount == (reenter == .settleCheck ? 0 : 1))
+        #expect(tracker.traceForTesting == ["terminal", "endTurn"])
     }
 
     /// The body applies `.failed` while it holds the keeper's model: `failLand` runs inside the
