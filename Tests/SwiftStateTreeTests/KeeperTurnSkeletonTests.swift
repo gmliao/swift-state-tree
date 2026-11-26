@@ -207,8 +207,8 @@ final class TurnSkeletonFailingPhaseTransport: LandKeeperTransport, @unchecked S
 }
 
 /// A port the keeper is bound to (never attached) whose sync phase trips the sentinel and then
-/// attaches another transport synchronously, as a misbehaving callback could: the gate the
-/// sentinel closed is no longer the one `failLand` reaches.
+/// tries to attach another transport synchronously, as a misbehaving callback could. The attach
+/// is refused too, as the other adapter-facing entries are during a body.
 final class TurnSkeletonAttachingTransport: LandKeeperTransport, @unchecked Sendable {
     private let lock = NSLock()
     private weak var keeper: LandKeeper<TurnSkeletonState>?
@@ -233,7 +233,7 @@ final class TurnSkeletonAttachingTransport: LandKeeperTransport, @unchecked Send
     ) -> InTurnSyncOutput {
         if let keeper = lock.withLock({ self.keeper }) {
             let replacement = self.replacement
-            keeper.assumeIsolated { keeper in // lint-allow: turns-isolated: a re-entry that then attaches another transport
+            keeper.assumeIsolated { keeper in // lint-allow: turns-isolated: a re-entry that then tries to attach another transport
                 keeper.submitSyncStream([outputDraft(7)])
                 keeper.setTransport(replacement)
             }
@@ -356,8 +356,8 @@ struct KeeperTurnSkeletonTests {
         #expect(await keeper.lateReentriesAppliedForTesting == 0)
     }
 
-    @Test("A transport attached after the sentinel closed the bound requester still gets its close; each gate closes once")
-    func transportAttachedAfterTheTripGetsItsClose() async throws {
+    @Test("An attach during a turn body is refused: the bound requester stays the gate, closed once, and the land ends")
+    func attachDuringABodyIsRefused() async throws {
         let keeper = makeKeeper(recording: false)
         let port = TurnSkeletonAttachingTransport()
         port.bind(keeper)
@@ -370,10 +370,12 @@ struct KeeperTurnSkeletonTests {
             return
         }
         #expect(reported.kind == .keeperReentry)
+        // Both re-entries refused; the gate they reach is the bound requester, closed once (a
+        // second refusal and `failLand` skip the gate already closed).
+        #expect(await keeper.reentryViolationsForTesting == 2)
         #expect(port.closeCount == 1)
-        // `failLand` reached the transport attached during the body: a different gate, closed.
-        #expect(port.replacement.closeCount == 1)
-        #expect(await keeper.reentryViolationsForTesting == 1)
+        // The replacement was never attached, so nothing reached it.
+        #expect(port.replacement.closeCount == 0)
     }
 
     @Test("A failing sync phase's drafts are recorded in order, then the terminal entry, then the turn's end; teardown adds nothing")

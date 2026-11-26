@@ -551,7 +551,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// stops the process (`fatalError`, every build): a live keeper syncs only in its turns, so it
     /// would get no output (#546 L2d). An adapter built for another keeper is refused the same
     /// way. `nil` and re-evaluation keepers are exempt.
+    ///
+    /// Called synchronously while one of the keeper's turn bodies runs (a callback during a port
+    /// call), it is refused and changes nothing, and the land ends with
+    /// `LandFailure.Kind.keeperReentry` (#700 K1b-5a), as the other adapter-facing entries are.
     public func setTransport(_ transport: LandKeeperTransport?) {
+        guard bodyDepth == 0 else {
+            noteReentry(through: "setTransport")
+            return
+        }
         if !model.destructionFinished {
             Self.refuseTransportWithoutInTurnPhase(transport, mode: behavior.config.mode, landID: behavior.config.actualLandID ?? definition.id, keeper: self)
         }
@@ -5574,7 +5582,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         if reentryFailure == nil { reentryFailure = reported }
         notePendingFailure(reported)
-        if let gate = transport ?? boundSyncRequester, !closingGateForReentry {
+        // A gate the sentinel already closed isn't closed again by a further refusal in the turn.
+        if let gate = transport ?? boundSyncRequester, !closingGateForReentry,
+           !(Self.gateObject(gate).map { $0 === reentryClosedGate } ?? false) {
             closingGateForReentry = true
             defer { closingGateForReentry = false }
             gate.closeOutputs(for: reported)
