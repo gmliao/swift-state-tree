@@ -53,21 +53,50 @@ jobs:
     # Non-blocking only because the check is not required; keep it out of the required checks.
     continue-on-error: true
     timeout-minutes: 60
+    env:
+      # One place for the toolchain version: the install step and the build cache key both read it, so a
+      # bump cannot restore dependency builds made with the old compiler.
+      SWIFT_VERSION: 6.4.3
 
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-    # The action installs release 6.4.3 on a hosted runner. It is pinned by full commit SHA, but the
+    # The action installs the release named by SWIFT_VERSION on a hosted runner. It is pinned by full commit SHA, but the
     # Linux jobs also pin the image by digest; this action downloads the installer without a pinned
     # digest, so the parity is partial.
-    - name: Install Swift 6.4.3
+    - name: Install Swift
       uses: compnerd/gha-setup-swift@9ff1ee4c44888c5817fc14d1b257ac8cabb4935f # v0.5.1
       with:
-        swift-version: swift-6.4.3-release
-        swift-build: 6.4.3-RELEASE
+        swift-version: swift-${{ env.SWIFT_VERSION }}-release
+        swift-build: ${{ env.SWIFT_VERSION }}-RELEASE
 
     - name: Show toolchain
       run: swift --version
+
+    # Build cache (#878, option 1): the root package's .build only, which holds its dependency
+    # checkouts and the compiled dependencies (swift-syntax and the rest); the repository's own
+    # modules rebuild because the checkout gives their sources new mtimes. Examples/Demo/.build is NOT
+    # cached: it depends on the library by path, and an incremental build of such a package can run
+    # objects compiled against two struct layouts (Notes/solutions/2026-11-19-a-stale-example-build-
+    # crashes-after-a-library-layout-change.md; CI builds each package fresh so far). Keyed by exact
+    # key only (no restore-keys): the runner image (its MSVC and SDK), the toolchain, and the two named
+    # package files; never a '**' glob, which the post step would evaluate again over .build.
+    # actions/cache saves in its post step, only when the job succeeded and the key was not an exact hit.
+    - name: Build cache key
+      id: buildcache
+      shell: bash
+      run: echo "image=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+    - name: Build cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        # The debug and release links are left out: the build makes its own, and a restored one made
+        # SwiftPM warn that the link already exists (and left .build/debug pointing at the cached tree).
+        path: |
+          .build
+          !.build/debug
+          !.build/release
+        key: swiftbuild-${{ runner.os }}-${{ steps.buildcache.outputs.image }}-${{ env.SWIFT_VERSION }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
 
     # Same single debug build that every test run reuses, as on Linux.
     # Not built on Windows: SwiftStateTreeNIOProvisioning (left out of the manifest there).
