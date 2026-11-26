@@ -206,15 +206,26 @@ extension DifferentialHarness {
             #expect(DiffGolden.corruption(of: record) != nil, "an edited record view")
         }
 
-        @Test(
-            "The harness waits for the writer's sync-cycle drain before the step's sync and tick (#917)",
-            arguments: [DiffLandKind.tick, DiffLandKind.tickless]
-        )
-        func harnessSyncWaitsForTheWriter(land: DiffLandKind) async throws {
+        // Two tests, not one with arguments: the gate script names each test `name()` in the
+        // results, which a parameterized test's `name(land:)` doesn't match.
+        @Test("The harness waits for the writer's sync-cycle drain before the tick land's tick (#917)")
+        func harnessTickWaitsForTheWriter() async throws {
+            try await harnessSyncWaitsForTheWriter(land: .tick)
+        }
+
+        @Test("The harness waits for the writer's sync-cycle drain before the tickless land's sync (#917)")
+        func harnessSyncWaitsForTheWriter() async throws {
+            try await harnessSyncWaitsForTheWriter(land: .tickless)
+        }
+
+        private func harnessSyncWaitsForTheWriter(land: DiffLandKind) async throws {
             // The writer can't be held from here: the transport's `send` hands each frame to its
             // connection in a task, so the writer's element retires before any connection-level
-            // gate. The harness's own seam is the drain hook, called by the drain it waits for.
+            // gate. The harness's own seam is the drain observer, called by each drain it waits
+            // for, before the wait. (A drain that calls the observer and skips the wait passes
+            // this check; only the sweep's deferral count, which depends on timing, would see it.)
             let seen = DrainObservation()
+            let site: DiffDrainSite = land == .tick ? .tick : .beforeSync
             let scenario = DiffScenario(
                 name: "self-check-writer-drain",
                 cells: .all,
@@ -224,15 +235,16 @@ extension DifferentialHarness {
                     .bumpUnsynced("A", requestID: "bump-a", amount: 1),
                     .tickUnsynced,
                     .check("the next drain is observed") { run in
-                        let connection = try run.attempt("A").connection
                         let deferred = await run.adapter.syncSkipCounts().outboundBacklog
-                        let frames = await connection.frames.count
-                        run.drainWaitHookForTesting = { run in
-                            // Nothing of the next step has run yet: no phase was deferred, and the
-                            // bump's diff hasn't reached A.
+                        let outputs = await run.adapter.syncOutputDigestCountForTesting
+                        run.drainObserverForTesting = { run, reached in
+                            guard reached == site, !seen.recorded else { return }
+                            // Nothing of the next step has run yet: no phase was deferred, and no
+                            // phase planned an output (the count moves inside the phase, in the
+                            // keeper's turn, so this doesn't depend on the writer's timing).
                             seen.record(
                                 deferredSince: await run.adapter.syncSkipCounts().outboundBacklog - deferred,
-                                framesSince: await connection.frames.count - frames
+                                outputsSince: await run.adapter.syncOutputDigestCountForTesting - outputs
                             )
                         }
                     },
@@ -245,11 +257,45 @@ extension DifferentialHarness {
             )
             let cell = DiffCell(sync: .inTurn, encoding: .json, land: land)
             let result = try await DiffRun.make(scenario, cell: cell).execute()
-            let observed = try #require(seen.value, "the step ran no writer drain")
-            #expect(observed.deferredSince == 0 && observed.framesSince == 0, "the step's phase ran before the drain: \(observed)")
-            // And the step's sync did deliver the bump afterwards.
-            let frames = try #require(result.live.connections["A"]?.frames.count)
-            #expect(frames > 0)
+            let observed = try #require(seen.value, "the step ran no writer drain at \(site)")
+            #expect(observed.deferredSince == 0 && observed.outputsSince == 0, "the step's phase ran before the drain: \(observed)")
+            #expect(result.diagnostics.syncPhasesDeferredByBackPressure == 0, "\(result.diagnostics.summary)")
+            // And the step's sync delivered the bump afterwards.
+            let frames = try #require(result.live.connections["A"]?.frames)
+            #expect(frames.contains { DiffValue.canonicalText($0.decoded).contains("\"/counter\"") }, "A never got the bump's update")
+        }
+
+        @Test("A kick's leave and a join's sync request wait for the writer's drain too (#917)")
+        func keeperPhasesWaitForTheWriter() async throws {
+            // second-session: A2's join kicks A (a keeper leave), then asks for A2's join sync turn.
+            let scenario = try #require(diffScenarios.first { $0.name == "second-session" })
+            let events = DrainEvents()
+            let run = try await DiffRun.make(scenario, cell: DiffCell(sync: .inTurn, encoding: .json, land: .tickless))
+            // The observer lives on this run only, and goes with it.
+            run.drainObserverForTesting = { _, site in events.append("drain \(site)") }
+            // Registered after `make`, as a scenario's armed hold is: it must run after the
+            // harness's body at the same point (HoldRegistry runs a point's bodies in
+            // registration order, one after another), so the writer has drained when it runs.
+            let writer = await run.adapter.outboundWriter
+            run.holds.keeper.on(.leave) {
+                events.append("scenario leave, writer drained: \(writer.backlog.syncCycleElements == 0)")
+            }
+            run.holds.adapter.on(.joinSyncRequested) {
+                events.append("scenario joinSync, writer drained: \(writer.backlog.syncCycleElements == 0)")
+            }
+            let result = try await run.execute()
+            let all = events.all
+            let leaves = all.indices.filter { all[$0].hasPrefix("scenario leave") }
+            let joinSyncs = all.indices.filter { all[$0].hasPrefix("scenario joinSync") }
+            #expect(!leaves.isEmpty && !joinSyncs.isEmpty, "\(all)")
+            for index in leaves {
+                #expect(index > 0 && all[index - 1] == "drain keeperLeave", "\(all)")
+                #expect(all[index].hasSuffix("true"), "\(all)")
+            }
+            for index in joinSyncs {
+                #expect(index > 0 && all[index - 1] == "drain joinSyncRequest", "\(all)")
+                #expect(all[index].hasSuffix("true"), "\(all)")
+            }
             #expect(result.diagnostics.syncPhasesDeferredByBackPressure == 0, "\(result.diagnostics.summary)")
         }
 
@@ -432,19 +478,28 @@ extension DifferentialHarness {
     }
 }
 
-/// What the harness's drain hook saw, once.
+/// What the harness's drain observer saw, once.
 private final class DrainObservation: @unchecked Sendable {
     struct Value: CustomStringConvertible {
         let deferredSince: Int
-        let framesSince: Int
-        var description: String { "deferred since \(deferredSince), frames to A since \(framesSince)" }
+        let outputsSince: Int
+        var description: String { "deferred since \(deferredSince), outputs since \(outputsSince)" }
     }
     private let lock = NSLock()
     private var stored: Value?
     var value: Value? { lock.withLock { stored } }
-    func record(deferredSince: Int, framesSince: Int) {
-        lock.withLock { stored = Value(deferredSince: deferredSince, framesSince: framesSince) }
+    var recorded: Bool { value != nil }
+    func record(deferredSince: Int, outputsSince: Int) {
+        lock.withLock { if stored == nil { stored = Value(deferredSince: deferredSince, outputsSince: outputsSince) } }
     }
+}
+
+/// What ran at the harness's drains and at a scenario's holds, in order.
+private final class DrainEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [String] = []
+    var all: [String] { lock.withLock { events } }
+    func append(_ event: String) { lock.withLock { events.append(event) } }
 }
 
 /// A writer that reads busy once after `arm()`.

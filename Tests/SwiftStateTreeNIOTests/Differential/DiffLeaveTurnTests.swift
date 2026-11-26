@@ -5,7 +5,8 @@
 // that turn ran moved the turn's sync phase into a sync-only turn after the cycle's `endSync`,
 // so the record's output after the leave's pass read `syncOnly` instead of `tick`. The row pins
 // the order with `awaitDisconnectForwards` (and a flush before the leave, against the writer's
-// back-pressure). This test checks the pinned row's output at the flake's index.
+// back-pressure). This test checks the pinned row's first output after the leave's pass (at
+// the flake's index, `syncOutputs[3]`, then).
 //
 // Its other half held a legacy cycle over the leave's turn and checked the latch. Since #546 L2a
 // an in-turn `syncNow()` is a sync-only turn, so no legacy cycle can be held there; that half is

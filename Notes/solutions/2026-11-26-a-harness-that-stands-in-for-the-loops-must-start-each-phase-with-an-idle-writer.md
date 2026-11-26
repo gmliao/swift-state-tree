@@ -36,10 +36,11 @@ The harness turns the keeper's loops off and runs each tick and sync itself. A s
 
 ## Fix
 
-Before every sync it runs and before each tick, the harness waits for the writer's sync-cycle drain (`outboundWriter.waitForSyncCycleDrain()`, with no test override), and it waits again after the sync. No harness phase starts behind a pending element, so no run depends on the connections' speed. The goldens didn't change: they were recorded without back-pressure. The run reports its deferrals beside its differences (not compared), and the sweep fails a cell that deferred a phase outside the scenario that forces the back-pressure. It also fails that scenario if it reports none.
+Before every sync it runs and before each tick, the harness waits for the writer's sync-cycle drain (`outboundWriter.waitForSyncCycleDrain()`, with no test override), and it waits again after the sync. The phases the keeper starts on its own inside a step wait too: a leave's turn (a disconnect, a kick, the stop's leaves) at the keeper's `leave` hold, and a join's sync turn at the adapter's `joinSyncRequested` hold. There the harness first waits for the keeper's input drain to go idle (tickless), then for the writer. A first version drained only around the harness's own syncs; review found two keeper-started pairs (the stop's two leaves, a kick followed by the replacement's join sync) that could still meet a pending element. No phase starts behind a pending element, so no run depends on the connections' speed. The goldens didn't change: they were recorded without back-pressure. The run reports its deferrals beside its differences (not compared), and the sweep fails a cell that deferred a phase outside the scenario that forces the back-pressure. It also fails that scenario if it reports none.
 
 ## Prevention
 
+- List every place a phase starts, not only the ones the harness calls: the component under test starts some on its own (here leaves, kicks and join syncs), and those need the same settling.
 - A harness that replaces a timer or a loop with explicit steps must also remove the timing-dependent conditions the loop would have absorbed. Here that condition was the writer's backlog; it could be another queue's depth or an in-flight cycle. Settle it at each step, and count it, so a run that met it says so.
 - Don't loosen the oracle where the condition hits. That's exactly where a real merge bug would show.
 - Test the behaviour under the condition in its own row, which forces it with a gate or an override. Then check that the row really forced it.

@@ -26,6 +26,7 @@
 // A class with ` deferred=N` had N deferrals instead of m: the writer was really busy as well
 // (the scenario forces it), or a burst deferred one phase, or more than two.
 
+#if DEBUG
 import Foundation
 import Testing
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
@@ -68,108 +69,122 @@ private final class DeferralWindow: @unchecked Sendable {
     }
 }
 
-@Suite(
-    "PROBE #917: deferred sync phases against a baseline",
-    .enabled(if: EnvHelpers.getEnvBool(key: DiffBackPressureProbeEnvKeys.enabled, defaultValue: false)),
-    .serialized
-)
-struct DiffBackPressureProbeTests {
-    private struct Output: Equatable, CustomStringConvertible {
-        let kind: String
-        let afterPass: Int64?
-        let sequence: Int64?
-        var description: String { "(\(kind) p\(afterPass.map(String.init) ?? "-") s\(sequence.map(String.init) ?? "-"))" }
-    }
+// Under the harness's serialized parent: the probe and the harness suites both reset the
+// process-wide resolver gates (`DiffGates`), so they must not run side by side.
+extension DifferentialHarness {
+    @Suite(
+        "PROBE #917: deferred sync phases against a baseline",
+        .enabled(if: EnvHelpers.getEnvBool(key: DiffBackPressureProbeEnvKeys.enabled, defaultValue: false)),
+        .resolverDeadlinesOff,
+        .serialized
+    )
+    struct DiffBackPressureProbeTests {
+        private struct Output: Equatable, CustomStringConvertible {
+            let kind: String
+            let afterPass: Int64?
+            let sequence: Int64?
+            var description: String { "(\(kind) p\(afterPass.map(String.init) ?? "-") s\(sequence.map(String.init) ?? "-"))" }
+        }
 
-    /// Every frame's sync outputs, in order.
-    private static func outputs(_ result: DiffRunResult) -> [Output] {
-        guard case .object(let root) = result.record.decoded, case .array(let frames)? = root["frames"] else { return [] }
-        return frames.flatMap { frame -> [Output] in
-            guard case .object(let fields) = frame, case .array(let outputs)? = fields["syncOutputs"] else { return [] }
-            return outputs.compactMap { output in
-                guard case .object(let o) = output, case .string(let kind)? = o["turnKind"] else { return nil }
-                func integer(_ key: String) -> Int64? { if case .int(let v)? = o[key] { return v }; return nil }
-                return Output(kind: kind, afterPass: integer("afterPass"), sequence: integer("sequence"))
+        /// Every frame's sync outputs, in order.
+        private static func outputs(_ result: DiffRunResult) -> [Output] {
+            guard case .object(let root) = result.record.decoded, case .array(let frames)? = root["frames"] else { return [] }
+            return frames.flatMap { frame -> [Output] in
+                guard case .object(let fields) = frame, case .array(let outputs)? = fields["syncOutputs"] else { return [] }
+                return outputs.compactMap { output in
+                    guard case .object(let o) = output, case .string(let kind)? = o["turnKind"] else { return nil }
+                    func integer(_ key: String) -> Int64? { if case .int(let v)? = o[key] { return v }; return nil }
+                    return Output(kind: kind, afterPass: integer("afterPass"), sequence: integer("sequence"))
+                }
             }
         }
-    }
 
-    private static func run(_ scenario: DiffScenario, _ cell: DiffCell, window: DeferralWindow?) async throws -> DiffRunResult {
-        let run = try await DiffRun.make(scenario, cell: cell)
-        if let window {
-            let adapter = run.adapter
-            await adapter.setWriterBackPressureOverrideForTesting { window.busy() }
+        private static func run(_ scenario: DiffScenario, _ cell: DiffCell, window: DeferralWindow?) async throws -> DiffRunResult {
+            let run = try await DiffRun.make(scenario, cell: cell)
+            if let window {
+                let adapter = run.adapter
+                await adapter.setWriterBackPressureOverrideForTesting { window.busy() }
+            }
+            return try await run.execute()
         }
-        return try await run.execute()
-    }
 
-    /// `same`, `merged` (fewer outputs), `kind` (same count, a turn kind changed), `outputs`
-    /// (same count and kinds, other fields), `clients` (outputs equal, frames or closes differ).
-    private static func classify(_ base: DiffRunResult, _ armed: DiffRunResult) -> (String, String) {
-        let a = outputs(base), b = outputs(armed)
-        let clients = DiffCompare.compare(base.live, armed.live, checkpoint: "live", checkBytes: false)
-            + DiffCompare.compare(base.terminal, armed.terminal, checkpoint: "terminal", checkBytes: false)
-        let record = DiffCompare.compareRecord(base.record, armed.record, checkBytes: false)
-        let detail = "\(a) -> \(b)" + (clients.first.map { "; first client difference: \($0)" } ?? "")
-        if b.count < a.count { return ("merged", detail) }
-        if b.count > a.count { return ("extra", detail) }
-        if a.map(\.kind) != b.map(\.kind) { return ("kind", detail) }
-        if a != b { return ("outputs", detail) }
-        if !clients.isEmpty { return ("clients", detail) }
-        if !record.isEmpty { return ("record", "\(record.first!)") }
-        return ("same", "")
-    }
+        /// `same`, `merged` (fewer outputs), `kind` (same count, a turn kind changed), `outputs`
+        /// (same count and kinds, other fields), `clients` (outputs equal, frames or closes differ).
+        private static func classify(_ base: DiffRunResult, _ armed: DiffRunResult) -> (String, String) {
+            let a = outputs(base), b = outputs(armed)
+            let clients = DiffCompare.compare(base.live, armed.live, checkpoint: "live", checkBytes: false)
+                + DiffCompare.compare(base.terminal, armed.terminal, checkpoint: "terminal", checkBytes: false)
+            let record = DiffCompare.compareRecord(base.record, armed.record, checkBytes: false)
+            let detail = "\(a) -> \(b)" + (clients.first.map { "; first client difference: \($0)" } ?? "")
+            if b.count < a.count { return ("merged", detail) }
+            if b.count > a.count { return ("extra", detail) }
+            if a.map(\.kind) != b.map(\.kind) { return ("kind", detail) }
+            if a != b { return ("outputs", detail) }
+            if !clients.isEmpty { return ("clients", detail) }
+            if !record.isEmpty { return ("record", "\(record.first!)") }
+            return ("same", "")
+        }
 
-    @Test("PROBE #917: every deferral window on every in-turn cell")
-    func sweep() async throws {
-        let land = EnvHelpers.getEnvString(key: DiffBackPressureProbeEnvKeys.land, defaultValue: "")
-        let repeats = max(1, EnvHelpers.getEnvInt(key: DiffBackPressureProbeEnvKeys.repeats, defaultValue: 1))
-        var tally: [String: Int] = [:]
-        var lines: [String] = []
-        for scenario in diffScenarios {
-            for cell in scenario.cells.cells where cell.sync == .inTurn && (land.isEmpty || cell.land.rawValue == land) {
-                let counter = DeferralWindow(start: .max, burst: 0)
-                let base: DiffRunResult
-                do { base = try await Self.run(scenario, cell, window: counter) } catch {
-                    lines.append("\(scenario.name) \(cell) baseline threw: \(error)")
-                    continue
-                }
-                let reads = counter.readCount
-                tally["baseline \(cell.land.rawValue) deferred=\(base.diagnostics.syncPhasesDeferredByBackPressure)", default: 0] += 1
-                for k in 1...max(1, reads) {
-                    for m in 1...2 {
-                        // The classes over the repeats: a race shows as more than one.
-                        var classes: [String: Int] = [:]
-                        var details: [String: String] = [:]
-                        for _ in 0..<repeats {
-                            let key: String
-                            var detail = ""
-                            var deferred = -1
-                            do {
-                                let armed = try await Self.run(scenario, cell, window: DeferralWindow(start: k, burst: m == 1 ? 1 : 50))
-                                deferred = armed.diagnostics.syncPhasesDeferredByBackPressure
-                                (key, detail) = Self.classify(base, armed)
-                            } catch {
-                                key = "threw"
-                                detail = "\(error)"
+        @Test("PROBE #917: every deferral window on every in-turn cell")
+        func sweep() async throws {
+            let land = EnvHelpers.getEnvString(key: DiffBackPressureProbeEnvKeys.land, defaultValue: "")
+            let repeats = max(1, EnvHelpers.getEnvInt(key: DiffBackPressureProbeEnvKeys.repeats, defaultValue: 1))
+            guard land.isEmpty || DiffLandKind(rawValue: land) != nil else {
+                Issue.record("DIFF_BACKPRESSURE_PROBE_LAND is \(land): tick, tickless, or unset")
+                return
+            }
+            var tally: [String: Int] = [:]
+            var lines: [String] = []
+            var cells = 0
+            for scenario in diffScenarios {
+                for cell in scenario.cells.cells where cell.sync == .inTurn && (land.isEmpty || cell.land.rawValue == land) {
+                    let counter = DeferralWindow(start: .max, burst: 0)
+                    let base: DiffRunResult
+                    do { base = try await Self.run(scenario, cell, window: counter) } catch {
+                        // No baseline, no evidence for this cell: the probe fails.
+                        Issue.record("\(scenario.name) \(cell): the baseline threw: \(error)")
+                        continue
+                    }
+                    cells += 1
+                    let reads = counter.readCount
+                    tally["baseline \(cell.land.rawValue) deferred=\(base.diagnostics.syncPhasesDeferredByBackPressure)", default: 0] += 1
+                    for k in 1..<(reads + 1) {
+                        for m in 1...2 {
+                            // The classes over the repeats: a race shows as more than one.
+                            var classes: [String: Int] = [:]
+                            var details: [String: String] = [:]
+                            for _ in 0..<repeats {
+                                let key: String
+                                var detail = ""
+                                var deferred = -1
+                                do {
+                                    let armed = try await Self.run(scenario, cell, window: DeferralWindow(start: k, burst: m == 1 ? 1 : 50))
+                                    deferred = armed.diagnostics.syncPhasesDeferredByBackPressure
+                                    (key, detail) = Self.classify(base, armed)
+                                } catch {
+                                    key = "threw"
+                                    detail = "\(error)"
+                                }
+                                let label = key + (deferred == m || key == "threw" ? "" : " deferred=\(deferred)")
+                                classes[label, default: 0] += 1
+                                if details[label] == nil { details[label] = detail }
                             }
-                            let label = key + (deferred == m || key == "threw" ? "" : " deferred=\(deferred)")
-                            classes[label, default: 0] += 1
-                            if details[label] == nil { details[label] = detail }
-                        }
-                        let distribution = classes.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
-                        tally["\(cell.land.rawValue) m=\(m) [\(distribution.replacingOccurrences(of: #"\d+"#, with: "n", options: .regularExpression))]", default: 0] += 1
-                        if classes.keys.contains(where: { $0 != "same" }) {
-                            lines.append("\(scenario.name) \(cell) k=\(k)/\(reads) m=\(m) [\(distribution)]")
-                            for (label, detail) in details.sorted(by: { $0.key < $1.key }) where label != "same" {
-                                lines.append("    \(label): \(detail)")
+                            let distribution = classes.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+                            tally["\(cell.land.rawValue) m=\(m) [\(distribution.replacingOccurrences(of: #"\d+"#, with: "n", options: .regularExpression))]", default: 0] += 1
+                            if classes.keys.contains(where: { $0 != "same" }) {
+                                lines.append("\(scenario.name) \(cell) k=\(k)/\(reads) m=\(m) [\(distribution)]")
+                                for (label, detail) in details.sorted(by: { $0.key < $1.key }) where label != "same" {
+                                    lines.append("    \(label): \(detail)")
+                                }
                             }
                         }
                     }
                 }
             }
+            #expect(cells > 0, "the probe compared no cell")
+            for line in lines { print("probe917 \(line)") }
+            for (label, count) in tally.sorted(by: { $0.key < $1.key }) { print("probe917 tally \(label): \(count)") }
         }
-        for line in lines { print("probe917 \(line)") }
-        for (label, count) in tally.sorted(by: { $0.key < $1.key }) { print("probe917 tally \(label): \(count)") }
     }
 }
+#endif

@@ -128,6 +128,20 @@ struct DiffRunResult: Codable, Equatable, Sendable {
     }
 }
 
+/// Where the harness waits for the writer's sync-cycle drain.
+enum DiffDrainSite: Hashable, Sendable {
+    /// `sync()`, before its `syncNow`.
+    case beforeSync
+    /// `sync()`, after its background syncs.
+    case afterSync
+    /// A tick the harness steps, before it.
+    case tick
+    /// The start of a keeper leave (a disconnect, a kick, the stop's leaves), before its turn.
+    case keeperLeave
+    /// A join's sync request, before the keeper's join sync turn.
+    case joinSyncRequest
+}
+
 /// A run's counters that depend on timing, reported beside a cell's differences (#908).
 struct DiffRunDiagnostics: Equatable, Sendable {
     /// In-turn sync phases the writer's back-pressure deferred (`syncSkipCounts().outboundBacklog`).
@@ -178,6 +192,18 @@ final class DiffRun: @unchecked Sendable {
     private var stopTask: Task<StopLandResult, Never>?
     /// Attempts whose client disconnected: no longer live, though their connection isn't closed.
     private(set) var disconnected: Set<String> = []
+    /// Failures of the harness's own hold bodies, which can't throw: the step they ran in fails.
+    private let holdBodyFailureLock = NSLock()
+    private var holdBodyFailures: [String] = []
+
+    func recordHoldBodyFailure(_ failure: String) {
+        holdBodyFailureLock.withLock { holdBodyFailures.append(failure) }
+    }
+
+    private func throwHoldBodyFailures() throws {
+        let failures = holdBodyFailureLock.withLock { holdBodyFailures }
+        if !failures.isEmpty { throw DiffRunFailure("a harness hold body failed: \(failures.joined(separator: "; "))") }
+    }
 
     var transport: WebSocketTransport { server.transport }
     var router: LandRouter<DiffState> { server.landRouter }
@@ -248,6 +274,28 @@ final class DiffRun: @unchecked Sendable {
                 await keeper.waitForInputDrainIdleForTesting()
             }
         }
+        // The phases the keeper starts on its own inside a step (a leave's turn, a kick's, the
+        // stop's leaves, a join's sync turn) don't go through the harness's `sync()`, so they
+        // wait here instead: the input turns before them are applied (tickless), then the writer
+        // drains, so none finds an earlier phase's element still queued (#917). Registered
+        // first, so a scenario's own hold at these points comes after.
+        let landIsTickless = cell.land == .tickless
+        let writer = await container.transportAdapter.outboundWriter
+        // Bounded like every harness wait: a hold body can't throw, so a wait that runs out is
+        // recorded on the run, the hold goes on, and the step fails with its name.
+        let settle: @Sendable (DiffDrainSite) async -> Void = { [weak run, keeper = container.keeper] site in
+            do {
+                if landIsTickless {
+                    try await bounded("the keeper's input drain before \(site)") { await keeper.waitForInputDrainIdleForTesting() }
+                }
+                if let run, let observer = run.drainObserverForTesting { await observer(run, site) }
+                try await bounded("the writer's sync-cycle drain before \(site)") { await writer.waitForSyncCycleDrain() }
+            } catch {
+                run?.recordHoldBodyFailure("\(error)")
+            }
+        }
+        run.holds.keeper.on(.leave) { await settle(.keeperLeave) }
+        run.holds.adapter.on(.joinSyncRequested) { await settle(.joinSyncRequest) }
         await container.keeper.installHolds(run.holds.keeper.hook)
         server.stopFlightsForTesting.onAfterSessionsClosedForTesting { [holds = run.holds] _ in
             await holds.gate(.stopSessionsClosed)?.arrive()
@@ -255,9 +303,9 @@ final class DiffRun: @unchecked Sendable {
         return run
     }
 
-    /// Called once, by the next writer drain the harness waits for, before it waits (a
-    /// self-check's seam: it sees what ran before the drain, then lets the writer drain).
-    var drainWaitHookForTesting: (@Sendable (DiffRun) async -> Void)?
+    /// Called by every writer drain the harness waits for, before it waits, with where the
+    /// drain is (a self-check's seam: it sees what ran before the drain).
+    var drainObserverForTesting: (@Sendable (DiffRun, DiffDrainSite) async -> Void)?
 
     /// Runs the scenario: its steps, then the stop (unless a step stopped the land), the
     /// terminal capture and the record. Cleans up whatever happens.
@@ -266,6 +314,7 @@ final class DiffRun: @unchecked Sendable {
             for (index, step) in scenario.steps.enumerated() {
                 do {
                     try await run(step)
+                    try throwHoldBodyFailures()
                 } catch let failure as DiffRunFailure {
                     throw DiffRunFailure("step \(index + 1) (\(Self.name(of: step))): \(failure)")
                 }
@@ -273,6 +322,7 @@ final class DiffRun: @unchecked Sendable {
             guard let live else { throw DiffRunFailure("no live checkpoint: a scenario must have one") }
             if !stopped { try await stop() }
             try await barrier()
+            try throwHoldBodyFailures()
             let terminal = try await capture()
             let record = try await saveRecord()
             let deferred = await adapter.syncSkipCounts().outboundBacklog
@@ -280,15 +330,13 @@ final class DiffRun: @unchecked Sendable {
             var result = DiffRunResult(live: live, terminal: terminal, record: record)
             result.diagnostics.syncPhasesDeferredByBackPressure = deferred
             return result
-        } catch let failure as DiffRunFailure {
-            // A run that fails names the deferrals it went through too, so a red cell shows
-            // them without a rerun (#908).
+        } catch {
+            // A run that fails names the deferrals it went through too, whatever failed, so a
+            // red cell shows them without a rerun (#908).
             let diagnostics = DiffRunDiagnostics(syncPhasesDeferredByBackPressure: await adapter.syncSkipCounts().outboundBacklog)
             await cleanUp()
-            throw diagnostics.summary.isEmpty ? failure : DiffRunFailure("\(failure) (\(diagnostics.summary))")
-        } catch {
-            await cleanUp()
-            throw error
+            if diagnostics.summary.isEmpty { throw error }
+            throw DiffRunFailure("\(error) (\(diagnostics.summary))")
         }
     }
 
@@ -600,7 +648,7 @@ final class DiffRun: @unchecked Sendable {
 
     /// One tick and the sync cycle after it: the tick loop and the sync loop, once each.
     private func stepTick() async throws {
-        try await drainWriter()
+        try await drainWriter(.tick)
         await keeper.stepTickOnce()
         try await sync()
     }
@@ -608,19 +656,16 @@ final class DiffRun: @unchecked Sendable {
     /// One sync cycle, and the retry a skipped one schedules in the background (a cycle in
     /// flight, or the writer's backlog): with the loops off nothing else would order it.
     private func sync() async throws {
-        try await drainWriter()
+        try await drainWriter(.beforeSync)
         await adapter.syncNow()
         try await bounded("the background syncs") { [adapter] in await adapter.waitForBackgroundSyncsForTesting() }
-        try await drainWriter()
+        try await drainWriter(.afterSync)
     }
 
     /// The writer holds no sync cycle element: a sync phase run next can't find it busy, so no
     /// run's phases depend on how fast the connections took the frames (#908, #917).
-    private func drainWriter() async throws {
-        if let hook = drainWaitHookForTesting {
-            drainWaitHookForTesting = nil
-            await hook(self)
-        }
+    private func drainWriter(_ site: DiffDrainSite) async throws {
+        if let observer = drainObserverForTesting { await observer(self, site) }
         try await bounded("the writer's sync cycle drain") { [writer = adapter.outboundWriter] in
             await writer.waitForSyncCycleDrain()
         }
@@ -802,6 +847,9 @@ final class DiffRun: @unchecked Sendable {
     /// the run's tasks, each under its own bound. Work left past the bounds touches only this
     /// run's instances.
     private func cleanUp() async {
+        // A forcing row's back-pressure goes first: with it in place, a writer-drain retry the
+        // opened holds let run would wait on it forever.
+        await adapter.setWriterBackPressureOverrideForTesting(nil)
         holds.openAll()
         DiffGates.openAll()
         if !stopped {
