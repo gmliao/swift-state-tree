@@ -784,11 +784,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        await runSyncRequests(outputCollector.syncRequestsByTick.removeValue(forKey: tickId))
+        await runSyncRequests(model.syncRequestsByTick.removeValue(forKey: tickId))
     }
 
     /// Runs the sync requests a tick's handlers made (`ctx.requestSyncNow()` and the like),
-    /// taken from `outputCollector.syncRequestsByTick` by the caller.
+    /// taken from `model.syncRequestsByTick` by the caller.
     private func runSyncRequests(_ requests: SyncRequests?) async {
         guard let req = requests else { return }
         // In-turn paths take their own requests; one left here runs as a sync-only turn (a
@@ -880,7 +880,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tests only: the ticks with sync requests still in the output collector.
     func syncRequestTicksForTesting() -> [Int64] {
-        outputCollector.syncRequestsByTick.keys.sorted()
+        model.syncRequestsByTick.keys.sorted()
     }
 
     /// Tests only: the ticks of the events still in the output collector, one entry per event.
@@ -1107,8 +1107,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
-        outputCollector.checksOverflow = mode == .reevaluation
-
 
         // The land's generator starts from a caller-registered service's seed (replay registers
         // the recorded one), else from the instance ID when known, else from definition.id. The
@@ -1117,6 +1115,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let rngSeed = services.get(DeterministicRngService.self)?.seed
             ?? DeterministicSeed.fromLandID(landID ?? definition.id)
         self.model = KeeperModel(state: initialState, landRandom: DeterministicRng(seed: rngSeed))
+        self.model.sequence.checksOverflow = mode == .reevaluation
         var resolvedServices = services.removing(DeterministicRngService.self)
 
         self.transport = transport
@@ -1157,6 +1156,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return await keeper.submitServerInputErased(input)
             },
             collector: outputCollector,
+            sequenceLease: KeeperSequenceLease(),
             drainFlag: drainFlag,
             transportFailure: pendingTransportFailure,
             transport: transport,
@@ -1365,8 +1365,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 .first(where: { $0.kind == LifecycleKind.initialize.rawValue })
         else { return }
         let resolverOutputs = replayedResolverOutputs(recorded.resolverOutputs)
-        outputCollector.nextSequence = record.sequence
-        _ = outputCollector.takeNextSequence()
+        model.sequence.next = record.sequence
+        _ = model.sequence.take()
         let ctx = model.makeContext(behavior, turnSide,
             playerID: behavior.config.systemPlayerID,
             clientID: behavior.config.systemClientID,
@@ -1477,7 +1477,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Record it as a lifecycle event under tick 0 so replay can apply it deterministically
         // before the first tick handler runs.
         if behavior.config.mode == .live, let handler = definition.lifetimeHandlers.onInitialize {
-            let sequence = outputCollector.takeNextSequence()
+            let sequence = model.sequence.take()
 
             var ctx = model.makeContext(behavior, turnSide,
                 playerID: behavior.config.systemPlayerID,
@@ -2621,7 +2621,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 await applyShutdownTurnBetweenTicks()
             }
         } else {
-            let sequence = outputCollector.takeNextSequence()
+            let sequence = model.sequence.take()
             model.pendingItems.append(.shutdown(PendingShutdownItem(sequence: sequence, resolvedAtTick: model.lastCommittedTickId)))
             turnSide.probe?("shutdown-queued")
             scheduleInputDrain()
@@ -3404,7 +3404,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Re-evaluation only: whether a take found the sequence counter at `Int64.max` (#741). The run
     /// throws `ReevaluationRecordContentError.sequenceExhausted` at its next step boundary.
     package func replaySequenceExhausted() -> Bool {
-        outputCollector.sequenceExhausted
+        model.sequence.exhausted
     }
 
     /// Installs `replayPassObserver` (re-evaluation only).
@@ -3424,15 +3424,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the extra server event shows up in the per-tick server-event comparison instead.
     private func restoreSequenceWatermark(_ watermark: Int64?, tickId: Int64, point: String) {
         guard behavior.config.mode == .reevaluation, let watermark else { return }
-        if outputCollector.nextSequence <= watermark {
-            outputCollector.nextSequence = watermark
+        if model.sequence.next <= watermark {
+            model.sequence.next = watermark
         } else {
             // Replay has taken more numbers than live did; later ticks may mismatch because of
             // this, so log where it started.
             behavior.logger.warning("Re-evaluation sequence counter is past the recorded watermark", metadata: [
                 "tickId": .stringConvertible(tickId),
                 "point": .string(point),
-                "counter": .stringConvertible(outputCollector.nextSequence),
+                "counter": .stringConvertible(model.sequence.next),
                 "watermark": .stringConvertible(watermark),
             ])
         }
@@ -3720,7 +3720,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Sequence watermark W1 (before inputs). Live: captured synchronously, with no await
         // since `nextTickId += 1`. Re-evaluation: restored after the source-loading awaits.
         restoreSequenceWatermark(replayWatermarks?.beforeInputs, tickId: tickId, point: "beforeInputs")
-        let sequenceBeforeInputs = outputCollector.nextSequence
+        let sequenceBeforeInputs = model.sequence.next
 
         // Process pending actions before tick handler
         // Don't flush outputs yet - defer until after tick handler to ensure
@@ -3751,7 +3751,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // in-turn tick (`runTickTurn`). The inputs applied before it were recorded.
             model.lastCommittedTickId = tickId
             _ = model.takeEmittedEvents(turnSide, forTick: tickId)
-            _ = outputCollector.syncRequestsByTick.removeValue(forKey: tickId)
+            _ = model.syncRequestsByTick.removeValue(forKey: tickId)
             return
         }
 
@@ -3765,7 +3765,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Sequence watermark W2 (before the tick handler). processPendingActions awaits after
         // its item loop, so inputs arriving then may have taken numbers since W1.
         restoreSequenceWatermark(replayWatermarks?.beforeTickHandler, tickId: tickId, point: "beforeTickHandler")
-        let sequenceBeforeTickHandler = outputCollector.nextSequence
+        let sequenceBeforeTickHandler = model.sequence.next
 
         // The handler runs on the state in place, in one synchronous segment, with the land's
         // generator bound (`withHandlerStep`). A replayed shutdown frame (#382) runs no tick
@@ -4470,7 +4470,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             ])
             return
         }
-        let sequence = outputCollector.takeNextSequence()
+        let sequence = model.sequence.take()
         model.pendingItems.append(.landFailure(PendingLandFailureItem(
             sequence: sequence,
             resolvedAtTick: model.lastCommittedTickId,
@@ -5138,7 +5138,7 @@ extension KeeperModel {
             return .refused(.unencodable)
         }
 
-        let sequence = side.sharedCollector.takeNextSequence()
+        let sequence = sequence.take()
         let item = PendingItem.serverInput(PendingServerInputItem(
             sequence: sequence,
             typeIdentifier: typeIdentifier,
@@ -5231,7 +5231,7 @@ extension KeeperModel {
         try rejectSenderIfSuperseded(behavior, playerID: playerID, clientID: clientID, sessionID: sessionID, input: event.type)
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
-        let sequence = side.sharedCollector.takeNextSequence()
+        let sequence = sequence.take()
 
         // Bind event to lastCommittedTickId for replay logging
         let resolvedAtTick = lastCommittedTickId
@@ -5312,6 +5312,7 @@ extension KeeperModel {
         let landID = behavior.config.actualLandID ?? definition.id
         let eventRecordingTickId = tickId ?? lastCommittedTickId
         let collector = side.sharedCollector
+        let lease = side.sharedSequenceLease
         return LandContext(
             landID: landID,
             playerID: playerID,
@@ -5324,13 +5325,13 @@ extension KeeperModel {
             metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
             tickId: tickId,
             emitEventHandler: { anyEvent, target in
-                collector.enqueueEmittedEvent(anyEvent, to: target, tickId: eventRecordingTickId)
+                lease.emit(anyEvent, to: target, tickId: eventRecordingTickId, into: collector)
             },
             requestSyncNowHandler: {
-                collector.requestSyncNow(tickId: eventRecordingTickId)
+                lease.requestSync(broadcastOnly: false, tickId: eventRecordingTickId)
             },
             requestSyncBroadcastOnlyHandler: {
-                collector.requestSyncBroadcastOnly(tickId: eventRecordingTickId)
+                lease.requestSync(broadcastOnly: true, tickId: eventRecordingTickId)
             },
             resolverOutputs: resolverOutputs,
             serverInputs: side.serverInputs
@@ -5628,7 +5629,7 @@ extension KeeperModel {
         }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
-        let sequence = side.sharedCollector.takeNextSequence()
+        let sequence = sequence.take()
         let ticket = actionTicket(behavior, for: playerID, clientID: clientID)
 
         // An action with built resolver values runs them in a job (`startActionJob`), off the
@@ -6139,7 +6140,7 @@ extension KeeperModel {
             deviceID: session.deviceID,
             isGuest: session.isGuest,
             metadata: session.metadata,
-            sequence: side.sharedCollector.takeNextSequence(),
+            sequence: sequence.take(),
             // Snapshot tick at request time; update after resolver completion for async determinism.
             resolvedAtTick: lastCommittedTickId
         )
@@ -6303,7 +6304,7 @@ extension KeeperModel {
             contextCarriesIdentity: true,
             entryGeneration: entryGeneration,
             // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
-            sequence: side.sharedCollector.takeNextSequence(),
+            sequence: sequence.take(),
             // Snapshot tick at request time; update after resolver completion for async determinism.
             resolvedAtTick: lastCommittedTickId
         )
@@ -6386,7 +6387,7 @@ extension KeeperModel {
             contextCarriesIdentity: false,
             entryGeneration: entryGeneration,
             // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
-            sequence: side.sharedCollector.takeNextSequence(),
+            sequence: sequence.take(),
             // Snapshot tick at request time; update after resolver completion for async determinism.
             resolvedAtTick: lastCommittedTickId
         )
@@ -6806,7 +6807,7 @@ extension KeeperModel {
     fileprivate func syncReadPosition(_ behavior: KeeperBehavior<State>, _ side: KeeperTurnSide) -> SyncReadPosition {
         SyncReadPosition(
             observedTickId: lastCommittedTickId,
-            sequence: side.sharedCollector.nextSequence,
+            sequence: sequence.next,
             afterPass: behavior.isTickless ? passOrdinal : nil
         )
     }
@@ -7145,20 +7146,44 @@ extension KeeperModel {
         dropsOutputs: Bool = false,
         _ body: (inout KeeperModel<State>, LandContext) throws -> R
     ) rethrows -> R {
+        // The counter is lent to a step that passes outputs (#700 K1b-5 D15.3); a destroy
+        // handler's scope drops every output and borrows nothing.
+        let lease = dropsOutputs ? nil : side.sharedSequenceLease
         switch random {
         case .detached(let service):
             let (bound, scope) = side.openStepScope(ctx, random: service, droppingInto: dropsOutputs ? side.sharedDestroyHandlerOutputsDropped : nil)
-            defer { scope.close() }
+            lease?.lend(sequence)
+            defer {
+                scope.close()
+                endLease(lease)
+            }
             return try body(&self, bound)
         case .step:
             let service = DeterministicRngService(continuing: landRandom, seed: behavior.config.landRandomSeed)
             let (bound, scope) = side.openStepScope(ctx, random: service, droppingInto: dropsOutputs ? side.sharedDestroyHandlerOutputsDropped : nil)
-            // After the body's access to the model ends: it doesn't overlap.
+            lease?.lend(sequence)
+            // After the body's access to the model ends: it doesn't overlap. The scope closes
+            // first, so no output runs after the counter is back.
             defer {
                 scope.close()
+                endLease(lease)
                 landRandom = service.generator
             }
             return try body(&self, bound)
+        }
+    }
+
+    /// Takes the counter back from a step's lease and ORs the step's staged sync requests into
+    /// the table, before the body reads them (`takeSyncRequest`).
+    private mutating func endLease(_ lease: KeeperSequenceLease?) {
+        guard let lease else { return }
+        let (counter, requests) = lease.end()
+        sequence = counter
+        for (tickId, staged) in requests {
+            var merged = syncRequestsByTick[tickId] ?? KeeperSyncRequests()
+            merged.syncNow = merged.syncNow || staged.syncNow
+            merged.syncBroadcastOnly = merged.syncBroadcastOnly || staged.syncBroadcastOnly
+            syncRequestsByTick[tickId] = merged
         }
     }
 
@@ -7596,7 +7621,7 @@ extension KeeperModel {
             inTurnSyncDue = false
         }
         // Sequence watermark W1 (before inputs).
-        let sequenceBeforeInputs = side.sharedCollector.nextSequence
+        let sequenceBeforeInputs = sequence.next
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
         let applied = applyInputs(behavior, &side, &outputs, readyPendingItemsInOrder(), executingTickId: tickId, reportJoins: { m, side, outputs, results in
             m.reportJoinsInTurn(behavior, &side, &outputs, results)
@@ -7625,7 +7650,7 @@ extension KeeperModel {
             tickId: tickId
         )
         // Sequence watermark W2 (before the tick handler).
-        let sequenceBeforeTickHandler = side.sharedCollector.nextSequence
+        let sequenceBeforeTickHandler = sequence.next
         withHandlerStep(behavior, side, ctx) { m, ctx in
             handler(&m.state, ctx)
         }
@@ -7743,8 +7768,8 @@ extension KeeperModel {
     /// Whether the sync requests handlers made for `tickId` (taken from the collector) or a
     /// leave in `applied` ask for a sync phase. A broadcast-only request runs the full phase in a
     /// turn: the leave's effects go out with the turn's frames.
-    fileprivate func takeSyncRequest(_ side: KeeperTurnSide, forTick tickId: Int64, applied: AppliedInputs?) -> Bool {
-        let requests = side.sharedCollector.syncRequestsByTick.removeValue(forKey: tickId)
+    fileprivate mutating func takeSyncRequest(_ side: KeeperTurnSide, forTick tickId: Int64, applied: AppliedInputs?) -> Bool {
+        let requests = syncRequestsByTick.removeValue(forKey: tickId)
         return requests?.syncNow == true
             || requests?.syncBroadcastOnly == true
             || applied?.shouldSyncBroadcastOnly == true
@@ -7866,7 +7891,7 @@ extension KeeperModel {
         side.probe?("input-batch-\(batch.count)")
         let failedBefore = side.failure != nil
         let executingTickId = executingTickIdForPendingItems()
-        let sequenceBefore = side.sharedCollector.nextSequence
+        let sequenceBefore = sequence.next
         beginPass(behavior)
         // A failing input fails alone (its caller gets its error); the rest of the batch goes
         // on (`applyInputs`). Its events were dropped there.
@@ -7936,7 +7961,7 @@ extension KeeperModel {
         let tickId = nextTickId
         nextTickId += 1
         let item = PendingItem.shutdown(PendingShutdownItem(
-            sequence: side.sharedCollector.takeNextSequence(),
+            sequence: sequence.take(),
             resolvedAtTick: lastCommittedTickId
         ))
         // A shutdown alone: no join to report.
@@ -8172,54 +8197,15 @@ struct KeeperEmittedEvent: Sendable {
     let target: EventTarget
 }
 
+@PlainData
 struct KeeperSyncRequests: Sendable {
     var syncNow: Bool = false
     var syncBroadcastOnly: Bool = false
 }
 
 final class KeeperOutputCollector: @unchecked Sendable {
-    var nextSequence: Int64 = 0
-    /// Re-evaluation only: a take past `Int64.max` stops the replay instead of the process (#741).
-    /// A live counter starts at 0 and traps first, so the live path keeps the plain increment.
-    var checksOverflow = false
-    /// Set by the first take that found no number left; read at the run's step boundaries.
-    var sequenceExhausted = false
+    /// The emitted events, numbered from the model's counter (lent to the step, `KeeperSequenceLease`).
     var emittedEvents: [KeeperEmittedEvent] = []
-    var syncRequestsByTick: [Int64: KeeperSyncRequests] = [:]
-
-    func takeNextSequence() -> Int64 {
-        let s = nextSequence
-        guard checksOverflow else {
-            nextSequence += 1
-            return s
-        }
-        let (next, overflow) = s.addingReportingOverflow(1)
-        if overflow {
-            // The counter stays at Int64.max and the number repeats: the run ends at its next
-            // step boundary (`replaySequenceExhausted()`), and what it computed meanwhile is dropped.
-            sequenceExhausted = true
-        } else {
-            nextSequence = next
-        }
-        return s
-    }
-
-    func enqueueEmittedEvent(_ anyEvent: AnyServerEvent, to target: EventTarget, tickId: Int64) {
-        let seq = takeNextSequence()
-        emittedEvents.append(KeeperEmittedEvent(sequence: seq, tickId: tickId, event: anyEvent, target: target))
-    }
-
-    func requestSyncNow(tickId: Int64) {
-        var req = syncRequestsByTick[tickId] ?? KeeperSyncRequests()
-        req.syncNow = true
-        syncRequestsByTick[tickId] = req
-    }
-
-    func requestSyncBroadcastOnly(tickId: Int64) {
-        var req = syncRequestsByTick[tickId] ?? KeeperSyncRequests()
-        req.syncBroadcastOnly = true
-        syncRequestsByTick[tickId] = req
-    }
 }
 
 /// A follow-up a turn armed (the writer-drain retry, the join-sync turn, a requested turn

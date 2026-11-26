@@ -137,6 +137,7 @@ enum KeeperCensus {
             // Copies of the keeper's references, for the bodies (#700 K1b-5 move): the homes of
             // the members they copy.
             "turnSide.sharedCollector": .replaced(by: "K2"),
+            "turnSide.sharedSequenceLease": .outside(.stepScope),
             "turnSide.sharedDrainFlag": .outside(.drainFlag),
             "turnSide.sharedTransportFailure": .replaced(by: "K4"),
             "turnSide.attachedTransport": .outside(.bindingToken),
@@ -178,6 +179,8 @@ enum KeeperCensus {
             "model.didInitialize": .model,
             "model.entryGenerations": .model,
             "model.failureIDs": .model,
+            "model.sequence": .model,
+            "model.syncRequestsByTick": .model,
             "model.failureTableMisses": .model,
             "model.foldedSyncs": .model,
             "model.hasHeldTransport": .model,

@@ -109,6 +109,9 @@ package struct KeeperTurnSide {
     /// Named apart from the keeper's own members (the census reads a label stored twice as one
     /// field with two homes); each is a copy of the same reference.
     let sharedCollector: KeeperOutputCollector
+    /// The keeper's sequence lease: a handler step lends the model's counter through it to the
+    /// step's contexts (#700 K1b-5 D15.3).
+    let sharedSequenceLease: KeeperSequenceLease
     let sharedDrainFlag: KeeperDrainFlag
     let sharedTransportFailure: LandFailureMailbox
     /// The attached transport: the keeper sets it with its own at both of its assignments.
@@ -214,6 +217,7 @@ package struct KeeperTurnSide {
         abandonmentCounter: LandAbandonmentCounter,
         serverInputs: ServerInputSubmitter,
         collector: KeeperOutputCollector,
+        sequenceLease: KeeperSequenceLease,
         drainFlag: KeeperDrainFlag,
         transportFailure: LandFailureMailbox,
         transport: (any LandKeeperTransport)?,
@@ -230,6 +234,7 @@ package struct KeeperTurnSide {
         self.sharedAbandonmentCounter = abandonmentCounter
         self.serverInputs = serverInputs
         self.sharedCollector = collector
+        self.sharedSequenceLease = sequenceLease
         self.sharedDrainFlag = drainFlag
         self.sharedTransportFailure = transportFailure
         self.attachedTransport = transport
@@ -326,6 +331,75 @@ final class KeeperBoundRequester: @unchecked Sendable {
 /// The keeper's drain in progress (single-flight). A box the keeper and its side share, used
 /// on the keeper's executor only, so `failLand`'s staged start installs the handle from a body
 /// and the keeper's async entries read it.
+/// The model's sequence counter, lent to a handler step's contexts while the handler runs
+/// (#700 K1b-5 D15.3). The handler holds only `&m.state`, so the counter leaves the model for the
+/// step and comes back when it ends, in the step's `defer`: an emit takes its number at emit
+/// time, as before, and the body's watermarks after the step read numbers that include the
+/// handler's. A sync request is staged here, keyed on the tick its context captured, and ORed
+/// into the model's table when the step ends.
+///
+/// Only one step is lent to at a time: a handler step runs in one synchronous segment. An
+/// output that finds nothing lent (a context outside any step that passes outputs) is dropped
+/// and counted; no keeper path makes one.
+final class KeeperSequenceLease: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counter: KeeperSequenceCounter?
+    private var requests: [Int64: KeeperSyncRequests] = [:]
+    private var unlent = 0
+
+    /// Lends the counter for one step.
+    func lend(_ lent: KeeperSequenceCounter) {
+        lock.withLock {
+            precondition(counter == nil, "a handler step's sequence counter was lent twice")
+            counter = lent
+            requests = [:]
+        }
+    }
+
+    /// Ends the step's lend: the counter, with the step's takes, and its staged requests.
+    func end() -> (counter: KeeperSequenceCounter, requests: [Int64: KeeperSyncRequests]) {
+        lock.withLock {
+            guard let lent = counter else { preconditionFailure("a handler step's lend ended twice") }
+            counter = nil
+            defer { requests = [:] }
+            return (lent, requests)
+        }
+    }
+
+    /// An emitted event, numbered from the lent counter.
+    func emit(_ event: AnyServerEvent, to target: EventTarget, tickId: Int64, into collector: KeeperOutputCollector) {
+        lock.withLock {
+            guard var lent = counter else {
+                unlent += 1
+                assertionFailure("A LandContext event was emitted outside a handler step; it was dropped")
+                return
+            }
+            let sequence = lent.take()
+            counter = lent
+            collector.emittedEvents.append(KeeperEmittedEvent(sequence: sequence, tickId: tickId, event: event, target: target))
+        }
+    }
+
+    /// A sync request, staged for the step's end.
+    func requestSync(broadcastOnly: Bool, tickId: Int64) {
+        lock.withLock {
+            guard counter != nil else {
+                unlent += 1
+                assertionFailure("A LandContext sync request was made outside a handler step; it was dropped")
+                return
+            }
+            if broadcastOnly {
+                requests[tickId, default: KeeperSyncRequests()].syncBroadcastOnly = true
+            } else {
+                requests[tickId, default: KeeperSyncRequests()].syncNow = true
+            }
+        }
+    }
+
+    /// The outputs that found nothing lent.
+    var unlentCount: Int { lock.withLock { unlent } }
+}
+
 final class KeeperDrainHandle: @unchecked Sendable {
     var task: Task<Void, Never>?
 }

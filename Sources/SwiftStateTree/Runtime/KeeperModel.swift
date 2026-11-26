@@ -47,6 +47,12 @@ struct KeeperModel<State: StateNodeProtocol> {
     var initializationFailure: FailureID?
     /// Mints failure IDs. Keeper-local: never reset, never restored from a record.
     var failureIDs: EpochCounter = EpochCounter()
+    /// The input and output sequence numbers (#700 K1b-5 D15.3). A handler step lends it to the
+    /// step's contexts (`KeeperSequenceLease`) and takes it back when the step ends.
+    var sequence: KeeperSequenceCounter = KeeperSequenceCounter()
+    /// The sync requests per tick. A handler step's requests are staged in the lease and ORed
+    /// in when the step ends.
+    var syncRequestsByTick: [Int64: KeeperSyncRequests] = [:]
     var actionJobs: [Int64: KeeperActionJob<State>] = [:]
     var actionSlots: [Int64: KeeperActionSlot] = [:]
     /// Tickless jobs whose in-flight work (`debugBeginWork` at intake) ends when their slot is
@@ -421,4 +427,32 @@ struct KeeperActionJob<State: StateNodeProtocol>: Sendable {
 @PlainData
 struct KeeperActionSlot: Sendable {
     var result: InputResult?
+}
+
+/// The keeper's sequence counter: one number per input and per emitted event, in order.
+@PlainData
+struct KeeperSequenceCounter: Sendable {
+    var next: Int64 = 0
+    /// Re-evaluation only: a take past `Int64.max` stops the replay instead of the process (#741).
+    /// A live counter starts at 0 and traps first, so the live path keeps the plain increment.
+    var checksOverflow: Bool = false
+    /// Set by the first take that found no number left; read at the run's step boundaries.
+    var exhausted: Bool = false
+
+    mutating func take() -> Int64 {
+        let s = next
+        guard checksOverflow else {
+            next += 1
+            return s
+        }
+        let (following, overflow) = s.addingReportingOverflow(1)
+        if overflow {
+            // The counter stays at Int64.max and the number repeats: the run ends at its next
+            // step boundary (`replaySequenceExhausted()`), and what it computed meanwhile is dropped.
+            exhausted = true
+        } else {
+            next = following
+        }
+        return s
+    }
 }
