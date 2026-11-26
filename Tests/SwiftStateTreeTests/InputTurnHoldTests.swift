@@ -29,18 +29,22 @@ final class InputTurnHoldProbe: @unchecked Sendable {
     private let lock = NSLock()
     private weak var keeper: LandKeeper<InputTurnHoldState>?
     private var reads: [[Int]] = []
+    private var encoded: [Int] = []
 
     func bind(_ keeper: LandKeeper<InputTurnHoldState>) { lock.withLock { self.keeper = keeper } }
     var boundKeeper: LandKeeper<InputTurnHoldState>? { lock.withLock { keeper } }
     func noteRead(_ applied: [Int]) { lock.withLock { reads.append(applied) } }
     var statesRead: [[Int]] { lock.withLock { reads } }
+    func noteEncode(_ n: Int) { lock.withLock { encoded.append(n) } }
+    /// The `n` of each encode, in order.
+    var encodes: [Int] { lock.withLock { encoded } }
 
-    /// One probe per test: parallel tests must not share one.
+    /// Process-wide: only this `.serialized` suite may use `CallingBackAction`, one test at a time.
     nonisolated(unsafe) static var current: InputTurnHoldProbe?
 }
 
 /// An action whose `encode(to:)` reads its keeper's state synchronously, as a payload's own
-/// encoder could.
+/// encoder could. A negative `n` then throws.
 @Payload
 struct CallingBackAction: ActionPayload {
     typealias Response = InputTurnHoldAck
@@ -51,13 +55,17 @@ struct CallingBackAction: ActionPayload {
             keeper.assumeIsolated { keeper in // lint-allow: turns-isolated: a payload encoder that calls back into its keeper
                 probe.noteRead(keeper.currentState().applied)
             }
+            probe.noteEncode(n)
         }
+        if n < 0 { throw CallingBackEncodeError() }
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(n, forKey: .n)
     }
 
     private enum CodingKeys: String, CodingKey { case n }
 }
+
+struct CallingBackEncodeError: Error {}
 
 private func inputTurnHoldLand() -> LandDefinition<InputTurnHoldState> {
     Land("input-turn-hold", using: InputTurnHoldState.self) {
@@ -110,6 +118,32 @@ struct InputTurnHoldTests {
         #expect(recorded.map(\.sequence) == [1_000, 1_001])
         let payloads = try recorded.map { try JSONSerialization.jsonObject(with: $0.payload) as? [String: Int] }
         #expect(payloads == [["n": 7], ["n": 8]])
+        #expect(keeper.failure == nil)
+    }
+
+    /// Each prepared encode keeps its own error: the input whose encode threw is refused alone
+    /// (`applyInputs`), and its bytes aren't encoded again inside the hold, where the callback's
+    /// read would trap.
+    @Test("A payload whose encode throws refuses only its own input, and is encoded once")
+    func fallbackEncodeErrorStaysWithItsInput() async throws {
+        let keeper = LandKeeper<InputTurnHoldState>(
+            definition: inputTurnHoldLand(),
+            initialState: InputTurnHoldState(),
+            enableLiveStateHashRecording: true,
+            autoStartLoops: false,
+            landID: "input-turn-hold:\(UUID().uuidString)"
+        )
+        await keeper.awaitInitialization()
+        let probe = InputTurnHoldProbe()
+        probe.bind(keeper)
+        InputTurnHoldProbe.current = probe
+        defer { InputTurnHoldProbe.current = nil }
+
+        let recorded = await keeper.runInputTurnForTesting([unrecordedAction(sequence: 1_000, n: -1), unrecordedAction(sequence: 1_001, n: 9)])
+
+        #expect(probe.encodes == [-1, 9], "each encode runs once, before the hold")
+        #expect(await keeper.currentState().applied == [9])
+        #expect(recorded.map(\.sequence) == [1_001], "the refused input threw before its record")
         #expect(keeper.failure == nil)
     }
 }

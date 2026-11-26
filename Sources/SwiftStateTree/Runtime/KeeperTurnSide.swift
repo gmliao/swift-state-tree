@@ -37,7 +37,7 @@ package struct TurnOutputs {
     }
 
     /// Stages an effect that must not run before the flush. The action must not enter the keeper
-    /// synchronously. At a body's end it runs after the depth has dropped, where the guarded
+    /// synchronously, nor touch its model: a `callOut`'s flush runs it inside the hold. At a body's end it runs after the depth has dropped, where the guarded
     /// entries wouldn't refuse it; when a `callOut` flushes first it runs at depth 1, where they
     /// refuse it and the call out is refused before the call.
     package mutating func stage(_ action: @escaping () -> Void) {

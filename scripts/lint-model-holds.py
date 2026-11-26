@@ -20,8 +20,18 @@ read a member that reaches it, except a holder overload called with `m` first (`
 `f(m, ...)`). Code inside `Task { ... }` runs after the hold ends and isn't checked.
 
 It matches names, not types. A local that shares a member's name can make a false report (rename
-the local), and a call through another receiver (`other.f()`) is not followed. The run-time check
-in the debug test suite stays the proof for the paths the tests run.
+the local). It does not see:
+- a closure literal passed beside `&model` in a call outside a holder
+  (`withHandlerStep(&model, ctx) { m, ctx in ... }`): it runs under the hold, but isn't a holder;
+- a call through another receiver (`other.f()`), including a port's witness that calls back
+  into the keeper;
+- a method assigned to a local and then called;
+- a computed property whose declaration spans lines;
+- a `Task` capture list (`Task { [s = self.model] in ... }`), which is evaluated when the task is
+  made, inside the hold;
+- port calls: whether a holder calls out of the keeper bare instead of through `callOut`.
+The SwiftSyntax rule (#881) covers these. The run-time check in the debug test suite stays the
+proof for the paths the tests run.
 
 Usage: scripts/lint-model-holds.py [--self-test] [--list] [file ...]
        (default file: Sources/SwiftStateTree/Runtime/LandKeeper.swift)
@@ -430,6 +440,26 @@ actor LandKeeper<State> {
         model.count += 1
     }
 
+    private func badSelfDirect(_ m: inout KeeperModel<State>) {
+        self.model.count += 1
+    }
+
+    private func badFunctionValue(_ m: inout KeeperModel<State>) {
+        run(touches)
+    }
+
+    private func badClosureDuringHold(_ m: inout KeeperModel<State>) {
+        items.forEach { _ in touches() }
+    }
+
+    private func goodParameterSharingAName(_ m: inout KeeperModel<State>, entry: Int) {
+        let x = entry
+    }
+
+    private func goodAfterAwait(_ m: inout KeeperModel<State>) {
+        let n = await touches()
+    }
+
     private func badTransitive(_ m: inout KeeperModel<State>) {
         reachesThroughACall()
     }
@@ -453,7 +483,10 @@ actor LandKeeper<State> {
 }
 """
 
-SELF_TEST_EXPECTED = {"badDirect", "badTransitive", "badOverload", "badProperty", "badInterpolation", "badLabelledOverload", "withTurn body"}
+SELF_TEST_EXPECTED = {
+    "badDirect", "badSelfDirect", "badTransitive", "badOverload", "badProperty", "badInterpolation",
+    "badLabelledOverload", "badFunctionValue", "badClosureDuringHold", "withTurn body",
+}
 
 
 def self_test() -> int:
@@ -467,7 +500,10 @@ def self_test() -> int:
     ok = (
         failed == SELF_TEST_EXPECTED
         and len(failures) == len(SELF_TEST_EXPECTED)
-        and {"goodHolder", "helper", "logsAName", "overloadAndAsync", "withTurn body"} <= names
+        and {
+            "goodHolder", "helper", "logsAName", "overloadAndAsync", "goodParameterSharingAName",
+            "goodAfterAwait", "withTurn body",
+        } <= names
         and len(lines) == len(failures)
     )
     if not ok:
