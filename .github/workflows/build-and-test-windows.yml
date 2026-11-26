@@ -78,6 +78,9 @@ jobs:
     # out on Windows.
     - name: Tests
       shell: bash
+      env:
+        # The shared runners stall for seconds: the tests' hang bounds use their slow scale (#888).
+        SST_SLOW_RUNNER: "1"
       run: |
         set -o pipefail
         swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \

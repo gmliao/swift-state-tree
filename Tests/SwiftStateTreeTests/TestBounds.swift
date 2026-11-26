@@ -6,20 +6,16 @@
 // stalls for seconds) needs a longer one, or a hold that is only late reads as a hang (#888).
 
 import Foundation
+import SwiftStateTree
 
 enum TestBounds {
-    /// How long a test waits for a hold, a signal or a shutdown before it records a hang.
-    /// 10 s by default; 60 s when `SST_SLOW_RUNNER=1` is set, and on Windows.
-    static let hang: Duration = slowRunner ? .seconds(60) : .seconds(10)
+    /// The environment variable that selects the slow scale. The Windows job sets it to `1`;
+    /// a developer on a slow machine can set it too.
+    static let slowRunnerKey = "SST_SLOW_RUNNER"
 
-    private static let slowRunner: Bool = {
-        // The Windows job runs on shared runners that stall for seconds, and this test target
-        // can't set an environment variable for that one job (workflows are out of scope for
-        // #888), so Windows is checked here as well as the variable.
-        #if os(Windows)
-        return true
-        #else
-        return ProcessInfo.processInfo.environment["SST_SLOW_RUNNER"] == "1"
-        #endif
-    }()
+    /// How long a test waits for a hold, a signal or a shutdown before it records a hang.
+    /// 10 s by default; 30 s when `SST_SLOW_RUNNER` is true. The slow scale stays well under the
+    /// suites' one-minute time limit, so a real hang names its step before the limit ends it.
+    static let hang: Duration = EnvHelpers.getEnvBool(key: slowRunnerKey, defaultValue: false)
+        ? .seconds(30) : .seconds(10)
 }
