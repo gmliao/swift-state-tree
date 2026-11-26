@@ -36,7 +36,7 @@ struct FoldTickEvent: ServerEventPayload {
 
 /// `foldReportLand` whose tick handler emits an event: a replay that runs a tick the live
 /// keeper skipped shows it as a server-event mismatch.
-private func foldReportLandEmitting() -> LandDefinition<FoldReportState> {
+func foldReportLandEmitting() -> LandDefinition<FoldReportState> {
     Land("fold-report-test", using: FoldReportState.self) {
         ServerEvents { Register(FoldTickEvent.self) }
         Lifetime {
@@ -94,9 +94,20 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
     private var callsInBody = 0
     private var reenteredNth = false
     private weak var keeper: LandKeeper<FoldReportState>?
+    private var reentersAtFirstPhaseQuery = false
+    private var phaseQueriesToSkip = 0
     let records: Bool
 
-    init(records: Bool) { self.records = records }
+    /// `reentersAtFirstPhaseQuery`: the first `runsSyncPhaseInTurn(of:)` asked during a turn body
+    /// re-enters the keeper that asked, so a body that runs before the test holds the keeper
+    /// (initialization, which the keeper starts from its `init`) can be refused (#901). The
+    /// keeper's `init` asks once, off its actor, before it starts the initialization: that query
+    /// is skipped, and every later one comes from the keeper's actor.
+    init(records: Bool, reentersAtFirstPhaseQuery: Bool = false) {
+        self.records = records
+        self.reentersAtFirstPhaseQuery = reentersAtFirstPhaseQuery
+        self.phaseQueriesToSkip = reentersAtFirstPhaseQuery ? 1 : 0
+    }
 
     var folds: [InTurnSyncFold] { lock.withLock { notes } }
     /// How many sync phases the keeper ran, requested or not.
@@ -178,6 +189,20 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
     func onLandDestroyed() async {}
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool {
         noteCall()
+        // The flag first: only an armed fake past the `init`'s query assumes the keeper's actor.
+        let armed = lock.withLock { () -> Bool in
+            guard reentersAtFirstPhaseQuery else { return false }
+            if phaseQueriesToSkip > 0 {
+                phaseQueriesToSkip -= 1
+                return false
+            }
+            return true
+        }
+        guard armed, let asking = keeper as? LandKeeper<FoldReportState>,
+              asking.assumeIsolated({ $0.bodyDepthForTesting > 0 }) // lint-allow: turns-isolated: the fake re-enters only from a body
+        else { return true }
+        lock.withLock { reentersAtFirstPhaseQuery = false }
+        asking.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the synchronous callback the sentinel refuses
         return true
     }
     var recordsInTurnSyncFolds: Bool { records }
@@ -269,7 +294,7 @@ private let window = Duration.milliseconds(5)
 
 @Suite("In-turn sync: folds reported to the transport", .timeLimit(.minutes(1)))
 struct InTurnSyncFoldReportTests {
-    private func makeKeeper(
+    func makeKeeper(
         _ transport: FoldRecordingTransport,
         onJoin: Bool = false,
         definition: LandDefinition<FoldReportState>? = nil,
