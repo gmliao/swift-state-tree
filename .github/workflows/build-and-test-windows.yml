@@ -90,13 +90,25 @@ jobs:
     - name: Build cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        # The debug and release links are left out: the build makes its own, and a restored one made
-        # SwiftPM warn that the link already exists (and left .build/debug pointing at the cached tree).
-        path: |
-          .build
-          !.build/debug
-          !.build/release
+        path: .build
         key: swiftbuild-${{ runner.os }}-${{ steps.buildcache.outputs.image }}-${{ env.SWIFT_VERSION }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+
+    # The cache holds the debug and release links of the run that saved it (excluding them from the
+    # path with `!.build/debug` did not keep them out of the archive). A restored link made SwiftPM warn
+    # "unable to create symbolic link ... already exists" in the Build and Tests steps, and left
+    # .build/debug as the cache's link, not the build's own. `rmdir` without /s removes only a link or
+    # an empty directory (a link's target is left alone) and fails on a real non-empty directory, which
+    # is then kept and reported.
+    - name: Remove the restored build links
+      shell: bash
+      run: |
+        for link in debug release; do
+          if cmd //c rmdir //q "$(cygpath -w ".build/$link")" >/dev/null 2>&1; then
+            echo "removed .build/$link"
+          else
+            echo ".build/$link: nothing removed (absent, or not a link or an empty directory)"
+          fi
+        done
 
     # Same single debug build that every test run reuses, as on Linux.
     # Not built on Windows: SwiftStateTreeNIOProvisioning (left out of the manifest there).
