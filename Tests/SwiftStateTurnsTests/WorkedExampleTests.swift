@@ -42,6 +42,8 @@ struct Lobby: TurnMachine {
     var waiting: [Int: InputID]
     /// Loads that came back after their join was given up.
     var late: Int
+    /// How long one load may hold the store before its join is given up.
+    var loadDeadline: Duration = .seconds(2)
 
     func inputPolicy(for input: Input) -> InputPolicy<Key> {
         switch input {
@@ -57,7 +59,7 @@ struct Lobby: TurnMachine {
             // The player's binding. The load is a request it owns, holding the store with a
             // deadline.
             turn.start(.player(player))
-            let hold = Hold.untilRequestCloses(Key.store, deadline: .seconds(2))
+            let hold = Hold.untilRequestCloses(Key.store, deadline: loadDeadline)
             guard let id = turn.request(.loadProfile(player: player), for: .player(player), holding: hold) else { return }
             loading[id] = player
             if let caller = turn.input { waiting[player] = caller }
@@ -100,17 +102,18 @@ enum LobbyError: Error {
 // docs:actor
 /// The actor that owns the lobby's core.
 actor LobbyActor: TurnActor {
-    let core = TurnCore(
-        Lobby(seats: [:], loading: [:], waiting: [:], late: 0),
-        queueLimit: 64,
-        maxReleasesPerBatch: 16,
-        clock: SystemTurnClock()
-    )
+    let core: TurnCore<Lobby>
     nonisolated let profiles: any ProfileStore
     private(set) var sent: [String] = []
 
-    init(profiles: any ProfileStore) {
+    init(profiles: any ProfileStore, loadDeadline: Duration = .seconds(2)) {
         self.profiles = profiles
+        core = TurnCore(
+            Lobby(seats: [:], loading: [:], waiting: [:], late: 0, loadDeadline: loadDeadline),
+            queueLimit: 64,
+            maxReleasesPerBatch: 16,
+            clock: SystemTurnClock()
+        )
     }
 
     /// The profile load, off the actor. Its result comes back as an input.
@@ -146,7 +149,7 @@ struct WorkedExampleTests {
     func lobby() async throws {
         try await withinTestHangBound {
             // docs:use
-            let lobby = LobbyActor(profiles: ImmediateProfiles())
+            let lobby = LobbyActor(profiles: ImmediateProfiles(), loadDeadline: .seconds(300))
             let count = try await lobby.sendAndWait(.join(player: 7), cancellation: .ignoresCancel)
             // count == 1, and the lobby flushed "welcome player 7".
             // docs:end
