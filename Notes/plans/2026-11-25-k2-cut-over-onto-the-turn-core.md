@@ -1,6 +1,14 @@
 # K2: the keeper's cut-over onto the turn core (#700)
 
-**Status:** draft 5, for Review. Draft 5 retakes §2, §4 and §7 on what landed:
+**Status:** draft 6, for Review. Draft 6 answers Review's NOT GO on draft 5 (3 must-fix, 3 should, 3 nits):
+- K2-Q3's recommended option now has a mechanism and a probe (§4.2, P5).
+- There is an entry matrix (§4.2).
+- Events keep the in-phase batch (§4.4).
+- §7.2 is narrowed to what the core stops.
+- Review's exclusivity probe is quoted (P6).
+- The admission path's callbacks are named (§4.5).
+
+§15 lists the changes. Draft 5 retook §2, §4 and §7 on what landed:
 - K1b-4 (#877, at its head e18e70c0, GO on green CI; merge pending): `KeeperModel`, `KeeperBehavior`, `ReplayFields`, the `playerServices` table and the census.
 - K1b-5a step 1 (#865, merged as 65cced07): `withTurn`, `TurnOutputs`, the stored `KeeperTurnSide`, `callOut` and the re-entry sentinel.
 
@@ -29,7 +37,7 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
 
 | From | What K2 uses |
 |---|---|
-| K1b-4 (#877) | `KeeperModel<State>` (`@PlainData`, `KeeperModel.swift`) is the machine's state: 61 fields, plus 3 that exist only in debug. `var state: State` is declared last, so every other field has a fixed offset in the unspecialized keeper. `KeeperBehavior<State>` (`nonisolated let behavior`, LK:428) is the machine's `Behavior` (#768): the definition, the services, the resolver services, the payload decoders, the logger and an internal `KeeperConfig` of 10 settings. `ReplayFields<State>` (LK:407) holds the 11 re-evaluation fields, which become the replay owner's. These stay on the actor: `playerServices` (LK:405), keyed by player and holding `(generation: Epoch, services:)`; `outputCollector` (LK:499, K1b-4's D1, until K2-E); the failure table; the tasks and waiters. `withHandlerStep`'s body takes `inout KeeperModel` once per step and passes `&m.state` to the handler. `KeeperCensusTests` gives every stored field one row, by storage path (`model.x`, `behavior.config.x`, `replay.x`, `actor.x`) |
+| K1b-4 (#877) | `KeeperModel<State>` (`@PlainData`, `KeeperModel.swift`) is the machine's state: 61 fields, plus 3 that exist only in debug. `var state: State` is declared last, so every other field has a fixed offset in the unspecialized keeper. The cloud's count in a release build, over the tick and input functions, with `state` last vs `state` first: 3 vs 12 calls to `KeeperModel`'s metadata accessor, and 36 vs 163 by the job's second count (#877's mutant job). `KeeperBehavior<State>` (`nonisolated let behavior`, LK:428) is the machine's `Behavior` (#768): the definition, the services, the resolver services, the payload decoders, the logger and an internal `KeeperConfig` of 10 settings. `ReplayFields<State>` (LK:407) holds the 11 re-evaluation fields, which become the replay owner's. These stay on the actor: `playerServices` (LK:405), keyed by player and holding `(generation: Epoch, services:)`; `outputCollector` (LK:499, K1b-4's D1, until K2-E); the failure table; the tasks and waiters. `withHandlerStep`'s body takes `inout KeeperModel` once per step and passes `&m.state` to the handler. `KeeperCensusTests` gives every stored field one row, by storage path (`model.x`, `behavior.config.x`, `replay.x`, `actor.x`) |
 | K1b-5a step 1 (#865) | `withTurn` and `withTurnSubmitting` (LK:5488, :5506) own one body call each. A body gets `inout KeeperTurnSide` and `inout TurnOutputs`. `TurnOutputs` stages `.submission` and `.action` effects, and `KeeperTurnSide.flush` runs them once, in staging order, before the body's first suspension. `callOut` (LK:5544) flushes before every synchronous call out of the keeper and returns `.answered` or `.refused`. The re-entry sentinel lives on the actor, outside the model and the side: `bodyDepth`, `reentryViolations`, `reentryFailure`, the three gate fields and `lateReentriesApplied`. A guarded entry called during a body changes nothing, closes the output gate and ends the land in that turn (`LandFailure.Kind.keeperReentry`). In step 1 the side holds only the recorder submission tracker. Step 2 gives `withTurn` the model `&model` |
 | K1b-5 | The turn bodies as `mutating` methods on `KeeperModel` that take the behavior and `KeeperTurnSide`, and return `TurnOutputs`. Every async flow as named synchronous segments (J1–J4, L1–L3, the action, intake and driver flows). A segment never awaits: it returns its flow's request enum, one case per await, carrying the capture that crosses it, and a driver performs the await |
 | K1b-3 | `landRandom` in the model; `withHandlerStep` as a model method |
@@ -45,7 +53,7 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
   - `.replay(ReplayLandOwner)`, which holds a `KeeperModel` and no core.
 - **The parent plan's Q1 is decided: (c), the facade** (maintainer, 2026-11-25). `ReplayLandOwner` is temporary: #612 deletes it, and the facade stays.
 - **The machine is the model** (survey §1): `extension KeeperModel: TurnMachine`, with `Behavior = KeeperBehavior<State>`. `TurnActor` requires `M: TurnMachine & PlainData`, which K1b-4's `@PlainData` gives.
-- **The executor:** the facade adopts `LiveLandTurns`' executor, and the adapter adopts the facade's (TA:105), so all three share one serial executor. The facade forwards with `live.assumeIsolated { … }`.
+- **The executor:** the facade adopts `LiveLandTurns`' executor, and the adapter adopts the facade's (TA:113, `unownedExecutor`), so all three share one serial executor. The facade forwards with `live.assumeIsolated { … }`.
 - **Identity:** `runsSyncPhaseInTurn(of:)` keeps receiving the facade. `LiveLandTurns` holds it `nonisolated(unsafe) weak`, set once at the end of `LandKeeper.init`, with a set-once flag that the first step asserts.
 - **The lint:** `scripts/lint-turns.sh` gets the facade's forwarding rule, with a fixture.
 
@@ -70,17 +78,43 @@ The keeper's API, the wire bytes and the record bytes don't change (parent §8: 
 
 Each row of parent §3.3's table becomes one forwarding method on the facade. The table is the contract, and §6.2's K2 tests pin each row. Three notes for the implementation:
 - **Re-entry: two stops, one to choose (K2-Q3, new in draft 5).** Two mechanisms stop a re-entry today, and they act differently:
-  - **The core's borrow rule** (TurnCore.swift:90–125). A `read` or a `query` inside a step stops the process (`fatalError`, in release too). So does a step inside a step. A `send` made during a step is not a step entry: the core defers it, and it steps after the current step ends.
-  - **#865's sentinel.** A guarded adapter-facing entry called during a body (for example `submitSyncStream` or `syncTurnNow`) is refused: it changes nothing, closes the output gate, and the land ends in that turn. The process keeps running.
+  - **The core's borrow rule** (TurnCore.swift:115–129, `read` at :476–477). A `read` or a `query` inside a step stops the process with a generic message ("TurnCore: the machine was read from inside its own step"), in release too. So does a step inside a step. A `send` made during a step is not a step entry: the core defers it, and it steps after the current step ends.
+  - **#865's sentinel.** A guarded entry called during a body changes nothing, closes the output gate, and the land ends in that turn. The process keeps running. The matrix below shows which entries have it today.
 
-  After K2-2, those entries are core entries. A synchronous one (a query) would stop the process where it ends only the land today. A `send` would be deferred where it is refused today. K2-Q3 asks which behavior K2 keeps. Options:
-  - (a) Keep the sentinel's behavior: the facade checks a depth before it forwards, and ends the land as #865 does.
-  - (b) Take the core's stops, and state the change in K2-2's PR.
+  K2-Q3 asks which behavior K2 keeps:
+  - (a) keep the sentinel's behavior, through the mechanism below;
+  - (b) take the core's stops, and state the change in K2-2's PR.
 
-  Recommended: (a) for K2, since the parent plan promises no public change (§8). The facade check sits outside the core, so the core's stop stays only as a backstop. K2-1's callback audit (§4.5) lists which entries each path reaches.
+  Recommended: (a), since the parent plan promises no public change (§8).
+
+  **(a)'s mechanism** (new in draft 6; probe P5):
+  1. **Where the predicate comes from.** The core gets a package accessor, `isStepping` (`borrows < 0`). This is a SwiftStateTurns change, additive and package-only, in K2-1. A counter in the facade can't be the predicate: the core also starts steps the facade never sees (timers, deferred sends, mail after K4). `borrows` is `@usableFromInline internal` today (TurnCore.swift:129), and only `borrowStateForTesting` is `package`.
+  2. **How the refusing entry records the trip.** A guarded facade entry reads `live.core.isStepping` on the shared executor before it forwards. When the core is stepping:
+     - it changes nothing in the model;
+     - it adds 1 to a violation count;
+     - it writes the failure to the set-once `LandFailureMailbox` (#732);
+     - it closes the output gate itself, under #865's recursion guard (`closingGateForReentry`);
+     - it returns the entry's refusal result (the matrix below).
+
+     The count, the mailbox and the guard live in a sentinel object outside the model. It is a final class held by `LiveLandTurns` and used on the shared executor only, the same shape as #865's actor fields. Each step reaches it through its input's binding token.
+  3. **How the running step sees it.** `callOut` compares the violation count before and after each port call, as #865 does. It does so inside the step. On a change, the step ends the land through its own borrowed model (`self`), before it reads the call's answer. The refusing entry never touches the model. So a refusal changes land state only in the running step, which fits the turn rule.
+  4. **The factory guard and the backstop, in order.** Draft factories run inside the step: the step makes the plain entries, as `recordSyncStream` does today, and only the made entries leave as outputs. So a factory that re-enters is refused like a port callback. The step's last action, before it returns its outputs, is the backstop: a count that changed since the step began, but that no `callOut` applied, ends the land there. The core's flush after the step (TurnActor.swift:904) then carries that turn's outputs, with the failure applied. A staged action that re-enters during the core's flush runs after the step, with `borrows` back at 0, so it isn't refused. That matches #865, where actions at a body's end run after the depth drops.
+
+  **The entry matrix.** "Sync callback" means the entry is reached synchronously from a port call during a step. "Awaited" means it is only reached through `await`, as a separate job, so never during a step.
+
+  | Entry | Reached in production | Today, during a body | K2 under (a) |
+  |---|---|---|---|
+  | `submitSyncStream` | sync callback (TA:3859, the `.legacyCycle` branch; TA:3986, `recordSyncStreamClear`) | refused: nothing recorded, the land ends | refused through `isStepping`, with the entry's name |
+  | `recordsSyncStream` (a read) | sync callback (TA:3831, `keeperRecordsSyncStream`) | no refusal: it reads `reevaluationRecorder` | a step-local answer. The step that reaches the port puts the flag on the binding token, so the callback reads the token, not the model. Through the facade it would hit the core's `read` stop, and the audit (§4.5) makes sure nothing does |
+  | `syncTurnNow` | awaited (TA:3158, :3211, :3231, :3524, :5134) | nested: `.skipped`, and the outer turn returns `.landFailed` | the same, through `isStepping` (the tests reach it synchronously) |
+  | `syncTurnTicket`, `settleTurn` | awaited (TA:3227, :3519; the freeze settle) | no refusal result | keeps the core's stop: a query inside a step. Unreachable during a step in production; a test pins that |
+  | `currentState()`, `playerCount()` | awaited (LandManager:95, :104) | no refusal result | keeps the core's stop (`read`) |
+  | the `send` entries (join, leave, actions, events, server inputs) | awaited | not guarded | deferred by the core, as a `send` during a step is |
+
+  **Where the name comes from.** The core's stop is generic. Each guarded facade entry passes its own name to the refusal, as `noteReentry(through:)` does today, and the debug check reports that name. An entry that keeps the core's stop (the rows above) reports the core's generic message. Only an unreachable path ends up there.
 - **Queries can't wait.** A query is used only where today's caller gets its answer at intake (the tick ACK, the two-phase action's `.pending`, the server input's `.accepted`).
 - **Barriers, not holds** (parent §3.3.1). The initialization and freeze barriers read the model through `core.read` and wait on `sendAndWait(.awaitInitialized)` / `.awaitResume`. No intake is parked by a hold, so a query can't overtake a parked `sendAndWait`.
-- **The debug check:** a synchronous step entry (`query`, and the keeper's synchronous entries that step) called from inside a keeper step traps with the entry's name. A mutant aimed at it is killed by a crash, so it runs in the cloud, one test case per process (K1b-2's lesson); the check also bumps a count that a normal test reads.
+- **The debug check** is the matrix's refusal. A guarded entry called during a step is refused with its name and counted, and a normal test reads the count, so a mutant aimed at the refusal is killed without a crash. A crash is left only for the core's own stop, on the rows that keep it. A mutant aimed there runs in the cloud, one test case per process (K1b-2's lesson).
 
 ### 4.3 Segments become steps; awaits become `run` (the core of K2)
 
@@ -111,8 +145,12 @@ K1b-5's request cases are of three kinds, and K2 maps each kind differently:
 
 **In its own PR, K2-E, between K2-1 and K2-2, on today's keeper** (Review's condition 2; §6). It is a per-handler-call scope, the same shape as K1b-3's step RNG service, bound in `withHandlerStep`. One type, `StepScope`, can hold both the RNG service and the emitter scope.
 - **The sequence counter** (`nextSequence`, `checksOverflow`, `sequenceExhausted`) and `syncRequestsByTick` move from `OutputCollector` into the model. This ends K1b-4's D1.
-- **The scoped emitter:** each handler call gets a per-step scope (a lock-protected open flag and the staged list). `LandContext`'s three output closures capture the scope, not the model. The step moves the staged events into `turn.emit` after the handler returns, and closes the scope. A call after that is dropped and counted, asserted in debug. That is a visible behavior change, stated in K2's PR (parent §8).
-- **Record drafts** are outputs. `flush` hands them to the recorder's serial sink in step order (TurnActor.swift:897's flush after each step).
+- **The scoped emitter:** each handler call gets a per-step scope (a lock-protected open flag and the staged list). `LandContext`'s three output closures capture the scope, not the model. When the handler returns, the step takes the staged events and closes the scope. A call after that is dropped and counted, asserted in debug. That is a visible behavior change, stated in K2's PR (parent §8).
+- **Where the events go: today's route, not `turn.emit`** (draft 6; Review's MF3). Today an eventful tick or input turn hands its events to the in-turn sync phase, `runTurnOutputs(events:)` (LK:5137) → `runSyncPhaseInTurn(events:)`, ahead of the sync plan, in one call. Only the sync-only turn passes `events: []` (LK:5884). If K2 sent events through `turn.emit`, they would go out after the step, after that turn's frames, so the order would change. So inside a step:
+  - the events still ride the in-phase batch, through the binding token's direct call (§4.5), on every path that runs the phase;
+  - a path with no phase, which has no bound in-turn transport, keeps today's legacy flush (`outputCollector`'s list, LK:730);
+  - `turn.emit` carries only the record entries and the services-table and token writes (§4.1's `KeeperOutput`), never events.
+- **Record drafts** are outputs. `flush` hands them to the recorder's serial sink in step order (TurnActor.swift:904, the flush call in `drainProducts` (:897), after each step).
 - **The in-turn sync phase** stays inside the step and calls the port through the binding token (parent §3.7).
 
 ### 4.5 Ports, tokens and the services table (parent §3.1, §3.7)
@@ -121,7 +159,7 @@ K1b-5's request cases are of three kinds, and K2 maps each kind differently:
 - **What #865 landed, and how K2 maps it.**
   - `KeeperTurnSide` is a struct stored on the actor, borrowed `inout` by one body call (`withTurn`). In step 1 it holds only the recorder submission tracker.
   - The bodies stage into `TurnOutputs`, and `callOut` flushes before each port call.
-  - K2-1's `handle` builds the same pair per step: a step-local side, and a `TurnOutputs` the step returns. The core's `flush` (TurnActor.swift's flush after each step) then runs what `KeeperTurnSide.flush` runs today. A `callOut` inside a step can't flush through the core, because the step hasn't returned. So K2-1 keeps `callOut`'s own flush of the step-local outputs, and the order at each port call stays as #865 has it. This is new in draft 5. K2-1's differential (§6) compares the two paths' submission traces (`ReevaluationSubmissionTracker`'s trace, #865).
+  - K2-1's `handle` builds the same pair per step: a step-local side, and a `TurnOutputs` the step returns. The core's `flush` (TurnActor.swift:904, after each step) then runs what `KeeperTurnSide.flush` runs today. A `callOut` inside a step can't flush through the core, because the step hasn't returned. So K2-1 keeps `callOut`'s own flush of the step-local outputs, and the order at each port call stays as #865 has it. This is new in draft 5. K2-1's differential (§6) compares the two paths' submission traces (`ReevaluationSubmissionTracker`'s trace, #865).
 - **`KeeperTurnSide` in a step.** A core step gets only the model (`self`), `turn` (the behavior, which holds no mutable reference, plus `emit` and `run`) and the input. So K2 can't hand a body the actor's `&turnSide`. K1b-5 rev 2.1 makes `KeeperTurnSide` an interface of methods: reads are methods, and every write is staged in `TurnOutputs`. K2-1's `handle` builds a step-local side from the input and a staging buffer, and calls the same bodies. Each method's route:
 
 | `KeeperTurnSide` method | K1b-5 (on the actor) | K2 (in a step) |
@@ -139,7 +177,10 @@ K1b-5's request cases are of three kinds, and K2 maps each kind differently:
 | `probe(_:)` | the test hook | the test hook; it must not call back into the keeper |
 
 - **The admission clear** takes a package path, `admitJoiningSessionInStep(…, recordsSyncStream:) -> (JoinAdmission, [SyncStreamDraft])`, so no port call reaches back into the keeper during a step.
-- **The callback audit, in K2-1 or before it** (Review's condition 3), not inside K2-2: grep the adapter for every `keeper.assumeIsolated` and list each with the path that reaches it. One that a step can reach is a stop, and it moves the plan before the big PR is written.
+- **The callback audit, in K2-1 or before it** (Review's condition 3), not inside K2-2: grep the adapter for every `keeper.assumeIsolated` and list each with the path that reaches it. At e18e70c0 there are three: TA:3831, :3859 and :3986. A callback a step can reach must have a row in §4.2's matrix with a refusal or a step-local answer; one without such a row is a stop, and it moves the plan before the big PR is written. The audit also covers code the core runs during its own accesses, which the borrow rule doesn't stop (§7.2): `KeeperKey`'s `==` and `hash(into:)`, and the deinits of what the core drops from `KeeperInput` and `KeeperKey` payloads (`LandServices`, the binding token, draft factories, carried errors). None of them may call into the keeper.
+- **The admission path** (draft 6 names it, should 3). The keeper's admission of a joining session (`admitJoiningInTurn`, LK:2259) calls the adapter's `admitJoiningSessionIsolated` (TA:1984). On a superseded session, that runs `applySessionPerPlayerPolicy` (TA:1571) → `supersedeSessions` (TA:1935) → `recordSyncStreamClear` (TA:1966 → :3981). That is two callbacks into the keeper: the recording-flag read (`keeperRecordsSyncStream`, TA:3831) and the draft submission (`submitSyncStream`, TA:3986). Inside a step both would be refused, and every recorded supersede would end the land (K1b-5 rev 2.2 D2). The package path `admitJoiningSessionInStep(…, recordsSyncStream:) -> (JoinAdmission, [SyncStreamDraft])` avoids both: the step passes the flag in, and the clear's drafts come back as the call's result, which the step records itself.
+  - The `.legacyCycle` branch (TA:3858–3859) submits outside any keeper step. It is reached from `_syncStateForNewPlayer` (TA:5228): the adapter's initial sync reads `await keeper.currentStateLocated()` (TA:5247), and after that hop it commits in its own segment. The keeper isn't running a step there, so the submission goes in as an ordinary entry.
+  - The disconnect's clear, `recordSyncStreamClear(outsideTurn: true)` (TA:1358, in `handleDisconnectQueued` after `await keeper.leave`), is outside a step for the same reason.
 - **The per-player services table** lives on `LiveLandTurns`, keyed by `(PlayerID, EntryID)`, the same key as K1b-4's `playerServices` (`EntryID` is the entry generation). K1b-4 stores it as `[PlayerID: (generation: Epoch, services: LandServices)]`, one entry per player. An entry whose generation differs from the player's current entry is never read, and a removal checks the generation. `LiveLandTurns` keeps that shape. The 10 write sites K1b-4 lists (#877's audit) become the outputs `flush` applies. `KeeperPlayerServicesTests` pins them, and K2-2 runs it against the facade unchanged. `flush` writes it from the join step's output and removes it on the leave step's output. The queued OnLeave handler's lookup at apply time (K1b-4 §3.3) reads the current entry's overrides, which the tick driver attaches to `.tickDue`'s input.
 
 ### 4.6 Drivers and the result slot
@@ -195,7 +236,9 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 | **K2-2, the cut-over** | the facade and `KeeperOwner`; every entry forwards to the core; the binding token, the services table, the package admission path, the drivers. A pure cut-over. The K2-Q1 docs (§5) | none | full, plus §8's three cells |
 | **K2-3, the leftovers** | the code paths K2-2 made unreachable, each proven unreachable on live keepers **and in the replay owner**: until #612, replay calls the same bodies without a core (§7.2), so a path dead on live keepers can still be live in replay (condition 4). K9 still owns the deletions that need K3–K7 | none | none, unless it touches a hot path |
 
-**K2-1's tests are a unit-level differential.** Each §4.3 flow row is driven twice on the same inputs: through a test `TurnCore` running the machine, and through the keeper's direct path. The resulting model and outputs are compared.
+**K2-1's tests are a unit-level differential.** Each §4.3 flow row is driven twice on the same inputs: through a test `TurnCore` running the machine, and through the keeper's direct path. The resulting model and outputs are compared. Draft 6 adds one ordered trace per run, compared entry by entry: the staged actions, the recorder hand-offs, the port calls, and the frames enqueued, with their contents.
+- The trace runs on an eventful path (a tick that emits events and syncs) and on a refusal path (a port callback refused mid-step).
+- It reruns at the cut-over (K2-2), after K2-E has moved the emitter.
 
 ## 7. Risks and ordering constraints
 
@@ -208,16 +251,17 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 
 ### 7.2 Others
 
-- **Exclusivity.** Inside a step, `self` is the model and the only access to it (survey §1). The scoped emitter exists so the closures write separate storage. K2 changes how a re-entry is stopped (new in draft 5):
-  - Today (K1b-4) the model is the actor's stored `model`. Swift's dynamic exclusivity check catches a handler that reads it during `withHandlerStep` (P4; `KeeperReentryTrapTests`, which runs only with `KEEPER_REENTRY_TRAP=1`).
-  - In K2 the model is the core's `machine`, which release builds mark `@exclusivity(unchecked)` (#621). Swift's check no longer catches the overlap in release. The core's borrow rule catches it instead, when the handler goes through `core.read` or `query`.
+- **Exclusivity.** Inside a step, `self` is the model and the only access to it (survey §1). The scoped emitter exists so the closures write separate storage. K2 changes how a re-entry is stopped (new in draft 5, narrowed in draft 6):
+  - Today (K1b-4) the model is the actor's stored `model`. Swift's dynamic exclusivity check catches a handler that reads it during `withHandlerStep`. P4 and `KeeperReentryTrapTests` are evidence for that stored-property path, not for K2's. The test runs only with `KEEPER_REENTRY_TRAP=1`, and only in debug builds (`isDebugBuild`).
+  - In K2 the model is the core's `machine`, which release builds mark `@exclusivity(unchecked)` (#621), so Swift's check no longer catches the overlap in release. **What the core stops** (TurnCore.swift:90–100): a `read` or a `query` inside a step, and a step inside a step or inside a read. With (a), the guarded entries refuse before the core is reached (§4.2).
+  - **What the core doesn't stop:** adopter code it runs during its own accesses: `M.Key`'s `==` and `hash(into:)`, and the deinits of inputs and keys it drops. The callback audit (§4.5) covers `KeeperKey` and the `KeeperInput` payloads. The keeper suites also run once in a release build with `-Xswiftc -DTURNS_EXCLUSIVITY_CHECKED` (cloud), which turns Swift's check back on for the core's state.
   - A handler that reaches the model some other way, which the facade doesn't offer, would not be caught.
 
-  K2-2 therefore points `KeeperReentryTrapTests` at the core's stop, and the contract docs that K1b-4 wrote (runtime.md, both languages; `LandContext`'s doc; `clearDirty()`'s doc) name the core's stop instead of Swift's check. A test case per process runs in the cloud, in debug and in release, as for P4.
+  K2-2 points `KeeperReentryTrapTests` at K2's stops. The refused entry is observed by a count, with no crash, so it runs in the normal suite. The core's stop runs one case per process in the cloud. Both need the `isDebugBuild` gate removed, so that they run in debug and in release. The contract docs that K1b-4 wrote (runtime.md, both languages; `LandContext`'s doc; `clearDirty()`'s doc) name K2's stops instead of Swift's check.
 - **Assignments into the model.** K1b-4 found that an optional-chain assignment into the model begins its access before it evaluates the call on its right side (`Notes/solutions/2026-11-26-assignment-into-a-struct-field-begins-its-access-before-the-call-on-the-right.md`). In a step, `self` is the model, so a mutating call on the right that reaches `self` is a compile-time overlap, not a run-time one. K2-1's `handle` is written with locals first, as K1b-4's three sites are.
 - **The per-message cost.** A query intake's cost is not established (parent §3.8). K2-2's A/B measures it on tick actions with and without resolvers and on tickless client events. Over budget means a core fix (G5 #761), not a keeper shortcut.
 - **G3 (#760, step-path specialization)** is checked before K2-2's A/B is read. A generic machine in another module that isn't specialized could show up as a regression that isn't the keeper's.
-- **A missed callback.** A port call that reaches back into the keeper during a step traps at run time. The audit (§4.5) and the debug check (§4.2) find it before the cut-over, and the full E2E in three encodings exercises it.
+- **A missed callback.** A port call that reaches back into the keeper during a step is refused (a matrix row) or stops the process (a row that keeps the core's stop). The audit (§4.5) and the debug check (§4.2) find it before the cut-over, and the full E2E in three encodings exercises it.
 - **Replay drift.** The replay owner calls the same bodies without a core (parent §3.10). A step-only check added in K2 (a token or a ticket) must have a replay path, or replay skips it. K2-2's harness pass and the reevaluation E2E (0 mismatch) catch a divergence.
 
 ## 8. Tests and measurement
@@ -236,7 +280,7 @@ Parent §5 has K2 as one slice. It is the largest one, so K2 is four PRs, each b
 |---|---|---|---|
 | K2-Q1 | `ctx.services` in steps (§5) | **decided (a)** (maintainer, 2026-11-25); (b) is #855 | — (K2-2 carries the docs) |
 | K2-Q2 | Four PRs instead of one (§6) | Review: agreed in the pre-read, with four conditions, which §6 takes; confirmed in the review of this plan | K2-1 |
-| K2-Q3 | A re-entry into a keeper entry during a step: keep #865's refuse-and-end-the-land (a), or take the core's stops (b)? (§4.2) | Review, then the maintainer if (b), since (b) is a behavior change | K2-1's facade check |
+| K2-Q3 | A re-entry into a keeper entry during a step: keep #865's refuse-and-end-the-land (a), or take the core's stops (b)? (§4.2: (a)'s mechanism, matrix, P5) | Review, then the maintainer if (b), since (b) is a behavior change | K2-1's facade check and the core's `isStepping` |
 
 ## 10. Draft 1 → draft 2
 
@@ -265,7 +309,10 @@ Each point below rests on Swift semantics, so it is checked by a probe, not argu
 | P1 | `extension KeeperModel: TurnMachine` satisfies `TurnActor`'s `M: TurnMachine & PlainData` inside the generic keeper, with `Behavior = KeeperBehavior<State>` (§3) | a generic `ProbeModel<State: StateNodeProtocol>` whose `PlainData` conformance is conditional on `State: PlainData` (the shape `@PlainData` generates for a generic struct), a generic behavior, `actor ProbeLive<State>: TurnActor`, built through `TurnCore(machine:behavior:queueLimit:maxReleasesPerBatch:clock:)`. `swiftc -typecheck -swift-version 6` against the built `SwiftStateTurns` and `SwiftStateTree` modules (Apple Swift 6.4.2; `SwiftStateTurns` identical to main's) | positive: exit 0. Negative (the condition changed to `State: Hashable`): exit 1, `error: type 'ProbeLive<State>' does not conform to protocol 'TurnActor'`. So the condition `StateNodeProtocol` already implies (P4-1) is what makes it hold |
 | P2 | the facade adopts `LiveLandTurns`' executor and forwards with `live.assumeIsolated { … }` (§3) | compile: the same file as P1 (`nonisolated var unownedExecutor: UnownedSerialExecutor { live.unownedExecutor }`, `func forward() -> Int { live.assumeIsolated { $0.liveOnly() } }`). Run: a self-contained file, on Linux | compile: exit 0. Run (Linux, Swift 6.4.3), control mode, `-Onone` and `-O`: exit 0, stdout `P2 forward: 3` then `step done: state=1`. So `assumeIsolated` from the facade's own isolated method passes on the shared executor |
 | P3 | `LiveLandTurns` holds the facade `nonisolated(unsafe) weak` (§3) | `nonisolated(unsafe) weak var facade: AnyObject?` on the actor, in P1's file | exit 0 |
-| P4 | a handler (or a service it calls) that reaches the facade or `core.read` from inside a step traps, in debug and release (§7.2) | a self-contained file: a step holds `&model` for its whole body (`withHandlerStep`'s shape); the handler reads `model` through the facade and `assumeIsolated`. Built `-Onone` and `-O`, run in a control mode (no re-entry) and a trap mode, on Linux (a trap on the Mac opens a crash dialog) | Swift 6.4.3, Linux. Control, both builds: exit 0, `step done: state=1`. Trap, both builds: exit 134, stderr `Simultaneous accesses to 0x…, but modification requires exclusive access`, `Previous access (a modification) started at…`, `Current access (a read) started at:`, and no `step done` line. So the check holds in `-O` too: a synchronous call back into the keeper during a step is a run-time trap in release, not only in debug. In the trap runs stdout was lost at the abort (file buffering), so P2's line doesn't show there; the control runs carry it |
+| P4 | a handler (or a service it calls) that reaches the facade or `core.read` from inside a step traps, in debug and release (§7.2). Draft 6: evidence for K1b-4's stored-property path (a step that holds `&model` on the actor), not for K2, where the model is the core's unchecked `machine` (§7.2) | a self-contained file: a step holds `&model` for its whole body (`withHandlerStep`'s shape); the handler reads `model` through the facade and `assumeIsolated`. Built `-Onone` and `-O`, run in a control mode (no re-entry) and a trap mode, on Linux (a trap on the Mac opens a crash dialog) | Swift 6.4.3, Linux. Control, both builds: exit 0, `step done: state=1`. Trap, both builds: exit 134, stderr `Simultaneous accesses to 0x…, but modification requires exclusive access`, `Previous access (a modification) started at…`, `Current access (a read) started at:`, and no `step done` line. So the check holds in `-O` too: a synchronous call back into the keeper during a step is a run-time trap in release, not only in debug. In the trap runs stdout was lost at the abort (file buffering), so P2's line doesn't show there; the control runs carry it |
+| P5 (draft 6) | K2-Q3 (a): a re-entry through the facade during a core step is refused, with no crash, by a predicate the core owns. The running step sees the refusal after its port call returns, and applies the failure to its own model (§4.2) | `2026-11-26-k2-probe-p5.swift`, self-contained. `ProbeCore` copies the core's borrow rule and adds the proposed `isStepping`. The facade adopts the live actor's executor and installs the live actor's weak backlink in its init. The port calls back through `facade.assumeIsolated { $0.submitSyncStream() }` during a step. It runs three cases: a control (the entry outside a step), a step entered through the facade, and a step the live actor starts itself (a timer). Mac, Apple Swift 6.4.2, `-Onone` and `-O` | both builds exit 0, with stdout `control: accepted=1 violations=0 failed=false`, `facade step: refused=1 violations=1 failed=true gateCloses=1 borrows=0`, `core-driven step: refused=1 violations=2 failed=true gateCloses=2 borrows=0`, `done`. So the refusal needs no facade-side counter: the core-driven step is refused the same way. Limit: the borrow rule is a copy, so K2-1's tests repeat this against the real `TurnCore` with its `isStepping` |
+| P6 (draft 6; Review's probe) | an assignment into the model whose right side mutates the model, inside a step, where `self` is the model (§7.2) | Review's `neg.swift` / `pos.swift`: a struct with `mutating func held`, built with Apple Swift 6.4.2 | `slots[k]?.result = held(o)` is refused: `error: overlapping accesses to 'self.slots' … [#ExclusivityViolation]`. The plain subscript set, the plain field assignment and locals first all pass. The diagnostic comes from the SIL pass: `swiftc -typecheck` accepts the file, and `-emit-sil` or a build refuses it. So in a step the optional-chain shape is a build error, not a run-time trap |
+
 
 What the probes don't cover:
 - the per-step scoped emitter (§4.4): a lock and a flag, ordinary code that K2-E's own tests pin;
@@ -289,7 +336,21 @@ What the probes don't cover:
 | Assignments into the model: write locals first | K1b-4's solutions entry | §7.2 |
 | The census extended by storage path; the A/B rule of 2026-11-26 | #877; the maintainer | §8 |
 
-**Probes:** none new. Draft 5 adds no point that rests on Swift semantics without evidence:
+**Probes:** none new in draft 5 (draft 6 adds P5 and quotes P6, §12). Draft 5's reasons:
 - P1's shape (a generic model whose `PlainData` is conditional) is what landed. `KeeperCensusTests`' `requirePlain(KeeperModel<CensusState>.self)` compiles in #877.
 - The core's release stop is `fatalError` in `read` (TurnCore.swift:477), code the turn core's own tests cover, not a compiler rule.
 - K2-Q3 is a choice, not a semantic point.
+
+## 15. Draft 5 → draft 6 (Review's NOT GO on draft 5: 3 must-fix, 3 should, 3 nits)
+
+| Finding | Change | Where |
+|---|---|---|
+| MF1: (a) had no mechanism | The predicate is a package `isStepping` on the core, not a facade counter. The refusing entry counts the trip, notes it in the mailbox and closes the gate under #865's guard. `callOut` in the step sees the trip and ends the land through the step's own model. Factories run in the step. The backstop is the step's last action, before the core's flush. Probe P5 | §4.2, §12 |
+| MF2: the entry matrix | For each entry: how production reaches it, today's behavior, and K2's (refused, a step-local answer, the core's stop, or deferred). The debug check's name comes from the facade entry. The trap test's debug gate is removed in K2-2 | §4.2, §7.2 |
+| MF3: output order | Events keep the in-phase batch on eventful paths; `turn.emit` carries no events. The differential compares one ordered trace on an eventful path and a refusal path, and reruns at the cut-over | §4.4, §6 |
+| should 1 | §7.2 is narrowed to what the core stops. The audit adds `KeeperKey` and the `KeeperInput` payloads. The keeper suites run once with `TURNS_EXCLUSIVITY_CHECKED` in release | §4.5, §7.2 |
+| should 2 | Review's exclusivity probe is quoted as P6 | §12 |
+| should 3 | The admission path's two bypassed callbacks are named, and the `.legacyCycle` and disconnect submissions are shown to run outside a step | §4.5 |
+| Nits | The fixed-offset claim cites the cloud's count. P4 is labelled as K1b-4's evidence. Anchors corrected: TurnActor.swift:904 (the flush call; :897 is `drainProducts`), TA:113 (`unownedExecutor`) | §2, §3, §4.4, §4.5, §12 |
+
+TA anchors in draft 6 are at e18e70c0 (main's `TransportAdapter.swift` is the same file), found by grep, not by the LSP.
