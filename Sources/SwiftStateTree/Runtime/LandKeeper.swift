@@ -2928,6 +2928,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             debugEndWork(&m, &side)
         }
         rememberFilledSlotForAssert(&m, sequence)
+        side.probe?("action-slot-filled")
         guard m.actionSlots[sequence] != nil else { return }
         // The waiter leaves before the slot does: a slot holds at most one of a result and a
         // waiter. A waiting caller gets the value itself; only an unread result is held.

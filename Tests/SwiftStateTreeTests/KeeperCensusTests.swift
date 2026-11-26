@@ -305,7 +305,10 @@ struct KeeperCensusTests {
                 continue
             case ("turnSide", .container) where path == "turnSide.actions":
                 continue
-            case ("turnSide", _), ("turnSide.actions", _), ("behavior.reentrySentinel", .outside(.reentrySentinel)):
+            // The side's rows keep the homes they had on the actor: outside, replaced or a hook.
+            case ("turnSide", .outside), ("turnSide", .replaced), ("turnSide", .testHook),
+                 ("turnSide.actions", .outside), ("turnSide.actions", .replaced), ("turnSide.actions", .testHook),
+                 ("behavior.reentrySentinel", .outside(.reentrySentinel)):
                 continue
             case ("actor", .model), ("actor", .behavior), ("actor", .replay):
                 Issue.record("\(path): a \(home) field still on the actor")
