@@ -35,7 +35,10 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     case leave(KeeperCaller)
     /// The tick driver's input. The fold and its start instant are the two arguments
     /// `runTickTurn` takes from the actor today; the start is read only for a fold.
-    case tickDue(tickId: Int64, fold: PendingFold?, foldStart: ContinuousClock.Instant?)
+    /// A tick is due. `syncsInTurn`: the driver's read of whether the attached transport runs
+    /// the sync phase in turn (the keeper's `syncsInTurn`), made outside the step as `runTick`
+    /// makes it outside its body; K2-2's binding token carries it.
+    case tickDue(fold: PendingFold?, foldStart: ContinuousClock.Instant?, syncsInTurn: Bool)
     case syncDue
     case freeze(generation: UInt64, timeout: Duration)
     case resume(generation: UInt64)
@@ -120,11 +123,83 @@ extension KeeperModel: TurnMachine {
     typealias Behavior = KeeperBehavior<State>
 
     mutating func handle(_ input: KeeperInput<State>, _ turn: inout Turn<KeeperModel<State>>) {
-        // Commit 2 routes each input to the segment the keeper's driver calls (plan §4.3).
-        preconditionFailure("K2-1: \(input) is not routed yet")
+        let behavior = turn.behavior
+        guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
+        switch input {
+        case let .tickDue(fold, foldStart, syncsInTurn):
+            tickDueStep(behavior, store, fold: fold, foldStart: foldStart, syncsInTurn: syncsInTurn)
+        default:
+            // The routes with a `run` come in the next commit (plan §4.3).
+            preconditionFailure("K2-1: \(input) is not routed yet")
+        }
     }
 
     mutating func answer(_ query: KeeperQuery, _ turn: inout Turn<KeeperModel<State>>) -> KeeperAnswer<State> {
-        preconditionFailure("K2-1: \(query) is not routed yet")
+        let behavior = turn.behavior
+        guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
+        switch query {
+        case let .admitServerInput(input):
+            // The driver's segment S1 (`submitServerInputErased`): the check, the sequence and
+            // the append in one body.
+            return .serverInput(step(behavior, store) { m, side, outputs in m.serverInputIntake(behavior, &side, &outputs, input) })
+        default:
+            preconditionFailure("K2-1: \(query) is not routed yet")
+        }
+    }
+}
+
+// MARK: - The steps
+
+extension KeeperModel {
+    /// One turn body in a core step, in the frame the keeper's `withTurn` runs (`KeeperTurnFrame`):
+    /// the body borrows the model and the store's side; the flush and the late re-entry run
+    /// after that borrow ends.
+    mutating func step<R>(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ body: (inout KeeperModel<State>, inout KeeperTurnSide, inout TurnOutputs) -> R
+    ) -> R {
+        // The frame's isolation is nil here statically (a synchronous model method the core
+        // calls), so the step checks its executor once at entry: the flush below then runs on
+        // the owner's executor, checked, not assumed. The keeper's frame is isolated to the
+        // keeper statically and has no such check.
+        store.preconditionOnOwner()
+        var violationsBefore = 0
+        let result = KeeperTurnFrame.run(
+            behavior.reentrySentinel,
+            flush: { outputs in store.withSide { side in side.flush(&outputs) } },
+            lateReentry: { violationsBefore = $0 }
+        ) { outputs in
+            store.withSide { side in body(&self, &side, &outputs) }
+        }
+        // The keeper's `applyLateReentry`, after the frame: the closures above can't both hold
+        // the model.
+        if var late = store.withSide({ side in applyLateReentry(behavior, &side, since: violationsBefore) }) {
+            store.withSide { side in side.flush(&late.outputs) }
+            KeeperModel<State>.noteLateReentry(behavior, late.applied)
+        }
+        return result
+    }
+
+    /// A tick land's `.tickDue`: the driver's live tick (`runTick`) with the same segments, and
+    /// the record's submission flushed in the step, where the keeper awaits it (plan §4.4: the
+    /// recorder's serial sink keeps the order).
+    mutating func tickDueStep(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, fold: PendingFold?, foldStart: ContinuousClock.Instant?, syncsInTurn: Bool) {
+        guard let handler = behavior.definition.lifetimeHandlers.tickHandler else {
+            preconditionFailure("K2-1: a tickless land's tick is routed with the input drain")
+        }
+        guard tickAdmit() == .admitted else { return }
+        // Declared first, so it runs last, as in `runTick`.
+        defer { store.withSide { side in debugEndWork(&side) } }
+        guard let tickId = store.withSide({ side in tickStart(side) }) else { return }
+        // No drain waits on a core's ticks in K2-1; K2-2 makes the wait a reply.
+        defer { _ = tickEnd() }
+        let output = step(behavior, store) { m, side, outputs in
+            m.tickTurnBody(behavior, &side, &outputs, handler: handler, tickId: tickId,
+                           transport: syncsInTurn ? side.attachedTransport : nil, fold: fold, foldStart: foldStart)
+        }
+        step(behavior, store) { m, _, outputs in
+            m.stageRecorderSubmission(behavior, output.record, endsTurn: behavior.isTickless, outputs: &outputs)
+        }
     }
 }

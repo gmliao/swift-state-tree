@@ -3795,7 +3795,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
 
     /// What a tick turn leaves for the work after it (the recorder).
-    fileprivate struct TickTurnOutput {
+    struct TickTurnOutput {
         let record: ReevaluationTickRecord
     }
 
@@ -5003,7 +5003,7 @@ extension KeeperModel {
     typealias SettleTurnOutcome = LandKeeper<State>.SettleTurnOutcome
     fileprivate typealias InputTurnOutcome = LandKeeper<State>.InputTurnOutcome
     fileprivate typealias InitializeTurnOutput = LandKeeper<State>.InitializeTurnOutput
-    fileprivate typealias TickTurnOutput = LandKeeper<State>.TickTurnOutput
+    typealias TickTurnOutput = LandKeeper<State>.TickTurnOutput
     fileprivate typealias AppliedItem = LandKeeper<State>.AppliedItem
     fileprivate typealias InputApplication = LandKeeper<State>.InputApplication
     typealias HandlerRandom = LandKeeper<State>.HandlerRandom
@@ -7570,7 +7570,7 @@ extension KeeperModel {
     /// `runTickTurn`'s body, on the model the turn holds (#700 K1b-5a step 2). The tick handler
     /// runs in the hold, as an input's handler does (`withHandlerStep`); so does the state hash,
     /// whose conversion is the sync phase's.
-    fileprivate mutating func tickTurnBody(
+    mutating func tickTurnBody(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
