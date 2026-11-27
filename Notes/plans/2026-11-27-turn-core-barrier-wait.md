@@ -84,10 +84,14 @@ Every payload comes back exactly once, by one of three routes:
 | `release(where:)` | the returned array, in the releasing step | the releasing step: a reply, or a continuation that may `wait` again |
 | `.cancelsCall` withdraw | `handleWaitEnded(.withdrawn)`, stepped in the cancellation's entry | the core answers `CancellationError` after the hook's step; a reply from the hook finds no waiter |
 | Timeout | `handleWaitEnded(.timedOut)`, stepped in the deadline's entry | the hook (default `TurnError.timedOut`) |
-| A reply published while waiting | `handleWaitEnded(.answered)`, its own step after the drain | the published reply; the hook only cleans up |
-| `endAll()` | `handleWaitEnded(.ended)`, one step per wait, oldest first, after the ending step | the hook (default `TurnError.closed`) |
+| A reply published while waiting | `handleWaitEnded(.answered)`, its own step after the drain | the published reply, held by the driver until the hook's step has run |
+| `endAll()` | `handleWaitEnded(.ended)`, one step per wait, oldest first, after the ending step and after its replies claimed theirs | the hook (default `TurnError.closed`) |
 
-So a #958 join that holds a #852 reservation undoes it in whichever step gets the payload back. The withdraw's and the timeout's hooks step before the caller's answer leaves the core, as #958's keeper ends the reservation before the join returns.
+So a #958 join that holds a #852 reservation undoes it in whichever step gets the payload back. Every hook steps before the caller's answer leaves the core, as #958's keeper ends the reservation before the join returns:
+- the withdraw's and the timeout's hooks run inside their entry;
+- a claimed reply's continuation is held in the hook's queue entry and resumed right after the hook.
+
+The public type is `ReleasedWait`, not `Released`. The plain name collided with a test helper class in SwiftStateTurnsTests, and an adopter's own `Released` would collide the same way.
 
 Oldest first: `release(where:)` sorts the matching callers by `InputID` across the keys, and `endAll` uses the same order. The prior art is the kernel's keyed wake (`__wake_up` with a key that the wake function matches), Akka's stash and unstash for payloads that run again on release, and Erlang's `gen_server` deferred `reply/2` with monitors, whose cleanup on a waiting caller's exit `handleWaitEnded` plays.
 
@@ -105,7 +109,7 @@ On a core with barriers (`TurnCore.usesBarriers`, `BarrierKey != Never`), the co
 `.ignoresCancel` installs no handler, so it never has a flag and a release reads `cancelled: false` for it (`ignoresCancel` test).
 
 Between the cancel and its hop, every step reads the flag:
-- `release(where:)` samples it once per call, for the whole array;
+- `release(where:)` samples it once per call, for the whole array, under one lock (`cancelled(among:)`), so the array never shows a pair of flags that didn't coexist;
 - `wait` refuses a flagged caller (`.refused(_, .cancelled)`), so a re-wait in the step that released it doesn't park a cancelled caller (`flagSticksAcrossReleaseAndRewait`);
 - the hook's `ReleasedWait.cancelled` reads it in its own step.
 
@@ -124,7 +128,8 @@ The hop is an existing entry with its ordinal, so the barrier adds none. A pre-c
 
 `timeout` is a `Duration` budget, added to `turn.now` (the batch's clock sample) with saturation:
 - `<= .zero` is `.expired`, with no timer;
-- a budget past `Int64`'s range waits until `Int64.max` (`saturatingBudget`).
+- the instant is clamped, not the budget first: from a negative `now` a budget past `Int64`'s range can still land below `Int64.max` (`saturatingDeadline`, `saturatingDeadlineArithmetic`);
+- a budget past the range from a non-negative `now` waits until `Int64.max`, and the heap's head is that instant (`saturatingBudget`).
 
 Each registration takes a fresh generation from `nextBarrierTimer`. `barrierTimers[generation] = caller` is the liveness that every heap path reads through `DeadlineEntry.kind == .barrier`:
 - `deadlineIsLive`, so compaction and the wake's stale pops;
@@ -136,7 +141,7 @@ So:
 - a timer whose wait ends in the step that armed it is never armed (`replyInTheWaitingStep`);
 - an entry already in a wake's due list when an earlier entry's hook released its waiter fails the liveness recheck before `entryBoundary` (`dueEntryReleasedInTheSameWake`).
 
-The heap deletes lazily, so stale barrier entries stay in it until a wake or a compaction drops them, report `.staleTimer`, and take no ordinal.
+The heap deletes lazily, so stale barrier entries stay in it until a wake or a compaction drops them, report `.staleTimer`, and take no ordinal. An entry counts toward the stale count (which decides compaction) only once its arm pushed it (`BarrierEntry.armed`). A firing one, already out of the heap, doesn't count.
 
 Precedence:
 - The budget makes the timeout eligible at its instant, not exact: the driver serves mail and queued work before a due timer, so a release can win after the instant.
@@ -145,14 +150,18 @@ Precedence:
 
 ### 2.5 How a reply claims a caller
 
-One rule, at the place a reply is published (`drainProducts`): a published reply whose caller still has a barrier entry removes the entry and its timer, and queues `handleWaitEnded(.answered)` with the payload. `reply(after:)` publishes through the same queue when its request completes or is abandoned, so it claims the caller then, not when it was staged (`replyAfterClaimsCaller`). The check sits behind `usesBarriers` and a non-empty table.
+One rule, at the place a reply is published (`drainProducts`): a published reply whose caller still has a barrier entry removes the entry and its timer, and queues `handleWaitEnded(.answered)` with the payload and the held answer. The caller resumes right after the hook's step. `reply(after:)` publishes through the same queue when its request completes or is abandoned, so it claims the caller then, not when it was staged (`replyAfterClaimsCaller`). A completion keeps its staged replies in `repliesAfter` through its own step, so a `wait` there sees them as staged. The check sits behind `usesBarriers` and a non-empty table.
 
 `wait` stops the process (`fatalError`, in debug and release builds alike) for a caller that already waits, or that has a reply staged (in `replies`, or held for a request by `reply(after:)`). One caller has one answer. A reply staged after the wait, in the same step, is legal, and claims it at publication.
 
 ### 2.6 `close`, `endAll` and callers that aren't calls
 
 - **`close()`** is intake close and leaves barrier waits alone: those callers have stepped. A release, their timeout or `endAll` ends them (`closeLeavesWaits`). The drain's `.tick` wait and `.shutdown`'s callers survive it.
-- **`endAll()`** moves every entry, oldest first, to the hook queue as `.ended`, and invalidates their timers before `stopDeadlines()` empties the heap. Each payload comes back in a step of its own after the ending step. A step that must answer some callers otherwise (`.shutdown` with the destroy's result) releases them before `endAll`, in the same step (`releaseThenEndAll`). After it, `wait` is refused `.ended`.
+- **`endAll()`** marks the waits for ending, and `stopDeadlines()` empties the heap. The driver ends them right after it has published the ending step's replies:
+  - a waiter whose reply was staged (a `reply(after:)` of a request `endAll` closes, or one staged in that step) is claimed by it, `.answered`, with that reply as its answer (`endAllWithStagedReply`);
+  - every other waiter goes to the hook queue as `.ended`, oldest first.
+
+  Each payload comes back in a step of its own after the ending step. A step that must answer some callers otherwise (`.shutdown` with the destroy's result) releases them before `endAll`, in the same step (`releaseThenEndAll`). After it, `wait` is refused `.ended`.
 - **A wait is caller-bound** (an `InputID` with a waiter). A continuation of internal work, such as a drain started by the land's own timer, has no caller, so it can't be a barrier wait. It stays model state (a phase), released by the same step that would release the waiters.
 
 ### 2.7 Replay, counts and the public API
@@ -206,7 +215,8 @@ This adopter moves after #958 merges and the barrier lands, in one commit that r
    - a cancel after the reply;
    - a reply claiming a caller, and `reply(after:)` claiming it at completion;
    - a reply in the waiting step, before the timer is armed;
-   - `endAll`, and a release before `endAll`;
+   - `endAll`, `endAll` with a staged `reply(after:)`, and a release before `endAll`;
+   - the deadline arithmetic at the range's edge;
    - `close`;
    - release vs. cancel and timeout vs. cancel, both orders each;
    - a re-wait's fresh generation;
