@@ -846,8 +846,9 @@ extension KeeperModel {
         }
     }
 
-    /// A leave ended (`result`): its caller gets the answer, or, for a join's kick, J3 runs and
-    /// the join goes on; a failed kick fails the join with the leave's own error.
+    /// A leave ended (`result`): its caller gets the answer, or, for a join's kick, J2c runs
+    /// (the fence and the slot check) and the join goes on; a failed kick fails the join with
+    /// the leave's own error.
     mutating func continueAfterLeave(
         _ behavior: KeeperBehavior<State>,
         _ store: KeeperSideStore,
