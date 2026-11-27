@@ -2225,7 +2225,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         side.holdPoints = turnSide.holdPoints
         // A guarded entry refused on this keeper while the core steps (they share the sentinel)
         // closes the twin's gate, as the keeper's own refusal closes its transport's.
-        reentryGateForTesting = twinTransport
+        // Only a twin with a transport sets the gate, so a later twin without one can't clear it.
+        if twinTransport != nil { reentryGateForTesting = twinTransport }
         let store = KeeperSideStore(side: side)
         var twin = behavior
         twin.sideStore = store
@@ -5328,8 +5329,9 @@ extension KeeperModel {
         for refusal in coreReplies.refusals { violations.append("core side: refused \(refusal)") }
         // A sync follow-up that slipped past the refusal (Review round 2 on #938): its work count
         // or its pending turn on a core's side has nothing that runs or ends it.
-        if coreReplies.onCore, requestedSyncWork > 0 || side.pendingSyncTurnAfterTurn != nil {
-            violations.append("core side: requested sync work \(requestedSyncWork), pending follow-up \(side.pendingSyncTurnAfterTurn != nil)")
+        if coreReplies.onCore,
+           requestedSyncWork > 0 || side.pendingSyncTurnAfterTurn != nil || joinSyncTurnBinding != nil || inTurnDrainRetryBinding != nil {
+            violations.append("core side: requested sync work \(requestedSyncWork), pending follow-up \(side.pendingSyncTurnAfterTurn != nil), join-sync binding \(joinSyncTurnBinding != nil), drain-retry binding \(inTurnDrainRetryBinding != nil)")
         }
         if !coreReplies.onCore, coreReplies.carriedSyncsInTurn != nil {
             violations.append("a carried syncsInTurn on the keeper's side")
@@ -6835,8 +6837,8 @@ extension KeeperModel {
         reason: SyncTurnReason
     ) {
         // On a core (#700 K2-1, Review round 2 on #938): the follow-up's start would go through
-        // the keeper reference, which a core's side doesn't have. Refused before any change and
-        // reported (`actionTableViolations`); K2-2 routes it with the binding token.
+        // the keeper reference, which a core's side doesn't have. The follow-up is dropped after
+        // its completed phase and reported (`refusesSyncFollowUpOnCore`); K2-2 routes it.
         if refusesSyncFollowUpOnCore(&side, "requestSyncTurnAfterThisTurn") { return }
         requestedSyncTurnsForTesting[reason, default: 0] += 1
         if let pending = side.pendingSyncTurnAfterTurn {
@@ -6882,8 +6884,13 @@ extension KeeperModel {
         }
     }
 
-    /// Whether `side` is a core's, whose sync follow-ups K2-1 doesn't route: the refusal is
-    /// recorded by name and nothing else changes (no work count, no binding, no pending turn).
+    /// Whether `side` is a core's, whose sync follow-ups K2-1 doesn't route. This drops the
+    /// follow-up after a completed phase; it doesn't refuse the input: by the time it runs, the
+    /// step applied its inputs, sent its events to the port and applied the sync result. Only
+    /// the follow-up's own work is skipped (its work count, binding, pending turn and staged
+    /// start), and the drop is recorded by name. A core that holds a recorded refusal is not
+    /// valid for further steps (the differential asserts no core violations). K2-2 must route
+    /// the follow-ups, not refuse them (K2 plan §18, item 19).
     mutating func refusesSyncFollowUpOnCore(_ side: inout KeeperTurnSide, _ site: String) -> Bool {
         guard side.coreInputReplies.onCore else { return false }
         side.coreInputReplies.refusals.append("\(site): a sync follow-up's start needs the keeper (K2-2: the binding token)")

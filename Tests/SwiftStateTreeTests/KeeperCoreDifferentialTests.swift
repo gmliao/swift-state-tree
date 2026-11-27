@@ -441,6 +441,8 @@ final class CoreDiffCounter: @unchecked Sendable {
 /// A value as text with every dictionary's and set's entries sorted, at any depth, so two equal
 /// values render alike whatever their hash order (Review round 2 on #938).
 func coreDiffCanonical(_ value: Any) -> String {
+    // Strings quoted and escaped, so a value's text can't read as a separator or as `nil`.
+    if let string = value as? String { return string.debugDescription }
     let mirror = Mirror(reflecting: value)
     switch mirror.displayStyle {
     case .dictionary:
@@ -512,7 +514,7 @@ struct CoreDiffDigest: Equatable, Sendable, CustomStringConvertible {
     func differingFields(from other: CoreDiffDigest) -> [String] {
         var names: [String] = []
         for (mine, theirs) in zip(Mirror(reflecting: self).children, Mirror(reflecting: other).children) where mine.label != "otherModelFields" {
-            if String(describing: mine.value) != String(describing: theirs.value) { names.append(mine.label ?? "?") }
+            if coreDiffCanonical(mine.value) != coreDiffCanonical(theirs.value) { names.append(mine.label ?? "?") }
         }
         for key in Set(otherModelFields.keys).union(other.otherModelFields.keys).sorted() where otherModelFields[key] != other.otherModelFields[key] {
             names.append("model.\(key)")
@@ -568,7 +570,8 @@ private struct CoreDiffPair {
     /// fixture.
     var transports = false
 
-    static func make(_ shape: CoreDiffShape, _ name: String, holds: (@Sendable (LandKeeperHoldPoint) async -> Void)? = nil) async -> CoreDiffPair {
+    static func make(_ shape: CoreDiffShape, _ name: String, holds: (@Sendable (LandKeeperHoldPoint) async -> Void)? = nil,
+                     pathHolds: (@Sendable (String, LandKeeperHoldPoint) async -> Void)? = nil) async -> CoreDiffPair {
         let landID = "core-diff:\(name):\(UUID().uuidString)"
         func keeper() -> LandKeeper<CoreDiffState> {
             LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: landID)
@@ -578,6 +581,11 @@ private struct CoreDiffPair {
             // On both keepers, before the twin copies the source's side.
             await direct.installHolds(holds)
             await twinSource.installHolds(holds)
+        }
+        if let pathHolds {
+            // Labelled by path, so a case can tell the keeper's hold from the core's.
+            await direct.installHolds { await pathHolds("keeper", $0) }
+            await twinSource.installHolds { await pathHolds("core", $0) }
         }
         await direct.awaitInitialization()
         await twinSource.awaitInitialization()
@@ -638,6 +646,9 @@ private func boundedEnd(_ task: Task<Void, Never>, seconds: Int) async -> Bool {
         group.addTask { await task.value; return true }
         group.addTask { try? await safeTaskSleep(for: .seconds(seconds)); return false }
         let first = await group.next() ?? false
+        // Cancelling the waiter doesn't cancel the unstructured task it waits on, so a timeout
+        // cancels the task itself, or the group would wait for it (Review round 3 on #938).
+        if !first { task.cancel() }
         group.cancelAll()
         return first
     }
@@ -871,12 +882,12 @@ struct KeeperCoreDifferentialTests {
     func uncancelledDestroyTimerFires(tick: Bool) async throws {
         // Each path's fire is observed by its hold, not by time (Review round 2): the keeper's own
         // drain cancels a timer that fired, so its task's end says nothing.
-        let fires = CoreDiffCounter()
+        let keeperFires = CoreDiffCounter(), coreFires = CoreDiffCounter()
         let (fired, firedContinuation) = AsyncStream<Void>.makeStream()
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false, noOnLeave: true, destroysWhenEmpty: true), "destroy-fires",
-                                           holds: { point in
+                                           pathHolds: { path, point in
                                                guard point == .destroyTimerFired else { return }
-                                               fires.increment()
+                                               (path == "keeper" ? keeperFires : coreFires).increment()
                                                firedContinuation.yield()
                                            })
         _ = await bothJoin(pair, "p1", "c1")
@@ -891,7 +902,7 @@ struct KeeperCoreDifferentialTests {
         var fireEvents = fired.makeAsyncIterator()
         _ = await fireEvents.next()
         _ = await fireEvents.next()
-        #expect(fires.value == 2, "fires: \(fires.value)")
+        #expect(keeperFires.value == 1 && coreFires.value == 1, "fires: keeper \(keeperFires.value), core \(coreFires.value)")
     }
 
     @Test("A failure item in a tickless input turn fails the land the same way on both paths, up to the drain's start (§16 item 13's K2-1 part)")
@@ -1344,11 +1355,17 @@ struct KeeperCoreDifferentialTests {
     }
 
     @Test("A sync follow-up a tick's phase asks for, on a land without periodic sync, is refused on the core by name, with no work count or pending turn left (Review round 2 on #938: K2-2 routes them)",
-          arguments: [CoreDiffTraceTransport.FollowUp.joinsAwaiting, .keptEvents, .deferred])
-    func syncFollowUpsAreRefusedOnTheCore(followUp: CoreDiffTraceTransport.FollowUp) async throws {
+          arguments: [CoreDiffTraceTransport.FollowUp.joinsAwaiting, .keptEvents, .deferred], [false, true])
+    func syncFollowUpsAreRefusedOnTheCore(followUp: CoreDiffTraceTransport.FollowUp, syncOnly: Bool) async throws {
         let pair = try await TracePair.make("follow-up")
         pair.coreTransport.followUp = followUp
-        await harnessTick(pair)
+        if syncOnly {
+            // A sync that doesn't fold (no tick due): `syncOnlyTurnBody`'s own path to the helpers.
+            await pair.harness.drive(.syncDue(now: ContinuousClock.now, tickDeadline: nil, foldPending: false, syncsInTurn: true))
+            await pair.harness.waitForSubmissions()
+        } else {
+            await harnessTick(pair)
+        }
         let read = await pair.harness.differentialRead()
         let site = switch followUp {
         case .joinsAwaiting: "scheduleJoinSyncTurn"
@@ -1358,6 +1375,10 @@ struct KeeperCoreDifferentialTests {
         #expect(read.violations.contains { $0.contains("refused \(site)") }, "\(read.violations)")
         #expect(!read.violations.contains { $0.contains("requested sync work") }, "no work count began: \(read.violations)")
         #expect(read.model.requestedSyncWork == 0)
+        #expect(read.model.joinSyncTurnBinding == nil && read.model.inTurnDrainRetryBinding == nil, "no binding was written")
+        #expect(read.pendingSyncTurnAfterTurn == "-", "no pending follow-up: \(read.pendingSyncTurnAfterTurn)")
+        #expect(read.model.requestedSyncTurnsForTesting.isEmpty && read.model.joinSyncTurnsScheduledForTesting == 0, "no test counter moved")
+        #expect(!pair.coreTrace.all.contains("flush: staged action"), "no staged start: \(pair.coreTrace.all)")
         #expect(pair.coreTrace.all.contains { $0.hasPrefix("runSyncPhaseInTurn") && $0.contains("includeSync=true") }, "the phase ran: \(pair.coreTrace.all)")
     }
 

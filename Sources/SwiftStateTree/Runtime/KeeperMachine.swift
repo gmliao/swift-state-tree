@@ -410,7 +410,7 @@ extension KeeperModel: TurnMachine {
             // kick ends), which a core's side has no keeper for. K2-2 routes it with the core's
             // drain (plan §16 item 19).
             // A precondition, not a named `KeeperCoreRefusal`: the query's answer
-            // (`ServerInputOutcome`) has no error channel to carry one.
+            // (`ServerInputOutcome`) can refuse, but `ServerInputRefusal` has no K2-1 reason.
             precondition(!behavior.isTickless, "K2-1: a tickless land's server input is routed in K2-2")
             // The driver's segment S1 (`submitServerInputErased`): the check, the sequence and
             // the append in one body.
