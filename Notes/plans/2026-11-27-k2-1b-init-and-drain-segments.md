@@ -1,6 +1,6 @@
 # K2-1b: the initialization and the destroy drain in segments (#700)
 
-**Status:** draft rev 1 (2026-11-27), not reviewed. Rev 1 quotes the probes P1–P3 (§ Probes). Line anchors are `LandKeeper.swift` (`LK:`) on main 9964d1de: `performInitialization` and `drainAfterIdleCheck` are unchanged since aced9ace, where the await survey was taken. On 7aacf129 (#931) the two functions keep their lines, and the loop configurators moved to LK:2953 and LK:4575.
+**Status:** rev 2 (2026-11-27). Review's GO on rev 1 came with four conditions, met here: the loops before `didInitialize`, with T9; the sequence assert; the bound requester's hold, T8b; the K2-2 boundary table. Q1–Q5 are decided (§ Questions). Rev 1 quoted the probes P1–P3 (§ Probes). Line anchors are `LandKeeper.swift` (`LK:`) on main 9964d1de: `performInitialization` and `drainAfterIdleCheck` are unchanged since aced9ace, where the await survey was taken. On 7aacf129 (#931) the two functions keep their lines, and the loop configurators moved to LK:2953 and LK:4575.
 
 **Scope:** the K2 plan's §16 item 18 (Review, 2026-11-27). Segment `performInitialization` and `drainAfterIdleCheck` the way K1b-5 segmented the join and the leave:
 - each segment is a `KeeperModel` method run in one `withTurn`;
@@ -39,17 +39,18 @@ loop:
   .replayHeader(source)      → legacy replay part, unchanged (see "Replay" below) → withTurn initializeAfterReplay
   .runResolvers(r)           → await executeInitializeResolvers → withTurn initializeResolved(r, result)
   .submitRecord(record)      → await submitTurnRecord(record) → withTurn initializeRecorded
-  .startLoops(tick, sync)    → configureTickLoop / configureSyncLoop (sync, no await) → return
+  .startLoops(tick, sync)    → configureTickLoop / configureSyncLoop (sync, no await) → withTurn initializeDone → return
   .failed                    → return (the teardown Task was staged by the segment)
   .done                      → return
 ```
 
 | Segment | Does, in one turn | Replaces |
 |---|---|---|
-| `initializeBegin` | the registration checks (pure reads, LK:1422–1439); on a problem, `fail` (below). Re-evaluation: `.replayHeader`. Live with OnInitialize: takes the sequence and builds `ctx` (LK:1481–1488), and the executors from `model.state` (LK:1493). With executors, `.runResolvers`; without, it applies in this segment, as `initializeResolved` does | LK:1415–1494 |
-| `initializeResolved(r, result)` | timeout and `.failLand` handling (LK:1504–1528), reading `side.isDraining` in this segment; then `initializeTurnBody` (LK:1538), unchanged; on `.failure`, `fail`. With a recorder, `.submitRecord`; else `initializeFinish` | LK:1503–1556 |
+| `initializeBegin` | the registration checks (pure reads, LK:1422–1439); on a problem, `fail` (below). Re-evaluation: `.replayHeader`. Live with OnInitialize: takes the sequence, builds `ctx` (LK:1481–1488) and the executors from `model.state` (LK:1493), and records `sequence.next` after the take in the request (`sequenceAfterTake`). With executors, `.runResolvers`; without, it applies in this segment, as `initializeResolved` does | LK:1415–1494 |
+| `initializeResolved(r, result)` | first, `assert(sequence.next == r.sequenceAfterTake)`: nothing but this initialization took a number during the resolvers (the survey's open point 3). It holds by the code: every intake entry awaits `ensureInitialized` before it takes one (`join`, `leave`, `submit`, `handleClientEvent`, `submitServerInput`), and the loops aren't configured yet. Then the timeout and `.failLand` handling (LK:1504–1528), reading `side.isDraining` in this segment; then `initializeTurnBody` (LK:1538), unchanged; on `.failure`, `fail`. With a recorder, `.submitRecord`; else `initializeFinish` | LK:1503–1556 |
 | `initializeRecorded` | `initializeFinish` | LK:1598's check after the record |
-| `initializeFinish` | `guard autoStartLoops, !side.isDraining` → `.startLoops(intervals)` or `.done`; sets `didInitialize = true` (Q2) | LK:1598–1630, LK:1265 |
+| `initializeFinish` | `guard autoStartLoops, !side.isDraining` → `.startLoops(intervals)`; else `initializeDone` in this segment, then `.done` | LK:1598–1630 |
+| `initializeDone` | `didInitialize = true` and the watchers' resume (`resumeInitializationWaitWatchers`). It runs after the driver configured the loops, so "loops configured, then `didInitialize`" holds as today (Q2; T9) | LK:1265–1266 |
 | `fail(error)` (helper) | `failInitialization` (`recordFailure`, `initializationFailure`), `didInitialize = true`, and stages the teardown task in `outputs`, as `scheduleDestroyIfNeeded` stages its timer (LK:6062) | the five `failInitialization` + `Task { … }` exits |
 
 Deletions:
@@ -84,7 +85,7 @@ loop:
 
 Each segment after `drainAfterTicks` asserts the no-ticket argument instead of stating it in prose: `side.isDraining`, `ticksInFlight == 0`, `pendingItems.isEmpty` (`assert`, debug only).
 
-**`setTransport(nil)`** stays a call right after `drainFinished`'s turn, at depth 0 with no await between. The sentinel refuses it from inside a body (LK:556). Q1 asks whether its body should move into a side helper instead.
+**`setTransport(nil)`** stays a call right after `drainFinished`'s turn, at depth 0 with no await between. The sentinel refuses it from inside a body (LK:556). Until K2-2's commit 3 (the binding as a step), a core-driven drain's driver makes that call too (Q1).
 
 **Re-entry during `onLandDestroyed`.** A `setTransport(X)` that lands in the await attaches X, since `destructionFinished` is still false. `drainFinished` and `setTransport(nil)` then replace it with `releasedTransport`, as today: destruction wins, unconditionally. That is the current behavior, kept, and T8 pins it.
 
@@ -105,8 +106,10 @@ Every new test parks the keeper at one await. While it is parked, a re-entrant c
 | T6 | OnFinalize resolvers | gated resolver | OnDestroyWhenEmpty's write applied, OnFinalize's not |
 | T7 | AfterFinalize | gated handler | OnFinalize's write applied; `destructionFinished` false; the transport still attached |
 | T8 | `onLandDestroyed` | a gated test transport | `destructionFinished` false. A `setTransport(X)` at the hold attaches X. After release, `destructionFinished` is true and the transport is the released stand-in |
+| T8b | `onLandDestroyed` of a bound requester, on a keeper with no transport (`boundSyncRequester`, D2/D6) | a gated test port, bound by its sync request and never attached (KeeperTurnSkeletonTests' bound-port pattern, its :380) | `destructionFinished` false; the bound requester still set. After release, `destructionFinished` is true and the requester is cleared (`boundRequester.object == nil`) |
+| T9 | the order of the loops and `didInitialize` | an initialization waiter (`waitForInitializationWaitersForTesting`) on an `autoStartLoops` tick land with a recorder | the waiter, resumed by `initializeDone`, sees `tickLoopConfiguredAt != nil`; and a join that calls `ensureInitialized` right after it takes the `didInitialize` fast path on a land whose loop is configured |
 
-T1–T3 run on tick and tickless lands. T4 needs a tick land. T5–T8 run on a live land, plus one replay row for T8, where a re-evaluation keeper skips the handlers (#826). The gates use `KeyedGates` with a fresh key range (`firstKey: 12_000`).
+T1–T3 run on tick and tickless lands. T4 and T9 need a tick land. T5–T8b run on a live land, plus one replay row for T8, where a re-evaluation keeper skips the handlers (#826). The gates use `KeyedGates` with a fresh key range (`firstKey: 12_000`).
 
 **Suites that must stay green unchanged** (from the survey):
 - InitializeTwoStageTests, InitializeResolverFailureTests, ResolverDeadlineTests, ResolverValueTests, ResolverOutputReplayTests;
@@ -128,6 +131,8 @@ T1–T3 run on tick and tickless lands. T4 needs a tick land. T5–T8 run on a l
 | 4 | OnFinalize's resolvers built in `drainAfterTicks` (before OnDestroyWhenEmpty's write) | T6 (its resolver sees the state before OnDestroyWhenEmpty: assert on a value it reads) |
 | 5 | `fail` doesn't stage the teardown task | T3, LandManagerFailedInitializationTests |
 | 6 | the `!isDraining` check in `initializeFinish` removed | T2b |
+| 7 | `didInitialize = true` moved from `initializeDone` into `initializeFinish`, with the loop configuration back behind an `await` (a `Task.yield()` before `configureTickLoop`) | T9 |
+| 8 | `boundRequester.object = nil` moved before the `onLandDestroyed` await | T8b |
 
 ## Probes
 
@@ -166,16 +171,40 @@ The probe diff is [2026-11-27-k2-1b-probes.diff](2026-11-27-k2-1b-probes.diff); 
 
 | # | Question | Recommended |
 |---|---|---|
-| Q1 | Keep `setTransport(nil)` as a depth-0 call after `drainFinished`, or move its body into a side helper callable in the turn? | keep: it is the public attach path, with its own refusal logic, and K2-2 replaces it with the facade anyway |
-| Q2 | Move `didInitialize = true` into the last init segment (and `fail`)? | yes: it is a model write after an await today, and nothing awaits after the last segment. P3: the suite is green with the caller's write removed. The one difference is `initializationWaits` for a caller in the window after the Task's end, a test-only counter |
-| Q3 | Gates instead of new `LandKeeperHoldPoint` cases | gates: every await here runs test-controllable code, except `submitTurnRecord`, which already holds at `.turnRecord`, and `waitForTickInFlight`, which a gated tick holds |
-| Q4 | The replay header (I1–I3) stays legacy until #612 | yes; only its one write moves into a segment |
-| Q5 | CLAUDE.md's sentence "The land-stop drain's post-await bookkeeping is a further exception until #522 moves it into a turn" | delete it in this PR. #522 stays open for its other paths (join and leave resolvers, freeze settle, the legacy tick, the monitor land) |
+All five were decided by Review on rev 1 (2026-11-27).
+
+| # | Question | Decided |
+|---|---|---|
+| Q1 | Keep `setTransport(nil)` as a depth-0 call after `drainFinished`, or move its body into a side helper callable in the turn? | keep. Until K2-2's commit 3 (the binding as a step), a core-driven drain's driver makes that call |
+| Q2 | Move `didInitialize = true` into the last init segment (and `fail`)? | yes, in `initializeDone`, after the loops are configured (condition 1; T9). P3: the suite is green with the caller's write removed. The one difference is `initializationWaits` for a caller in the window after the Task's end, a test-only counter |
+| Q3 | Gates instead of new `LandKeeperHoldPoint` cases | gates: every await here runs test-controllable code, except `submitTurnRecord`, which already holds at `.turnRecord`, and `waitForTickInFlight`, which a gated tick holds. The bound requester's `onLandDestroyed` is held by a gated test port (T8b) |
+| Q4 | The replay header (I1–I3) stays legacy until #612 | yes; only its one write moves into a segment. The K2-1b code PR names I1–I3 under CLAUDE.md's "re-evaluation keepers keep their non-turn replay path until #612" sentence |
+| Q5 | CLAUDE.md's sentence "The land-stop drain's post-await bookkeeping is a further exception until #522 moves it into a turn" | the K2-1b code PR deletes it. #522 stays open for its other paths (join and leave resolvers, freeze settle, the legacy tick, the monitor land) |
+
+## The boundary with K2-2
+
+What each request this plan creates becomes when K2-2 (#700, the K2 plan's PR K2-2, commit 1) drives these flows on the turn core. On the core, a step can't await: each await is an effect, and its result comes back as an input whose step runs the next segment. A call staged through the keeper (`outputs.stage { … }` reaching an actor method or field) is an owner call. On a core whose `keeperReference` is empty, an owner call is a no-op (#938 r1 MF4, r2). So each one needs a named home.
+
+| Request or staged call | Today's await or call | On the core | Result input |
+|---|---|---|---|
+| `.replayHeader(source)` (re-evaluation) | `getMetadata`, `payloadDecoders.check`, `replayInitializeBeforeTickZero` | none: re-evaluation keepers keep the non-turn path until #612, and K2-2 doesn't route it | `initializeAfterReplay` (legacy driver only; outside the routed subset) |
+| `.runResolvers(r)` | `executeInitializeResolvers` | the resolver effect | `initializeResolved` (already in `KeeperInputRoutes.deferred`) |
+| `.submitRecord(record)` | `submitTurnRecord` | the record effect | **`initializeRecorded`** (new) |
+| `.startLoops(tick, sync)` | `configureTickLoop`, `configureSyncLoop` (sync after P1) | an **owner call**: it writes the actor fields `tickTask` and `syncTask`. K2-2 keeps it as the owner's call after the step, until the core's timers (#762) replace the loops | **`initializeDone`** (new; no await before it) |
+| `fail(error)`'s staged teardown | `Task { tearDownAfterFailedInitialization() }` (LK:1336) | an **owner call** (a Task through the keeper). K2-2 makes it an effect, or keeps it as the owner's call after the step; either way it must not be dropped (mutant 5 and LandManagerFailedInitializationTests pin it) | none: the teardown starts its own leave and drain flows |
+| `.waitForTick` | `waitForTickInFlight` | none: on the core a tick is a step, so the drain's step starts after it, and `drainAfterTicks` runs in the drain's first step | **`drainAfterTicks`** (new; legacy driver only, unless K2-2 keeps a tick off the core) |
+| `.runDestroyResolvers(d)` | `executeResolversWithoutDeadline` | the resolver effect | `destroyHandlerResolved` (already in `deferred`) |
+| `.runAfterFinalize(snapshot)` | the land's AfterFinalize handler | an effect: the handler runs off the core with the snapshot, in its scope | **`drainAfterFinalize`** (new) |
+| `.notifyTransport(port)` | `port?.onLandDestroyed()` (transport, or the bound requester) | the port effect | `drainFinished` (already in `deferred`); then `setTransport(nil)`, the driver's owner call until K2-2's commit 3 (Q1) |
+
+So K2-2's "routed subset total" check gains three result inputs, `initializeRecorded`, `initializeDone` and `drainAfterFinalize`, beside the three already in `deferred`. It also gains two owner calls that need a home: `.startLoops` and `fail`'s teardown. `initializeAfterReplay` and `drainAfterTicks` stay outside the routed subset, the first until #612, and the second because a step already orders the drain after a tick.
 
 ## Order of work
 
-1. The tests T1–T8 against main: green, since they pin today's behavior.
-2. The init segments, then the drain segments: one commit each, each green on T1–T8 and the listed suites.
-3. The deletions (the dead branch, `async`), with P1 and P2.
-4. CLAUDE.md (Q5), and `Notes/plans/README.md`'s row.
+1. The deletions first: `async` off `configureTickLoop` and `configureSyncLoop`, and the dead record branch (P1, P2). With them in, no later commit can suspend between `didInitialize` and the loops (condition 1).
+2. The tests T1–T9 (T8b included) against that commit: green, since they pin today's behavior.
+3. The init segments, then the drain segments: one commit each, each green on T1–T9 and the listed suites.
+4. CLAUDE.md: Q5's sentence deleted, and I1–I3 named under the #612 sentence (Q4). `Notes/plans/README.md`'s row.
 5. Full debug test, pre-push, push. Mutants to the cloud.
+
+The nit on T8 (a `setTransport(X)` during `onLandDestroyed` is replaced, and X never hears that the land was destroyed) goes to an issue: whether X should get `onLandDestroyed` or a refusal. K2-1b keeps today's behavior.
