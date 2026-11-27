@@ -106,6 +106,33 @@ enum ModelHoldsLint {
 
     static func isPortMarker(_ comment: String) -> Bool { hasReason(comment, after: portMarker) }
 
+    /// The side-store rule's exceptions (#700 K2-1): the step frame, the only members whose own
+    /// bodies borrow a core's `KeeperSideStore`, by file and name, each with its reason. A closure
+    /// holder inside one is checked on its own. The repository test checks that each one exists.
+    static let sideStoreFrame: [String: String] = [
+        "handle": "the machine's step entry: reads the box from the behavior and passes it to the step",
+        "answer": "the machine's query entry: the same, for queries",
+        "answerQuery": "the query's routes: each intake as a step",
+        "step": "the turn frame: borrows the side for the body, the flush and the late re-entry",
+        "tickDueStep": "the tick's driver segments (tickAdmit, tickStart, tickEnd, debugEndWork) around its steps",
+        "syncDueStep": "the sync loop's driver segments (the handler, the fold decision, the failure guard) around its step",
+        "ticklessTickStep": "the tickless tick's driver segments (tickAdmit, scheduleInputDrain, debugEndWork)",
+        "inputDrainStep": "the input drain's loop: the batch, the record's submission and the waiters' resume around its steps",
+        "stepSubmitting": "the turn frame, returning the submission: borrows the side for the body, the flush and the late re-entry",
+        "joinDrive": "the join's driver loop: its segments as steps, the transport's admission between two of them, its awaits as runs or waits",
+        "joinStepped": "the join's resumes after its resolvers: the next segment as a step, or the rollback and the end",
+        "finishJoin": "the join's end: the reservation's end as a step, then the reply",
+        "leaveDrive": "the leave's driver: its next await as a run or a wait, or its end",
+        "continueAfterLeave": "a leave's end: the reply, or the kicking join's J3 and the rest of the join",
+        "awaitCoreInputTurn": "a flow's input-turn wait: kept on the side, with the drain's schedule",
+        "answerCoreInputWaits": "the recorded turn's waits, answered in batch order",
+        "answerCoreInputWait": "one wait's answer: the join's end, or the leave's L3 as a step and its continuation",
+        "answerDroppedCoreInputWaits": "the waits a drop failed, taken off the side and answered landClosed",
+        "actionStep": "a tickless action's driver: the closed-land check, the intake as a step, the dropped-input check, its wait",
+        "clientEventStep": "a tickless client event's driver: the closed-land check, the intake as a step, the dropped-input check, its wait",
+    ]
+    static let sideStoreFramePath = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
+
     private static func hasReason(_ comment: String, after marker: String) -> Bool {
         guard comment.hasPrefix(marker) else { return false }
         return comment.dropFirst(marker.count).trimmingCharacters(in: .whitespaces).count >= 10
@@ -189,6 +216,21 @@ enum ModelHoldsLint {
                 let path = ([holder.name] + graph.path(from: reached)).joined(separator: " → ")
                 findings.insert(Finding(path: holder.path, line: line, text: "in \(holder.name): `\(reached)` reaches the model while the hold is open: \(path)"))
             }
+            // The side-store rule (#700 K2-1): a core's side is borrowed only by the step frame,
+            // the members `sideStoreFrame` lists; any other holder that reaches the box, through a
+            // member chain (`turn.behavior.sideStore`), an alias or a parameter of its type, could
+            // borrow it again while its step holds it.
+            let isClosureHolder = holder.name.contains(" body in ")
+            let isFrame = !isClosureHolder && holder.path == sideStoreFramePath && sideStoreFrame[holder.name] != nil
+            if !isFrame {
+                let stores = SideStoreUses(names: SideStoreUses.names(in: holder.scope))
+                stores.walk(holder.body)
+                for use in stores.uses {
+                    let line = holder.converter.location(for: use.positionAfterSkippingLeadingTrivia).line
+                    findings.insert(Finding(path: holder.path, line: line,
+                                            text: "in \(holder.name): `\(use.trimmedDescription)` reaches a core's side store while the hold is open; only the step frame borrows it"))
+                }
+            }
             // The bare-port rule: a callOut closure's port calls are the call-out's own.
             guard !holder.isCallOut else { continue }
             for access in uses.portAccesses {
@@ -205,6 +247,13 @@ enum ModelHoldsLint {
                 findings.insert(Finding(path: holder.path, line: line,
                                         text: "in \(holder.name): `\(reached)` calls a port while the hold is open; go through callOut: \(path)"))
             }
+        }
+        // The frame's exception is by name: a second declaration of a listed name in the frame's
+        // file (an overload) would share it unreviewed, so it is a finding of its own.
+        let frameDeclarations = Dictionary(grouping: members.filter { $0.path == sideStoreFramePath && sideStoreFrame[$0.key.name] != nil }, by: \.key.name)
+        for (name, declared) in frameDeclarations where declared.count > 1 {
+            findings.insert(Finding(path: sideStoreFramePath, line: 0,
+                                    text: "`\(name)` is declared \(declared.count) times in the frame's file; the side-store frame excepts one declaration per name"))
         }
         report.findings = findings.sorted { ($0.path, $0.line, $0.text) < ($1.path, $1.line, $1.text) }
             .map { "\($0.path):\($0.line): \($0.text)" }
@@ -257,6 +306,81 @@ enum ModelHoldsLint {
             }
         }
     }
+}
+
+/// The uses of a core's `KeeperSideStore` in a body (#700 K2-1): any `.sideStore` member access,
+/// whatever its base, and any reference to a parameter or local declared with the box's type.
+final class SideStoreUses: SyntaxVisitor {
+    let names: Set<String>
+    var uses: [Syntax] = []
+
+    init(names: Set<String>) {
+        self.names = names
+        super.init(viewMode: .sourceAccurate)
+    }
+
+    /// The names declared with the box's type in `scope`: parameters, closure parameters and
+    /// annotated locals.
+    static func names(in scope: Syntax) -> Set<String> {
+        final class Finder: SyntaxVisitor {
+            var names: Set<String> = []
+            override func visit(_ node: FunctionParameterSyntax) -> SyntaxVisitorContinueKind {
+                if isSideStore(node.type) { names.insert((node.secondName ?? node.firstName).text) }
+                return .visitChildren
+            }
+            override func visit(_ node: ClosureParameterSyntax) -> SyntaxVisitorContinueKind {
+                if let type = node.type, isSideStore(type) { names.insert((node.secondName ?? node.firstName).text) }
+                return .visitChildren
+            }
+            override func visit(_ node: PatternBindingSyntax) -> SyntaxVisitorContinueKind {
+                guard let name = node.pattern.as(IdentifierPatternSyntax.self)?.identifier.text else { return .visitChildren }
+                if let type = node.typeAnnotation?.type, isSideStore(type) {
+                    names.insert(name)
+                } else if let value = node.initializer?.value, reachesBox(value) {
+                    // An unannotated local bound to the box (`let s = behavior.sideStore`, or an
+                    // alias of a name already found).
+                    names.insert(name)
+                }
+                return .visitChildren
+            }
+            // `guard let store = behavior.sideStore`, `if let store = …`: an optional binding of
+            // the box, with or without an annotation.
+            override func visit(_ node: OptionalBindingConditionSyntax) -> SyntaxVisitorContinueKind {
+                guard let name = node.pattern.as(IdentifierPatternSyntax.self)?.identifier.text else { return .visitChildren }
+                if let type = node.typeAnnotation?.type, isSideStore(type) {
+                    names.insert(name)
+                } else if let value = node.initializer?.value, reachesBox(value) {
+                    names.insert(name)
+                }
+                return .visitChildren
+            }
+            /// Whether `value` is the box: a `.sideStore` member access, or a name found so far.
+            private func reachesBox(_ value: ExprSyntax) -> Bool {
+                if let access = value.as(MemberAccessExprSyntax.self), access.declName.baseName.text == "sideStore" { return true }
+                if let forced = value.as(ForceUnwrapExprSyntax.self) { return reachesBox(forced.expression) }
+                if let reference = value.as(DeclReferenceExprSyntax.self) { return names.contains(reference.baseName.text) }
+                return false
+            }
+        }
+        let finder = Finder(viewMode: .sourceAccurate)
+        finder.walk(scope)
+        return finder.names
+    }
+
+    override func visit(_ node: MemberAccessExprSyntax) -> SyntaxVisitorContinueKind {
+        if node.declName.baseName.text == "sideStore" { uses.append(Syntax(node)) }
+        return .visitChildren
+    }
+
+    override func visit(_ node: DeclReferenceExprSyntax) -> SyntaxVisitorContinueKind {
+        let isMemberName = node.parent?.as(MemberAccessExprSyntax.self).map { $0.declName.id == node.id } ?? false
+        if !isMemberName, names.contains(node.baseName.text) { uses.append(Syntax(node)) }
+        return .visitChildren
+    }
+}
+
+private func isSideStore(_ type: TypeSyntax) -> Bool {
+    unwrap(type).as(IdentifierTypeSyntax.self)?.name.text == "KeeperSideStore"
 }
 
 /// A keeper member: a function or a property, with the body that runs when it's used.
@@ -329,9 +453,13 @@ struct KeeperMember {
     }
 }
 
-/// `inout`, attributes and parentheses removed.
+/// `inout`, attributes, parentheses and `Optional` (`T?`, `T!`, `Optional<T>`) removed.
 private func unwrap(_ type: TypeSyntax) -> TypeSyntax {
     if let attributed = type.as(AttributedTypeSyntax.self) { return unwrap(attributed.baseType) }
+    if let optional = type.as(OptionalTypeSyntax.self) { return unwrap(optional.wrappedType) }
+    if let forced = type.as(ImplicitlyUnwrappedOptionalTypeSyntax.self) { return unwrap(forced.wrappedType) }
+    if let generic = type.as(IdentifierTypeSyntax.self), generic.name.text == "Optional",
+       let argument = generic.genericArgumentClause?.arguments.first, case let .type(wrapped) = argument.argument { return unwrap(wrapped) }
     if let tuple = type.as(TupleTypeSyntax.self), tuple.elements.count == 1, let only = tuple.elements.first { return unwrap(only.type) }
     return type
 }
@@ -1442,6 +1570,73 @@ struct ModelHoldsLintTests {
         #expect(report.findings.count == expected, "\(report.findings.joined(separator: "\n"))")
     }
 
+    @Test("A core's side store is reached only by the step frame (#700 K2-1)", arguments: [
+        // The member chain, an alias of it, and the alias's use.
+        ("_ = turn.behavior.sideStore", 1),
+        ("let s = behavior.sideStore\n_ = s", 2),
+        ("behavior.sideStore?.withSide { _ in }", 1),
+        // A parameter of the box's type, and a closure parameter of it.
+        ("_ = store", 1),
+        ("let f = { (x: KeeperSideStore) in _ = x }\nf(store)", 2),
+        // Through a body given the model: the closure holder is checked on its own, and the
+        // member around it reports it too.
+        ("lend { m, _ in _ = m.behavior.sideStore }", 2),
+        // The side the step lends is not the box.
+        ("_ = side.count", 0),
+        // Review round 1 on #938: an optional binding of the box, annotated or not, and its use
+        // inside a closure the member hands out; an unannotated alias of a found name; an
+        // optional-typed parameter.
+        ("guard let s = behavior.sideStore else { return }\nlend { _, _ in s.withSide { _ in } }", 3),
+        ("if let s: KeeperSideStore = behavior.sideStore { _ = s }", 2),
+        ("let t = store\n_ = t", 2),
+        ("let f = { (x: KeeperSideStore?) in _ = x }\nf(store)", 2),
+    ])
+    func sideStoreOnlyInTheFrame(body: String, expected: Int) {
+        let model = """
+        extension KeeperModel {
+            mutating func lend(_ body: (inout KeeperModel<State>, inout KeeperTurnSide) -> Void) {}
+            mutating func body(_ side: inout KeeperTurnSide, _ store: KeeperSideStore, turn: Turn, behavior: Behavior) {
+        \(body)
+            }
+        }
+        """
+        // A listed frame member, in the frame's file, borrows the box without a finding; the same
+        // name in another file is a holder like any other.
+        let frame = """
+        extension KeeperModel {
+            mutating func step(_ store: KeeperSideStore) { store.withSide { _ in } }
+        }
+        """
+        let report = ModelHoldsLint.check(Self.ownerFiles + [
+            (path: "Sources/SwiftStateTree/Runtime/KeeperModelBodies.swift", source: model),
+            (path: ModelHoldsLint.sideStoreFramePath, source: frame),
+        ])
+        #expect(report.findings.count == expected, "\(report.findings.joined(separator: "\n"))")
+    }
+
+    @Test("An overload of a listed frame member, in the frame's file, is a finding: the exception is one declaration per name")
+    func sideStoreFrameOverloadIsAFinding() {
+        let report = ModelHoldsLint.check(Self.ownerFiles + [(path: ModelHoldsLint.sideStoreFramePath, source: """
+        extension KeeperModel {
+            mutating func step(_ store: KeeperSideStore) { store.withSide { _ in } }
+            mutating func step(_ store: KeeperSideStore, again: Int) { store.withSide { _ in } }
+        }
+        """)])
+        #expect(report.findings.contains { $0.contains("`step` is declared 2 times") }, "\(report.findings.joined(separator: "\n"))")
+    }
+
+    @Test("An unlisted member in the frame's file is checked: the list, not the file, is the exception")
+    func sideStoreFrameIsTheList() {
+        let report = ModelHoldsLint.check(Self.ownerFiles + [(path: ModelHoldsLint.sideStoreFramePath, source: """
+        extension KeeperModel {
+            mutating func step(_ store: KeeperSideStore) { store.withSide { _ in } }
+            mutating func helper(_ store: KeeperSideStore) { store.withSide { _ in } }
+        }
+        """)])
+        #expect(report.findings.count == 1, "\(report.findings.joined(separator: "\n"))")
+        #expect(report.findings.first?.contains("in helper:") == true, "\(report.findings.joined(separator: "\n"))")
+    }
+
     @Test("The keeper's turn side is held as its model is", arguments: [
         ("_ = turnSide.count", 1),
         ("_ = self.turnSide.count", 1),
@@ -1525,7 +1720,24 @@ struct ModelHoldsLintTests {
         let files = try keeperFiles()
         // A path change that finds nothing would pass vacuously.
         try #require(files.contains { $0.path == "Sources/SwiftStateTree/Runtime/LandKeeper.swift" })
+        // The turn machine's file (#700 K2-1): in scope by its `extension KeeperModel`, and its
+        // steps are holders of the model.
+        let machine = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
+        try #require(files.contains { $0.path == machine })
+        // The drivers' segments (#700 K2-1): in scope by their `extension KeeperModel`, and each
+        // segment is a holder of the model.
+        let drivers = "Sources/SwiftStateTree/Runtime/KeeperModel+Drivers.swift"
+        try #require(files.contains { $0.path == drivers })
         let report = ModelHoldsLint.check(files)
+        #expect(report.holders.contains { $0.path == machine && $0.name == "handle" },
+                "holders in \(machine): \(report.holders.filter { $0.path == machine }.map(\.name))")
+        // The side-store frame (#700 K2-1): every listed member is a holder in its file, so a
+        // renamed one can't leave a stale exception.
+        let frame = Set(report.holders.filter { $0.path == ModelHoldsLint.sideStoreFramePath && !$0.name.contains(" body in ") }.map(\.name))
+        #expect(Set(ModelHoldsLint.sideStoreFrame.keys).isSubset(of: frame), "frame members missing: \(Set(ModelHoldsLint.sideStoreFrame.keys).subtracting(frame).sorted())")
+        #expect(ModelHoldsLint.sideStoreFrame.count == 20, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
+        #expect(report.holders.contains { $0.path == drivers && $0.name == "tickStart" },
+                "holders in \(drivers): \(report.holders.filter { $0.path == drivers }.map(\.name))")
         // Each family of closure holders is found: every member that gives a closure the model
         // has at least one, and `withHandlerStep` (every handler) has one per handler kind.
         let families = Dictionary(grouping: report.holders.filter { $0.name.contains(" body in ") }) {

@@ -85,6 +85,7 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
 
     private let lock = NSLock()
     private var notes: [InTurnSyncFold] = []
+    private var eventSequences: [Int64?] = []
     private var deferNextSyncs = 0
     private var syncPhases: [InTurnSyncResult] = []
     private var phasesRun = 0
@@ -111,6 +112,8 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
     }
 
     var folds: [InTurnSyncFold] { lock.withLock { notes } }
+    /// The output sequence of every event a sync phase was given, in order.
+    var receivedEventSequences: [Int64?] { lock.withLock { eventSequences } }
     /// How many sync phases the keeper ran, requested or not.
     var phaseCount: Int { lock.withLock { phasesRun } }
 
@@ -219,7 +222,10 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
         noteCall()
-        lock.withLock { phasesRun += 1 }
+        lock.withLock {
+            phasesRun += 1
+            eventSequences.append(contentsOf: events.map(\.sequence))
+        }
         return InTurnSyncOutput(syncPhaseResult(state: state, events: events, includeSync: includeSync))
     }
 
@@ -250,7 +256,8 @@ final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
 /// sleep; a test that set the deadline before then could have it overwritten by the loop's
 /// (now + 1 h), and the next sync would then not fold. Once the sleep is reported, the loop
 /// writes no deadline until the hour has passed. The sleep is real and ends on shutdown.
-private final class FirstTickSleepSignal: @unchecked Sendable {
+/// Shared with `KeeperCoreDifferentialTests`, whose fold case drives a keeper the same way.
+final class FirstTickSleepSignal: @unchecked Sendable {
     private let lock = NSLock()
     private var reached = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
