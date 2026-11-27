@@ -205,6 +205,8 @@ private struct RowAddressingRun {
             await keeper.awaitInitialization()
         }
         await keeper.setTransport(adapter)
+        // The adapter link is a cycle until the drain: the suite's trait drains it (#910).
+        FixtureKeepers.register(keeper)
         return RowAddressingRun(
             keeper: keeper, adapter: adapter, frames: frames, script: script, encoding: encoding,
             hasher: PathHasher(pathHashes: pathHashes)
@@ -379,7 +381,8 @@ private func unitsWith(_ rows: [String: RowAddressingUnit]) -> RowAddressingStat
 }
 
 @Suite(
-    "Row addressing in the adapter"
+    "Row addressing in the adapter",
+    .drainsFixtureKeepers
 )
 struct RowAddressingAdapterTests {
     @Test("The config: rowAddressing needs path hashes, pathIndex, syncSequence and an opcode encoding")

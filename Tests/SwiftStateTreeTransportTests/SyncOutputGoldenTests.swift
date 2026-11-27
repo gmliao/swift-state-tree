@@ -77,7 +77,7 @@ enum SyncOutputGoldenEnvKeys {
     static let regenerate = "SST_REGENERATE_SYNC_OUTPUT_GOLDENS"
 }
 
-@Suite("Sync-output golden recordings", .timeLimit(.minutes(1)))
+@Suite("Sync-output golden recordings", .timeLimit(.minutes(1)), .drainsFixtureKeepers)
 struct SyncOutputGoldenTests {
     static let directory = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

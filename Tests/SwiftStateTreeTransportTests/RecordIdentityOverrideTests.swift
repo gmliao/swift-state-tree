@@ -34,6 +34,8 @@ private func recordedMetadata(
         landID: LandID(landType: "record-identity", instanceId: instance),
         definition: definition, initialState: RecordIdentityState(), metadata: [:]
     )
+    // The manager keeps the land until its drain: the suite's trait drains it (#910).
+    FixtureKeepers.register(container.keeper)
     let recorder = try #require(await container.keeper.getReevaluationRecorder())
     return try await firstSerializedHeader(recorder)
 }
@@ -57,7 +59,7 @@ private func firstSerializedHeader(_ recorder: ReevaluationRecorder) async throw
     return try #require(record.metadata)
 }
 
-@Suite("Record-identity override (#555)")
+@Suite("Record-identity override (#555)", .drainsFixtureKeepers)
 struct RecordIdentityOverrideTests {
     @Test("A land built after the override records the pinned createdAt and no hardware info")
     func overridePinsIdentity() async throws {

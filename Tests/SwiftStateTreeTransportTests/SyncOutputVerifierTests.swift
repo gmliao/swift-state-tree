@@ -245,6 +245,8 @@ struct VerifierFixture {
             await keeper.awaitInitialization()
         }
         await keeper.setTransport(adapter)
+        // The adapter link is a cycle until the drain: the suite's trait drains it (#910).
+        FixtureKeepers.register(keeper)
         return VerifierFixture(keeper: keeper, adapter: adapter, definition: definition)
     }
 
@@ -278,6 +280,8 @@ struct VerifierFixture {
         await transport.setDelegate(adapter)
         await keeper.awaitInitialization()
         await keeper.setTransport(adapter)
+        // The adapter link is a cycle until the drain: the suite's trait drains it (#910).
+        FixtureKeepers.register(keeper)
         return VerifierFixture(keeper: keeper, adapter: adapter, throughRouter: true)
     }
 
@@ -628,7 +632,7 @@ private final class VerifierSwitch: @unchecked Sendable {
     func set(_ value: Bool) { lock.lock(); on = value; lock.unlock() }
 }
 
-@Suite("Sync-output verifier", .timeLimit(.minutes(1)))
+@Suite("Sync-output verifier", .timeLimit(.minutes(1)), .drainsFixtureKeepers)
 struct SyncOutputVerifierTests {
     @Test(
         "A deterministic run passes: every scope compared, nothing unverifiable",
@@ -1387,7 +1391,7 @@ private func replacingSync(
     )
 }
 
-@Suite("Sync output verifier: drops in records made before #535 PR 2a", .timeLimit(.minutes(1)))
+@Suite("Sync output verifier: drops in records made before #535 PR 2a", .timeLimit(.minutes(1)), .drainsFixtureKeepers)
 struct SyncOutputVerifierOldDropTests {
     private func tickOutputs(_ f: VerifierFixture) async throws -> [ReevaluationRecordedSyncOutput] {
         try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
@@ -1504,7 +1508,7 @@ struct SyncOutputVerifierOldDropTests {
     }
 }
 
-@Suite("Debug freeze settle: a sync failure ends the land (#535)", .timeLimit(.minutes(1)))
+@Suite("Debug freeze settle: a sync failure ends the land (#535)", .timeLimit(.minutes(1)), .drainsFixtureKeepers)
 struct DebugFreezeSettleFailureTests {
     @Test("A settle whose plan throws ends the land in the settle's turn: the gate closes and the freeze throws the failure")
     func settleFailureEndsTheLand() async throws {
@@ -1616,7 +1620,7 @@ func makeTicklessVerifierLand() -> LandDefinition<VerifierState> {
 /// Records made by an earlier build, kept frozen (never regenerated), that must stay replayable
 /// after a change to how the live run records the same scenario (#546 L2d-1). See
 /// Fixtures/ReplayCompatibility/README.md.
-@Suite("Replay of records made by an earlier build", .timeLimit(.minutes(1)))
+@Suite("Replay of records made by an earlier build", .timeLimit(.minutes(1)), .drainsFixtureKeepers)
 struct ReplayCompatibilityRecordTests {
     static let directory = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

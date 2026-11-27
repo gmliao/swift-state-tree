@@ -104,6 +104,8 @@ private struct InitRecordFixture {
             landID: landID
         )
         await keeper.setTransport(adapter)
+        // The adapter link is a cycle until the drain: the suite's trait drains it (#910).
+        FixtureKeepers.register(keeper)
         gate.open()
         await keeper.stepTickOnce()
         return InitRecordFixture(keeper: keeper, adapter: adapter)
@@ -115,7 +117,7 @@ private struct InitRecordFixture {
     }
 }
 
-@Suite("Initialize record and marker (record format 2.1)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
+@Suite("Initialize record and marker (record format 2.1)", .timeLimit(.minutes(1)), .resolverDeadlinesOff, .drainsFixtureKeepers)
 struct SyncStreamInitializeRecordTests {
     @Test("The sync path records OnInitialize's events and post-initialize state hash")
     func initializeRecordOnTheSyncPath() async throws {
@@ -152,7 +154,7 @@ struct SyncStreamInitializeRecordTests {
     }
 }
 
-@Suite("Record header: recordsSyncStream")
+@Suite("Record header: recordsSyncStream", .drainsFixtureKeepers)
 struct SyncStreamRecordHeaderTests {
     @Test("LandManager writes version 2.1 and recordsSyncStream")
     func header() async throws {
@@ -164,6 +166,8 @@ struct SyncStreamRecordHeaderTests {
         )
         let landID = LandID(landType: "init-record-test", instanceId: "header")
         let container = try await manager.getOrCreateLand(landID: landID, definition: makeInitRecordLand(), initialState: InitRecordTestState(), metadata: [:])
+        // The manager keeps the land until its drain: the suite's trait drains it (#910).
+        FixtureKeepers.register(container.keeper)
         let recorder = try #require(await container.keeper.getReevaluationRecorder())
         let metadata = try #require(await recorder.getMetadata())
         #expect(metadata.version == ReevaluationRecordVersion.current)
