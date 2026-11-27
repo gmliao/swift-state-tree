@@ -976,7 +976,14 @@ private struct CanonicalReader {
 
     private mutating func enter() throws {
         depth += 1
-        guard depth <= CanonicalMessagePack.maxDepth else { throw CanonicalMessagePackError.nestingTooDeep }
+        guard depth <= CanonicalMessagePack.maxDepth else {
+            #if DEBUG
+            // The refusal's leaf, below the last `readValue` probe: the deepest point a read of a
+            // too-deep tree reaches (#874).
+            CanonicalMessagePack.stackProbeForTesting?()
+            #endif
+            throw CanonicalMessagePackError.nestingTooDeep
+        }
     }
 
     private mutating func readArray(count: Int) throws -> CanonicalNode {
