@@ -255,7 +255,11 @@ package struct KeeperTurnSide {
     /// the keeper's `syncsInTurn`, read from a body. A port call: a body reads it inside
     /// `callOut`.
     func syncsInTurn<State>(_ behavior: KeeperBehavior<State>) -> Bool {
-        guard behavior.config.mode == .live, let keeper = keeperReference.keeper else { return false }
+        guard behavior.config.mode == .live else { return false }
+        // A core's tick or sync step carries its input's read (K2-1); K2-2's binding token
+        // replaces it.
+        if let carried = coreInputReplies.carriedSyncsInTurn { return carried && attachedTransport != nil }
+        guard let keeper = keeperReference.keeper else { return false }
         return attachedTransport?.runsSyncPhaseInTurn(of: keeper) ?? false
     }
 

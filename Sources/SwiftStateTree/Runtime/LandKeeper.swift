@@ -5334,6 +5334,10 @@ extension KeeperModel {
         if coreReplies.onCore, !actionJobs.isEmpty || !actionSlots.isEmpty {
             violations.append("core side: a job intake \(actionJobs.keys.sorted()), routed in K2-2")
         }
+        for refusal in coreReplies.refusals { violations.append("core side: refused \(refusal)") }
+        if !coreReplies.onCore, coreReplies.carriedSyncsInTurn != nil {
+            violations.append("a carried syncsInTurn on the keeper's side")
+        }
         return violations
     }
 

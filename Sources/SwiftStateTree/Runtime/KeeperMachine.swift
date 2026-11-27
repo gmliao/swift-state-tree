@@ -180,6 +180,19 @@ struct KeeperCoreInputReplies: Sendable {
     var onCore = false
     var waits: [Int64: KeeperCoreInputWait] = [:]
     var dropped: [KeeperCoreInputWait] = []
+    /// The tick or sync step's read of `syncsInTurn`, carried from its input for that one step
+    /// (a core's side has no keeper to ask the port with). Nil outside those steps, and always on
+    /// the keeper's side, where `KeeperTurnSide.syncsInTurn` asks the port.
+    var carriedSyncsInTurn: Bool?
+    /// The routed inputs a core refused because they need the binding token (K2-2): each names
+    /// the input and why. A core path that reaches one is a bug in K2-1; `actionTableViolations`
+    /// reports each, so the differential's invariant fails on it.
+    var refusals: [String] = []
+}
+
+/// A core's refusal of an input K2-1 doesn't route on the core (`KeeperCoreInputReplies.refusals`).
+struct KeeperCoreRefusal: Error, Sendable {
+    let reason: String
 }
 
 /// The intakes answered at once, and the adapter's synchronous calls (plan §4.1).
@@ -254,6 +267,11 @@ extension KeeperModel: TurnMachine {
     mutating func handle(_ input: KeeperInput<State>, _ turn: inout Turn<KeeperModel<State>>) {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
+        if let reason = coreRefusal(behavior, store, input) {
+            store.withSide { side in side.coreInputReplies.refusals.append("\(input.routeName): \(reason)") }
+            if let caller = turn.input { turn.reply(to: caller, .failure(KeeperCoreRefusal(reason: reason))) }
+            return
+        }
         switch input {
         case let .tickDue(fold, foldStart, syncsInTurn):
             if behavior.isTickless {
@@ -337,12 +355,41 @@ extension KeeperModel: TurnMachine {
                 return submission
             })
         case let .admitServerInput(input):
+            // A tickless land's intake kicks its input turn through the keeper
+            // (`kickServerInputTurn` stages `startServerInputKick`, and begins a work count the
+            // kick ends), which a core's side has no keeper for. K2-2 routes it with the core's
+            // drain (plan §16 item 19).
+            precondition(!behavior.isTickless, "K2-1: a tickless land's server input is routed in K2-2")
             // The driver's segment S1 (`submitServerInputErased`): the check, the sequence and
             // the append in one body.
             return .serverInput(step(behavior, store) { m, side, outputs in m.serverInputIntake(behavior, &side, &outputs, input) })
         default:
             preconditionFailure("K2-1: \(query) is not routed yet")
         }
+    }
+}
+
+// MARK: - The refusals
+
+extension KeeperModel {
+    /// Why a core refuses `input` in K2-1, or nil. Each refused shape needs the binding token,
+    /// which K2-2 adds: a body that reads `syncsInTurn` outside a tick or sync step would get
+    /// false on a core's side (no keeper to ask the port with), while the keeper's path asks the
+    /// port, so the two would diverge without a difference the differential could see.
+    /// - A join syncing in the turn: its admission, the stale-join refusal and the consumed-join
+    ///   notifications read the binding at the admission, after up to three awaits.
+    /// - Any input of a tickless land with a transport attached: the input turn's output phase
+    ///   reads it inside the drain.
+    func coreRefusal(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ input: KeeperInput<State>) -> String? {
+        if case .join(_, syncsInTurn: true) = input {
+            return "a join syncing in the turn needs the binding token (K2-2)"
+        }
+        // `.startLand` starts the core's key and reads no binding.
+        if case .startLand = input { return nil }
+        if behavior.isTickless, store.withSide({ side in side.attachedTransport }) != nil {
+            return "a tickless land with a transport needs the binding token (K2-2)"
+        }
+        return nil
     }
 }
 
@@ -401,6 +448,8 @@ extension KeeperModel {
             preconditionFailure("K2-1: a tickless land's tick is routed with the input drain")
         }
         guard tickAdmit() == .admitted else { return }
+        store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = syncsInTurn }
+        defer { store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = nil } }
         // Declared first, so it runs last, as in `runTick`.
         defer { store.withSide { side in debugEndWork(&side) } }
         guard let tickId = store.withSide({ side in tickStart(side) }) else { return }
@@ -427,6 +476,8 @@ extension KeeperModel {
     ) -> PendingFold? {
         // The only sync while frozen is the settle cycle run by the transport.
         guard !debugFrozen else { return nil }
+        store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = syncsInTurn }
+        defer { store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = nil } }
         if let handler = behavior.definition.lifetimeHandlers.syncHandler {
             store.withSide { side in runSyncHandler(behavior, side, handler) }
         }
@@ -540,6 +591,9 @@ extension KeeperModel {
                 return
             case let .admit(made, joinSequence):
                 // Between two segments, as on the keeper: the transport's admission is no body's.
+                // A join syncing in the turn is refused on the core (`coreRefusal`), so no
+                // transport admits here and `joinAfterAdmission` never schedules the keeper's drain.
+                precondition(!syncsInTurn, "K2-1: a join syncing in the turn is refused on the core")
                 let transport = syncsInTurn ? store.withSide({ side in side.attachedTransport }) : nil
                 let admission = transport?.admitJoiningSession(playerID: made.playerID, clientID: made.call.clientID, sessionID: made.call.sessionID, joinSequence: joinSequence) ?? .notAdmitted
                 guard let joinSequence else {

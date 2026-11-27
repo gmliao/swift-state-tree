@@ -821,4 +821,70 @@ struct KeeperCoreDifferentialTests {
         await pair.expectSame("after the event")
         #expect(await pair.digests().core.inFlightWork == 0)
     }
+
+    // MARK: Review round 1 on #938
+
+    @Test("Each core has its own side box: two twins of one source share no store, and a step on one leaves the other's side unchanged")
+    func eachCoreHasItsOwnBox() async {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false)
+        let source = LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: "core-diff:box:\(UUID().uuidString)")
+        await source.awaitInitialization()
+        let a = await source.coreTwinForTesting()
+        let b = await source.coreTwinForTesting()
+        #expect(a.store !== b.store)
+        let first = KeeperCoreHarness(a), second = KeeperCoreHarness(b)
+        await first.start()
+        await second.start()
+        let before = CoreDiffDigest(await second.differentialRead())
+        let pair = CoreDiffPair(keeper: source, harness: first, landID: "box")
+        #expect(await coreJoin(pair, "p1", "c1") == .joined(allowed: true, admitted: false))
+        let stepped = CoreDiffDigest(await first.differentialRead())
+        let after = CoreDiffDigest(await second.differentialRead())
+        #expect(stepped.players.keys.sorted() == ["p1"], "\(stepped)")
+        #expect(after == before, "the other core's side moved:\n before \(before)\n after  \(after)")
+    }
+
+    @Test("A join that syncs in the turn is refused on the core with a named refusal, and changes nothing (K2-2 routes it with the binding token)")
+    func joinSyncingInTheTurnIsRefused() async {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "refuse-join")
+        let before = CoreDiffDigest(await pair.harness.differentialRead())
+        let call = KeeperJoinCall(session: session("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1"), services: LandServices(), admitThroughTransport: true)
+        let reply: String
+        do {
+            _ = try await pair.harness.call(.join(call, syncsInTurn: true))
+            reply = "replied"
+        } catch let refusal as KeeperCoreRefusal {
+            reply = refusal.reason
+        } catch {
+            reply = "\(error)"
+        }
+        #expect(reply == "a join syncing in the turn needs the binding token (K2-2)")
+        let read = await pair.harness.differentialRead()
+        #expect(read.violations == ["core side: refused join: a join syncing in the turn needs the binding token (K2-2)"], "\(read.violations)")
+        var after = CoreDiffDigest(read)
+        after.violations = before.violations
+        #expect(after == before, "the refused join changed the core:\n before \(before)\n after  \(after)")
+    }
+
+    @Test("Any input of a tickless land with a transport attached is refused on the core (its input turn reads the binding inside the drain)")
+    func ticklessLandWithATransportIsRefused() async {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false)
+        let source = LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: "core-diff:refuse-tickless:\(UUID().uuidString)")
+        await source.awaitInitialization()
+        let harness = KeeperCoreHarness(await source.coreTwinForTesting(transport: FoldRecordingTransport(records: false)))
+        await harness.start()
+        let reason: String
+        do {
+            _ = try await harness.call(.action(envelope(CoreDiffAction(n: 1, fails: false)), caller("p1", "c1")))
+            reason = "replied"
+        } catch let refusal as KeeperCoreRefusal {
+            reason = refusal.reason
+        } catch {
+            reason = "\(error)"
+        }
+        #expect(reason == "a tickless land with a transport needs the binding token (K2-2)")
+        let read = await harness.differentialRead()
+        #expect(read.violations == ["core side: refused action: a tickless land with a transport needs the binding token (K2-2)"], "\(read.violations)")
+        #expect(read.model.debugInFlightWork == 0 && !read.model.inputDrainScheduled)
+    }
 }
