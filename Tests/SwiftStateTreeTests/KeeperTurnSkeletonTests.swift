@@ -238,7 +238,7 @@ final class TurnSkeletonReenteringTransport: LandKeeperSettlePort, @unchecked Se
             case .nestedSettle:
                 _ = keeper.settleTurn(via: self, fence: turnSkeletonSettleFence)
             case .phaseOnDrainingLand:
-                keeper.markDrainingForTesting(cause: .forceShutdown)
+                keeper.setDrainFlagInBodyForTesting(cause: .forceShutdown)
                 keeper.submitSyncStream([outputDraft(99)])
             case .phase, .joinsAwaitingSync, .draftFactory, .runsSyncPhaseWitness, .settleCheck, .settlePhase,
                  .settleDraftFactory, .nthCallInBody, .closeOutputs, .nowhere:

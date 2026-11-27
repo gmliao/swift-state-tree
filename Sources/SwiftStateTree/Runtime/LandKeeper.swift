@@ -4208,12 +4208,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Tests: marks the land draining with `cause`, as the land's stop does first, without
-    /// starting the drain. Unlike every production drain start, it leaves `players` and the
-    /// player services as they are (tests use it to reach a post-await segment with a joined
-    /// player). So a join whose OnJoin resolvers are held across it reaches the OnJoin append's
-    /// drain branch with its entry still present, which the branch's assert names as the one
-    /// exception (Review on #966).
+    /// starting the drain. In one turn, as every production drain start does, it also clears
+    /// `players`, the player services and the rejoin reservations, so no test reaches a state
+    /// production can't (Review on #966: the OnJoin append's drain branch asserts the clears).
     package func markDrainingForTesting(cause: LandDestructionCause) {
+        withTurn { m, side, _ in
+            side.sharedDrainFlag.set(cause: cause)
+            m.players.removeAll()
+            side.playerServices.removeAll()
+            m.rejoinReservations.removeAll()
+        }
+    }
+
+    /// Tests: only the drain flag, from inside a turn body, where `markDrainingForTesting`'s own
+    /// turn would nest: a transport's re-entry during a sync phase (`KeeperTurnSkeletonTests`).
+    /// No join's OnJoin resolvers run across it, so it never reaches the OnJoin append's drain
+    /// branch, whose assert expects the clears.
+    package func setDrainFlagInBodyForTesting(cause: LandDestructionCause) {
         drainFlag.set(cause: cause)
     }
 
@@ -6589,10 +6600,10 @@ extension KeeperModel {
         // first (the shutdown turn, `failLand`, `shutdownIfIdle` on an empty land, the failed
         // initialization's teardown).
         guard !side.isDraining else {
-            // `markDrainingForTesting` is the one way to reach this with the entry present: it
-            // sets the flag without the clears (its doc).
+            // Every drain start clears players in the segment that sets the flag, the test hook
+            // `markDrainingForTesting` included.
             assert(players[capture.playerID]?.generation != capture.entryGeneration,
-                   "a drain start clears players before a resolved join's append runs (markDrainingForTesting excepted)")
+                   "a drain start clears players before a resolved join's append runs")
             // Actions submitted for this entry during the resolvers can't be delivered, as after
             // a leave (their tickets name the entry).
             cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: capture.entryGeneration)
