@@ -1925,11 +1925,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // Registered before any suspension since J2b's (or J2c's) segment, as
                 // `awaitInputTurn`'s.
                 try await awaitLeaveEnd(of: decided.playerID)
-                // A cancel whose hop came after the release found the waiter gone: honored here,
-                // before J2c can insert (#943).
-                try Task.checkCancellation()
+                // A cancel whose hop came after the release found the waiter gone: honored in
+                // J2c's segment, before it can insert (#943), and after its drain check, so a
+                // land that is ending still answers `landShuttingDown`.
+                let cancelledWhileWaiting = Task.isCancelled
                 request = try withTurn { m, side, outputs in
-                    try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: leavingGeneration)
+                    guard !side.isDraining else { throw JoinError.landShuttingDown }
+                    if cancelledWhileWaiting { throw CancellationError() }
+                    return try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: leavingGeneration)
                 }
             case let .kick(decided, oldClientID, oldSessionID, kickedGeneration):
                 // Kick old connection by calling leave

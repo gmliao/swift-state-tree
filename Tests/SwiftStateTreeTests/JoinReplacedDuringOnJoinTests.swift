@@ -867,11 +867,29 @@ struct JoinReplacedDuringOnJoinTests {
         defer { gate.release() }
         guard let (leaveA, joinC) = try await rejoinWaitingForTheLeave(f, clientA: ClientID("lgate-\(key)"), sessionA: SessionID("s-a"), leaveGate: gate) else { return }
         // Each cause releases the waiters in its own segment: the shutdown turn's, or the
-        // failure's (`failLand`).
+        // failure's (`failLand`). The shutdown is held after its turn applied, before
+        // `shutdownIfIdle`, which releases them too: C must end while it is held, so the turn's
+        // own release is what this case tests.
+        let afterShutdownTurn = TestGate()
+        defer { afterShutdownTurn.open() }
+        if cause == "shutdown" {
+            await f.keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>().on(.shutdownTurnApplied) { await afterShutdownTurn.arrive() }.hook)
+        }
         let shutdown = Task {
             if cause == "shutdown" { await f.keeper.forceShutdown() }
         }
         defer { shutdown.cancel() }
+        if cause == "shutdown" {
+            #expect(await afterShutdownTurn.waitForArrivals(1), "the shutdown turn never applied")
+            guard let errorC = await valueWithinHangBound(joinC) else {
+                Issue.record("tick=\(tick): C's join didn't end in the shutdown turn")
+                return
+            }
+            var shuttingDown = false
+            if case .landShuttingDown? = errorC as? JoinError { shuttingDown = true }
+            #expect(shuttingDown, "tick=\(tick) cause=shutdown: C's join \(describe(errorC))")
+            afterShutdownTurn.open()
+        }
         if cause == "failure" {
             await f.keeper.submitLandFailure(LandFailure(kind: .syncPlan, detail: "#943", position: LandFailurePosition(stage: .syncPhase)))
             // A tick land applies the failure in its next tick.
