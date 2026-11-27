@@ -319,6 +319,9 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
     /// wait continues the join (J2c), so it waits for #953's barrier, whose payload release
     /// hands the join back (its plan's §5, the first adopter).
     case joinAwaitingLeaveInFlight
+    /// A tick land's freeze: it answers from the work count, and the core doesn't yet hold the
+    /// tick's count across its record's submission, as the keeper does (Review on #948).
+    case tickLandFreeze
 
     /// The message the refusal carries and `refusals` records.
     var message: String {
@@ -326,6 +329,7 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
         case .joinSyncingInTurn: "a join syncing in the turn needs the binding token (K2-2)"
         case .ticklessLandWithTransport: "a tickless land with a transport needs the binding token (K2-2)"
         case .joinAwaitingLeaveInFlight: "a join waiting for a leave in flight needs the core's barrier wait (#953)"
+        case .tickLandFreeze: "a tick land's freeze needs the tick record's hold (K2-2 commit 1)"
         }
     }
 
@@ -333,7 +337,8 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
     var liftedIn: String {
         switch self {
         case .joinSyncingInTurn, .ticklessLandWithTransport: "K2-2 commit 3: the binding token"
-        case .joinAwaitingLeaveInFlight: "#953's barrier wait, its first adopter (after #948's commit 2)"
+        case .joinAwaitingLeaveInFlight: "K2-2 commit 4's precondition: #953's barrier wait, its first adopter, before the cut-over"
+        case .tickLandFreeze: "K2-2 commit 1b: the tick record's hold"
         }
     }
 }
@@ -828,7 +833,7 @@ extension KeeperModel {
         // A tick land's freeze answers from the work count, and the core doesn't yet hold the
         // tick's count across its record's submission, as the keeper does (Review on #948).
         if case .freeze = input, !behavior.isTickless {
-            return "a tick land's freeze needs the tick record's hold (K2-2 commit 1)"
+            return .tickLandFreeze
         }
         if behavior.isTickless, hasTransport {
             return .ticklessLandWithTransport
