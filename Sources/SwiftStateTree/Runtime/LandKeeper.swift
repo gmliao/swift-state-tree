@@ -965,6 +965,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         model.pendingItems.map(\.sequence)
     }
 
+    /// Tests only (#700 K2-1b): the initialization's and the drain's flags, read while a test
+    /// holds one of their awaits.
+    struct LifecycleFlagsForTesting: Sendable, Equatable {
+        var didInitialize: Bool
+        var initializationFailed: Bool
+        var destroyHandlersStarted: Bool
+        var destructionFinished: Bool
+        var pendingInputs: Int
+        var tickLoopConfigured: Bool
+        var hasBoundRequester: Bool
+    }
+
+    /// Tests only: see `LifecycleFlagsForTesting`.
+    func lifecycleFlagsForTesting() -> LifecycleFlagsForTesting {
+        LifecycleFlagsForTesting(
+            didInitialize: model.didInitialize,
+            initializationFailed: model.initializationFailure != nil,
+            destroyHandlersStarted: model.destroyHandlersStarted,
+            destructionFinished: model.destructionFinished,
+            pendingInputs: model.pendingItems.count,
+            tickLoopConfigured: tickLoopConfiguredAt != nil,
+            hasBoundRequester: boundRequester.object != nil
+        )
+    }
+
     /// Tests only: the queued inputs, in queue order (#700 K1a: whether each holds its bytes).
     func pendingItemsForTesting() -> [PendingItem] {
         model.pendingItems
