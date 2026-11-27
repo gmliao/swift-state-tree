@@ -1,5 +1,12 @@
 # #943: a rejoin waits for the player's leave in flight
 
+Revision 1 (2026-11-27): Review's GO on rev 0 (4f21c0cf), with no must-fix and Q1 answered (b). Its three shoulds:
+- option (c), a reorder at the apply, is recorded and rejected (§3.1);
+- the tests wait on a positive event, the waiter's registration (§4, P4);
+- the waiter resumes exactly once, and cancellation before the registration is covered (§3.2).
+
+Q3 now names the case that can fire. Prior art is in §3.2. Q2 waits on the maintainer (decision #120).
+
 Revision 0 (2026-11-27). Plan only. The fix builds on #940 (the join's arrival token and the kick by generation), so it lands after #940 merges. Line numbers are at #940's head 7b2dda84 (`LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, `KM` is `KeeperMachine.swift`, `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`).
 
 ## 1. The problem
@@ -41,6 +48,12 @@ Two candidates:
 | Jobs and services | cancelled and removed at L1 as today, but the entry is still there | as today |
 | The kick | the kicking join's own leave also leaves the entry in place, so J2c's "slot by generation" check changes | unchanged: the kick's leave is a leave in flight like any other |
 
+A third candidate, **(c), a reorder at the apply,** keeps today's insert and holds C's OnJoin back when it is applied, until A's OnLeave is applied. It loses for two reasons:
+- **The hold has to go somewhere.** In the land's one input queue, C's OnJoin blocks every later input of every player until A's resolvers return: head-of-line blocking. A per-player hold-back avoids that, but then inputs of one land apply out of sequence order. That is a second ordering rule, which the record and replay would have to learn.
+- **C is already in.** C's entry is inserted, and the transport admits and syncs C before its OnJoin has run, so C sees the land without its own join applied. Its actions are delivered against an entry whose OnJoin is held back.
+
+The order has to be decided where the slot is decided, before the insert.
+
 **Recommendation: (b).** The window is the leave's, not the entry's: what the next join must not overtake is the leave's OnLeave, not the entry's presence. (b) adds one model table and changes no reader of `players`.
 
 The marker is `leavesInFlight: [PlayerID: Epoch]`, the leaving entry's generation, on `KeeperModel`:
@@ -70,10 +83,14 @@ The marker is `leavesInFlight: [PlayerID: Epoch]`, the leaving entry's generatio
 **The kick's own leave is a leave in flight too.** B kicks A, and C arrives during A's OnLeave. Today C inserts into the empty slot, and B is fenced out when its kick returns (R8, R11). With the marker, C waits for A's leave like B does. Both resume after A's OnLeave is appended. C, the latest arrival, inserts, and B gets `.superseded`. The order is `[join A, leave A, join C]` on every path, so R11's set check becomes an exact one, and #940's R8 keeps its order without depending on C's OnJoin being held.
 
 **The wait's mechanics, on the keeper path.**
-- J2b's segment records the waiter's ticket (the player and the leaving generation) in `side.leaveEndWaiters[player]` and returns. The driver registers its continuation there before any other suspension, the same way `awaitInputTurn`'s waiter is registered (no suspension since the segment).
-- The segment that ends the marker resumes every waiter of that generation. A waiter whose generation is gone (a teardown) is resumed too, and J2c's drain check answers it.
-- Cancellation: a join cancelled while it waits removes its waiter (`withTaskCancellationHandler`, as `waitUntilDrainStartedForTesting` does). Its driver's `defer` already ends its reservation and its token.
+- J2b's segment returns `.awaitLeave`. The driver registers its continuation in `side.leaveEndWaiters[player]` under a fresh waiter ID before any other suspension, the same way `awaitInputTurn`'s waiter is registered (no suspension since the segment).
+- The segment that ends the marker takes the player's waiters out of the table and resumes each one. A waiter whose leave ended in a teardown is resumed too, and J2c's drain check answers it.
+- **Exactly once.** A waiter is resumed only by whoever removes it from the table: the marker's end, or the waiter's own cancel. Both run on the keeper. `onCancel` hops to the keeper and removes the waiter by its ID, resuming it with `CancellationError` only if that call removed it. A marker's end that ran first already took it out, so the cancel finds nothing and does nothing. This is `waitUntilDrainStartedForTesting`'s shape (`cancelDrainStartedWaiterForTesting` removes by ID, then resumes).
+- **Cancellation before the registration.** A join whose task is already cancelled when it reaches the wait checks `Task.isCancelled` inside the `withCheckedContinuation` closure, before it registers, and resumes at once with `CancellationError`. It never enters the table. The driver's `defer` then ends its reservation and its token, as on any other exit.
 - Resuming mutates nothing: J2c is a new segment that re-reads everything.
+- Test hook: `leaveEndWaiterCountForTesting(player)`, and `waitForLeaveEndWaitersForTesting(player, count)`, which returns once that many waiters are registered and is bounded by `testHangBound`. The tests wait on it, a positive event, instead of checking that a join hasn't returned.
+
+**Prior art.** This is per-key serialization: a mutex per key, here per player, whose waiters run when the holder releases it, as a keyed lock does. The adapter's membership queue already gives the hosted path that order, with one queue per adapter. The keeper gets it per player, without depending on the caller.
 
 **Capacity (#852).** A player whose leave is in flight has no entry and no reservation, so J2 counts it as a new player: the cap applies to C, as it does today. A join that will wait must then hold a place while it waits, or a newcomer could take the last place and C would insert over the cap. So J2 takes a reservation when an entry exists (as today) **or when a leave of the player is in flight**. The reservation is a place hold, not a cap bypass: `isReconnection` stays "an entry or a reservation exists", and a waiting join that passed the cap holds the place until it inserts or ends.
 
@@ -95,12 +112,14 @@ All of these use the keeper's own fixtures and holds (`ReplacedJoinGates`' `lgat
 
 | # | Case | Expected |
 |---|---|---|
-| W1 | P1's shape: A leaves, held in its OnLeave resolver; C joins | C waits (bounded check: C hasn't returned while A is held); after the release, the log is exactly `[join A, leave A, join C]`, with one player |
-| W2 | W1 with two rejoins, C then D | D inserts, C is `.superseded`, and the log ends `join D` |
-| W3 | the kick: B kicks A, held in A's OnLeave; C arrives | C waits; B is `.superseded`; the log is exactly `[join A, leave A, join C]` (R11's set check becomes exact) |
+| W1 | P1's shape: A leaves, held in its OnLeave resolver; C joins | `waitForLeaveEndWaitersForTesting(player, 1)` returns while A is held: C waits. After the release, the log is exactly `[join A, leave A, join C]`, with one player |
+| W2 | W1 with two rejoins, C then D | both are registered (`…(player, 2)`); D inserts, C is `.superseded`, and the log ends `join D` |
+| W3 | the kick: B kicks A, held in A's OnLeave; C arrives | B and C are both registered: B through its kick, C as a waiter (`…(player, 1)` for C). B is `.superseded`; the log is exactly `[join A, leave A, join C]` (R11's set check becomes exact) |
 | W4 | W1, but A's OnLeave resolver throws | the marker ends; C inserts; A's OnLeave is dropped as today |
 | W5 | W1, and the land drains while C waits (`forceShutdown`, `waitUntilDrainStartedForTesting`) | C gets `landShuttingDown`; the drain ends (bounded through an `EventLog`, not `withinHangBound` on the drain's task) |
-| W6 | W1, and C's task is cancelled while it waits | C ends with `CancellationError`; its waiter, reservation and token are gone; A's leave ends normally |
+| W6 | W1, and C's task is cancelled once it is registered (`…(player, 1)`) | C ends with `CancellationError`; the waiter count is back to 0; its reservation and token are gone; A's leave ends normally and resumes nobody |
+| W6b | C's task is cancelled before it reaches the wait (held at `.join`, cancelled, released) | C ends with `CancellationError` and never registers (the count stays 0); A's leave ends normally |
+| W6c | the cancel and the marker's end race: C registered, A's leave released and C cancelled in the same keeper hop (the cancel's hop held until the marker's segment has run) | C is resumed once, by the marker's end, and the cancel's removal finds nothing (a debug counter of resumes per waiter ID is 1) |
 | W7 | capacity: a full land (`maxPlayers` 2), A leaves (held), C rejoins and waits, and a newcomer arrives | the newcomer gets `roomIsFull`; C inserts; the count stays at 2 |
 | W8 | a leave without resolvers, or with a pending OnJoin | no marker; a join right after behaves as today |
 | W9 | the record of W1 replays | 0 mismatches; the recorded order is `join, leave, join` |
@@ -118,6 +137,8 @@ The suites that change their expectations: #940's R11 (the set check becomes exa
 | 4 | the drain's drop doesn't end the marker or answer the waiters | W5 |
 | 5 | J2 takes no reservation for a waiting join | W7 |
 | 6 | the cancellation handler doesn't remove the waiter | W6's table check |
+| 6b | the cancel resumes the waiter whether or not it removed it | W6c (a second resume traps in debug; run it on the cloud) |
+| 6c | no `Task.isCancelled` check before the registration | W6b |
 | 7 | the marker is ended by key alone (no generation check) | a stale end: W3 with a second leave scheduled (written with the code) |
 
 The mutants go to the cloud.
@@ -126,7 +147,7 @@ The mutants go to the cloud.
 
 - **Q1 (Review): (b) over (a).** The marker keeps every reader of `players` as it is. Does Review agree that the window belongs to the leave, not to the entry?
 - **Q2 (maintainer): wait, not refuse or fence.** A rejoin during a slow OnLeave resolver waits for it, as it already does through the adapter's queue. Is a bound needed? A resolver deadline already bounds OnLeave (`ResolverDeadline`), so the wait is bounded by it.
-- **Q3 (maintainer, may be out of scope): should a waiting join keep the land from its empty-land destroy?** Today a kick's join can be told `landShuttingDown` in the same window. Proposal: leave it for a follow-up and keep this change to the order.
+- **Q3 (a follow-up): a destroy timer scheduled earlier in the window.** L2 and L3 schedule the destroy at or after the marker's end, and the waiting join's insert cancels it, so that path can't destroy a land a join waits on. The case that can is a timer scheduled while A's leave is already in flight and `players` is empty, by something else: another player's failed join, or another player's kick's leave. If it fires before A's resolvers return, the land drains with C still waiting, and C gets `landShuttingDown`, which a client retries. Today's kick has the same window. Proposal: a follow-up, which counts a leave in flight as "not empty" for the destroy check.
 
 ## 7. Probes
 
@@ -150,4 +171,4 @@ So the record keeps the live order with the sequences out of order (the OnLeave 
 
 **P2: settled by reading the code, no run.** The hosted path serializes the two. `_onDisconnectImpl` (TA:1282) runs `handleDisconnectQueued` in `enqueueMembership`, and that awaits `keeper.leave` to its end (TA:1337). `performJoinQueued` (TA:2265) runs in the same queue. `enqueueMembership` (TA:3115) chains every operation on `membershipQueueTail`, one queue per adapter, so a hosted rejoin starts only after the leave returned. The claim shapes the severity, not the design: the fix is in the keeper either way. W1 is the failing test the fix starts from.
 
-**P4: to run with the code.** That the driver registers the waiter's continuation before any suspension after J2b's segment, the way `awaitInputTurn` does. It is pinned by W1 with a `.join`-style hold placed right after the segment, which must not let a leave end unseen. Written as a test, not argued.
+**P4: to run with the code.** That the driver registers the waiter's continuation before any suspension after J2b's segment, the way `awaitInputTurn` does. W1 pins it with a positive event: `waitForLeaveEndWaitersForTesting(player, 1)` must return while A is still held, and the marker's end must find exactly that waiter. W6b and W6c pin the cancel's two orders. Written as tests, not argued.
