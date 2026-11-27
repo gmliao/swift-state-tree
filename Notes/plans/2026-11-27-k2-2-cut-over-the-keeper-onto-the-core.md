@@ -379,6 +379,20 @@ K2-2a merged as #948 without commit 1 (§3). Commit 1a routes the initialization
 - **Core twins:** `initializationHeldRecordTwoWaiters` (a), `initializationFailureAnswersTheWaiters` (b, the resolver's throw), `initializationStartsLoops` (c: the twin answers `.startLoops` with `.initializeDone`). Still to come: (b)'s `validate` refusal, (d) T11's late re-entry, and (e) a drain during the resolvers and during the record.
 - **`parkedCallerCancelRacesResume`** is replaced by `parkedCallerResumedThenCancelled`, the resume-first order, forced. The job is held at its resolver while the caller is cancelled, and the comparison waits for the core's `input-drain-end`. The cancel-first order stays `parkedCallerCancelledBeforeResume`.
 
+**Round 2 on #966.**
+- **The seam, built from what exists:** `CoreDiffInitGates` holds and fails the resolvers. `armedRecordGate` holds the record on the core, and the pair's `keeperRecordGate` holds it on the keeper. The harness's `markDraining(cause:)` sets the twin's drain flag (`store.withSide`), mirroring the keeper's `markDrainingForTesting`. T11's twin reuses `CoreDiffHandlerReentry`, fired from OnInitialize's body. `CoreDiffShape.initializeRefuses` is the two-stage OnInitialize whose `validate` throws.
+- **New twins:**
+  - `initializationValidateRefuses`, (b)'s validate: `.failed`, nothing applied, no loop, and both waiters get the failure.
+  - `initializationLateReentry`, (d): one late re-entry per path, `keeperReentry` on both, no loop. The initialization itself ends `.done` on both paths, and the waiter is answered `.done`; the land fails after it.
+  - `initializationDrainDuringResolvers`, (e): `.abandonedByDrain`, nothing applied, no loop, and the waiter gets `LandInitializationError` (the closed land).
+  - `initializationDrainDuringRecord`, (e): still applied, no loop.
+- **`markDrainingForTesting`** now clears `players`, the services and the rejoin reservations in one turn, as every drain start does. The OnJoin assert has no exception left. The in-body re-entry case in `KeeperTurnSkeletonTests` uses `setDrainFlagInBodyForTesting`.
+- **Expected survivors until 1b:**
+  - Mutant (h), `.initializeDone` left `.normal`: no 1a case fills or closes the queue while the owner's answer is in flight.
+  - The flag-swap half of mutant (c): with no tick or sync interval in the init shape, no loop is configured, so `initializeDone`'s two flags reach only asserts on a land with no loops.
+
+  1b's stop and drain cases cover both: a closed queue at `.initializeDone`, and a tick land's init.
+
 **Round 4's leftovers on #948, carried here.**
 - A cancel concurrent with the resume: `parkedCallerCancelRacesResume`, 8 runs. Either outcome, consistent on each path, and nothing left waiting.
 - The registration watcher is bounded: it returns false after `within:`.

@@ -41,3 +41,5 @@ The owner's two sends, `.initialize` and `.initializeDone`, kept the default `.n
 - If the harness stands in for the owner, it must send every reply the owner sends, or the steps after that reply are dead in the tests.
 - A comparison waits for the slower path's last event. `perform` noting a result is not that event: the result hasn't stepped yet.
 - An owner send that is the only way to answer a flow's waiters is `.control`.
+- A doc that names an exception to an assert must make the exception not trap, or say that it traps. Round 1's `markDrainingForTesting` doc called itself "the one exception" to the OnJoin assert, which still trapped in debug. Round 2 makes the hook clear players and services in one turn, as every production drain start does. The only caller inside a turn body gets a flag-only hook, `setDrainFlagInBodyForTesting`, whose doc says why it can't reach that assert.
+- Before writing a twin's expectation from the review's wording, check the keeper's answer. T11's twin was asked to expect "the phase isn't `.done`", but on the keeper the initialization ends `.done` and the land fails after it. The case pins what both paths do.
