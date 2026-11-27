@@ -379,7 +379,11 @@ extension KeeperModel {
         while true {
             let batch = nextInputTurnBatch(limit: LandKeeper<State>.inputTurnBatchLimit)
             guard !batch.isEmpty else {
+                // The keeper's drain end: the flag, then the probe. Its idle waiters are the
+                // actor's (`inputDrainIdleWaitersForTesting`): a core-driven test waits on the
+                // probe instead. The drain's `.inputDrain` hold is the keeper's alone until K2-2.
                 endInputDrain()
+                store.withSide { side in side.probe?("input-drain-end") }
                 if endsTickWork { store.withSide { side in debugEndWork(&side) } }
                 return
             }
