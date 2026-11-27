@@ -99,6 +99,8 @@ struct CoreDiffShape: Sendable, CustomStringConvertible {
     /// `DestroyWhenEmpty(after: 50 ms)`: an emptied land stages the timer's start, and a timer
     /// nobody cancels reaches `.destroyTimerFired` soon.
     var destroysWhenEmpty = false
+    /// The destroy timer's delay: 50 ms where a case waits for it to fire, 1 h where it must not.
+    var destroyDelay: Duration = .milliseconds(50)
 
     var description: String {
         "\(tick ? "tick" : "tickless"), join resolvers \(joinResolvers), leave resolver \(leaveResolver)\(noOnLeave ? ", no OnLeave" : "")\(destroysWhenEmpty ? ", destroys when empty" : "")"
@@ -150,7 +152,7 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
         if shape.tick && shape.destroysWhenEmpty {
             Lifetime {
                 Tick(every: .seconds(3600)) { state, ctx in coreDiffTick(&state, ctx) }
-                DestroyWhenEmpty(after: .milliseconds(50))
+                DestroyWhenEmpty(after: shape.destroyDelay)
             }
         } else if shape.tick {
             Lifetime {
@@ -158,7 +160,7 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
             }
         } else if shape.destroysWhenEmpty {
             Lifetime {
-                DestroyWhenEmpty(after: .milliseconds(50))
+                DestroyWhenEmpty(after: shape.destroyDelay)
             }
         }
     }
@@ -208,6 +210,11 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
 
     /// Yields once per input drain's end (the side's `input-drain-end` probe), and counts them.
     /// Install after `start` (the store must be bound) and before the drain.
+    /// Installs the side's probe (the keeper's `setInTurnProbeForTesting`).
+    func setProbe(_ probe: (@Sendable (String) -> Void)?) {
+        store.withSide { side in side.probe = probe }
+    }
+
     func drainEnds() -> (stream: AsyncStream<Void>, count: CoreDiffCounter) {
         let (stream, continuation) = AsyncStream<Void>.makeStream()
         let count = CoreDiffCounter()
@@ -378,7 +385,10 @@ final class CoreDiffTrace: @unchecked Sendable {
 /// The port that writes the trace. When armed, its `runSyncPhaseInTurn` re-enters `keeper` once
 /// with a guarded entry (`submitSyncStream`), which the sentinel refuses mid-step.
 final class CoreDiffTraceTransport: LandKeeperTransport, @unchecked Sendable {
+    /// Which sync follow-up a committed or deferred phase asks for (Review round 2 on #938).
+    enum FollowUp: Sendable, CaseIterable { case none, joinsAwaiting, keptEvents, deferred }
     let trace: CoreDiffTrace
+    var followUp: FollowUp = .none
     private let lock = NSLock()
     private weak var reentryKeeper: LandKeeper<CoreDiffState>?
     init(_ trace: CoreDiffTrace) { self.trace = trace }
@@ -398,7 +408,7 @@ final class CoreDiffTraceTransport: LandKeeperTransport, @unchecked Sendable {
     }
     func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool { trace.append("refusesResolvedJoin \(playerID) \(sessionID)"); return false }
     func noteJoinInputsConsumed(_ results: [JoinInputResult]) { trace.append("noteJoinInputsConsumed \(results)") }
-    var hasJoinsAwaitingSync: Bool { trace.append("hasJoinsAwaitingSync"); return false }
+    var hasJoinsAwaitingSync: Bool { trace.append("hasJoinsAwaitingSync"); return followUp == .joinsAwaiting }
     func waitForWriterDrainForInTurnSync() async { trace.append("waitForWriterDrain") }
     var recordsInTurnSyncFolds: Bool { false }
     func noteInTurnSyncFold(_ fold: InTurnSyncFold) { trace.append("noteInTurnSyncFold \(fold)") }
@@ -410,7 +420,12 @@ final class CoreDiffTraceTransport: LandKeeperTransport, @unchecked Sendable {
             trace.append("re-enter submitSyncStream")
             keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the synchronous callback the sentinel refuses
         }
-        return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
+        guard includeSync else { return InTurnSyncOutput(.notRequested) }
+        switch followUp {
+        case .deferred: return InTurnSyncOutput(.deferredBackPressure)
+        case .keptEvents: return InTurnSyncOutput(.committed(clearDirtyFlags: true), syncStream: [], keepsEvents: true)
+        case .none, .joinsAwaiting: return InTurnSyncOutput(.committed(clearDirtyFlags: true))
+        }
     }
 }
 
@@ -422,6 +437,37 @@ final class CoreDiffCounter: @unchecked Sendable {
 }
 
 // MARK: - What the two paths are compared on
+
+/// A value as text with every dictionary's and set's entries sorted, at any depth, so two equal
+/// values render alike whatever their hash order (Review round 2 on #938).
+func coreDiffCanonical(_ value: Any) -> String {
+    let mirror = Mirror(reflecting: value)
+    switch mirror.displayStyle {
+    case .dictionary:
+        let entries = mirror.children.map { entry -> String in
+            let pair = Mirror(reflecting: entry.value).children.map { coreDiffCanonical($0.value) }
+            return pair.joined(separator: ": ")
+        }
+        return "[" + entries.sorted().joined(separator: ", ") + "]"
+    case .set:
+        return "{" + mirror.children.map { coreDiffCanonical($0.value) }.sorted().joined(separator: ", ") + "}"
+    case .collection, .tuple:
+        return "(" + mirror.children.map { ($0.label.map { "\($0): " } ?? "") + coreDiffCanonical($0.value) }.joined(separator: ", ") + ")"
+    case .optional:
+        return mirror.children.first.map { coreDiffCanonical($0.value) } ?? "nil"
+    case .struct:
+        let fields = mirror.children.map { ($0.label.map { "\($0): " } ?? "") + coreDiffCanonical($0.value) }
+        return "\(mirror.subjectType)(" + fields.joined(separator: ", ") + ")"
+    case .enum:
+        // The case's name, then its payload rendered the same way.
+        let name = String(describing: value).prefix { $0 != "(" }
+        guard !mirror.children.isEmpty else { return String(name) }
+        return name + "(" + mirror.children.map { coreDiffCanonical($0.value) }.joined(separator: ", ") + ")"
+    default:
+        // A class or a leaf: its own description (the model is plain; a class here is a box).
+        return String(describing: value)
+    }
+}
 
 /// The model's and the side's state the routed flows change, as plain values.
 struct CoreDiffDigest: Equatable, Sendable, CustomStringConvertible {
@@ -455,10 +501,24 @@ struct CoreDiffDigest: Equatable, Sendable, CustomStringConvertible {
         "hasHeldTransport": "the twin's copy sets it from the twin's own transport (`coreTwinForTesting`)",
         "transportRecordsFolds": "the same",
     ]
+    /// Fields the projections above compare. `players`, `rejoinReservations` and `pendingItems`
+    /// are compared whole too, in `otherModelFields` (metadata, guest and device identity,
+    /// reservation epochs, the items' kinds and payloads: Review round 2 on #938).
     static let digestedFields: Set<String> = [
-        "state", "players", "sequence", "lastCommittedTickId", "rejoinReservations", "pendingItems",
-        "debugInFlightWork", "inputDrainScheduled", "actionJobs",
+        "state", "sequence", "lastCommittedTickId", "debugInFlightWork", "inputDrainScheduled", "actionJobs",
     ]
+
+    /// The fields that differ from `other`, by name, for the failure message.
+    func differingFields(from other: CoreDiffDigest) -> [String] {
+        var names: [String] = []
+        for (mine, theirs) in zip(Mirror(reflecting: self).children, Mirror(reflecting: other).children) where mine.label != "otherModelFields" {
+            if String(describing: mine.value) != String(describing: theirs.value) { names.append(mine.label ?? "?") }
+        }
+        for key in Set(otherModelFields.keys).union(other.otherModelFields.keys).sorted() where otherModelFields[key] != other.otherModelFields[key] {
+            names.append("model.\(key)")
+        }
+        return names
+    }
 
     var description: String {
         "other model fields \(otherModelFields.count), collected \(collectedEventSequences), failure IDs \(failureIDs), draining \(isDraining), mailbox \(mailboxFailure.map(\.description) ?? "-"), follow-up \(pendingSyncTurnAfterTurn), " +
@@ -470,7 +530,7 @@ struct CoreDiffDigest: Equatable, Sendable, CustomStringConvertible {
         var others: [String: String] = [:]
         for child in Mirror(reflecting: model).children {
             guard let label = child.label, !Self.digestedFields.contains(label), Self.statedAsymmetries[label] == nil else { continue }
-            others[label] = String(describing: child.value)
+            others[label] = coreDiffCanonical(child.value)
         }
         otherModelFields = others
         collectedEventSequences = read.collectedEventSequences
@@ -502,6 +562,11 @@ private struct CoreDiffPair {
     let keeper: LandKeeper<CoreDiffState>
     let harness: KeeperCoreHarness<CoreDiffState>
     let landID: String
+    /// The twin's source, whose sentinel and mailbox the core shares (nil for a pair built by hand).
+    var source: LandKeeper<CoreDiffState>? = nil
+    /// Each path has a transport (a pair built by hand with ports): the stated asymmetries'
+    /// fixture.
+    var transports = false
 
     static func make(_ shape: CoreDiffShape, _ name: String, holds: (@Sendable (LandKeeperHoldPoint) async -> Void)? = nil) async -> CoreDiffPair {
         let landID = "core-diff:\(name):\(UUID().uuidString)"
@@ -521,7 +586,7 @@ private struct CoreDiffPair {
         // The destroy-timer cases read the last ticket after a cancel, on both paths.
         await direct.keepLastDestroyTicketForTesting()
         await harness.keepLastDestroyTicket()
-        return CoreDiffPair(keeper: direct, harness: harness, landID: landID)
+        return CoreDiffPair(keeper: direct, harness: harness, landID: landID, source: twinSource)
     }
 
     func digests() async -> (keeper: CoreDiffDigest, core: CoreDiffDigest) {
@@ -540,7 +605,12 @@ private struct CoreDiffPair {
         let (keeperDigest, coreDigest) = await digests()
         // The whole-model comparison compares something: the model has dozens of other fields.
         #expect(coreDigest.otherModelFields.count > 20, "\(step): \(coreDigest.otherModelFields.keys.sorted())", sourceLocation: sourceLocation)
-        #expect(keeperDigest == coreDigest, "\(step):\n keeper \(keeperDigest)\n core   \(coreDigest)", sourceLocation: sourceLocation)
+        #expect(keeperDigest == coreDigest, "\(step): differ in \(keeperDigest.differingFields(from: coreDigest))\n keeper \(keeperDigest)\n core   \(coreDigest)", sourceLocation: sourceLocation)
+        // The stated asymmetries, each checked against its path's fixture: each path holds a
+        // transport exactly when the pair gave it one, and none records folds.
+        let keeperModel = await keeper.differentialReadForTesting().model, coreModel = await harness.differentialRead().model
+        #expect(keeperModel.hasHeldTransport == transports && coreModel.hasHeldTransport == transports, "\(step): held transport", sourceLocation: sourceLocation)
+        #expect(!keeperModel.transportRecordsFolds && !coreModel.transportRecordsFolds, "\(step): no fold recording", sourceLocation: sourceLocation)
         #expect(coreDigest.violations.isEmpty, "\(step): \(coreDigest.violations)", sourceLocation: sourceLocation)
         let leftover = await harness.differentialRead().coreWaitsLeft
         #expect(leftover == 0, "\(step): core waits left", sourceLocation: sourceLocation)
@@ -768,12 +838,18 @@ struct KeeperCoreDifferentialTests {
         // Each step flushes at its end, on both paths: L1's staged start installs the timer before
         // J3's `joinInsert` cancels it. So this pins install-then-cancel, not D14's cancel before
         // install (a stage and a cancel in one frame), which #860's D2 shape or K1b-5's own test
-        // covers.
+        // covers. The order is each path's probes; the timer is 1 h, so no window lets it fire.
         let fires = CoreDiffCounter()
-        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false, noOnLeave: true, destroysWhenEmpty: true), "kick-destroy",
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false, noOnLeave: true, destroysWhenEmpty: true, destroyDelay: .seconds(3600)), "kick-destroy",
                                            holds: { point in if point == .destroyTimerFired { fires.increment() } })
         _ = await bothJoin(pair, "p1", "c1")
+        let keeperOrder = CoreDiffTrace(), coreOrder = CoreDiffTrace()
+        await pair.keeper.setInTurnProbeForTesting { if $0.hasPrefix("destroy-timer-") { keeperOrder.append($0) } }
+        await pair.harness.setProbe { if $0.hasPrefix("destroy-timer-") { coreOrder.append($0) } }
         let again = await bothJoin(pair, "p1", "c2")
+        for (path, order) in [("keeper", keeperOrder.all), ("core", coreOrder.all)] {
+            #expect(order == ["destroy-timer-installed", "destroy-timer-cancelled"], "\(path): \(order)")
+        }
         #expect(again.0 == again.1 && again.0 == .joined(allowed: true, admitted: false), "\(again)")
         await pair.expectSame("after the kick and the join")
         let keeperRead = await pair.keeper.differentialReadForTesting()
@@ -783,8 +859,7 @@ struct KeeperCoreDifferentialTests {
             let ticket = try #require(read.lastDestroyTicket, "\(path): L1 staged the timer")
             let task = try #require(ticket.installedTask, "\(path): the staged start installed its task")
             #expect(task.isCancelled, "\(path): J3 cancelled it")
-            // Bounded: a timer nobody cancelled would fire after 50 ms and end, so this returns
-            // either way, and the count below tells the two apart.
+            // A cancelled 1 h timer ends at once; a live one wouldn't end within the bound.
             let ended = await boundedEnd(task, seconds: 5)
             #expect(ended, "\(path): the timer's task ended")
         }
@@ -794,20 +869,28 @@ struct KeeperCoreDifferentialTests {
 
     @Test("The control: the last player's leave installs the destroy timer, and with no rejoin it fires on both paths", arguments: [false, true])
     func uncancelledDestroyTimerFires(tick: Bool) async throws {
+        // Each path's fire is observed by its hold, not by time (Review round 2): the keeper's own
+        // drain cancels a timer that fired, so its task's end says nothing.
         let fires = CoreDiffCounter()
+        let (fired, firedContinuation) = AsyncStream<Void>.makeStream()
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false, noOnLeave: true, destroysWhenEmpty: true), "destroy-fires",
-                                           holds: { point in if point == .destroyTimerFired { fires.increment() } })
+                                           holds: { point in
+                                               guard point == .destroyTimerFired else { return }
+                                               fires.increment()
+                                               firedContinuation.yield()
+                                           })
         _ = await bothJoin(pair, "p1", "c1")
         #expect(await keeperLeave(pair, "p1", "c1") == "done")
         #expect(await coreLeave(pair, "p1", "c1") == "done")
         for (path, read) in [("keeper", await pair.keeper.differentialReadForTesting()), ("core", await pair.harness.differentialRead())] {
             let ticket = try #require(read.lastDestroyTicket, "\(path): the leave staged the timer")
-            let task = try #require(ticket.installedTask, "\(path): installed")
-            #expect(!task.isCancelled, "\(path)")
-            #expect(await boundedEnd(task, seconds: 5), "\(path): the timer's task ended")
+            #expect(ticket.installedTask != nil, "\(path): installed")
         }
         // One fire per path: the keeper's (which then drains) and the core's (whose staged hop
         // finds no keeper, K2-1).
+        var fireEvents = fired.makeAsyncIterator()
+        _ = await fireEvents.next()
+        _ = await fireEvents.next()
         #expect(fires.value == 2, "fires: \(fires.value)")
     }
 
@@ -880,7 +963,7 @@ struct KeeperCoreDifferentialTests {
         await source.awaitInitialization()
         let harness = KeeperCoreHarness(await source.coreTwinForTesting(transport: coreTransport))
         await harness.start()
-        let pair = CoreDiffPair(keeper: direct, harness: harness, landID: landID)
+        let pair = CoreDiffPair(keeper: direct, harness: harness, landID: landID, transports: true)
         let first = await pair.digests().core.nextSequence
 
         await direct.stepTickOnce()
@@ -1215,6 +1298,12 @@ struct KeeperCoreDifferentialTests {
         let pair = try await TracePair.make("trace-refusal")
         pair.keeperTransport.armReentry(pair.keeper)
         pair.coreTransport.armReentry(pair.source)
+        // The refused answer is not used on either path (Review round 2): the failure applies in
+        // the call (one refusal, no late application), not after the frame read the answer.
+        let keeperViolationsBefore = await pair.keeper.reentryViolationsForTesting
+        let coreViolationsBefore = await pair.source.reentryViolationsForTesting
+        let keeperLateBefore = await pair.keeper.lateReentriesAppliedForTesting
+        let coreLateBefore = await pair.source.lateReentriesAppliedForTesting
         await pair.tick()
         try await pair.expectSameTrace("after the refused callback", failed: true)
         #expect(pair.coreTrace.all.contains("re-enter submitSyncStream"))
@@ -1222,6 +1311,10 @@ struct KeeperCoreDifferentialTests {
         let coreFailure = await pair.harness.differentialRead().failure
         #expect(keeperFailure != nil && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
         #expect(keeperFailure?.kind == .keeperReentry)
+        #expect(await pair.keeper.reentryViolationsForTesting - keeperViolationsBefore == 1)
+        #expect(await pair.source.reentryViolationsForTesting - coreViolationsBefore == 1)
+        #expect(await pair.keeper.lateReentriesAppliedForTesting == keeperLateBefore)
+        #expect(await pair.source.lateReentriesAppliedForTesting == coreLateBefore)
     }
 
     @Test("The tokenless step: a .tickDue carries no binding token, its handler reaches a guarded entry outside callOut, and the land ends in that same step by the keeper's route (§4.2 point 3)")
@@ -1250,6 +1343,59 @@ struct KeeperCoreDifferentialTests {
         #expect(!pair.coreTrace.all.contains { $0.hasPrefix("runSyncPhaseInTurn") }, "no sync phase after the trip: \(pair.coreTrace.all)")
     }
 
+    @Test("A sync follow-up a tick's phase asks for, on a land without periodic sync, is refused on the core by name, with no work count or pending turn left (Review round 2 on #938: K2-2 routes them)",
+          arguments: [CoreDiffTraceTransport.FollowUp.joinsAwaiting, .keptEvents, .deferred])
+    func syncFollowUpsAreRefusedOnTheCore(followUp: CoreDiffTraceTransport.FollowUp) async throws {
+        let pair = try await TracePair.make("follow-up")
+        pair.coreTransport.followUp = followUp
+        await harnessTick(pair)
+        let read = await pair.harness.differentialRead()
+        let site = switch followUp {
+        case .joinsAwaiting: "scheduleJoinSyncTurn"
+        case .keptEvents: "requestSyncTurnAfterThisTurn"
+        case .deferred, .none: "retrySyncOnlyTurnAfterWriterDrain"
+        }
+        #expect(read.violations.contains { $0.contains("refused \(site)") }, "\(read.violations)")
+        #expect(!read.violations.contains { $0.contains("requested sync work") }, "no work count began: \(read.violations)")
+        #expect(read.model.requestedSyncWork == 0)
+        #expect(pair.coreTrace.all.contains { $0.hasPrefix("runSyncPhaseInTurn") && $0.contains("includeSync=true") }, "the phase ran: \(pair.coreTrace.all)")
+    }
+
+    /// The core's tick only (the keeper's path runs its follow-up, which this case doesn't compare).
+    /// A sync due before the tick folds into it (as the fold round trip drives it), so the
+    /// tick's phase includes the sync and reaches `applyInTurnSyncResult`'s branches.
+    private func harnessTick(_ pair: TracePair) async {
+        let deadline = ContinuousClock.now
+        await pair.harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false, syncsInTurn: true))
+        let fold = await pair.harness.flushedFolds.last
+        await pair.harness.drive(.tickDue(fold: fold, foldStart: fold.map { _ in deadline + .milliseconds(20) }, syncsInTurn: true))
+        await pair.harness.waitForSubmissions()
+    }
+
+    @Test("The late re-entry backstop: with no transport, a handler's re-entry is applied by the frame's backstop after the body, once on each path (Review round 2 on #938)")
+    func lateReentryBackstop() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "backstop")
+        let source = try #require(pair.source)
+        let keeperLateBefore = await pair.keeper.lateReentriesAppliedForTesting
+        let coreLateBefore = await source.lateReentriesAppliedForTesting
+        // One path at a time: the hook is one-shot and keyed by the land ID both share.
+        CoreDiffHandlerReentry.register(pair.landID) { [keeper = pair.keeper] in
+            keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the handler's re-entry the sentinel refuses
+        }
+        await pair.keeper.stepTickOnce()
+        CoreDiffHandlerReentry.register(pair.landID) { [source] in
+            source.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the handler's re-entry the sentinel refuses
+        }
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: false))
+        defer { CoreDiffHandlerReentry.clear(pair.landID) }
+        let keeperLate = await pair.keeper.lateReentriesAppliedForTesting - keeperLateBefore
+        let coreLate = await source.lateReentriesAppliedForTesting - coreLateBefore
+        #expect(keeperLate == 1 && coreLate == 1, "backstop: keeper \(keeperLate), core \(coreLate)")
+        let keeperFailure = await pair.keeper.differentialReadForTesting().failure
+        let coreFailure = await pair.harness.differentialRead().failure
+        #expect(coreFailure != nil && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
+    }
+
     @Test("The core's flush sends an input and then asks a query: the query is answered in place, before the queued input steps (§16 item 5)")
     func flushSendsThenQueries() async throws {
         let shape = CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false)
@@ -1266,14 +1412,16 @@ struct KeeperCoreDifferentialTests {
         await harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false, syncsInTurn: true))
         let answers = await harness.flushQueryAnswers
         try #require(answers.count == 1, "the fold's flush ran the armed calls")
-        guard case .actionSubmission = answers[0].answer else {
+        guard case let .actionSubmission(submission) = answers[0].answer, (try? submission.get()) != nil else {
             Issue.record("the query's answer: \(answers[0].answer)")
             return
         }
+        #expect(answers[0].pendingAtQuery.count == 1, "the intake appended at the query: \(answers[0].pendingAtQuery)")
         // Answered in place, as its own step: the sent tick hadn't stepped yet.
         #expect(answers[0].tickAtQuery == before.lastCommittedTickId, "\(answers[0].tickAtQuery)")
         let after = await harness.differentialRead().model
         #expect(after.lastCommittedTickId == before.lastCommittedTickId + 1, "the sent tick stepped after the flush")
+        #expect(after.state.log.contains("action:3"), "the queued tick applied the query's action: \(after.state.log)")
         #expect(await harness.inputsSeen.suffix(2) == ["syncDue", "tickDue"])
     }
 

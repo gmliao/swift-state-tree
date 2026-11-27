@@ -2191,6 +2191,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         precondition(model.initializationFailure == nil, "coreTwinForTesting: the initialization failed")
         // A drain still scheduled would be copied as scheduled, and the core would never run one.
         precondition(!model.inputDrainScheduled, "coreTwinForTesting: an input drain is still scheduled; wait for the keeper's work first")
+        // The twin shares the source's mailbox and sentinel (Review round 2 on #938): it starts
+        // from an empty mailbox, and one source closes at most one twin's gate, so a second twin
+        // with a transport can't replace the first one's gate unseen.
+        precondition(pendingTransportFailure.failure == nil, "coreTwinForTesting: the source's mailbox holds a failure")
+        precondition(twinTransport == nil || reentryGateForTesting == nil, "coreTwinForTesting: one twin with a transport per source")
         var model = model
         model.didInitialize = true
         model.hasHeldTransport = twinTransport != nil
@@ -5321,6 +5326,11 @@ extension KeeperModel {
             violations.append("core side: a job intake \(actionJobs.keys.sorted()), routed in K2-2")
         }
         for refusal in coreReplies.refusals { violations.append("core side: refused \(refusal)") }
+        // A sync follow-up that slipped past the refusal (Review round 2 on #938): its work count
+        // or its pending turn on a core's side has nothing that runs or ends it.
+        if coreReplies.onCore, requestedSyncWork > 0 || side.pendingSyncTurnAfterTurn != nil {
+            violations.append("core side: requested sync work \(requestedSyncWork), pending follow-up \(side.pendingSyncTurnAfterTurn != nil)")
+        }
         if !coreReplies.onCore, coreReplies.carriedSyncsInTurn != nil {
             violations.append("a carried syncsInTurn on the keeper's side")
         }
@@ -5989,9 +5999,11 @@ extension KeeperModel {
         // A copy, so the timer doesn't hop to the keeper for it.
         let holds = side.holdPoints
         let keeperReference = side.keeperReference
+        let probe = side.probe
         outputs.stage { [weak keeperReference] in
             let keeper = keeperReference?.keeper as? LandKeeper<State>
             ticket.install(LandKeeper<State>.destroyTimer(after: delay, keeper: keeper, ticket: ticket, holds: holds))
+            probe?("destroy-timer-installed")
         }
     }
 
@@ -6782,7 +6794,7 @@ extension KeeperModel {
             // Joins left over a commit's budget: the next sync-only turn completes them.
             if !behavior.hasPeriodicSync {
                 guard let awaiting = joinsAwaitingSync(&self, &side, &outputs) else { return }
-                if awaiting { scheduleJoinSyncTurn(side, &outputs, after: .zero, transport: transport) }
+                if awaiting { scheduleJoinSyncTurn(&side, &outputs, after: .zero, transport: transport) }
             }
             // Events still queued after the commit (kept by it, or queued after it): on a land
             // without periodic sync nothing else would deliver them, so one sync-only turn does,
@@ -6797,7 +6809,7 @@ extension KeeperModel {
             inTurnDeferredTurns += 1
             if joinSyncOnly { joinSyncWaitsForCommit = true }
             if !behavior.hasPeriodicSync {
-                retrySyncOnlyTurnAfterWriterDrain(side, &outputs, transport: transport)
+                retrySyncOnlyTurnAfterWriterDrain(&side, &outputs, transport: transport)
             }
         case .failed:
             // A transport that reports a thrown plan without its failure: the first throw ends
@@ -6822,6 +6834,10 @@ extension KeeperModel {
         transport: any LandKeeperTransport,
         reason: SyncTurnReason
     ) {
+        // On a core (#700 K2-1, Review round 2 on #938): the follow-up's start would go through
+        // the keeper reference, which a core's side doesn't have. Refused before any change and
+        // reported (`actionTableViolations`); K2-2 routes it with the binding token.
+        if refusesSyncFollowUpOnCore(&side, "requestSyncTurnAfterThisTurn") { return }
         requestedSyncTurnsForTesting[reason, default: 0] += 1
         if let pending = side.pendingSyncTurnAfterTurn {
             if pending.binding != syncBinding.current {
@@ -6844,10 +6860,11 @@ extension KeeperModel {
     /// After a deferred phase on a land without periodic sync: one sync-only turn once the writer
     /// has drained its sync cycle elements (at most one pending per binding), through the same port.
     mutating func retrySyncOnlyTurnAfterWriterDrain(
-        _ side: KeeperTurnSide,
+        _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         transport: any LandKeeperTransport
     ) {
+        if refusesSyncFollowUpOnCore(&side, "retrySyncOnlyTurnAfterWriterDrain") { return }
         guard inTurnDrainRetryBinding != syncBinding.current else { return }
         inTurnDrainRetryBinding = syncBinding.current
         beginRequestedSyncWork()
@@ -6865,14 +6882,23 @@ extension KeeperModel {
         }
     }
 
+    /// Whether `side` is a core's, whose sync follow-ups K2-1 doesn't route: the refusal is
+    /// recorded by name and nothing else changes (no work count, no binding, no pending turn).
+    mutating func refusesSyncFollowUpOnCore(_ side: inout KeeperTurnSide, _ site: String) -> Bool {
+        guard side.coreInputReplies.onCore else { return false }
+        side.coreInputReplies.refusals.append("\(site): a sync follow-up's start needs the keeper (K2-2: the binding token)")
+        return true
+    }
+
     /// One sync-only turn for joins waiting on a committed sync phase, after `delay` (at most one
     /// pending per binding). It runs only if joins still wait then.
     mutating func scheduleJoinSyncTurn(
-        _ side: KeeperTurnSide,
+        _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         after delay: Duration,
         transport port: any LandKeeperTransport
     ) {
+        if refusesSyncFollowUpOnCore(&side, "scheduleJoinSyncTurn") { return }
         guard joinSyncTurnBinding != syncBinding.current else { return }
         joinSyncTurnBinding = syncBinding.current
         joinSyncTurnsScheduledForTesting += 1

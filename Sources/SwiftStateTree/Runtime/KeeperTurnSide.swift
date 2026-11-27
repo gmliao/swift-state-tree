@@ -182,6 +182,7 @@ package struct KeeperTurnSide {
     /// Cancels the empty-land destroy timer, and a start staged before this that hasn't
     /// installed its task yet (D16).
     mutating func cancelDestroy() {
+        if destroyTicket != nil { probe?("destroy-timer-cancelled") }
         destroyTicket?.cancel()
         destroyTicket = nil
     }
