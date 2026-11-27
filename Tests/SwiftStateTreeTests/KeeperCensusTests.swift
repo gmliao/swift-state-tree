@@ -136,6 +136,7 @@ enum KeeperCensus {
             "turnSide.debugDrainWaiters": .replaced(by: "K7"),
             "turnSide.probe": .testHook,
             "turnSide.flushTraceForTesting": .testHook,
+            "turnSide.keepsLastDestroyTicketForTesting": .testHook,
             "turnSide.holdPoints": .testHook,
             // Copies of the keeper's references, for the bodies (#700 K1b-5 move): the homes of
             // the members they copy.
@@ -305,6 +306,7 @@ extension KeeperCensus {
         "turnSide.replay": "dropped: nil on the live keepers the core serves; the replay owner keeps the actor's path until #612",
         "turnSide.probe": "a test hook on the behavior",
         "turnSide.flushTraceForTesting": "a test hook on the behavior, with the probe",
+        "turnSide.keepsLastDestroyTicketForTesting": "goes with the slot: the core timer's own test read",
         "turnSide.holdPoints": "a test hook on the behavior",
         "turnSide.lateStepOutputAssertsForTesting": "a test hook on the behavior",
         "turnSide.serverInputMaxInFlight": "the behavior's config",
@@ -411,13 +413,18 @@ struct KeeperCensusTests {
         #expect(named.subtracting(sideFields).isEmpty, "not a side field: \(named.subtracting(sideFields).sorted())")
     }
 
-    @Test("The machine's inputs split into K2-1's routed set and the deferred ones, each named (#700 K2-1)")
+    @Test("The machine's inputs and queries split into K2-1's routed set and the deferred ones, each named, and together every case (#700 K2-1)")
     func inputRoutesSplitTheCases() {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
-        #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).sorted())")
-        // `KeeperInput` has 21 cases (`routeName` is exhaustive): a new one goes in a list, and this count moves.
-        #expect(routed.count == 11 && deferred.count == 10, "routed \(routed.sorted()), deferred \(deferred.sorted())")
+        #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")
+        #expect(routed.union(deferred) == Set(KeeperInputRoute.allCases), "neither: \(Set(KeeperInputRoute.allCases).subtracting(routed.union(deferred)).map(\.rawValue).sorted())")
+        #expect(routed.count == 11 && deferred.count == 10, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
         #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
+        let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
+        #expect(queries.isDisjoint(with: deferredQueries))
+        #expect(queries.union(deferredQueries) == Set(KeeperQueryRoute.allCases))
+        #expect(queries.count == 2 && deferredQueries.count == 4)
+        #expect(KeeperQueryRoutes.deferred.values.allSatisfy { !$0.isEmpty })
     }
 
     @Test("The model is plain at compile time")

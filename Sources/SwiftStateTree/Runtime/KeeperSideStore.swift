@@ -81,6 +81,12 @@ struct KeeperDifferentialRead<State: StateNodeProtocol>: Sendable {
     /// lease's count of outputs that found nothing lent.
     let collectedEventSequences: [Int64]
     let unlentCount: Int
+    /// The side's failure table's IDs, the drain flag, the transport-failure mailbox and the
+    /// pending follow-up sync turn (Review round 1 on #938: state a diverging core could change).
+    let failureIDs: [String]
+    let isDraining: Bool
+    let mailboxFailure: LandFailure?
+    let pendingSyncTurnAfterTurn: String
 
     init(model: KeeperModel<State>, side: KeeperTurnSide) {
         self.model = model
@@ -92,5 +98,9 @@ struct KeeperDifferentialRead<State: StateNodeProtocol>: Sendable {
         failure = side.failure
         collectedEventSequences = side.sharedCollector.emittedEvents.map(\.sequence)
         unlentCount = side.sharedSequenceLease.unlentCount
+        failureIDs = side.failures.keys.map { "\($0)" }.sorted()
+        isDraining = side.isDraining
+        mailboxFailure = side.sharedTransportFailure.failure
+        pendingSyncTurnAfterTurn = side.pendingSyncTurnAfterTurn.map { "\($0)" } ?? "-"
     }
 }

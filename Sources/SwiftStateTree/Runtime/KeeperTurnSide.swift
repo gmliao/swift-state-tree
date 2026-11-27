@@ -100,8 +100,10 @@ package struct KeeperTurnSide {
     var destroyTicket: DestroyTicket?
     /// Tests (#700 K2-1's differential): the last ticket `replaceDestroyTicket` issued, kept
     /// after a cancel clears the slot, so a test can see whether its staged start installed a
-    /// task and whether that task was cancelled.
+    /// task and whether that task was cancelled. Kept only when `keepsLastDestroyTicketForTesting`
+    /// is set, so a production keeper doesn't extend a cancelled ticket's (and its task's) life.
     var lastDestroyTicketForTesting: DestroyTicket?
+    var keepsLastDestroyTicketForTesting = false
     /// Each player's services (#700 K1b-4; moved here by the move, D10): `LandServices` holds
     /// references. Written in the same synchronous segment as every insert and removal of the
     /// model's `players`, keyed by the entry's generation, so a late writer never removes a newer
@@ -189,7 +191,7 @@ package struct KeeperTurnSide {
         destroyTicket?.cancel()
         let ticket = DestroyTicket()
         destroyTicket = ticket
-        lastDestroyTicketForTesting = ticket
+        if keepsLastDestroyTicketForTesting { lastDestroyTicketForTesting = ticket }
         return ticket
     }
 

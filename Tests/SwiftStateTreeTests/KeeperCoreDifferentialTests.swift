@@ -298,10 +298,24 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         armedFlush = (input, query)
     }
 
+    /// Whether `count` inputs named `name` were sent, within a bound (a call notes its input, then
+    /// steps it, in one segment of this actor).
+    func waitForInputs(named name: String, count: Int) async -> Bool {
+        for _ in 0..<5000 {
+            if inputsSeen.filter({ $0 == name }).count >= count { return true }
+            try? await safeTaskSleep(for: .milliseconds(1))
+        }
+        return false
+    }
+
     /// Waits for the record submissions the core's flushes made (the twin's own tracker).
     func waitForSubmissions() async {
         let tracker = store.withSide { side in side.submissionsForTesting }
         await tracker.waitForAll()
+    }
+
+    func keepLastDestroyTicket() {
+        store.withSide { side in side.keepsLastDestroyTicketForTesting = true }
     }
 
     /// Installs the side's flush trace.
@@ -420,13 +434,44 @@ struct CoreDiffDigest: Equatable, Sendable, CustomStringConvertible {
     var violations: [String]
     var holdsDestroyTicket: Bool
     var failure: LandFailure?
+    /// Every other model field, by label, as text (Review round 1 on #938: the model as a whole
+    /// value), less `statedAsymmetries`.
+    var otherModelFields: [String: String]
+    var collectedEventSequences: [Int64]
+    var failureIDs: [String]
+    var isDraining: Bool
+    var mailboxFailure: LandFailure?
+    var pendingSyncTurnAfterTurn: String
+
+    /// The model fields the two paths set apart by construction, each with its reason; the
+    /// fields named in the digest above are compared there.
+    static let statedAsymmetries: [String: String] = [
+        "hasHeldTransport": "the twin's copy sets it from the twin's own transport (`coreTwinForTesting`)",
+        "transportRecordsFolds": "the same",
+    ]
+    static let digestedFields: Set<String> = [
+        "state", "players", "sequence", "lastCommittedTickId", "rejoinReservations", "pendingItems",
+        "debugInFlightWork", "inputDrainScheduled", "actionJobs",
+    ]
 
     var description: String {
+        "other model fields \(otherModelFields.count), collected \(collectedEventSequences), failure IDs \(failureIDs), draining \(isDraining), mailbox \(mailboxFailure.map(\.description) ?? "-"), follow-up \(pendingSyncTurnAfterTurn), " +
         "log \(log), players \(players), next sequence \(nextSequence), tick \(lastCommittedTick), reservations \(reservations), pending \(pendingSequences), held \(heldResults), work \(inFlightWork), drain \(inputDrainScheduled), jobs \(actionJobs), services \(playerServices), violations \(violations), destroy ticket \(holdsDestroyTicket), failure \(failure.map(\.description) ?? "-")"
     }
 
     init(_ read: KeeperDifferentialRead<CoreDiffState>) {
         let model = read.model
+        var others: [String: String] = [:]
+        for child in Mirror(reflecting: model).children {
+            guard let label = child.label, !Self.digestedFields.contains(label), Self.statedAsymmetries[label] == nil else { continue }
+            others[label] = String(describing: child.value)
+        }
+        otherModelFields = others
+        collectedEventSequences = read.collectedEventSequences
+        failureIDs = read.failureIDs
+        isDraining = read.isDraining
+        mailboxFailure = read.mailboxFailure
+        pendingSyncTurnAfterTurn = read.pendingSyncTurnAfterTurn
         log = model.state.log
         players = model.players.reduce(into: [:]) { out, entry in
             out[entry.key.rawValue] = [entry.value.clientID?.rawValue ?? "-", entry.value.lastSessionID?.rawValue ?? "-", "\(entry.value.generation.rawValue)"]
@@ -467,6 +512,9 @@ private struct CoreDiffPair {
         await twinSource.awaitInitialization()
         let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting())
         await harness.start()
+        // The destroy-timer cases read the last ticket after a cancel, on both paths.
+        await direct.keepLastDestroyTicketForTesting()
+        await harness.keepLastDestroyTicket()
         return CoreDiffPair(keeper: direct, harness: harness, landID: landID)
     }
 
@@ -479,13 +527,27 @@ private struct CoreDiffPair {
     /// The two paths' digests match, nothing is left on the core's side, and no deferred input
     /// reached the machine.
     func expectSame(_ step: String, sourceLocation: SourceLocation = #_sourceLocation) async {
+        // The keeper's drain yields before it ends (`runInputDrain`), after the call that
+        // started it returned: read it once its work and its drain are done.
+        await keeper.waitForInFlightWorkForTesting()
+        await keeper.waitForInputDrainIdleForTesting()
         let (keeperDigest, coreDigest) = await digests()
+        // The whole-model comparison compares something: the model has dozens of other fields.
+        #expect(coreDigest.otherModelFields.count > 20, "\(step): \(coreDigest.otherModelFields.keys.sorted())", sourceLocation: sourceLocation)
         #expect(keeperDigest == coreDigest, "\(step):\n keeper \(keeperDigest)\n core   \(coreDigest)", sourceLocation: sourceLocation)
         #expect(coreDigest.violations.isEmpty, "\(step): \(coreDigest.violations)", sourceLocation: sourceLocation)
         let leftover = await harness.differentialRead().coreWaitsLeft
         #expect(leftover == 0, "\(step): core waits left", sourceLocation: sourceLocation)
-        let deferred = await harness.inputsSeen.filter { KeeperInputRoutes.deferred[$0] != nil }
-        #expect(deferred.isEmpty, "\(step): deferred inputs sent: \(deferred)", sourceLocation: sourceLocation)
+        let deferredNames = await harness.inputsSeen.filter { KeeperInputRoute(rawValue: $0).flatMap { KeeperInputRoutes.deferred[$0] } != nil }
+        #expect(deferredNames.isEmpty, "\(step): deferred inputs sent: \(deferredNames)", sourceLocation: sourceLocation)
+    }
+
+    /// A kick happened: p1's entry is c2's, with a new generation, on both paths (the digest
+    /// compares the two).
+    func expectKicked(sourceLocation: SourceLocation = #_sourceLocation) async {
+        let core = await digests().core
+        #expect(core.players["p1"]?.first == "c2", "the second login holds the entry: \(core.players)", sourceLocation: sourceLocation)
+        #expect(core.players["p1"]?.last != "1", "a new generation: \(core.players)", sourceLocation: sourceLocation)
     }
 }
 
@@ -609,7 +671,7 @@ private func coreTicklessAction(_ pair: CoreDiffPair, _ action: CoreDiffAction, 
 }
 
 private func coreTickAction(_ pair: CoreDiffPair, _ action: CoreDiffAction, _ player: String, _ client: String) async -> CoreDiffActionResult {
-    guard case let .actionSubmission(result) = await pair.harness.ask(.admitAction(envelope(action), caller(player, client))) else {
+    guard case let .actionSubmission(result) = await pair.harness.ask(.admitAction(envelope(action), caller(player, client), enforcingLimits: true)) else {
         return .failed(nil, "not an action answer")
     }
     return CoreDiffActionResult(result)
@@ -667,6 +729,7 @@ struct KeeperCoreDifferentialTests {
         let again = await bothJoin(pair, "p1", "c2")
         #expect(again.0 == again.1 && again.0 == .joined(allowed: true, admitted: false), "\(again)")
         await pair.expectSame("after the kick and the join")
+        await pair.expectKicked()
     }
 
     @Test("A kick whose OnLeave resolver throws fails the join with the leave's error, and ends the reservation", arguments: [false, true])
@@ -691,6 +754,7 @@ struct KeeperCoreDifferentialTests {
         let again = await bothJoin(pair, "p1", "c2")
         #expect(again.0 == again.1 && again.0 == .joined(allowed: true, admitted: false), "\(again)")
         await pair.expectSame("after the kick")
+        await pair.expectKicked()
     }
 
     @Test("A kick on a one-player land: L1 installs the destroy timer and J3 cancels it, on both paths, and the timer never fires (§16 item 10)", arguments: [false, true])
@@ -903,9 +967,12 @@ struct KeeperCoreDifferentialTests {
         // A's drain waits on its record; B's intake runs meanwhile and finds the drain scheduled.
         let a = Task { await coreTicklessAction(CoreDiffPair(keeper: direct, harness: harness, landID: landID), CoreDiffAction(n: 1, fails: false), "p1", "c1") }
         guard await gate.waitUntilEntered("A's record") else { return }
-        await harness.drive(.action(envelope(CoreDiffAction(n: 2, fails: false)), caller("p1", "c1")))
+        // B is a call too, so its reply is compared: its intake steps before the gate opens.
+        let b = Task { await coreTicklessAction(CoreDiffPair(keeper: direct, harness: harness, landID: landID), CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        #expect(await harness.waitForInputs(named: "action", count: 2), "B's intake stepped")
         gate.release()
         #expect(await a.value == .completed(1))
+        #expect(await b.value == .completed(2))
         var ends = drainEnds.makeAsyncIterator()
         _ = await ends.next()
 
@@ -945,11 +1012,15 @@ struct KeeperCoreDifferentialTests {
     func tickAction() async {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "tick-action")
         _ = await bothJoin(pair, "p1", "c1")
+        let pendingBefore = await pair.digests().core.pendingSequences.count
         let action = CoreDiffAction(n: 6, fails: false)
         let keeperResult = await keeperAction(pair, action, "p1", "c1")
         let coreResult = await coreTickAction(pair, action, "p1", "c1")
         #expect(keeperResult == coreResult, "keeper \(keeperResult), core \(coreResult)")
+        // Not the same failure on both: acknowledged and appended.
+        if case .failed = keeperResult { Issue.record("the tick land's action failed: \(keeperResult)") }
         await pair.expectSame("after the tick land's action")
+        #expect(await pair.digests().core.pendingSequences.count == pendingBefore + 1, "appended for the next tick")
     }
 
     @Test("A tickless client event answers done or its handler's error", arguments: [false, true])
@@ -1182,7 +1253,7 @@ struct KeeperCoreDifferentialTests {
         // The only K2-1 output is a fold, so the armed flush is `.syncDue`'s: it sends a tick and
         // asks for a tick land's action intake.
         await harness.armFlush(send: .tickDue(fold: nil, foldStart: nil, syncsInTurn: true),
-                               thenAsk: .admitAction(envelope(CoreDiffAction(n: 3, fails: false)), caller("p1", "c1")))
+                               thenAsk: .admitAction(envelope(CoreDiffAction(n: 3, fails: false)), caller("p1", "c1"), enforcingLimits: true))
         let deadline = ContinuousClock.now
         await harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false, syncsInTurn: true))
         let answers = await harness.flushQueryAnswers

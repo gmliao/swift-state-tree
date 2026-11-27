@@ -83,52 +83,89 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
 /// 2026-11-27). `routeName` is exhaustive, so a new case must be named; the census test checks
 /// that the two lists split the cases, and the differential that no deferred input is sent.
 enum KeeperInputRoutes {
-    static let routed: Set<String> = [
-        "tickDue", "syncDue", "recordTaken", "inputDrainDue",
-        "join", "joinStepped", "leave", "leaveStepped",
-        "action", "clientEvent", "startLand",
+    static let routed: Set<KeeperInputRoute> = [
+        .tickDue, .syncDue, .recordTaken, .inputDrainDue, .join, .joinStepped, .leave, .leaveStepped, .action, .clientEvent, .startLand,
     ]
-    static let deferred: [String: String] = [
-        "freeze": "K2-2: the freeze barrier",
-        "resume": "K2-2: the freeze barrier",
-        "shutdown": "K2-2",
-        "awaitInitialized": "K2-2: the initialization barrier",
-        "awaitResume": "K2-2: the freeze barrier",
-        "syncStreamDraft": "K2-2",
-        "actionResolved": "K2-2: the action jobs (plan §16 item 17)",
-        "initializeResolved": "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
-        "destroyHandlerResolved": "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
-        "drainFinished": "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
+    static let deferred: [KeeperInputRoute: String] = [
+        .freeze: "K2-2: the freeze barrier",
+        .resume: "K2-2: the freeze barrier",
+        .shutdown: "K2-2",
+        .awaitInitialized: "K2-2: the initialization barrier",
+        .awaitResume: "K2-2: the freeze barrier",
+        .syncStreamDraft: "K2-2",
+        .actionResolved: "K2-2: the action jobs (plan §16 item 17)",
+        .initializeResolved: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
+        .destroyHandlerResolved: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
+        .drainFinished: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
     ]
 }
 
-extension KeeperInput {
-    /// The case's name, for `KeeperInputRoutes`.
-    var routeName: String {
+/// Each `KeeperQuery` case by name, as `KeeperInputRoute` is for the inputs.
+enum KeeperQueryRoute: String, CaseIterable, Sendable {
+    case admitAction, admitClientEvent, admitServerInput, syncTurnNow, syncTurnTicket, settle
+}
+
+/// The queries K2-1 answers, and where each other one is routed. A tickless land's
+/// `.admitServerInput` is refused on the core too (a precondition: its kick needs the keeper).
+enum KeeperQueryRoutes {
+    static let routed: Set<KeeperQueryRoute> = [.admitAction, .admitServerInput]
+    static let deferred: [KeeperQueryRoute: String] = [
+        .admitClientEvent: "K2-2: its answer is decided there (plan §16 item 17)",
+        .syncTurnNow: "K2-2: the sync entries",
+        .syncTurnTicket: "K2-2: the sync entries",
+        .settle: "K2-2: the sync entries",
+    ]
+}
+
+extension KeeperQuery {
+    var route: KeeperQueryRoute {
         switch self {
-        case .action: "action"
-        case .clientEvent: "clientEvent"
-        case .join: "join"
-        case .leave: "leave"
-        case .tickDue: "tickDue"
-        case .syncDue: "syncDue"
-        case .freeze: "freeze"
-        case .resume: "resume"
-        case .shutdown: "shutdown"
-        case .awaitInitialized: "awaitInitialized"
-        case .awaitResume: "awaitResume"
-        case .syncStreamDraft: "syncStreamDraft"
-        case .joinStepped: "joinStepped"
-        case .leaveStepped: "leaveStepped"
-        case .actionResolved: "actionResolved"
-        case .initializeResolved: "initializeResolved"
-        case .destroyHandlerResolved: "destroyHandlerResolved"
-        case .recordTaken: "recordTaken"
-        case .inputDrainDue: "inputDrainDue"
-        case .drainFinished: "drainFinished"
-        case .startLand: "startLand"
+        case .admitAction: .admitAction
+        case .admitClientEvent: .admitClientEvent
+        case .admitServerInput: .admitServerInput
+        case .syncTurnNow: .syncTurnNow
+        case .syncTurnTicket: .syncTurnTicket
+        case .settle: .settle
         }
     }
+}
+
+/// Each `KeeperInput` case by name: `route` is exhaustive, so a new case needs a route here, and
+/// the census checks that every route is routed or deferred.
+enum KeeperInputRoute: String, CaseIterable, Sendable {
+    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, awaitResume, syncStreamDraft, joinStepped, leaveStepped, actionResolved, initializeResolved, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand
+}
+
+extension KeeperInput {
+    /// The case's route, for `KeeperInputRoutes`.
+    var route: KeeperInputRoute {
+        switch self {
+        case .action: .action
+        case .clientEvent: .clientEvent
+        case .join: .join
+        case .leave: .leave
+        case .tickDue: .tickDue
+        case .syncDue: .syncDue
+        case .freeze: .freeze
+        case .resume: .resume
+        case .shutdown: .shutdown
+        case .awaitInitialized: .awaitInitialized
+        case .awaitResume: .awaitResume
+        case .syncStreamDraft: .syncStreamDraft
+        case .joinStepped: .joinStepped
+        case .leaveStepped: .leaveStepped
+        case .actionResolved: .actionResolved
+        case .initializeResolved: .initializeResolved
+        case .destroyHandlerResolved: .destroyHandlerResolved
+        case .recordTaken: .recordTaken
+        case .inputDrainDue: .inputDrainDue
+        case .drainFinished: .drainFinished
+        case .startLand: .startLand
+        }
+    }
+
+    /// The case's name.
+    var routeName: String { route.rawValue }
 }
 
 /// Which of the join's awaits a `.joinStepped` result answers, with what its segment resumes
@@ -197,7 +234,9 @@ struct KeeperCoreRefusal: Error, Sendable {
 
 /// The intakes answered at once, and the adapter's synchronous calls (plan §4.1).
 enum KeeperQuery: Sendable {
-    case admitAction(ActionEnvelope, KeeperCaller)
+    /// `enforcingLimits`: the entry's choice, as the keeper's two entries make it
+    /// (`submitAction` enforces the job caps, `handleActionEnvelope` doesn't).
+    case admitAction(ActionEnvelope, KeeperCaller, enforcingLimits: Bool)
     case admitClientEvent(AnyClientEvent, KeeperCaller)
     case admitServerInput(any ServerInputPayload)
     case syncTurnNow(reason: SyncTurnReason, ticket: SyncTurnTicket?)
@@ -267,7 +306,7 @@ extension KeeperModel: TurnMachine {
     mutating func handle(_ input: KeeperInput<State>, _ turn: inout Turn<KeeperModel<State>>) {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
-        if let reason = coreRefusal(behavior, store, input) {
+        if let reason = coreRefusal(behavior, hasTransport: store.withSide({ side in side.attachedTransport != nil }), input) {
             store.withSide { side in side.coreInputReplies.refusals.append("\(input.routeName): \(reason)") }
             if let caller = turn.input { turn.reply(to: caller, .failure(KeeperCoreRefusal(reason: reason))) }
             return
@@ -330,7 +369,7 @@ extension KeeperModel: TurnMachine {
             }
         default:
             // `KeeperInputRoutes.deferred` names where each of these is routed.
-            preconditionFailure("K2-1: \(input.routeName) is routed in \(KeeperInputRoutes.deferred[input.routeName] ?? "an unnamed PR")")
+            preconditionFailure("K2-1: \(input.routeName) is routed in \(KeeperInputRoutes.deferred[input.route] ?? "an unnamed PR")")
         }
         // A drop of the pending inputs in this step failed the core's waits on them.
         answerDroppedCoreInputWaits(behavior, store, &turn)
@@ -339,15 +378,25 @@ extension KeeperModel: TurnMachine {
     mutating func answer(_ query: KeeperQuery, _ turn: inout Turn<KeeperModel<State>>) -> KeeperAnswer<State> {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
+        let answer = answerQuery(behavior, store, query)
+        // A query step can fail the land (a refused `callOut` → `failLand` → the pending inputs'
+        // drop), which fails the core's waits on them: answered here, as `handle` does. K2-1's
+        // two routed queries are a tick land's, which has no input-turn waits, so none is
+        // reachable yet; K2-2's tickless intakes are.
+        answerDroppedCoreInputWaits(behavior, store, &turn)
+        return answer
+    }
+
+    private mutating func answerQuery(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ query: KeeperQuery) -> KeeperAnswer<State> {
         switch query {
-        case let .admitAction(envelope, caller):
+        case let .admitAction(envelope, caller, enforcingLimits):
             // The keeper's `submit` on a tick land: the intake's segment, answered at once (the
             // append's ACK, or a job's `.pending`; jobs run on the core from K2-2).
             precondition(!behavior.isTickless, "K2-1: a tickless land's action is the .action input")
             let result = step(behavior, store) { m, side, outputs in
                 Result {
                     try m.actionIntakeBody(behavior, &side, &outputs, envelope, playerID: caller.playerID, clientID: caller.clientID,
-                                           sessionID: caller.sessionID ?? behavior.config.systemSessionID, enforcingLimits: true, isTickless: false)
+                                           sessionID: caller.sessionID ?? behavior.config.systemSessionID, enforcingLimits: enforcingLimits, isTickless: false)
                 }
             }
             return .actionSubmission(result.map { request in
@@ -364,7 +413,7 @@ extension KeeperModel: TurnMachine {
             // the append in one body.
             return .serverInput(step(behavior, store) { m, side, outputs in m.serverInputIntake(behavior, &side, &outputs, input) })
         default:
-            preconditionFailure("K2-1: \(query) is not routed yet")
+            preconditionFailure("K2-1: \(query.route.rawValue) is routed in \(KeeperQueryRoutes.deferred[query.route] ?? "an unnamed PR")")
         }
     }
 }
@@ -380,13 +429,13 @@ extension KeeperModel {
     ///   notifications read the binding at the admission, after up to three awaits.
     /// - Any input of a tickless land with a transport attached: the input turn's output phase
     ///   reads it inside the drain.
-    func coreRefusal(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ input: KeeperInput<State>) -> String? {
+    func coreRefusal(_ behavior: KeeperBehavior<State>, hasTransport: Bool, _ input: KeeperInput<State>) -> String? {
         if case .join(_, syncsInTurn: true) = input {
             return "a join syncing in the turn needs the binding token (K2-2)"
         }
         // `.startLand` starts the core's key and reads no binding.
         if case .startLand = input { return nil }
-        if behavior.isTickless, store.withSide({ side in side.attachedTransport }) != nil {
+        if behavior.isTickless, hasTransport {
             return "a tickless land with a transport needs the binding token (K2-2)"
         }
         return nil
@@ -424,7 +473,10 @@ extension KeeperModel {
         let result = KeeperTurnFrame.run(
             behavior.reentrySentinel,
             flush: { outputs in
-                store.withSide { side in side.flush(&outputs) }
+                // A copy, flushed after the borrow ends: a staged action finds neither the model
+                // nor the side borrowed (KeeperTurnFrame's rule), as `flushOutsideTurn` does.
+                let side = store.withSide { $0 }
+                side.flush(&outputs)
                 submission = outputs.lastSubmission ?? submission
             },
             lateReentry: { violationsBefore = $0 }
@@ -434,7 +486,8 @@ extension KeeperModel {
         // The keeper's `applyLateReentry`, after the frame: the closures above can't both hold
         // the model.
         if var late = store.withSide({ side in applyLateReentry(behavior, &side, since: violationsBefore) }) {
-            store.withSide { side in side.flush(&late.outputs) }
+            let side = store.withSide { $0 }
+            side.flush(&late.outputs)
             KeeperModel<State>.noteLateReentry(behavior, late.applied)
         }
         return (result, submission)
@@ -455,6 +508,8 @@ extension KeeperModel {
         guard let tickId = store.withSide({ side in tickStart(side) }) else { return }
         // No drain waits on a core's ticks in K2-1; K2-2 makes the wait a reply.
         defer { _ = tickEnd() }
+        // `runTick` fires it right before the turn; `tickTurnBody` fires only "turn-end".
+        store.withSide { side in side.probe?("turn-begin") }
         let output = step(behavior, store) { m, side, outputs in
             m.tickTurnBody(behavior, &side, &outputs, handler: handler, tickId: tickId,
                            transport: syncsInTurn ? side.attachedTransport : nil, fold: fold, foldStart: foldStart)
@@ -722,6 +777,13 @@ extension KeeperModel {
                 finishJoin(behavior, store, &turn, .failure(error), decided: nil, caller: caller)
             case let .success(resolverOutputs):
                 joinDrive(behavior, store, &turn, call: call, caller: caller, syncsInTurn: syncsInTurn, decided: nil) { m, side, outputs in
+                    // Rebuilt after the resolvers (only their outputs come back, plan §4.3); the
+                    // keeper reuses J1's. The two read the model in two places only:
+                    // `players["_pending"]` (CanJoin's placeholder ID: it differs only if a
+                    // player of that literal ID joined or left meanwhile) and
+                    // `lastCommittedTickId` for the emit closures, whose outputs CanJoin's scope
+                    // drops (K2-E2). K2-2 carries J1's plain values in the stage if that
+                    // placeholder lookup is kept.
                     let ctx = m.canJoinContext(behavior, side, call, resolverOutputs: resolverOutputs)
                     return try m.joinDecide(behavior, &side, &outputs, call, canJoinContext: ctx)
                 }

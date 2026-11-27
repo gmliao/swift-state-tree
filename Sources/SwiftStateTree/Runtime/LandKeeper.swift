@@ -880,6 +880,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         turnSide.probe = probe
     }
 
+    /// Keeps the last destroy ticket after a cancel (tests only; #700 K2-1's differential).
+    func keepLastDestroyTicketForTesting() {
+        turnSide.keepsLastDestroyTicketForTesting = true
+    }
+
     /// Installs the side's flush trace (tests only; #700 K2-1's ordered trace).
     func setFlushTraceForTesting(_ trace: (@Sendable (String) -> Void)?) {
         turnSide.flushTraceForTesting = trace
