@@ -496,6 +496,16 @@ struct BarrierTests {
         f.open("g")
     }
 
+    @Test("TurnInstant + Duration saturates past Int64 nanoseconds, from attoseconds: no trap past Int64.max seconds")
+    func turnInstantPlusFarDuration() {
+        // Duration.components would trap on these (its seconds convert to Int64).
+        #expect(TurnInstant(nanoseconds: 0) + (.seconds(Int64.max) + .seconds(1)) == TurnInstant(nanoseconds: .max))
+        #expect(TurnInstant(nanoseconds: 0) + (.seconds(Int64.min) - .seconds(1)) == TurnInstant(nanoseconds: .min))
+        // In range, whole nanoseconds, truncated toward zero.
+        #expect(TurnInstant(nanoseconds: 10) + .nanoseconds(5) == TurnInstant(nanoseconds: 15))
+        #expect(TurnInstant(nanoseconds: 10) + (.nanoseconds(-5) - .seconds(1) / 1_000_000_000_000_000_000) == TurnInstant(nanoseconds: 5))
+    }
+
     @Test("A positive budget under one nanosecond is expired, never a zero timer")
     func subNanosecondBudget() async {
         let f = Fixture()
