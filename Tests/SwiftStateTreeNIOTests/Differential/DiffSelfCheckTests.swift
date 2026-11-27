@@ -266,27 +266,30 @@ extension DifferentialHarness {
             #expect(frames.contains { DiffValue.canonicalText($0.decoded).contains("\"/counter\"") }, "A never got the bump's update")
         }
 
-        @Test("A finished run releases its keeper's recorder, which deletes its spool file (#910)", arguments: DiffLandKind.allCases)
-        func aFinishedRunReleasesItsRecorder(land: DiffLandKind) async throws {
+        // Not parametrized: the gate expects each declared test by its plain name.
+        @Test("A finished run releases its keeper's recorder, which deletes its spool file, on either land kind (#910)")
+        func aFinishedRunReleasesItsRecorder() async throws {
             // second-session reaches both drain sites (a kick's keeper leave and a join's sync
             // request), whose hold bodies are the ones the keeper holds.
             let scenario = try #require(diffScenarios.first { $0.name == "second-session" })
-            weak var recorder: ReevaluationRecorder?
-            var spool: String?
-            do {
-                let run = try await DiffRun.make(scenario, cell: DiffCell(sync: .inTurn, encoding: .json, land: land))
-                recorder = run.recorder
-                spool = await run.recorder.getSpoolPath()
-                _ = try await run.execute()
+            for land in DiffLandKind.allCases {
+                weak var recorder: ReevaluationRecorder?
+                var spool: String?
+                do {
+                    let run = try await DiffRun.make(scenario, cell: DiffCell(sync: .inTurn, encoding: .json, land: land))
+                    recorder = run.recorder
+                    spool = await run.recorder.getSpoolPath()
+                    _ = try await run.execute()
+                }
+                let path = try #require(spool)
+                let deadline = ContinuousClock.now + testHangBound
+                while recorder != nil || FileManager.default.fileExists(atPath: path) {
+                    guard ContinuousClock.now < deadline else { break } // wall-clock: the hang bound of this poll, never reached by a passing run
+                    try await Task.sleep(for: .milliseconds(10)) // wall-clock: a deinit, and the file removal on the writer's queue, have no event the test can await; a passing run leaves at once
+                }
+                #expect(recorder == nil, "\(land): the run's recorder outlived the run")
+                #expect(!FileManager.default.fileExists(atPath: path), "\(land): the run left its spool file: \(path)")
             }
-            let path = try #require(spool)
-            let deadline = ContinuousClock.now + testHangBound
-            while recorder != nil || FileManager.default.fileExists(atPath: path) {
-                guard ContinuousClock.now < deadline else { break } // wall-clock: the hang bound of this poll, never reached by a passing run
-                try await Task.sleep(for: .milliseconds(10)) // wall-clock: a deinit, and the file removal on the writer's queue, have no event the test can await; a passing run leaves at once
-            }
-            #expect(recorder == nil, "the run's recorder outlived the run")
-            #expect(!FileManager.default.fileExists(atPath: path), "the run left its spool file: \(path)")
         }
 
         @Test("A kick's leave and a join's sync request wait for the writer's drain too (#917)")
