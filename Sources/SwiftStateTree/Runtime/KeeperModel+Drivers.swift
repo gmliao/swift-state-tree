@@ -86,7 +86,8 @@ extension KeeperModel {
                 coreWaits.append((wait, result))
             }
         }
-        checkActionTables(behavior, side, #function)
+        // The keeper's label from before the move, so a violation reads as it did.
+        checkActionTables(behavior, side, "resumeInputTurnWaiters(for:)")
         return coreWaits
     }
 
