@@ -1555,7 +1555,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 initializeMarker = output.marker
             }
 
-            if let recorder = reevaluationRecorder {
+            if reevaluationRecorder != nil {
                 let resolverOutputsDict = ctx.getAllResolverOutputs().recordedEntries
                 let recorded = ReevaluationRecordedLifecycleEvent(
                     kind: LifecycleKind.initialize.rawValue,
@@ -1570,25 +1570,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     resolverOutputs: resolverOutputsDict,
                     resolvedAtTick: model.lastCommittedTickId
                 )
-                if routesThroughTurn {
-                    // OnInitialize's server events belong to tick -1, which no frame's
-                    // `serverEvents` records; the initialize record keeps them for verification.
-                    await submitTurnRecord(ReevaluationTickRecord(
-                        tickId: 0,
-                        lifecycleEvents: [recorded],
-                        syncMarkers: initializeMarker.map { [$0] } ?? [],
-                        initialize: initializeRecord
-                    ))
-                } else {
-                    await recorder.record(
-                        tickId: 0,
-                        actions: [],
-                        clientEvents: [],
-                        lifecycleEvents: [recorded]
-                    )
-                    // A tickless land's OnInitialize is one turn record (#327).
-                    await recorder.recordTick(ReevaluationTickRecord(tickId: 0, initialize: initializeRecord), endsTurn: isTickless)
-                }
+                // This block runs only on a live keeper, whose initialization goes through the
+                // turn (`routesThroughTurn` is `mode == .live`): the record is the turn's (#700
+                // K2-1b).
+                assert(routesThroughTurn)
+                // OnInitialize's server events belong to tick -1, which no frame's
+                // `serverEvents` records; the initialize record keeps them for verification.
+                await submitTurnRecord(ReevaluationTickRecord(
+                    tickId: 0,
+                    lifecycleEvents: [recorded],
+                    syncMarkers: initializeMarker.map { [$0] } ?? [],
+                    initialize: initializeRecord
+                ))
             }
         }
 
@@ -1603,7 +1596,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if let interval = tickInterval,
            definition.lifetimeHandlers.tickHandler != nil
         {
-            await configureTickLoop(interval: interval)
+            configureTickLoop(interval: interval)
         }
 
         // Start sync loop: use configured interval, or fallback to tick interval if not configured
@@ -1626,7 +1619,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         if let interval = effectiveSyncInterval {
-            await configureSyncLoop(interval: interval)
+            configureSyncLoop(interval: interval)
         }
     }
 
@@ -2950,7 +2943,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// keeper was created (the continuous clock, unless a test bound a manual one).
     private let tickLoopClock = TickLoopClock.forNewKeepers
 
-    private func configureTickLoop(interval: Duration) async {
+    private func configureTickLoop(interval: Duration) {
         tickTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
         let clock = tickLoopClock
@@ -4572,7 +4565,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         model.checkActionTables(behavior, turnSide, #function)
     }
 
-    private func configureSyncLoop(interval: Duration) async {
+    private func configureSyncLoop(interval: Duration) {
         syncTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
         appliedSyncPhaseOffset = phaseOffset
