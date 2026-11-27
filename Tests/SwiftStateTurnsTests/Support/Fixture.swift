@@ -83,7 +83,7 @@ final class Fixture: @unchecked Sendable {
     /// far), and its release "released #n" once its batch ends. A foreign completion opens
     /// "foreign" and "foreign #n", a stale deadline, timer, follow-up or cancellation "stale
     /// deadline #n", "stale timer #n", "stale follow-up #n" or "stale cancellation #n", an idle
-    /// completion "idle completion #n"; batch sizes and clock reads are recorded.
+    /// completion "idle completion #n", a barrier wait's registration "barrier wait #n"; batch sizes and clock reads are recorded.
     func observe(_ event: TurnDiagnostic) {
         switch event {
         case .queued(let total):
@@ -110,6 +110,8 @@ final class Fixture: @unchecked Sendable {
             open("idle completion #\(bump("idle completion"))")
         case .clockRead:
             bump("clock read")
+        case .barrierWait:
+            open("barrier wait #\(bump("barrier wait"))")
         }
     }
 

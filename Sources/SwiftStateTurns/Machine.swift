@@ -36,6 +36,10 @@ public protocol TurnMachine: Sendable {
     /// definition and config, and a different behavior replays a different machine; nothing in
     /// the record shows it. Default: none (`Void`).
     associatedtype Behavior: Sendable = Void
+    /// The keys a caller waits on (`Turn.wait`). Default: none, and the barrier paths fold away.
+    associatedtype BarrierKey: Hashable & Sendable = Never
+    /// What a waiting caller holds; handed back to the machine however its wait ends.
+    associatedtype BarrierPayload: Sendable = Never
 
     /// How `input` is admitted. Default: normal, with no hold and no scope.
     ///
@@ -54,12 +58,26 @@ public protocol TurnMachine: Sendable {
     /// withdrawal don't apply, and it has no caller to reply to. Its `MailTurn` can't arm
     /// `.afterBatch` work (plan §3.9).
     mutating func handleMail(_ mail: Mail, _ turn: inout MailTurn<Self>)
+    /// A registered barrier wait ended without a release (`WaitEnd`): its entry and timer are
+    /// gone, and `ended.payload` is the machine's to clean up. Stepped after the step or entry
+    /// that ended it, before the caller's answer leaves the core (after this step's outputs). For
+    /// `.timedOut` and `.ended` the machine answers the caller, unless another reply was published
+    /// for it first, which is then its answer; for `.withdrawn` and `.answered` the caller has its
+    /// answer, and a reply from here is dropped. Default: answers `.failure(error)` when
+    /// `why.error` has one.
+    mutating func handleWaitEnded(_ ended: ReleasedWait<Self>, _ why: WaitEnd, _ turn: inout Turn<Self>)
 }
 
 extension TurnMachine {
     @inlinable public func inputPolicy(for input: Input) -> InputPolicy<Key> { .normal(waitsFor: nil, belongsTo: nil) }
     @inlinable public mutating func handleAbandoned(_ request: RequestID, _ why: Abandonment, _ turn: inout Turn<Self>) {}
     @inlinable public mutating func handleLateResult(_ input: Input, _ turn: inout Turn<Self>) {}
+}
+
+extension TurnMachine {
+    @inlinable public mutating func handleWaitEnded(_ ended: ReleasedWait<Self>, _ why: WaitEnd, _ turn: inout Turn<Self>) {
+        if let error = why.error { turn.reply(to: ended.caller, .failure(error)) }
+    }
 }
 
 extension TurnMachine where Query == Never, Answer == Never {

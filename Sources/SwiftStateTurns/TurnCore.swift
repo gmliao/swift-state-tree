@@ -24,6 +24,8 @@ public struct TurnStats: Sendable, Equatable {
     public var continuationJobs = 0
     /// Calls answered with `CancellationError` under `.cancelsCall`.
     public var cancelledCalls = 0
+    /// Barrier waits registered (`Turn.wait` returning `.waiting`), counted once each.
+    public var barrierWaits = 0
     /// Follow-ups armed and not yet stepped, consumed or closed.
     public var pendingFollowUps = 0
     /// Mailbox wakes that found the mailbox empty: an entry took the mail first.
@@ -45,8 +47,9 @@ public enum TurnDiagnostic: Sendable, Equatable {
     /// deadlines, when `endAll` empties them, or when a wake clears closed entries due after the
     /// instant it woke for.
     case staleDeadline
-    /// The core's timer reached a timer that had been replaced or dropped, and did nothing. It
-    /// comes at the timer's instant or later, or never, as `staleDeadline` does.
+    /// The core's timer reached a timer that had been replaced or dropped, or a barrier wait's
+    /// timeout whose wait had already ended, and did nothing. It comes at the timer's instant or
+    /// later, or never, as `staleDeadline` does.
     case staleTimer
     /// A follow-up's gate returned after the follow-up was consumed or closed, and stepped
     /// nothing for it.
@@ -58,6 +61,8 @@ public enum TurnDiagnostic: Sendable, Equatable {
     /// hold to retire, or that had no request (a `run`), arrived and did nothing.
     case idleCompletion
     case clockRead
+    /// A barrier wait registered (`Turn.wait` returned `.waiting`).
+    case barrierWait
 }
 
 /// A `waitForQuiescence` caller.
@@ -315,6 +320,13 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline package var onEntryBoundaryForTesting: (() -> Void)?
+    /// Tests: called on the actor right before a published reply resumes its caller (the
+    /// drain's replies phase, a barrier caller's released answer, a plain withdraw), so a check
+    /// sees the order of resumes against flushes and steps from inside the segment. Observe-only.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onResumeForTesting: ((InputID) -> Void)?
     /// The next boundary's ordinal, counted over every step the core dispatches (inputs,
     /// releases, follow-ups, answers, completions, timers, abandonments) and every entry's own
     /// work (an admission, a completion, a deadline, a timer, a gate's return; plan §3.9); a mailbox
@@ -391,6 +403,8 @@ public final class TurnCore<M: TurnMachine> {
     /// The mailbox, when the machine takes mail (`Mail` isn't `Never`); its actor stores
     /// this same instance.
     public let mailbox: TurnMailbox<M.Mail>?
+    /// The cancelled `.cancelsCall` callers, when the machine has barriers (`CancelledCallers`).
+    @usableFromInline let cancelledCallers: CancelledCallers?
 
     /// - Parameters:
     ///   - machine: the machine in its initial state.
@@ -425,6 +439,7 @@ public final class TurnCore<M: TurnMachine> {
         self.clock = clock
         self.incarnation = UInt64.random(in: UInt64.min ... UInt64.max)
         self.mailbox = Self.usesMailbox ? TurnMailbox(capacity: mailboxCapacity) : nil
+        self.cancelledCallers = Self.usesBarriers ? CancelledCallers() : nil
     }
 
     deinit {
@@ -447,7 +462,11 @@ public final class TurnCore<M: TurnMachine> {
     /// Whether `entry`'s request is open, its follow-up's gate deadline still pending, or its
     /// timer still its key's current one.
     @inlinable func deadlineIsLive(_ entry: DeadlineEntry) -> Bool {
-        if entry.isTimer { return rt.timerKeys[entry.ticket] != nil }
+        switch entry.kind {
+        case .timer: return rt.timerKeys[entry.ticket] != nil
+        case .barrier: return rt.barrierTimers[entry.ticket] != nil
+        case .request: break
+        }
         let id = RequestID(raw: entry.ticket)
         if rt.open[id] != nil { return true }
         return Self.usesFollowUps && rt.gateDeadlineLive(id)

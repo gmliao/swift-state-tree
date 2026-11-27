@@ -69,6 +69,10 @@ extension TurnActor {
                 if isControl { submit(input, caller: id, readControl: isControl) }
                 throw CancellationError()
             }
+            // On a core with barriers, the cancellation is also a flag set synchronously here,
+            // so a step that runs before the hop (a release, a re-wait) reads it; the hop removes
+            // it on every exit (`CancelledCallers`).
+            let flags = core.cancelledCallers
             return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<M.Reply, any Error>) in
                     if Task.isCancelled, !isControl {
@@ -80,6 +84,7 @@ extension TurnActor {
                     self.submit(input, caller: id, readControl: isControl)
                 }
             } onCancel: {
+                flags?.insert(id)
                 Task { await self.callerCancelled(id) }
             }
         }
@@ -283,6 +288,8 @@ extension TurnActor {
     /// replay refuses them (`sendAndWait`), because it can't place a cancellation (plan §3.9).
     @inlinable func callerCancelled(_ id: InputID) {
         let core = self.core
+        // The hop owns the flag its `onCancel` set: removed on every exit, the stale ones too.
+        defer { if TurnCore<M>.usesBarriers { core.cancelledCallers?.remove(id) } }
         // A cancellation of a call already answered or refused (or never submitted) changes no
         // state: no entry, no ordinal, as a stale deadline.
         guard core.waiters[id] != nil else {
@@ -292,16 +299,29 @@ extension TurnActor {
         if TurnCore<M>.usesMailbox {
             beginEntry()
             // The take's mail can answer or refuse the call first: then the cancellation is stale.
-            guard core.waiters[id] != nil else {
+            guard core.waiters[id] != nil, !barrierAnswerFixed(id) else {
                 core.onDiagnostic?(.staleCancellation)
                 if core.rt.dirty { runSegment() }
                 return
             }
             entryBoundary()
         }
+        // A waiting caller's entry leaves with it: its payload goes back to the machine first,
+        // and its `CancellationError` is published after that step's outputs (`Settling`).
+        if TurnCore<M>.usesBarriers, let entry = core.rt.removeBarrier(id) {
+            _ = core.rt.withdraw(caller: id)
+            core.counters.cancelledCalls += 1
+            // A step, so a new batch's `now` (with a mailbox, `beginEntry` ran above).
+            if !TurnCore<M>.usesMailbox { beginEntry() }
+            core.rt.settling[id] = Settling(answer: .failure(CancellationError()))
+            core.stepWaitEnded(id, entry, .withdrawn)
+            runSegment()
+            return
+        }
         guard let waiter = core.waiters.removeValue(forKey: id) else { return }
         _ = core.rt.withdraw(caller: id)
         core.counters.cancelledCalls += 1
+        core.onResumeForTesting?(id)
         waiter.resume(throwing: CancellationError())
     }
 
@@ -405,14 +425,14 @@ extension TurnActor {
         }
         if let id {
             if let record = core.rt.open[id] {
-                let waiting = core.rt.repliesAfter.removeValue(forKey: id)
                 // The hold stays owned through the completion step, so a handover (a new request
                 // on the same hold in that step) never leaves the key free in between.
                 if let hold = record.hold { core.rt.held[hold, default: 0] += 1 }
                 core.rt.closeRequest(id, nil)
                 if let input { core.step(input, caller: nil) }
                 if let hold = record.hold { core.rt.releaseHold(hold) }
-                if let waiting { core.rt.replies.append(contentsOf: waiting) }
+                // Taken after the step: while it runs, `wait` sees these replies as staged.
+                if let waiting = core.rt.repliesAfter.removeValue(forKey: id) { core.rt.replies.append(contentsOf: waiting) }
                 core.rt.dirty = true
             } else {
                 // The request closed before its worker returned: the worker has returned.
@@ -493,7 +513,7 @@ extension TurnActor {
                 stalePops &+= 1
                 _ = core.deadlines.popFirst()
                 if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
-                core.onDiagnostic?(head.isTimer ? .staleTimer : .staleDeadline)
+                core.onDiagnostic?(head.kind == .request ? .staleDeadline : .staleTimer)
                 continue
             }
             _ = core.deadlines.popFirst()
@@ -545,7 +565,7 @@ extension TurnActor {
     @inlinable func fireDeadline(_ entry: DeadlineEntry, generation: UInt64, taken: Bool) {
         let core = self.core
         if !taken {
-            let stale: TurnDiagnostic = entry.isTimer ? .staleTimer : .staleDeadline
+            let stale: TurnDiagnostic = entry.kind == .request ? .staleDeadline : .staleTimer
             guard core.deadlineIsLive(entry) else {
                 // Out of the heap already: one decrement for the close that counted it.
                 if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
@@ -569,13 +589,21 @@ extension TurnActor {
             }
         }
         if TurnCore<M>.usesMailbox { entryBoundary() }
-        if entry.isTimer {
+        switch entry.kind {
+        case .timer:
             // Live: `timerKeys` holds only current generations, so both lookups succeed.
             if let key = core.rt.timerKeys.removeValue(forKey: entry.ticket),
                let armed = core.rt.timers.removeValue(forKey: key) {
                 core.step(armed.input, caller: nil)
             }
-        } else {
+        case .barrier:
+            // Live: only the matching generation is consumed; a re-wait has a fresh one.
+            // Its entry has left the heap already, so the removal counts nothing stale.
+            if let caller = core.rt.barrierTimers[entry.ticket], let waiting = core.rt.removeBarrier(caller, fired: true) {
+                core.rt.settling[caller] = Settling(answer: nil)
+                core.stepWaitEnded(caller, waiting, .timedOut)
+            }
+        case .request:
             let id = RequestID(raw: entry.ticket)
             if core.rt.open[id] != nil {
                 core.rt.closeRequest(id, .deadline)
@@ -592,12 +620,12 @@ extension TurnActor {
     /// Arms a deadline entry on the core's one timer, after the step that made it was flushed.
     /// A sleeper is started when there is none, or re-armed when the entry is due before the
     /// instant it sleeps until and no wake is being serviced (that wake returns the next target).
-    @inlinable func armDeadline(_ instant: TurnInstant, ticket: UInt64, isTimer: Bool) {
+    @inlinable func armDeadline(_ instant: TurnInstant, ticket: UInt64, kind: DeadlineKind) {
         let core = self.core
         // Not during a wake: its due entries are outside the heap and still counted.
         if !core.sleeperAwake { core.compactDeadlinesIfStale() }
         core.nextArm &+= 1
-        core.deadlines.push(DeadlineEntry(instant: instant.nanoseconds, order: core.nextArm, ticket: ticket, isTimer: isTimer))
+        core.deadlines.push(DeadlineEntry(instant: instant.nanoseconds, order: core.nextArm, ticket: ticket, kind: kind))
         if core.sleeper == nil {
             startSleeper(until: instant)
         } else if !core.sleeperAwake, let target = core.sleeperTarget, instant < target {
@@ -827,6 +855,10 @@ extension TurnActor {
                 core.stepAbandoned(id, why)
                 continue
             }
+            if TurnCore<M>.usesBarriers, let ended = core.rt.waitsEnded.pop() {
+                core.stepWaitEnded(ended.caller, ended.entry, ended.why)
+                continue
+            }
             if let next = core.queued.pop() {
                 admit(next.0, caller: next.1, arrival: next.2)
                 if core.queued.isEmpty, !core.scopeEndsWhileDeferred.isEmpty {
@@ -908,8 +940,34 @@ extension TurnActor {
                 var replies: [(InputID, Result<M.Reply, any Error>)] = []
                 swap(&replies, &core.rt.replies)
                 for (caller, result) in replies {
+                    if TurnCore<M>.usesBarriers, claimForBarrier(caller, result) { continue }
                     if let waiter = core.waiters.removeValue(forKey: caller) {
+                        core.onResumeForTesting?(caller)
                         waiter.resume(with: result)
+                    }
+                }
+                progressed = true
+            }
+            if TurnCore<M>.usesBarriers, !core.rt.released.isEmpty {
+                // Answers fixed for callers whose hook has stepped: after its outputs, as replies.
+                var released: [(InputID, Result<M.Reply, any Error>)] = []
+                swap(&released, &core.rt.released)
+                for (caller, result) in released {
+                    core.rt.releasing.remove(caller)
+                    if let waiter = core.waiters.removeValue(forKey: caller) {
+                        core.onResumeForTesting?(caller)
+                        waiter.resume(with: result)
+                    }
+                }
+                progressed = true
+            }
+            if TurnCore<M>.usesBarriers, core.rt.endingWaits {
+                // `endAll`'s end of the waits, after the replies that claimed theirs.
+                core.rt.endingWaits = false
+                for id in core.rt.barrierWaiters.keys.sorted(by: { $0.raw < $1.raw }) {
+                    if let entry = core.rt.removeBarrier(id) {
+                        core.rt.settling[id] = Settling(answer: nil)
+                        core.rt.waitsEnded.push(WaitEnded(caller: id, entry: entry, why: .ended))
                     }
                 }
                 progressed = true
@@ -937,7 +995,18 @@ extension TurnActor {
                 var timers: [PendingTimer<M>] = []
                 swap(&timers, &core.rt.timersToArm)
                 for timer in timers where core.rt.timers[timer.key]?.generation == timer.generation {
-                    armDeadline(timer.instant, ticket: timer.generation, isTimer: true)
+                    armDeadline(timer.instant, ticket: timer.generation, kind: .timer)
+                }
+                progressed = true
+            }
+            if TurnCore<M>.usesBarriers, !core.rt.barrierTimersToArm.isEmpty {
+                var timers: [(UInt64, TurnInstant)] = []
+                swap(&timers, &core.rt.barrierTimersToArm)
+                // One whose wait ended in the step that armed it isn't armed.
+                for (generation, instant) in timers {
+                    guard let caller = core.rt.barrierTimers[generation] else { continue }
+                    core.rt.barrierWaiters[caller]?.armed = true
+                    armDeadline(instant, ticket: generation, kind: .barrier)
                 }
                 progressed = true
             }
@@ -962,6 +1031,37 @@ extension TurnActor {
         }
     }
 
+    /// Whether `caller`'s answer is fixed and not yet published (a settling caller with an answer,
+    /// or one releasing): it is answered already, so a cancellation of it is stale.
+    @inlinable func barrierAnswerFixed(_ caller: InputID) -> Bool {
+        guard TurnCore<M>.usesBarriers else { return false }
+        let core = self.core
+        if !core.rt.settling.isEmpty, core.rt.settling[caller]?.answer != nil { return true }
+        return !core.rt.releasing.isEmpty && core.rt.releasing.contains(caller)
+    }
+
+    /// A published reply for a caller with barrier state. True: it is held, not resumed.
+    /// - The caller still waits: the reply claims it. Its entry and timer leave, its payload
+    ///   goes back through `handleWaitEnded(.answered)`, and the reply is its answer, published
+    ///   after that step's outputs.
+    /// - Its hook is queued (`settling`): the first reply is its answer, held the same way; a
+    ///   later one is dropped.
+    /// - Its answer is fixed and on its way (`releasing`): dropped.
+    @inlinable func claimForBarrier(_ caller: InputID, _ result: Result<M.Reply, any Error>) -> Bool {
+        let core = self.core
+        if !core.rt.barrierWaiters.isEmpty, let entry = core.rt.removeBarrier(caller) {
+            core.rt.settling[caller] = Settling(answer: result)
+            core.rt.waitsEnded.push(WaitEnded(caller: caller, entry: entry, why: .answered))
+            core.rt.dirty = true
+            return true
+        }
+        if !core.rt.settling.isEmpty, let settling = core.rt.settling[caller] {
+            if settling.answer == nil { core.rt.settling[caller]?.answer = result }
+            return true
+        }
+        return !core.rt.releasing.isEmpty && core.rt.releasing.contains(caller)
+    }
+
     @inlinable func launch(_ pending: PendingEffect<M>) {
         let core = self.core
         let incarnation = core.incarnation
@@ -974,7 +1074,7 @@ extension TurnActor {
             self.complete(id, input, incarnation: incarnation)
         }
         if let id, let instant = pending.deadline, core.rt.open[id] != nil {
-            armDeadline(instant, ticket: id.raw, isTimer: false)
+            armDeadline(instant, ticket: id.raw, kind: .request)
         }
     }
 
@@ -992,7 +1092,7 @@ extension TurnActor {
             self.gateReturned(id, input, incarnation: incarnation)
         }
         if let instant = pending.deadline {
-            armDeadline(instant, ticket: id.raw, isTimer: false)
+            armDeadline(instant, ticket: id.raw, kind: .request)
         }
     }
 }
