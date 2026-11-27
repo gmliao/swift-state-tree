@@ -54,27 +54,12 @@ public protocol TurnMachine: Sendable {
     /// withdrawal don't apply, and it has no caller to reply to. Its `MailTurn` can't arm
     /// `.afterBatch` work (plan §3.9).
     mutating func handleMail(_ mail: Mail, _ turn: inout MailTurn<Self>)
-    /// The caller of a `sendAndWait(.cancelsCall)` input that had already stepped was
-    /// cancelled: it has stopped waiting with `CancellationError`, and its waiter is gone, so a
-    /// later `reply(to: caller)` finds none and is dropped. The machine can now forget what it
-    /// keeps for that caller (a parked request it would otherwise resume). Prior art: Akka's
-    /// `Cancel` and Erlang's monitor `DOWN`, both delivered to the actor's own mailbox.
-    ///
-    /// Called once per cancelled caller, as a step of its own, under the entry's mailbox order
-    /// (the take that begins the cancellation's entry runs first, and a mail in it that
-    /// answers the call makes the cancellation stale: then this isn't called). A step: it
-    /// can't await. Not called for a call whose input was still queued (it is withdrawn and
-    /// never steps), or one already answered. A cancellation isn't a recorded input, so the
-    /// hook may change only bookkeeping about callers, never state a replay must reproduce.
-    /// Default: nothing.
-    mutating func handleCallerCancelled(_ caller: InputID, _ turn: inout MailTurn<Self>)
 }
 
 extension TurnMachine {
     @inlinable public func inputPolicy(for input: Input) -> InputPolicy<Key> { .normal(waitsFor: nil, belongsTo: nil) }
     @inlinable public mutating func handleAbandoned(_ request: RequestID, _ why: Abandonment, _ turn: inout Turn<Self>) {}
     @inlinable public mutating func handleLateResult(_ input: Input, _ turn: inout Turn<Self>) {}
-    @inlinable public mutating func handleCallerCancelled(_ caller: InputID, _ turn: inout MailTurn<Self>) {}
 }
 
 extension TurnMachine where Query == Never, Answer == Never {

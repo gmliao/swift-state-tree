@@ -300,20 +300,9 @@ extension TurnActor {
             entryBoundary()
         }
         guard let waiter = core.waiters.removeValue(forKey: id) else { return }
-        let withdrew = core.rt.withdraw(caller: id)
+        _ = core.rt.withdraw(caller: id)
         core.counters.cancelledCalls += 1
         waiter.resume(throwing: CancellationError())
-        // Not withdrawn: the input stepped (an entry runs between segments, so none is still
-        // in the batch's queue), and the machine may hold something for its caller. The
-        // waiter is gone first, so a reply from the hook's step is dropped, never a second
-        // resume. Its outputs, timers and effects leave through the segment, on both mailbox
-        // modes.
-        guard !withdrew else { return }
-        assert(!core.queued.items[core.queued.head...].contains { $0.1 == id }, "TurnActor: a cancellation entry found its input still in the batch's queue")
-        // Without a mailbox the entry hasn't begun yet: a fresh `now` for the hook's step.
-        if !TurnCore<M>.usesMailbox { beginEntry() }
-        core.stepCallerCancelled(id)
-        if core.rt.dirty { runSegment() }
     }
 
     /// `readControl`: what `sendAndWait(.cancelsCall)` read from `inputPolicy(for:)` before it

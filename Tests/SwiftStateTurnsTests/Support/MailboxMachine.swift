@@ -46,10 +46,6 @@ indirect enum MailOp: Sendable {
     /// An output whose flush posts a mail.
     case post(String, then: [MailOp] = [])
     case readNow
-    /// Keeps the step's caller without a reply (`answerHeld` replies).
-    case holdCaller
-    /// Replies `1` to every caller `holdCaller` kept; allowed in a mail.
-    case answerHeld
 }
 
 /// A mail: logs "mail `label`", then runs its script.
@@ -108,9 +104,6 @@ struct MailboxMachine: TurnMachine {
 
     var log: [String] = []
     var labels: [RequestID: String] = [:]
-    var heldCallers: [InputID] = []
-    /// The callers `handleCallerCancelled` was stepped for, in order.
-    var cancelledCallers: [InputID] = []
 
     init() {}
 
@@ -172,23 +165,12 @@ struct MailboxMachine: TurnMachine {
                 turn.emit(.post(MailNote(label, then: then)), for: 0)
             case .readNow:
                 log.append("now \(turn.now.wholeSeconds)")
-            case .answerHeld:
-                for caller in heldCallers { turn.reply(to: caller, .success(1)) }
-                heldCallers.removeAll()
             default:
                 // A mail's turn can't take or arm `.afterBatch` work (MailTurn). A failed test,
                 // not a crash: a crash ends every test in the process with no summary line.
                 Issue.record("MailboxMachine: op \(op) in a mail")
             }
         }
-    }
-
-    /// Records the caller, drops it from the held callers, and replies to it anyway: the reply
-    /// must find no waiter.
-    mutating func handleCallerCancelled(_ caller: InputID, _ turn: inout MailTurn<MailboxMachine>) {
-        cancelledCallers.append(caller)
-        heldCallers.removeAll { $0 == caller }
-        turn.reply(to: caller, .success(-1))
     }
 
     mutating func handleLateResult(_ input: Input, _ turn: inout Turn<MailboxMachine>) {
@@ -279,11 +261,6 @@ struct MailboxMachine: TurnMachine {
                 turn.emit(.post(MailNote(label, then: then)), for: 0)
             case .readNow:
                 log.append("now \(turn.now.wholeSeconds)")
-            case .holdCaller:
-                if let caller = turn.input { heldCallers.append(caller) }
-            case .answerHeld:
-                for caller in heldCallers { turn.reply(to: caller, .success(1)) }
-                heldCallers.removeAll()
             }
         }
     }
