@@ -101,7 +101,7 @@ enum KeeperEffect<State: StateNodeProtocol>: Sendable {
     /// A tickless input turn's record submission, awaited off the core; its applied inputs come
     /// back in `.recordTaken`. K2-1 keeps their results in the model (`inputTurnResults`); K2-2
     /// carries them here instead (plan §4.3).
-    case awaitRecordTaken(submission: Task<Void, Never>?, applied: [LandKeeper<State>.PendingItem])
+    case awaitRecordTaken(submission: RecorderSubmission?, applied: [LandKeeper<State>.PendingItem])
 }
 
 /// What a step leaves for the adopter's flush (plan §4.4, §4.5): record drafts, and the writes
@@ -195,14 +195,14 @@ extension KeeperModel {
         _ behavior: KeeperBehavior<State>,
         _ store: KeeperSideStore,
         _ body: (inout KeeperModel<State>, inout KeeperTurnSide, inout TurnOutputs) -> R
-    ) -> (result: R, submission: Task<Void, Never>?) {
+    ) -> (result: R, submission: RecorderSubmission?) {
         // The frame's isolation is nil here statically (a synchronous model method the core
         // calls), so the step checks its executor once at entry: the flush below then runs on
         // the owner's executor, checked, not assumed. The keeper's frame is isolated to the
         // keeper statically and has no such check.
         store.preconditionOnOwner()
         var violationsBefore = 0
-        var submission: Task<Void, Never>?
+        var submission: RecorderSubmission?
         let result = KeeperTurnFrame.run(
             behavior.reentrySentinel,
             flush: { outputs in
@@ -297,7 +297,7 @@ extension KeeperModel {
                 return
             }
             let mark = recorderSubmissionCount
-            let preparedRecordBytes = KeeperModel<State>.prepareFallbackRecordBytes(behavior, batch)
+            let preparedRecordBytes = LandKeeper<State>.prepareFallbackRecordBytes(behavior, batch)
             let outcome = step(behavior, store) { m, side, outputs in
                 m.inputTurnBody(behavior, &side, &outputs, batch, removingFromQueue: true, preparedRecordBytes: preparedRecordBytes)
             }

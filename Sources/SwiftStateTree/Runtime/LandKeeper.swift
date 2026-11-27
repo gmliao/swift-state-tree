@@ -3894,7 +3894,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// result. A throw flushes in the `defer` instead.
     private func withTurnSubmitting<R>(
         _ body: (inout KeeperModel<State>, inout KeeperTurnSide, inout TurnOutputs) throws -> R
-    ) rethrows -> (result: R, submission: Task<Void, Never>?) {
+    ) rethrows -> (result: R, submission: RecorderSubmission?) {
         assert(sentinel.bodyDepth == 0, "turn bodies don't nest")
         var outputs = TurnOutputs()
         let violationsBefore = sentinel.reentryViolations
@@ -4101,7 +4101,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             m.stageRecorderSubmission(behavior, record, endsTurn: isTickless, outputs: &outputs)
         }
         await holds.at(.turnRecord)
-        await submission?.value
+        await submission?.taken()
     }
 
 
