@@ -15,6 +15,9 @@ enum KeeperKey: Hashable, Sendable {
     case entry(PlayerID, Epoch)
     case syncBinding(SyncTurnTicket)
     case freeze(UInt64)
+    /// One freeze caller's wait: each caller gets its own deadline, as `debugFreeze` gives each
+    /// call its own timer (Review on #948).
+    case freezeWait(InputID)
 }
 
 /// The core's barrier waits (K2-2 plan, commit 2), as plain values: each caller's input ID.
@@ -103,8 +106,9 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// The owner starts `.land` at initialization, which a step's outputs for it need (K2-1: the
     /// test harness's start; K2-2: the core's initialization).
     case startLand
-    /// A freeze's timeout (the core timer on `.freeze(generation)`): its callers get false.
-    case freezeTimedOut(generation: UInt64)
+    /// One freeze caller's timeout (the core timer on `.freezeWait(caller)`): that caller gets
+    /// false.
+    case freezeTimedOut(generation: UInt64, caller: InputID)
 }
 
 /// Which inputs `handle` routes in K2-1, and where each of the rest is routed (Review,
@@ -231,6 +235,9 @@ enum KeeperCoreInputWait: Sendable {
     /// A tickless client event's wait: the work count ends, then the caller gets `.done` or the
     /// handler's error.
     case clientEvent(caller: InputID?)
+    /// The resume's kick (the keeper's `startServerInputKick`): its work count ends once the
+    /// turn applying the last held server input is recorded.
+    case serverInputKick
 }
 
 /// An action job's start, as a value an effect carries (K2-2 plan, commit 0): what the keeper's
@@ -295,7 +302,8 @@ enum KeeperQuery: Sendable {
     /// the query's step.
     case syncTurnNow(port: any LandKeeperTransport, inTurnForOwner: Bool, reason: SyncTurnReason, ticket: SyncTurnTicket?)
     case syncTurnTicket(port: any LandKeeperTransport, inTurnForOwner: Bool)
-    case settle(port: any LandKeeperTransport, inTurnForOwner: Bool, fence: SettleFence)
+    /// The settle's fence as its two values (`SettleFence` is nested in the generic keeper).
+    case settle(port: any LandKeeperTransport, inTurnForOwner: Bool, generation: UInt64, deadline: ContinuousClock.Instant)
 }
 
 /// Each query's answer.
@@ -453,12 +461,19 @@ extension KeeperModel: TurnMachine {
             step(behavior, store) { m, side, outputs in m.releaseCompletedActionJobBody(behavior, &side, &outputs, sequence) }
         case let .freeze(generation, timeout):
             freezeStep(&turn, generation: generation, timeout: timeout)
-        case let .freezeTimedOut(generation):
-            let waits = coreBarrierWaits.freeze.removeValue(forKey: generation) ?? []
-            for caller in waits { turn.reply(to: caller, .success(.frozen(false))) }
-            turn.end(.freeze(generation))
+        case let .freezeTimedOut(generation, caller):
+            // Only this caller's wait ends; the generation's other callers keep their own deadline.
+            if var waits = coreBarrierWaits.freeze[generation], let index = waits.firstIndex(of: caller) {
+                waits.remove(at: index)
+                coreBarrierWaits.freeze[generation] = waits.isEmpty ? nil : waits
+                turn.reply(to: caller, .success(.frozen(false)))
+            }
+            turn.end(.freezeWait(caller))
         case let .resume(generation):
-            resumeStep(behavior, &turn, generation: generation)
+            if let kick = resumeStep(behavior, &turn, generation: generation) {
+                // The resume's kick wait (see `resumeStep`), on the side through the step frame.
+                step(behavior, store) { _, side, _ in side.coreInputReplies.waits[kick] = .serverInputKick }
+            }
             if let caller = turn.input { turn.reply(to: caller, .success(.done)) }
         case .awaitResume:
             // The keeper's `debugWaitWhileFrozen`: open when not frozen, or once the land drains.
@@ -521,50 +536,72 @@ extension KeeperModel: TurnMachine {
         }
         guard let caller else { return }
         coreBarrierWaits.freeze[generation, default: []].append(caller)
-        // One timer per key: a second caller of the same generation moves the deadline to its
-        // own (the keeper gives each call its own; open for review).
-        _ = turn.start(.freeze(generation))
+        // One timer per caller, as `debugFreeze` gives each call its own deadline.
+        _ = turn.start(.freezeWait(caller))
         let (seconds, attoseconds) = timeout.components
         let nanoseconds = seconds * 1_000_000_000 + attoseconds / 1_000_000_000
-        turn.timer(at: TurnInstant(nanoseconds: turn.now.nanoseconds + nanoseconds), for: .freeze(generation), .freezeTimedOut(generation: generation))
+        turn.timer(at: TurnInstant(nanoseconds: turn.now.nanoseconds + nanoseconds), for: .freezeWait(caller), .freezeTimedOut(generation: generation, caller: caller))
     }
 
     /// `debugResume` as a step: the generation is released; when it is the one in effect, the
     /// land thaws, its held server inputs are appended (a tickless land's drain is scheduled, as
     /// the keeper's kick does), and the barrier's waiters are answered: the held intakes go on,
     /// and the freeze's callers get false.
+    /// Returns the sequence the resume's kick waits on, which the caller registers.
+    @discardableResult
     mutating func resumeStep(
         _ behavior: KeeperBehavior<State>,
         _ turn: inout Turn<KeeperModel<State>>,
         generation: UInt64
-    ) {
+    ) -> Int64? {
         debugReleasedGeneration = max(debugReleasedGeneration, generation)
-        guard debugActiveGeneration == generation else { return }
+        guard debugActiveGeneration == generation else { return nil }
         debugActiveGeneration = nil
         debugFrozen = false
+        var kick: Int64?
         if !serverInputsHeldWhileFrozen.isEmpty {
+            let last = serverInputsHeldWhileFrozen[serverInputsHeldWhileFrozen.count - 1].sequence
             pendingItems.append(contentsOf: serverInputsHeldWhileFrozen)
             serverInputsHeldWhileFrozen.removeAll()
-            // The keeper's kick also begins a work count its task ends; the core's drain step
-            // doesn't (open for review).
-            if behavior.isTickless, scheduleInputDrain() { turn.queue(.inputDrainDue, behind: .land) }
+            if behavior.isTickless {
+                // The keeper's kick (`kickServerInputTurn`): a work count that ends once the turn
+                // applying the last held input is recorded, so a freeze right after the resume
+                // waits for it (Review on #948). On the core the kick's task is a wait on that
+                // sequence, answered by the turn's step.
+                debugBeginWork()
+                kick = last
+                if scheduleInputDrain() { turn.queue(.inputDrainDue, behind: .land) }
+            }
         }
         let held = coreBarrierWaits.resume
         coreBarrierWaits.resume.removeAll()
         for caller in held { turn.reply(to: caller, .success(.done)) }
-        for caller in coreBarrierWaits.freeze.removeValue(forKey: generation) ?? [] {
+        // `debugResume` wakes every drain waiter; each re-checks and returns false.
+        let waits = coreBarrierWaits.freeze
+        coreBarrierWaits.freeze.removeAll()
+        for caller in waits.values.joined() {
             turn.reply(to: caller, .success(.frozen(false)))
+            turn.end(.freezeWait(caller))
         }
-        turn.end(.freeze(generation))
+        return kick
     }
 
     /// The freeze callers whose wait a step ended: the in-flight work is 0 with their generation
     /// still in effect (the keeper's `debugEndWork` resumes its drain waiters at the same point).
+    /// When the work reaches 0, `debugEndWork` wakes every drain waiter, and each re-checks:
+    /// the generation in effect returns true, a stale one false (Review on #948: a stale
+    /// generation's caller is answered here, not at its timeout).
     mutating func answerCoreFreezeWaits(_ turn: inout Turn<KeeperModel<State>>) {
-        guard let generation = debugActiveGeneration, debugInFlightWork == 0,
-              let waits = coreBarrierWaits.freeze.removeValue(forKey: generation) else { return }
-        for caller in waits { turn.reply(to: caller, .success(.frozen(true))) }
-        turn.end(.freeze(generation))
+        guard debugInFlightWork == 0, !coreBarrierWaits.freeze.isEmpty else { return }
+        let waits = coreBarrierWaits.freeze
+        coreBarrierWaits.freeze.removeAll()
+        for (generation, callers) in waits.sorted(by: { $0.key < $1.key }) {
+            let frozen = generation == debugActiveGeneration
+            for caller in callers {
+                turn.reply(to: caller, .success(.frozen(frozen)))
+                turn.end(.freezeWait(caller))
+            }
+        }
     }
 
     /// The job lane's effects and replies a step left on the core's side (K2-2 plan, commit 0):
@@ -662,7 +699,8 @@ extension KeeperModel: TurnMachine {
                 assert(side.pendingSyncTurnAfterTurn == nil, "a core holds no pending follow-up")
                 return KeeperModel<State>.syncOnlyTurnBody(&m, behavior, &side, &outputs, transport: port, joinSyncOnly: false)
             })
-        case let .settle(port, inTurnForOwner, fence):
+        case let .settle(port, inTurnForOwner, generation, deadline):
+            let fence = LandKeeper<State>.SettleFence(generation: generation, deadline: deadline)
             // The keeper's `settleTurn(via:fence:)`, with the port's in-turn answer the sender
             // read instead of the body's call through the keeper reference.
             return .settle(step(behavior, store) { m, side, outputs in
@@ -1171,6 +1209,8 @@ extension KeeperModel {
         case let .clientEvent(caller):
             store.withSide { side in debugEndWork(&side) }
             if let caller { turn.reply(to: caller, result.map { _ in KeeperReply<State>.done }) }
+        case .serverInputKick:
+            store.withSide { side in debugEndWork(&side) }
         case let .leave(continuation):
             switch result {
             case let .failure(error):
