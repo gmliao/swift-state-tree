@@ -71,6 +71,7 @@ enum KeeperCensus {
             "actor.freezeWaitWatchersForTesting": .replaced(by: "K2"),
             "actor.holds": .testHook,
             "actor.inTurnYieldForTesting": .testHook,
+            "actor.reentryGateForTesting": .testHook,
             "actor.initializationTask": .replaced(by: "K5"),
             "actor.initializationWaitWatchers": .replaced(by: "K2"),
             "actor.initializationWaits": .replaced(by: "K2"),
@@ -118,6 +119,7 @@ enum KeeperCensus {
             // The sentinel is a class the behavior holds (#700 K1b-5 rev 2.3 D13, a listed
             // exception below); its fields are rows under its own path.
             "behavior.reentrySentinel": .behavior,
+            "behavior.sideStore": .behavior,
             "behavior.reentrySentinel.bodyDepth": .outside(.reentrySentinel),
             "behavior.reentrySentinel.closingGateForReentry": .outside(.reentrySentinel),
             "behavior.reentrySentinel.lateReentriesApplied": .outside(.reentrySentinel),
@@ -133,6 +135,8 @@ enum KeeperCensus {
             "turnSide.failures": .outside(.failureTable),
             "turnSide.debugDrainWaiters": .replaced(by: "K7"),
             "turnSide.probe": .testHook,
+            "turnSide.flushTraceForTesting": .testHook,
+            "turnSide.keepsLastDestroyTicketForTesting": .testHook,
             "turnSide.holdPoints": .testHook,
             // Copies of the keeper's references, for the bodies (#700 K1b-5 move): the homes of
             // the members they copy.
@@ -144,6 +148,7 @@ enum KeeperCensus {
             "turnSide.sharedBoundRequester": .outside(.bindingToken),
             "turnSide.keeperReference": .replaced(by: "K2"),
             "turnSide.destroyTicket": .replaced(by: "K7"),
+            "turnSide.lastDestroyTicketForTesting": .testHook,
             "turnSide.replay": .container,
             "turnSide.lateStepOutputAssertsForTesting": .testHook,
             "turnSide.sharedLateStepOutputs": .outside(.stepScope),
@@ -156,11 +161,13 @@ enum KeeperCensus {
             "turnSide.sharedDrainHandle": .replaced(by: "K7"),
             "turnSide.debugHeldInputs": .replaced(by: "K7"),
             "turnSide.inputTurnWaiters": .replaced(by: "K2"),
+            "turnSide.coreInputReplies": .replaced(by: "K2"),
             "turnSide.shutdownTurnWaiters": .replaced(by: "K2"),
             "turnSide.sharedAbandonmentCounter": .outside(.resolverAbandonment),
             "turnSide.serverInputs": .replaced(by: "K2"),
             "turnSide.playerServices": .outside(.playerServices),
-            "turnSide.actions.jobTasks": .replaced(by: "K5"),
+            // K2-2 routes the job lane on the core before it wires the keeper (plan §16 item 17).
+            "turnSide.actions.jobTasks": .replaced(by: "K2"),
             "turnSide.actions.removalWaiters": .replaced(by: "K2"),
             "turnSide.actions.slotWaiters": .replaced(by: "K2"),
             "turnSide.actions.slotWatchers": .replaced(by: "K2"),
@@ -261,11 +268,61 @@ enum KeeperCensus {
             fields: ["behavior.reentrySentinel"],
             home: .behavior, why: "D13: the re-entry sentinel, a reference", endsIn: "#773"
         ),
+        // K2-1: a core-driven keeper's turn side, a reference the behavior carries (nil on the
+        // keeper). It holds a whole `KeeperTurnSide`; `sideStoreDestinations` names where each
+        // field goes in K2-2, which deletes the box.
+        .init(
+            fields: ["behavior.sideStore"],
+            home: .behavior, why: "K2-1: the core's side store, a reference", endsIn: "K2-2"
+        ),
         // S3 (F8): `runSync` writes these outside a turn, until K2's `.syncDue` step.
         .init(
             fields: ["model.foldedSyncs", "model.overdueFoldedSyncs", "model.inTurnSyncDue"],
             home: .model, why: "S3: written by runSync outside a turn", endsIn: "K2"
         ),
+    ]
+}
+
+extension KeeperCensus {
+    /// Where K2-2 moves each field of the turn side a core keeps in its `KeeperSideStore`
+    /// (#700 K2-1). Each row names its destination: K2-2 moves most, and a row whose destination is
+    /// a later step (K3's follow-up slot, K4's mail, K7's drain keys) stays on the side until that
+    /// step. The box goes once its last row has moved; this table is the checklist.
+    static let sideStoreDestinations: [String: String] = [
+        "turnSide.submissions": "the recorder hand-off: outputs that the core's flush submits",
+        "turnSide.actions": "action jobs, keeper-only in K2-1: K2-2 routes them (jobTasks: one run per job, the box and the release as inputs; slotWaiters: coreSlotReplies, then replies); K5 keys them",
+        "turnSide.failures": "the effect and the reply carry the failure (§4.3); the table only when nobody waits",
+        "turnSide.debugDrainWaiters": ".freeze's sendAndWait reply",
+        "turnSide.inputTurnWaiters": "sendAndWait replies, answered in .recordTaken's step",
+        "turnSide.coreInputReplies": "the waits ride in .awaitRecordTaken's effect and .recordTaken (§16 item 15); the table goes",
+        "turnSide.debugHeldInputs": ".awaitResume's barrier (inputPolicy)",
+        "turnSide.shutdownTurnWaiters": ".shutdown's sendAndWait reply",
+        "turnSide.pendingSyncTurnAfterTurn": "staged until K3's follow-up slot",
+        "turnSide.destroyTicket": "a keyed core timer (.land)",
+        "turnSide.lastDestroyTicketForTesting": "goes with the slot: the core timer's own test read",
+        "turnSide.playerServices": "LiveLandTurns' services table, written by outputs",
+        "turnSide.attachedTransport": "the binding token on the inputs that need the port",
+        "turnSide.sharedBoundRequester": "the binding token",
+        "turnSide.drainStartedWaitersForTesting": "test waiters on replies",
+        "turnSide.failureWaitersForTesting": "test waiters on replies",
+        "turnSide.replay": "dropped: nil on the live keepers the core serves; the replay owner keeps the actor's path until #612",
+        "turnSide.probe": "a test hook on the behavior",
+        "turnSide.flushTraceForTesting": "a test hook on the behavior, with the probe",
+        "turnSide.keepsLastDestroyTicketForTesting": "goes with the slot: the core timer's own test read",
+        "turnSide.holdPoints": "a test hook on the behavior",
+        "turnSide.lateStepOutputAssertsForTesting": "a test hook on the behavior",
+        "turnSide.serverInputMaxInFlight": "the behavior's config",
+        "turnSide.sharedCollector": "the step scope's list (§4.4)",
+        "turnSide.sharedSequenceLease": "the behavior, a reference shared with the step scope",
+        "turnSide.sharedDrainFlag": "the behavior, written only in a step (§16 item 3)",
+        "turnSide.sharedTransportFailure": "K4's mail",
+        "turnSide.keeperReference": "the facade's owner reference",
+        "turnSide.sharedDrainHandle": "a keyed core timer and K7's drain",
+        "turnSide.sharedLateStepOutputs": "the behavior, a counter shared with the step scope",
+        "turnSide.sharedDestroyHandlerOutputsDropped": "the behavior, a counter shared with the step scope",
+        "turnSide.sharedReadOnlyHandlerOutputsDropped": "the behavior, a counter shared with the step scope",
+        "turnSide.sharedAbandonmentCounter": "the behavior, a counter shared with the resolvers",
+        "turnSide.serverInputs": "the facade's submitter",
     ]
 }
 
@@ -346,6 +403,30 @@ struct KeeperCensusTests {
                 #expect(KeeperCensus.homes[field] == exception.home, "\(field) (\(exception.why), until \(exception.endsIn))")
             }
         }
+    }
+
+    @Test("Every field of the turn side names its K2-2 destination out of the core's side store")
+    func sideStoreFieldsHaveDestinations() {
+        let sideFields = Set(KeeperCensus.homes.keys.filter {
+            $0.hasPrefix("turnSide.") && $0.split(separator: ".").count == 2
+        })
+        let named = Set(KeeperCensus.sideStoreDestinations.keys)
+        #expect(sideFields.subtracting(named).isEmpty, "no destination: \(sideFields.subtracting(named).sorted())")
+        #expect(named.subtracting(sideFields).isEmpty, "not a side field: \(named.subtracting(sideFields).sorted())")
+    }
+
+    @Test("The machine's inputs and queries split into K2-1's routed set and the deferred ones, each named, and together every case (#700 K2-1)")
+    func inputRoutesSplitTheCases() {
+        let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
+        #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")
+        #expect(routed.union(deferred) == Set(KeeperInputRoute.allCases), "neither: \(Set(KeeperInputRoute.allCases).subtracting(routed.union(deferred)).map(\.rawValue).sorted())")
+        #expect(routed.count == 11 && deferred.count == 10, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
+        #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
+        let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
+        #expect(queries.isDisjoint(with: deferredQueries))
+        #expect(queries.union(deferredQueries) == Set(KeeperQueryRoute.allCases))
+        #expect(queries.count == 2 && deferredQueries.count == 4)
+        #expect(KeeperQueryRoutes.deferred.values.allSatisfy { !$0.isEmpty })
     }
 
     @Test("The model is plain at compile time")

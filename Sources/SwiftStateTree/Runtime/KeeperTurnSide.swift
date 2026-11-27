@@ -21,9 +21,9 @@ package enum TurnEffect {
 /// call, passed to the body `inout`, and flushed exactly once.
 package struct TurnOutputs {
     private var effects: [TurnEffect] = []
-    /// The task of the last submission any flush of this turn made, across every flush (one
-    /// before each call out, and the final one): what `withTurnSubmitting` returns.
-    package fileprivate(set) var lastSubmission: Task<Void, Never>?
+    /// The last submission any flush of this turn made, across every flush (one before each
+    /// call out, and the final one): what `withTurnSubmitting` returns.
+    package fileprivate(set) var lastSubmission: RecorderSubmission?
 
     package init() {}
 
@@ -72,6 +72,9 @@ package struct KeeperTurnSide {
     /// Tickless lands: callers waiting for their input's turn, by input sequence. Actions get
     /// their own response; other inputs get an empty one (or the handler's error).
     var inputTurnWaiters: [Int64: CheckedContinuation<InputOutcome, any Error>] = [:]
+    /// A core's steps waiting for an input turn (#700 K2-1): `inputTurnWaiters` for a flow that
+    /// can't await. Empty on the keeper's own side (`actionTableViolations`).
+    var coreInputReplies = KeeperCoreInputReplies()
     /// Tickless inputs waiting for `debugResume()`.
     var debugHeldInputs: [CheckedContinuation<Void, Never>] = []
     /// The replay fields (D17): set on a re-evaluation keeper, nil on a live one, so a body's
@@ -95,6 +98,12 @@ package struct KeeperTurnSide {
     var shutdownTurnWaiters: [CheckedContinuation<Void, Never>] = []
     /// The empty-land destroy timer's ticket (D15.1, D16), beside the job handles.
     var destroyTicket: DestroyTicket?
+    /// Tests (#700 K2-1's differential): the last ticket `replaceDestroyTicket` issued, kept
+    /// after a cancel clears the slot, so a test can see whether its staged start installed a
+    /// task and whether that task was cancelled. Kept only when `keepsLastDestroyTicketForTesting`
+    /// is set, so a production keeper doesn't extend a cancelled ticket's (and its task's) life.
+    var lastDestroyTicketForTesting: DestroyTicket?
+    var keepsLastDestroyTicketForTesting = false
     /// Each player's services (#700 K1b-4; moved here by the move, D10): `LandServices` holds
     /// references. Written in the same synchronous segment as every insert and removal of the
     /// model's `players`, keyed by the entry's generation, so a late writer never removes a newer
@@ -103,6 +112,11 @@ package struct KeeperTurnSide {
     /// Tests only: called at the probe labels ("turn-begin", "turn-end", ...) on the keeper's
     /// executor.
     var probe: (@Sendable (String) -> Void)?
+    /// Tests only (#700 K2-1's ordered trace): called for each effect a flush runs, in order,
+    /// before it runs: "submission <label>" or "staged action".
+    var flushTraceForTesting: (@Sendable (String) -> Void)?
+    /// Tests: the tracker of this side's record submissions, which a test core waits on.
+    var submissionsForTesting: ReevaluationSubmissionTracker { submissions }
     /// Tests only: a copy of the keeper's hold points, which `installHolds` sets with the keeper's,
     /// for the tasks a body's staged starts begin.
     var holdPoints = HoldPoints<LandKeeperHoldPoint>()
@@ -168,6 +182,7 @@ package struct KeeperTurnSide {
     /// Cancels the empty-land destroy timer, and a start staged before this that hasn't
     /// installed its task yet (D16).
     mutating func cancelDestroy() {
+        if destroyTicket != nil { probe?("destroy-timer-cancelled") }
         destroyTicket?.cancel()
         destroyTicket = nil
     }
@@ -177,6 +192,7 @@ package struct KeeperTurnSide {
         destroyTicket?.cancel()
         let ticket = DestroyTicket()
         destroyTicket = ticket
+        if keepsLastDestroyTicketForTesting { lastDestroyTicketForTesting = ticket }
         return ticket
     }
 
@@ -247,7 +263,11 @@ package struct KeeperTurnSide {
     /// the keeper's `syncsInTurn`, read from a body. A port call: a body reads it inside
     /// `callOut`.
     func syncsInTurn<State>(_ behavior: KeeperBehavior<State>) -> Bool {
-        guard behavior.config.mode == .live, let keeper = keeperReference.keeper else { return false }
+        guard behavior.config.mode == .live else { return false }
+        // A core's tick or sync step carries its input's read (K2-1); K2-2's binding token
+        // replaces it.
+        if let carried = coreInputReplies.carriedSyncsInTurn { return carried && attachedTransport != nil }
+        guard let keeper = keeperReference.keeper else { return false }
         return attachedTransport?.runsSyncPhaseInTurn(of: keeper) ?? false
     }
 
@@ -303,18 +323,33 @@ package struct KeeperTurnSide {
         submissions.submit(label: label, apply)
     }
 
-    /// Applies the staged effects in staging order and empties `outputs`, keeping the task of
-    /// the last submission it made in `outputs.lastSubmission`. Not `mutating`: the keeper calls
+    /// Applies the staged effects in staging order and empties `outputs`, keeping the last
+    /// submission it made in `outputs.lastSubmission`. Not `mutating`: the keeper calls
     /// it on a copy of the side, so no access to its stored side is held while the actions run.
     package func flush(_ outputs: inout TurnOutputs) {
         for effect in outputs.takeAll() {
             switch effect {
             case let .submission(label, apply):
-                outputs.lastSubmission = submissions.submit(label: label, apply)
+                flushTraceForTesting?("submission \(label)")
+                outputs.lastSubmission = RecorderSubmission(task: submissions.submit(label: label, apply))
             case let .action(action):
+                flushTraceForTesting?("staged action")
                 action()
             }
         }
+    }
+}
+
+/// A record submission the side's flush made to the recorder's serial sink: a handle a caller
+/// awaits until the sink took the record. The side starts the work; a turn machine only carries
+/// the handle to the effect that awaits it, so a machine's file names no task (lint-turns
+/// `machine-file`: a machine's steps start no work).
+package struct RecorderSubmission: Sendable {
+    fileprivate let task: Task<Void, Never>
+
+    /// Returns once the recorder's sink applied the submission.
+    package func taken() async {
+        await task.value
     }
 }
 
