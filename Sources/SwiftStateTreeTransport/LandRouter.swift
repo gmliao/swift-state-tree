@@ -1106,8 +1106,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // way. Its forwarded disconnect may have reached the adapter before this admission
             // was queued, as a no-op: the admission is then this join's to undo, whatever its
             // outcome. Idempotent, so a disconnect that came after the admission makes it a
-            // no-op.
-            await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+            // no-op. With this attempt's connection generation: a later connection that
+            // admitted under the same ID keeps its membership (#945).
+            await adapter.onDisconnect(sessionID: sessionID, clientID: clientID, generation: connectionGeneration)
             return
         }
 
