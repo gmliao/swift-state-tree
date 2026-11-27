@@ -1922,8 +1922,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 await holds.at(.join)
                 request = try withTurn { m, side, outputs in try m.joinKickCheck(behavior, &side, &outputs, decided) }
             case let .awaitLeave(decided, leavingGeneration):
-                // Registered before any suspension since J2b's segment, as `awaitInputTurn`'s.
+                // Registered before any suspension since J2b's (or J2c's) segment, as
+                // `awaitInputTurn`'s.
                 try await awaitLeaveEnd(of: decided.playerID)
+                // A cancel whose hop came after the release found the waiter gone: honored here,
+                // before J2c can insert (#943).
+                try Task.checkCancellation()
                 request = try withTurn { m, side, outputs in
                     try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: leavingGeneration)
                 }
@@ -2388,6 +2392,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Test hook: the players with a leave in flight, by the leaving entry's generation (#943).
     package func leavesInFlightForTesting() -> [PlayerID: Epoch] {
         model.leavesInFlight
+    }
+
+    /// Test hook: ends `player`'s leave in flight as the segment that closes a window does, for
+    /// the leave of the entry with `generation`: a marker of another generation stays (#943).
+    package func endLeaveInFlightForTesting(_ player: PlayerID, generation: Epoch) {
+        withTurn { m, side, _ in m.endLeaveInFlight(&side, of: player, generation: generation) }
+    }
+
+    /// Test hook: the places `player`'s join attempts hold, one per attempt.
+    package func rejoinReservationCountForTesting(_ player: PlayerID) -> Int {
+        model.rejoinReservations[player]?.count ?? 0
     }
 
     /// Test hook: the joins waiting for `player`'s leave in flight.
@@ -5769,9 +5784,10 @@ extension KeeperModel {
     }
 
     /// The drain's start ends every leave in flight (#943), once the drain flag is set: the
-    /// waiters resume and find the land draining (J2c). Called by `failLand` and
-    /// `shutdownIfIdle`, after the flag; a teardown that clears `players` before the flag leaves
-    /// them to it.
+    /// waiters resume and find the land draining (J2c). Called in the segment that sets the
+    /// flag, after it: `failLand`, the live shutdown turn (`completeShutdownTurn`) and
+    /// `shutdownIfIdle` (the turnless paths). A teardown that clears `players` before the flag
+    /// leaves them to it. Idempotent.
     mutating func endAllLeavesInFlight(_ side: inout KeeperTurnSide) {
         leavesInFlight.removeAll()
         side.leaveEnds.releaseAll()
@@ -6273,6 +6289,9 @@ extension KeeperModel {
     ///   ZooKeeper's zxid epochs). The token is the attempt's arrival, not the slot's entry: the
     ///   slot can be empty while a later attempt waits in its own kick (#940). So the last
     ///   attempt to arrive keeps the player, whichever kick returns first.
+    /// - **A leave in flight** (#943): the join waits for it (`.awaitLeave`) and runs J2c again
+    ///   when it ends, at J2b's decision and here, after the kick or a wait: each is an acting
+    ///   segment that would insert.
     /// - **The slot, by identity** (the kicked entry's generation), not by key. Every insert is
     ///   behind the fence (J2b and here), so while this join holds the latest token no other
     ///   attempt inserts, and the kick's leave removed the kicked entry: another entry there is
@@ -6290,6 +6309,12 @@ extension KeeperModel {
         guard latestJoinArrivals[decided.playerID] == decided.arrival else {
             behavior.logger.info("Join of player \(decided.playerID.rawValue) superseded during its kick by a later join: the later join keeps the player")
             throw JoinError.superseded
+        }
+        // A leave of the player is in flight (#943): the player's own leave can start between
+        // J2b's kick decision and the kick's leave, which then finds no entry and returns at
+        // once. The join waits for that leave, as at J2b, and comes back here when it ends.
+        if let leavingGeneration = leavesInFlight[decided.playerID] {
+            return .awaitLeave(decided, leavingGeneration: leavingGeneration)
         }
         if let entry = players[decided.playerID], entry.generation != kickedGeneration {
             assertionFailure("Player \(decided.playerID.rawValue)'s slot holds an entry inserted while this join held the latest token")
@@ -6851,6 +6876,9 @@ extension KeeperModel {
         dropPendingInputs(behavior, &side, reason: "forceShutdown")
         side.sharedDrainFlag.set(cause: .forceShutdown)
         releaseHeldInputsForDrain(behavior, &side)
+        // The flag is set in this segment: the joins waiting for a leave in flight resume into
+        // a draining land (#943).
+        endAllLeavesInFlight(&side)
         side.resumeShutdownTurnWaiters()
     }
 
@@ -7530,9 +7558,9 @@ extension KeeperModel {
             applied.appliedOrder.append(recorded.sequence)
             // In re-evaluation `players` holds the replay's viewers: the shutdown only ends the
             // replay (`completeShutdownTurn`).
-            // The leaves in flight stay open: their waiters resume when the drain starts
-            // (`shutdownIfIdle`), not here, where a resumed join would find the land not yet
-            // draining and insert after the shutdown turn (#943).
+            // The leaves in flight stay open until the drain flag is set (`completeShutdownTurn`
+            // in a live turn; `shutdownIfIdle` on the turnless paths): a join resumed before it
+            // would find the land not yet draining and insert after the shutdown turn (#943).
             if behavior.config.mode == .live { players.removeAll(); side.playerServices.removeAll(); rejoinReservations.removeAll() }
 
         case let .lifecycle(lifecycleItem):

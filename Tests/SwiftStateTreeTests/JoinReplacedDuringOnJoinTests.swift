@@ -859,27 +859,37 @@ struct JoinReplacedDuringOnJoinTests {
         #expect(await f.keeper.leavesInFlightForTesting().isEmpty)
     }
 
-    @Test("W5: the land drains while a rejoin waits for the player's leave: the rejoin is told the land is shutting down, and the drain ends (#943)", arguments: [false, true], [false, true])
-    func drainWhileTheRejoinWaits(tick: Bool, reporting: Bool) async throws {
-        let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
+    @Test("W5: the land drains while a rejoin waits for the player's leave, by a shutdown or by a land failure: the rejoin is told the land is shutting down before the leave's resolvers return, and the drain ends (#943)", arguments: [false, true], ["shutdown", "failure"])
+    func drainWhileTheRejoinWaits(tick: Bool, cause: String) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: true)
         let key = ReplacedJoinGates.freshKey()
         let gate = ReplacedJoinGates.gate(key)
         defer { gate.release() }
         guard let (leaveA, joinC) = try await rejoinWaitingForTheLeave(f, clientA: ClientID("lgate-\(key)"), sessionA: SessionID("s-a"), leaveGate: gate) else { return }
-        let shutdown = Task { await f.keeper.forceShutdown() }
+        // Each cause releases the waiters in its own segment: the shutdown turn's, or the
+        // failure's (`failLand`).
+        let shutdown = Task {
+            if cause == "shutdown" { await f.keeper.forceShutdown() }
+        }
         defer { shutdown.cancel() }
+        if cause == "failure" {
+            await f.keeper.submitLandFailure(LandFailure(kind: .syncPlan, detail: "#943", position: LandFailurePosition(stage: .syncPhase)))
+            // A tick land applies the failure in its next tick.
+            await f.settle()
+            #expect(await f.keeper.waitForFailureForTesting(), "the failure didn't end the land")
+        }
         guard await withinHangBound({ await f.keeper.waitUntilDrainStartedForTesting() }) else {
             Issue.record("the drain never started")
             return
         }
         // The drain's teardown ends the window: C resumes before A's resolver returns.
         guard let errorC = await valueWithinHangBound(joinC) else {
-            Issue.record("tick=\(tick) reporting=\(reporting): C's join didn't end after the teardown")
+            Issue.record("tick=\(tick) cause=\(cause): C's join didn't end after the teardown")
             return
         }
         var shuttingDown = false
         if case .landShuttingDown? = errorC as? JoinError { shuttingDown = true }
-        #expect(shuttingDown, "tick=\(tick) reporting=\(reporting): C's join \(describe(errorC))")
+        #expect(shuttingDown, "tick=\(tick) cause=\(cause): C's join \(describe(errorC))")
         gate.release()
         _ = await valueWithinHangBound(leaveA)
         // `waitUntilDrained` awaits the drain's task, which ignores cancellation: bound it on
@@ -910,6 +920,7 @@ struct JoinReplacedDuringOnJoinTests {
         #expect(errorC is CancellationError, "C's join \(describe(errorC))")
         #expect(await f.keeper.leaveEndWaiterCountForTesting(f.player) == 0)
         #expect(await f.keeper.latestJoinArrivalsForTesting().isEmpty, "C's token outlived its join")
+        #expect(await f.keeper.rejoinReservationCountForTesting(f.player) == 0, "C's reservation outlived its join")
         let cancels = await f.keeper.leaveEndWaiterCancelsForTesting()
         #expect(cancels.removed == 1 && cancels.foundGone == 0, "cancels \(cancels)")
         // A's leave ends as it would have, and resumes nobody.
@@ -964,7 +975,7 @@ struct JoinReplacedDuringOnJoinTests {
         #expect(await f.keeper.leavesInFlightForTesting().isEmpty)
     }
 
-    @Test("W6c: a rejoin's cancel that lands after its leave's end finds the waiter gone: it was resumed once, by the leave's end (#943)", arguments: [false, true])
+    @Test("W6c: a rejoin's cancel that lands after its leave's end finds the waiter gone: it was resumed once, by the leave's end, and its join ends with CancellationError before J2c (#943)", arguments: [false, true])
     func cancelAfterTheLeaveEnded(tick: Bool) async throws {
         let f = await ReplacedJoinFixture(tick: tick, reporting: true)
         let key = ReplacedJoinGates.freshKey()
@@ -993,8 +1004,86 @@ struct JoinReplacedDuringOnJoinTests {
         #expect(await cancelled.waitFor("cancelled"), "the cancel never ran")
         let cancels = await f.keeper.leaveEndWaiterCancelsForTesting()
         #expect(cancels.removed == 0 && cancels.foundGone == 1, "cancels \(cancels)")
-        // C's join ran on from its resume; whatever it ends with, it ends.
-        #expect(await valueWithinHangBound(joinC) != nil, "C's join didn't end")
+        // C resumed from the release, then saw its own cancel before J2c: it never inserts.
+        guard let errorC = await valueWithinHangBound(joinC) else {
+            Issue.record("tick=\(tick): C's join didn't end")
+            return
+        }
+        #expect(errorC is CancellationError, "C's join \(describe(errorC))")
+        await f.settle()
+        #expect(await f.log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)"])
+        #expect(await f.keeper.playerCount() == 0)
+    }
+
+    @Test("W3b: a join that decided its kick before the player's own leave started waits for that leave at J2c: join A, leave A, join C (#943)", arguments: [false, true], [false, true])
+    func kickDecidedBeforeTheOwnLeaveWaitsAtJ2c(tick: Bool, reporting: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
+        let key = ReplacedJoinGates.freshKey()
+        let gate = ReplacedJoinGates.gate(key)
+        defer { gate.release() }
+        let clientA = ClientID("lgate-\(key)"), sessionA = SessionID("s-a"), clientC = ClientID("c-c")
+        let keeper = f.keeper, player = f.player
+        let label = "tick=\(tick) reporting=\(reporting)"
+        try await f.join(clientA, sessionA)
+        await f.settle()
+
+        // C finds A's entry at J2b and decides the kick; its kick's leave is held before it starts.
+        let atKick = TestGate()
+        defer { atKick.open() }
+        await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>().on(.leave, arrival: 1) { await atKick.arrive() }.hook)
+        let joinC = f.joinInTask(clientC, SessionID("s-c"))
+        #expect(await atKick.waitForArrivals(1), "C's kick never started")
+        // A's own leave starts first: it removes A's entry and parks in OnLeave's resolver.
+        let leaveA = Task { () -> (any Error)? in
+            do { try await keeper.leave(playerID: player, clientID: clientA, sessionID: sessionA); return nil } catch { return error }
+        }
+        guard await gate.waitUntilEntered("A's OnLeave") else { return }
+        // C's kick finds no entry and returns; J2c finds A's leave in flight and waits for it.
+        atKick.open()
+        guard await withinHangBound({ await keeper.waitForLeaveEndWaitersForTesting(player, count: 1) }) else {
+            Issue.record("\(label): C never waited for A's leave at J2c")
+            return
+        }
+        #expect(await keeper.playerCount() == 0, "C inserted during A's OnLeave")
+
+        gate.release()
+        guard await valueWithinHangBound(leaveA) != nil, let errorC = await valueWithinHangBound(joinC) else {
+            Issue.record("\(label): A's leave or C's join didn't end")
+            return
+        }
+        #expect(errorC == nil, "\(label): C's join \(describe(errorC))")
+        await f.settle()
+        let log = await f.log
+        #expect(log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)", "join:\(clientC.rawValue)"], "\(label): log \(log)")
+        #expect(await keeper.playerCount() == 1)
+    }
+
+    @Test("W11: a window's end names the leaving entry's generation: an end for another generation leaves the marker and its waiter in place (#943)", arguments: [false, true])
+    func anEndOfAnotherGenerationLeavesTheWindowOpen(tick: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: true)
+        let key = ReplacedJoinGates.freshKey()
+        let gate = ReplacedJoinGates.gate(key)
+        defer { gate.release() }
+        let clientA = ClientID("lgate-\(key)"), clientC = ClientID("c-c")
+        guard let (leaveA, joinC) = try await rejoinWaitingForTheLeave(f, clientA: clientA, sessionA: SessionID("s-a"), leaveGate: gate) else { return }
+        guard let marker = await f.keeper.leavesInFlightForTesting()[f.player] else {
+            Issue.record("tick=\(tick): no marker for A's leave")
+            return
+        }
+        // A stale end (another entry's leave) changes nothing.
+        await f.keeper.endLeaveInFlightForTesting(f.player, generation: Epoch(rawValue: marker.rawValue + 1))
+        #expect(await f.keeper.leavesInFlightForTesting()[f.player] == marker, "an end of another generation closed A's window")
+        #expect(await f.keeper.leaveEndWaiterCountForTesting(f.player) == 1, "an end of another generation released C")
+        #expect(await f.keeper.playerCount() == 0)
+
+        gate.release()
+        guard await valueWithinHangBound(leaveA) != nil, let errorC = await valueWithinHangBound(joinC) else {
+            Issue.record("tick=\(tick): A's leave or C's join didn't end")
+            return
+        }
+        #expect(errorC == nil, "C's join \(describe(errorC))")
+        await f.settle()
+        #expect(await f.log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)", "join:\(clientC.rawValue)"])
     }
 
     @Test("W9: W1's record replays: the recorded order is join A, leave A, join C, with no mismatch (#943)", arguments: [false, true])
