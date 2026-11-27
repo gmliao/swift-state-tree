@@ -69,6 +69,7 @@ enum KeeperCensus {
             "actor.drainHandle": .replaced(by: "K7"),
             "actor.forceShutdownFlight": .replaced(by: "K7"),
             "actor.freezeWaitWatchersForTesting": .replaced(by: "K2"),
+            "actor.freezeRegistrationsForTesting": .replaced(by: "K2"),
             "actor.holds": .testHook,
             "actor.inTurnYieldForTesting": .testHook,
             "actor.reentryGateForTesting": .testHook,
@@ -180,6 +181,7 @@ enum KeeperCensus {
             "model.actionJobsStarted": .model,
             "model.actionSlots": .model,
             "model.alignmentViolations": .model,
+            "model.coreBarrierWaits": .model,
             "model.debugActiveGeneration": .model,
             "model.debugFrozen": .model,
             "model.debugInFlightWork": .model,
@@ -196,6 +198,8 @@ enum KeeperCensus {
             "model.failureTableMisses": .model,
             "model.foldedSyncs": .model,
             "model.hasHeldTransport": .model,
+            "model.inFlightRecordResults": .model,
+            "model.inFlightRecordSequences": .model,
             "model.inTurnDeferredTurns": .model,
             "model.inTurnDrainRetryBinding": .model,
             "model.inTurnSyncDue": .model,
@@ -298,18 +302,18 @@ extension KeeperCensus {
     static let sideStoreDestinations: [String: String] = [
         "turnSide.submissions": "the recorder hand-off: outputs that the core's flush submits",
         "turnSide.actions": "action jobs, keeper-only in K2-1: K2-2 routes them (jobTasks: one run per job, the box and the release as inputs; slotWaiters: coreSlotReplies, then replies); K5 keys them",
-        "turnSide.failures": "the effect and the reply carry the failure (§4.3); the table only when nobody waits",
+        "turnSide.failures": "the effect and the reply carry the failure (§4.3); the table only when nobody waits; while its record is in flight, model.inFlightRecordResults owns it (K22-Q5)",
         "turnSide.debugDrainWaiters": ".freeze's sendAndWait reply",
         "turnSide.inputTurnWaiters": "sendAndWait replies, answered in .recordTaken's step",
         "turnSide.leaveEnds": "the turn core's barrier wait (#953), keyed by player, released by the step that ends the leave's window (#943)",
         "turnSide.leaveEndWaiterWatchersForTesting": "test waiters on replies",
-        "turnSide.coreInputReplies": "the waits ride in .awaitRecordTaken's effect and .recordTaken (§16 item 15); the table goes",
-        "turnSide.debugHeldInputs": ".awaitResume's barrier (inputPolicy)",
+        "turnSide.coreInputReplies": "the core's waits, slot replies, job lane, refusals and held intakes, on the side until commit 4; the results ride .awaitRecordTaken and .recordTaken (§16 item 15)",
+        "turnSide.debugHeldInputs": "the intake's own step is the barrier: coreInputReplies.heldWhileFrozen, stepped again at the thaw or the drain",
         "turnSide.shutdownTurnWaiters": ".shutdown's sendAndWait reply",
         "turnSide.pendingSyncTurnAfterTurn": "staged until K3's follow-up slot",
         "turnSide.destroyTicket": "a keyed core timer (.land)",
         "turnSide.lastDestroyTicketForTesting": "goes with the slot: the core timer's own test read",
-        "turnSide.playerServices": "LiveLandTurns' services table, written by outputs",
+        "turnSide.playerServices": "in-step side writes (K2-2 plan §9): the join's insert, the leave's remove and the two removeAll sites move with the slot in commit 4; the teardown's and the no-turn shutdown's go in commit 1",
         "turnSide.attachedTransport": "the binding token on the inputs that need the port",
         "turnSide.sharedBoundRequester": "the binding token",
         "turnSide.drainStartedWaitersForTesting": "test waiters on replies",
@@ -425,17 +429,17 @@ struct KeeperCensusTests {
         #expect(named.subtracting(sideFields).isEmpty, "not a side field: \(named.subtracting(sideFields).sorted())")
     }
 
-    @Test("The machine's inputs and queries split into K2-1's routed set and the deferred ones, each named, and together every case (#700 K2-1)")
+    @Test("The machine's inputs and queries split into the routed set (K2-1, K2-2a) and the deferred ones, each named, and together every case (#700)")
     func inputRoutesSplitTheCases() {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
         #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")
         #expect(routed.union(deferred) == Set(KeeperInputRoute.allCases), "neither: \(Set(KeeperInputRoute.allCases).subtracting(routed.union(deferred)).map(\.rawValue).sorted())")
-        #expect(routed.count == 11 && deferred.count == 10, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
+        #expect(routed.count == 19 && deferred.count == 4, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
         #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
         let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
         #expect(queries.isDisjoint(with: deferredQueries))
         #expect(queries.union(deferredQueries) == Set(KeeperQueryRoute.allCases))
-        #expect(queries.count == 2 && deferredQueries.count == 4)
+        #expect(queries.count == 6 && deferredQueries.isEmpty)
         #expect(KeeperQueryRoutes.deferred.values.allSatisfy { !$0.isEmpty })
     }
 

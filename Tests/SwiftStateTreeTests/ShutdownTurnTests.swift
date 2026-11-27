@@ -471,6 +471,52 @@ struct ShutdownTurnTests {
         gate.release()
     }
 
+    @Test("Tickless: a leave whose OnLeave input the land's failure drops before its turn throws landClosed and arms no destroy timer; applied, the same leave arms it (#897)", arguments: [ShutdownPath.inTurn, .portless], [true, false])
+    func droppedLeaveArmsNoDestroyTimer(path: ShutdownPath, dropped: Bool) async throws {
+        let keeper = try await makeKeeper(path, destroyWhenEmpty: true)
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
+        try await join(keeper, path, [(p1, c1, s1)])
+        guard await signals.waitForInputDrainIdle(keeper) else { return }
+        #expect(await keeper.destroyTimerForTesting() == nil, "a timer was armed before the leave")
+        // The drain cancels a timer armed before it starts (`drainBegin`), so the arm itself is
+        // counted, not only the timer left at the end.
+        let armedBefore = signals.count("destroy-timer-installed")
+
+        // The leave's OnLeave input is appended, and the drain that would apply it holds.
+        let gate = WatermarkGate()
+        await keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.enterAndWait() })
+        let leave = Task { () -> (any Error)? in
+            do { try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1); return nil } catch { return error }
+        }
+        guard await gate.waitUntilEntered("the leave's input drain holds") else { return }
+        #expect(await keeper.playerCount() == 0)
+        if dropped {
+            // A failure found in a segment (as the output gate's) drops the pending inputs at
+            // once. forceShutdown can't drop this one on a tickless land: its shutdown input
+            // queues behind the OnLeave, which its drain applies first.
+            await keeper.failLandForTesting(LandFailure(kind: .syncPlan, detail: "#897", position: LandFailurePosition(stage: .syncPhase)))
+        }
+        await keeper.installHolds(nil)
+        gate.release()
+        guard let ended = try await withinDeadline("the leave returns", { await leave.value }) else { return }
+        if dropped {
+            #expect(ended as? LandInputRejection == .landClosed, "the leave \(String(describing: ended))")
+            #expect(signals.count("destroy-timer-installed") == armedBefore, "a closing land armed the destroy timer")
+            #expect(await keeper.destroyTimerForTesting() == nil, "a destroy timer is left on a closing land")
+            // The OnLeave never applied (the failure's teardown may have run OnFinalize).
+            let log = await keeper.currentState().log
+            #expect(!log.contains("leave:p1"), "log \(log)")
+        } else {
+            #expect(ended == nil, "the leave threw \(String(describing: ended))")
+            #expect(signals.count("destroy-timer-installed") == armedBefore + 1, "the applied leave armed no timer")
+            #expect(await keeper.destroyTimerForTesting() != nil, "the applied leave left no timer")
+            let log = await keeper.currentState().log
+            #expect(log == ["join:p1", "leave:p1"], "log \(log)")
+            await keeper.forceShutdown()
+        }
+    }
+
     // MARK: - Record and replay
 
     @Test("Record, shut down, replay: 0 mismatches, and the record holds one shutdown event", arguments: ShutdownPath.allCases)
