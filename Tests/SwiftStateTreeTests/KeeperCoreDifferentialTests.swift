@@ -2000,6 +2000,28 @@ private func markerDraft() -> SyncStreamDraft {
 }
 
 extension KeeperCoreDifferentialTests {
+    @Test("The freeze watcher counts a registration that has already ended: a caller that registered and timed out before the watcher was installed still counts (#948 cloud mutant b, forced by awaiting the caller's end first)")
+    func freezeWatcherCountsEndedRegistration() async throws {
+        let keeperGate = CoreDiffArmedGate()
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "freeze-watcher-ended",
+                                           keeperRecordGate: keeperGate)
+        _ = await bothJoin(pair, "p1", "c1")
+        let kg = WatermarkGate()
+        defer { kg.release() }
+        keeperGate.arm(kg)
+        let keeperAct = Task { await keeperAction(pair, CoreDiffAction(n: 1, fails: false), "p1", "c1") }
+        guard await kg.waitUntilEntered("the keeper's record") else { return }
+        // The caller registers (the work is in flight) and times out; its end is awaited before
+        // the watcher exists, so no caller waits when the watcher is installed. A watcher that
+        // read the current waiters would see 0 and wait out its bound.
+        let short = await pair.keeper.debugFreeze(generation: 1, timeout: .milliseconds(50))
+        #expect(short == false, "the short caller timed out with the work in flight")
+        #expect(await pair.keeper.waitUntilFreezeRegistrationsForTesting(1, within: .seconds(2)), "the ended registration counts")
+        kg.release()
+        _ = await keeperAct.value
+        await pair.keeper.debugResume(generation: 1)
+    }
+
     @Test("Each freeze caller has its own deadline: with work in flight, the first caller's short budget ends false while the second's long one answers true at the work's end, on both paths (Review on #948, MF1)")
     func freezeDeadlinePerCaller() async throws {
         let keeperGate = CoreDiffArmedGate(), clock = CoreDiffClock()
