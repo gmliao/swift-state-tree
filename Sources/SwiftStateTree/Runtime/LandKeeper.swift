@@ -4625,7 +4625,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // If we're already past the scheduled time, execute immediately
                 // Otherwise, sleep until the scheduled time
                 if now < nextSyncTime {
-                    try? await Task.sleep(until: nextSyncTime, clock: .continuous)
+                    try? await safeTaskSleep(until: nextSyncTime)
                 }
 
                 guard let keeper = self else { return }
