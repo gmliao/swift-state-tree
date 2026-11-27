@@ -105,7 +105,7 @@ Every new test parks the keeper at one await. While it is parked, a re-entrant c
 | T5 | OnDestroyWhenEmpty resolvers | gated resolver | `destroyHandlersStarted`; `pendingItems` empty; the state before the handler |
 | T6 | OnFinalize resolvers | gated resolver | OnDestroyWhenEmpty's write applied, OnFinalize's not |
 | T7 | AfterFinalize | gated handler | OnFinalize's write applied; `destructionFinished` false; the transport still attached |
-| T8 | `onLandDestroyed` | a gated test transport | `destructionFinished` false. A `setTransport(X)` at the hold attaches X. After release, `destructionFinished` is true and the transport is the released stand-in |
+| T8 | `onLandDestroyed` | a gated test transport | `destructionFinished` false. A `setTransport(X)` at the hold attaches X. After release, `destructionFinished` is true and the transport is the released stand-in: X is never told the land was destroyed (#698's second window) |
 | T8b | `onLandDestroyed` of a bound requester, on a keeper with no transport (`boundSyncRequester`, D2/D6) | a gated test port, bound by its sync request and never attached (KeeperTurnSkeletonTests' bound-port pattern, its :380) | `destructionFinished` false; the bound requester still set. After release, `destructionFinished` is true and the requester is cleared (`boundRequester.object == nil`) |
 | T9 | the order of the loops and `didInitialize` | an initialization waiter (`waitForInitializationWaitersForTesting`) on an `autoStartLoops` tick land with a recorder | the waiter, resumed by `initializeDone`, sees `tickLoopConfiguredAt != nil`; and a join that calls `ensureInitialized` right after it takes the `didInitialize` fast path on a land whose loop is configured |
 
@@ -207,4 +207,4 @@ So K2-2's "routed subset total" check gains three result inputs, `initializeReco
 4. CLAUDE.md: Q5's sentence deleted, and I1–I3 named under the #612 sentence (Q4). `Notes/plans/README.md`'s row.
 5. Full debug test, pre-push, push. Mutants to the cloud.
 
-The nit on T8 (a `setTransport(X)` during `onLandDestroyed` is replaced, and X never hears that the land was destroyed) goes to an issue: whether X should get `onLandDestroyed` or a refusal. K2-1b keeps today's behavior.
+The nit on T8 (a `setTransport(X)` during `onLandDestroyed` is replaced, and X never hears that the land was destroyed) is a second window of #698 (a rebind during teardown), added there. K2-1b keeps today's behavior; #698's fix changes T8's expectation.
