@@ -246,8 +246,16 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         return store.withSide { KeeperDifferentialRead(model: model, side: $0) }
     }
 
-    private func note(_ input: KeeperInput<State>) { inputsSeen.append(input.routeName) }
-    private func noteResult(_ name: String) { inputsSeen.append(name) }
+    private func note(_ input: KeeperInput<State>) { noteSeen(input.routeName) }
+    private func noteResult(_ name: String) { noteSeen(name) }
+    private var inputWaiters: [(name: String, count: Int, resume: CheckedContinuation<Void, Never>)] = []
+    private func noteSeen(_ name: String) {
+        inputsSeen.append(name)
+        let seen = inputsSeen.filter { $0 == name }.count
+        let ready = inputWaiters.filter { $0.name == name && $0.count <= seen }
+        inputWaiters.removeAll { $0.name == name && $0.count <= seen }
+        for waiter in ready { waiter.resume.resume() }
+    }
 
     @concurrent nonisolated func perform(_ effect: KeeperEffect<State>) async -> KeeperInput<State>? {
         let handlers = definition.lifetimeHandlers
@@ -299,14 +307,11 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         armedFlush = (input, query)
     }
 
-    /// Whether `count` inputs named `name` were sent, within a bound (a call notes its input, then
-    /// steps it, in one segment of this actor).
-    func waitForInputs(named name: String, count: Int) async -> Bool {
-        for _ in 0..<5000 {
-            if inputsSeen.filter({ $0 == name }).count >= count { return true }
-            try? await safeTaskSleep(for: .milliseconds(1))
-        }
-        return false
+    /// Returns once `count` inputs named `name` were sent: an event, resumed by the note (a call
+    /// notes its input, then steps it, in one segment of this actor).
+    func waitForInputs(named name: String, count: Int) async {
+        guard inputsSeen.filter({ $0 == name }).count < count else { return }
+        await withCheckedContinuation { inputWaiters.append((name, count, $0)) }
     }
 
     /// Waits for the record submissions the core's flushes made (the twin's own tracker).
@@ -972,7 +977,7 @@ struct KeeperCoreDifferentialTests {
         guard await gate.waitUntilEntered("A's record") else { return }
         // B is a call too, so its reply is compared: its intake steps before the gate opens.
         let b = Task { await coreTicklessAction(CoreDiffPair(keeper: direct, harness: harness, landID: landID), CoreDiffAction(n: 2, fails: false), "p1", "c1") }
-        #expect(await harness.waitForInputs(named: "action", count: 2), "B's intake stepped")
+        await harness.waitForInputs(named: "action", count: 2)
         gate.release()
         #expect(await a.value == .completed(1))
         #expect(await b.value == .completed(2))
