@@ -152,6 +152,31 @@ struct CoreDiffJobResolver: Resolver {
     }
 }
 
+/// OnInitialize's resolver: it waits at its land's gate when one is set, then throws when the
+/// land is marked failing (Review on #966, MF2: the core twins of the keeper's T-cases).
+@PlainData
+struct CoreDiffInitResolver: Resolver {
+    typealias Dependencies = NoServices
+    typealias Output = CoreDiffOutput
+    let landID: String
+    func resolve(_ deps: NoServices) async throws -> CoreDiffOutput {
+        await CoreDiffInitGates.gate(landID)?.enterAndWait()
+        if CoreDiffInitGates.fails(landID) { throw CoreDiffError(token: -1) }
+        return CoreDiffOutput(value: 1)
+    }
+}
+
+/// OnInitialize's gate and failure mark, by land ID (both paths share the pair's land ID).
+enum CoreDiffInitGates {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var gates: [String: WatermarkGate] = [:]
+    nonisolated(unsafe) private static var failing: Set<String> = []
+    static func set(_ landID: String, _ gate: WatermarkGate?) { lock.withLock { gates[landID] = gate } }
+    static func gate(_ landID: String) -> WatermarkGate? { lock.withLock { gates[landID] } }
+    static func setFails(_ landID: String, _ fails: Bool) { lock.withLock { if fails { failing.insert(landID) } else { failing.remove(landID) } } }
+    static func fails(_ landID: String) -> Bool { lock.withLock { failing.contains(landID) } }
+}
+
 /// A job's resolver gate, by land ID: a case that holds the job sets it on both lands.
 enum CoreDiffJobGates {
     private static let lock = NSLock()
@@ -250,7 +275,7 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
         // eventful path (§16 item 11).
         if shape.onInitialize {
             Lifetime {
-                OnInitialize(resolvers: { _, ctx in SegmentInitResolver(landID: ctx.landID) }) { state, output, _ in
+                OnInitialize(resolvers: { _, ctx in CoreDiffInitResolver(landID: ctx.landID) }) { state, output, _ in
                     state.log.append("init:\(output?.value ?? -1)")
                 }
             }
@@ -473,7 +498,15 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     }
 
     func flush(_ outputs: consuming [KeeperOutput]) {
+        let outputs = Array(outputs)
         flushed.append(contentsOf: outputs)
+        // The owner's `.startLoops` (K2-2 commit 1a): the twin has no loops to configure, so it
+        // answers `.initializeDone` at once, behind this flush (Review on #966, MF2 (c)).
+        if outputs.contains(where: { if case .startLoops = $0 { true } else { false } }) {
+            let done = KeeperInput<State>.initializeDone(tickLoopConfigured: false, syncLoopConfigured: false)
+            note(done)
+            send(done)
+        }
         guard let (input, question) = armedFlush else { return }
         armedFlush = nil
         // The core's flush: a send is queued behind this flush, and a query is answered in place,
@@ -786,12 +819,15 @@ private struct CoreDiffPair {
     static func make(_ shape: CoreDiffShape, _ name: String, holds: (@Sendable (LandKeeperHoldPoint) async -> Void)? = nil,
                      pathHolds: (@Sendable (String, LandKeeperHoldPoint) async -> Void)? = nil,
                      keeperRecordGate: CoreDiffArmedGate? = nil, clock: CoreDiffClock? = nil,
-                     initializes: Bool = true, records: Bool = false) async -> CoreDiffPair {
+                     initializes: Bool = true, records: Bool = false, autoStartLoops: Bool = false,
+                     before: (@Sendable (String) -> Void)? = nil) async -> CoreDiffPair {
         let landID = "core-diff:\(name):\(UUID().uuidString)"
+        // Set before either keeper exists: a gate or failure mark the initialization reads.
+        before?(landID)
         func keeper() -> LandKeeper<CoreDiffState> {
             LandKeeperTesting.$defersInitialization.withValue(!initializes) {
                 LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(),
-                                          enableLiveStateHashRecording: records, autoStartLoops: false, landID: landID)
+                                          enableLiveStateHashRecording: records, autoStartLoops: autoStartLoops, landID: landID)
             }
         }
         let direct = keeper(), twinSource = keeper()
@@ -2620,6 +2656,63 @@ extension KeeperCoreDifferentialTests {
         // The land is open: a join goes through on both paths.
         _ = await bothJoin(pair, "p1", "c1")
         await pair.expectSame("after a join")
+    }
+
+    @Test("A held initialize record: two waiters that came first stay parked until the record is taken, then both get .done, on both paths (Review on #966, MF2 (a))")
+    func initializationHeldRecordTwoWaiters() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let pair = await CoreDiffPair.make(shape, "init-held-record", initializes: false, records: true)
+        let hold = WatermarkGate()
+        defer { hold.release() }
+        pair.harness.armedRecordGate.arm(hold)
+        let first = Task { try await pair.harness.call(.awaitInitialized) }
+        let second = Task { try await pair.harness.call(.awaitInitialized) }
+        await pair.harness.waitForInputs(named: "awaitInitialized", count: 2)
+        await pair.harness.drive(.initialize)
+        guard await hold.waitUntilEntered("the core's initialize record") else { return }
+        // Held at the record: OnInitialize applied, the waiters still parked.
+        let held = await pair.harness.differentialRead().model
+        guard case .recording = held.initializationPhase else { Issue.record("phase \(held.initializationPhase)"); return }
+        #expect(held.coreBarrierWaits.initialized.count == 2)
+        hold.release()
+        for waiter in [first, second] {
+            guard case .done = try await waiter.value else { Issue.record("not a done reply"); return }
+        }
+        #expect(await pair.harness.differentialRead().model.initializationPhase == .done)
+        await pair.keeper.awaitInitialization()
+        await pair.expectSame("after the held record")
+    }
+
+    @Test("A failed initialization (OnInitialize's resolver throws): an early and a late waiter both get the failure, the phase is .failed, on both paths (Review on #966, MF2 (b), and the should on §3.3.1)")
+    func initializationFailureAnswersTheWaiters() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let pair = await CoreDiffPair.make(shape, "init-fails", initializes: false, before: { CoreDiffInitGates.setFails($0, true) })
+        defer { CoreDiffInitGates.setFails(pair.landID, false) }
+        let early = Task { try await pair.harness.call(.awaitInitialized) }
+        await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
+        await pair.keeper.awaitInitialization()
+        await pair.harness.drive(.initialize)
+        await #expect(throws: LandInitializationError.self) { _ = try await early.value }
+        await #expect(throws: LandInitializationError.self) { _ = try await pair.harness.call(.awaitInitialized) }
+        #expect(await pair.harness.differentialRead().model.initializationPhase == .failed)
+        #expect(await pair.keeper.differentialReadForTesting().model.initializationPhase == .failed)
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.initialized.isEmpty)
+        // The keeper's teardown then drains; the core's is K2-2 commit 1b's, so the paths are
+        // compared on the initialization's outcome only.
+    }
+
+    @Test("autoStartLoops: the core's .startLoops is answered by the owner's .initializeDone, which ends the phase and answers the waiter, on both paths (Review on #966, MF2 (c))")
+    func initializationStartsLoops() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let pair = await CoreDiffPair.make(shape, "init-loops", initializes: false, autoStartLoops: true)
+        let waiter = Task { try await pair.harness.call(.awaitInitialized) }
+        await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
+        await pair.harness.drive(.initialize)
+        guard case .done = try await waiter.value else { Issue.record("not a done reply"); return }
+        #expect(await pair.harness.inputsSeen.contains("initializeDone"), "the owner's answer to .startLoops")
+        #expect(await pair.harness.differentialRead().model.initializationPhase == .done)
+        await pair.keeper.awaitInitialization()
+        await pair.expectSame("after the loops' start")
     }
 
     @Test("The initialization's barrier is open after OnInitialize, on both paths (Review on #948, MF6: the open case until commit 1)")
