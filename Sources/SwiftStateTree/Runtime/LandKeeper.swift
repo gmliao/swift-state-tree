@@ -880,6 +880,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         turnSide.probe = probe
     }
 
+    /// Installs the side's flush trace (tests only; #700 K2-1's ordered trace).
+    func setFlushTraceForTesting(_ trace: (@Sendable (String) -> Void)?) {
+        turnSide.flushTraceForTesting = trace
+    }
+
     /// Tests only: a job on this keeper's executor that records `label`.
     func recordInTurnProbeForTesting(_ label: String) {
         turnSide.probe?(label)
@@ -2201,15 +2206,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tests (#700 K2-1's differential): a test core's machine and behavior, from this keeper's
     /// model and behavior, with a fresh side of the core's own boxed in a `KeeperSideStore`. A
-    /// live keeper with no transport and no recorder; the keeper isn't used after (its behavior's
-    /// references go with the twin). `transport` is attached to the twin's side only, with the
+    /// live keeper with no transport; the keeper isn't used after (its behavior's references go
+    /// with the twin, its recorder included, which then takes the core's submissions through the
+    /// twin's own tracker). `owner` is the keeper itself, whose executor a test core shares, as the
+    /// facade will (plan §3), so a callback that re-enters the keeper runs on the right executor. `transport` is attached to the twin's side only, with the
     /// model's transport fields set as the keeper's `init` sets them; its port calls that need a
     /// keeper find none. Waits for the initialization first: a waiter of the eager
     /// initialization task returns before that task's starter sets `didInitialize` (#934).
-    func coreTwinForTesting(transport twinTransport: (any LandKeeperTransport)? = nil) async -> (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore) {
+    func coreTwinForTesting(transport twinTransport: (any LandKeeperTransport)? = nil) async -> (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>) {
         precondition(behavior.config.mode == .live, "coreTwinForTesting: a live keeper")
         precondition(transport == nil, "coreTwinForTesting: the source keeper has no transport (attach one to the twin instead); land \(behavior.config.actualLandID ?? definition.id) has \(transport.map { String(describing: type(of: $0)) } ?? "-")")
-        precondition(behavior.reevaluationRecorder == nil, "coreTwinForTesting: the source keeper has no recorder (land \(behavior.definition.id))")
         if let task = initializationTask { await task.value }
         precondition(model.didInitialize || initializationTask != nil, "coreTwinForTesting: an initialized keeper")
         precondition(model.initializationFailure == nil, "coreTwinForTesting: the initialization failed")
@@ -2232,17 +2238,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             collector: OutputCollector(),
             sequenceLease: KeeperSequenceLease(),
             drainFlag: KeeperDrainFlag(),
-            transportFailure: LandFailureMailbox(),
+            // The source's mailbox: a guarded entry refused on the source while the core steps
+            // notes its failure there (`noteReentry`), and the core's body reads it, as the
+            // keeper's own body reads its keeper's (plan §4.2 (a) point 2).
+            transportFailure: pendingTransportFailure,
             transport: twinTransport
         )
         // The players' services live on the side, beside the entries the model copy carries.
         side.playerServices = turnSide.playerServices
         // The source's test holds, so a staged start on the core reaches the same hold points.
         side.holdPoints = turnSide.holdPoints
+        // A guarded entry refused on this keeper while the core steps (they share the sentinel)
+        // closes the twin's gate, as the keeper's own refusal closes its transport's.
+        reentryGateForTesting = twinTransport
         let store = KeeperSideStore(side: side)
         var twin = behavior
         twin.sideStore = store
-        return (model, twin, store)
+        return (model, twin, store, self)
     }
 
     /// Tests (#700 K2-1's differential): this keeper's model, its action tables' violations, and
@@ -3984,7 +3996,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A gate the sentinel already closed isn't closed again by a further refusal in the turn.
         // The check needs class identity: a value-type port, or a close that re-enters during
         // `failLand`'s own close, can close the gate twice.
-        if let gate = transport ?? boundSyncRequester, !sentinel.closingGateForReentry,
+        if let gate = transport ?? boundSyncRequester ?? reentryGateForTesting, !sentinel.closingGateForReentry,
            !(Self.gateObject(gate).map { $0 === sentinel.reentryClosedGate } ?? false) {
             sentinel.closingGateForReentry = true
             defer { sentinel.closingGateForReentry = false }
@@ -4206,6 +4218,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// A box the side holds too, so a body and the refusing entries read one binding.
     private nonisolated let boundRequester: KeeperBoundRequester
     private var boundSyncRequester: (any LandKeeperTransport)? { boundRequester.port }
+    /// Tests (#700 K2-1's differential): the core twin's port, which a refused entry on this
+    /// (idle) source keeper closes, as the facade's sentinel will close the core's (plan §4.2
+    /// (a) point 2). Set by `coreTwinForTesting(transport:)`; nil on every other keeper.
+    private var reentryGateForTesting: (any LandKeeperTransport)?
 
     private func noteTransportBound() {
         model.hasHeldTransport = true

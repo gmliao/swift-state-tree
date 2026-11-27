@@ -106,6 +106,8 @@ struct CoreDiffShape: Sendable, CustomStringConvertible {
 
 @Sendable private func coreDiffTick(_ state: inout CoreDiffState, _ ctx: LandContext) {
     state.log.append("tick")
+    // The tokenless step's re-entry (a handler reaching a guarded entry, not through `callOut`).
+    CoreDiffHandlerReentry.fire(ctx.landID)
     ctx.emitEvent(CoreDiffServerEvent(n: 1), to: .all)
     ctx.emitEvent(CoreDiffServerEvent(n: 2), to: .all)
 }
@@ -176,9 +178,17 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     private(set) var inputsSeen: [String] = []
     /// When set, every `.awaitRecordTaken` effect waits here before it runs (released: passes).
     nonisolated let recordGate: WatermarkGate?
+    /// The twin's source keeper, whose executor this actor shares (as the facade will share the
+    /// core's, plan §3): a callback that re-enters the keeper with `assumeIsolated` then runs.
+    nonisolated let owner: LandKeeper<State>
+    nonisolated var unownedExecutor: UnownedSerialExecutor { owner.unownedExecutor }
+    /// §16 item 5: an input and a query the next flush makes, in that order, and what it saw.
+    private var armedFlush: (input: KeeperInput<State>, query: KeeperQuery)?
+    private(set) var flushQueryAnswers: [(answer: KeeperAnswer<State>, pendingAtQuery: [Int64], tickAtQuery: Int64)] = []
 
-    init(_ twin: (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore), recordGate: WatermarkGate? = nil) {
+    init(_ twin: (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>), recordGate: WatermarkGate? = nil) {
         self.recordGate = recordGate
+        owner = twin.owner
         core = TurnCore(machine: twin.model, behavior: twin.behavior, queueLimit: 1024, maxReleasesPerBatch: 64, clock: SystemTurnClock())
         store = twin.store
         definition = twin.behavior.definition
@@ -272,6 +282,31 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
 
     func flush(_ outputs: consuming [KeeperOutput]) {
         flushed.append(contentsOf: outputs)
+        guard let (input, question) = armedFlush else { return }
+        armedFlush = nil
+        // The core's flush: a send is queued behind this flush, and a query is answered in place,
+        // as its own step (TurnActor.swift's flush rules).
+        note(input)
+        send(input)
+        let answer = query(question)
+        let model = core.read { copy $0 }
+        flushQueryAnswers.append((answer, model.pendingItems.map(\.sequence), model.lastCommittedTickId))
+    }
+
+    /// §16 item 5: the next flush sends `input`, then asks `query`.
+    func armFlush(send input: KeeperInput<State>, thenAsk query: KeeperQuery) {
+        armedFlush = (input, query)
+    }
+
+    /// Waits for the record submissions the core's flushes made (the twin's own tracker).
+    func waitForSubmissions() async {
+        let tracker = store.withSide { side in side.submissionsForTesting }
+        await tracker.waitForAll()
+    }
+
+    /// Installs the side's flush trace.
+    func setFlushTrace(_ trace: @escaping @Sendable (String) -> Void) {
+        store.withSide { side in side.flushTraceForTesting = trace }
     }
 
     private static func resolve(
@@ -291,6 +326,71 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         } catch {
             return .failure(error)
         }
+    }
+}
+
+/// A tick handler's re-entry, by land ID: the case registers what its land's handler calls
+/// (parallel cases have their own land IDs).
+enum CoreDiffHandlerReentry {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var hooks: [String: @Sendable () -> Void] = [:]
+    static func register(_ landID: String, _ hook: @escaping @Sendable () -> Void) { lock.withLock { hooks[landID] = hook } }
+    static func clear(_ landID: String) { _ = lock.withLock { hooks.removeValue(forKey: landID) } }
+    static func fire(_ landID: String) {
+        // One-shot.
+        let hook = lock.withLock { hooks.removeValue(forKey: landID) }
+        hook?()
+    }
+}
+
+/// One path's ordered trace (§6, MF3's fix): every port call with its contents, and every effect
+/// a flush runs (the staged actions and the recorder hand-offs, by label), in the order they
+/// happen. `runsSyncPhaseInTurn` is left out: the keeper's path asks the port, the core's step
+/// carries its input's read (K2-1, until K2-2's binding token), a stated asymmetry.
+final class CoreDiffTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+    func append(_ entry: String) { lock.withLock { entries.append(entry) } }
+    func clear() { lock.withLock { entries.removeAll() } }
+    var all: [String] { lock.withLock { entries } }
+}
+
+/// The port that writes the trace. When armed, its `runSyncPhaseInTurn` re-enters `keeper` once
+/// with a guarded entry (`submitSyncStream`), which the sentinel refuses mid-step.
+final class CoreDiffTraceTransport: LandKeeperTransport, @unchecked Sendable {
+    let trace: CoreDiffTrace
+    private let lock = NSLock()
+    private weak var reentryKeeper: LandKeeper<CoreDiffState>?
+    init(_ trace: CoreDiffTrace) { self.trace = trace }
+
+    func armReentry(_ keeper: LandKeeper<CoreDiffState>) { lock.withLock { reentryKeeper = keeper } }
+
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async { trace.append("sendEvent \(event) to \(target)") }
+    func syncNowFromTransport() async { trace.append("syncNow") }
+    func syncBroadcastOnlyFromTransport() async { trace.append("syncBroadcastOnly") }
+    func onLandDestroyed() async { trace.append("onLandDestroyed") }
+    func landDidFail(_ failure: LandFailure) async { trace.append("landDidFail \(failure.kind) \(failure.detail)") }
+    func closeOutputs(for failure: LandFailure) { trace.append("closeOutputs \(failure.kind) \(failure.detail)") }
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
+        trace.append("admitJoiningSession \(playerID) \(clientID) \(sessionID) \(joinSequence.map(String.init) ?? "-")")
+        return .notAdmitted
+    }
+    func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool { trace.append("refusesResolvedJoin \(playerID) \(sessionID)"); return false }
+    func noteJoinInputsConsumed(_ results: [JoinInputResult]) { trace.append("noteJoinInputsConsumed \(results)") }
+    var hasJoinsAwaitingSync: Bool { trace.append("hasJoinsAwaitingSync"); return false }
+    func waitForWriterDrainForInTurnSync() async { trace.append("waitForWriterDrain") }
+    var recordsInTurnSyncFolds: Bool { false }
+    func noteInTurnSyncFold(_ fold: InTurnSyncFold) { trace.append("noteInTurnSyncFold \(fold)") }
+    func noteInTurnJoinSyncTick() { trace.append("noteInTurnJoinSyncTick") }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(state: S, events: [InTurnServerEvent], includeSync: Bool, recording: InTurnSyncRecording?) -> InTurnSyncOutput {
+        let described = events.map { "#\($0.sequence.map(String.init) ?? "-") \($0.event) to \($0.target)" }
+        trace.append("runSyncPhaseInTurn includeSync=\(includeSync) recording=\(recording.map { "\($0)" } ?? "-") events=\(described)")
+        if let keeper = lock.withLock({ () -> LandKeeper<CoreDiffState>? in defer { reentryKeeper = nil }; return reentryKeeper }) {
+            trace.append("re-enter submitSyncStream")
+            keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the synchronous callback the sentinel refuses
+        }
+        return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
 }
 
@@ -930,4 +1030,172 @@ struct KeeperCoreDifferentialTests {
         #expect(read.violations == ["core side: refused action: a tickless land with a transport needs the binding token (K2-2)"], "\(read.violations)")
         #expect(read.model.debugInFlightWork == 0 && !read.model.inputDrainScheduled)
     }
+
+    // MARK: The ordered trace and the tokenless step (§6, §4.2 point 3, §16 items 5 and 12)
+
+    /// A keeper on each path with a recorder and a tracing port, for the trace cases: the direct
+    /// keeper, and the core twin of a second keeper. Distinct land IDs (one recorder spool each);
+    /// the land reads no RNG and no land ID, so the records don't depend on it.
+    private struct TracePair {
+        let keeper: LandKeeper<CoreDiffState>
+        let source: LandKeeper<CoreDiffState>
+        let harness: KeeperCoreHarness<CoreDiffState>
+        let keeperLandID: String
+        let coreLandID: String
+        let keeperTrace: CoreDiffTrace
+        let coreTrace: CoreDiffTrace
+        let keeperTransport: CoreDiffTraceTransport
+        let coreTransport: CoreDiffTraceTransport
+
+        static func make(_ name: String) async throws -> TracePair {
+            let shape = CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false)
+            let keeperTrace = CoreDiffTrace(), coreTrace = CoreDiffTrace()
+            let keeperTransport = CoreDiffTraceTransport(keeperTrace), coreTransport = CoreDiffTraceTransport(coreTrace)
+            let keeperLandID = "core-diff:\(name):keeper:\(UUID().uuidString)", coreLandID = "core-diff:\(name):core:\(UUID().uuidString)"
+            func keeper(_ id: String, _ transport: CoreDiffTraceTransport?) -> LandKeeper<CoreDiffState> {
+                LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), enableLiveStateHashRecording: true,
+                                          autoStartLoops: false, landID: id, transport: transport)
+            }
+            let direct = keeper(keeperLandID, keeperTransport), source = keeper(coreLandID, nil)
+            await direct.awaitInitialization()
+            await source.awaitInitialization()
+            for k in [direct, source] {
+                let recorder = try #require(await k.getReevaluationRecorder())
+                await recorder.setMetadata(ReevaluationRecordMetadata(landID: "core-diff", landType: "core-diff", createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                                                                      metadata: [:], landDefinitionID: "core-diff", rngSeed: 1, version: ReevaluationRecordVersion.current))
+            }
+            let harness = KeeperCoreHarness(await source.coreTwinForTesting(transport: coreTransport))
+            await harness.start()
+            await direct.setFlushTraceForTesting { keeperTrace.append("flush: \($0)") }
+            await harness.setFlushTrace { coreTrace.append("flush: \($0)") }
+            await direct.waitForRecorderSubmissionsForTesting()
+            keeperTrace.clear()
+            coreTrace.clear()
+            return TracePair(keeper: direct, source: source, harness: harness, keeperLandID: keeperLandID, coreLandID: coreLandID,
+                             keeperTrace: keeperTrace, coreTrace: coreTrace, keeperTransport: keeperTransport, coreTransport: coreTransport)
+        }
+
+        /// A tick on each path, with its record handed to the recorder and taken.
+        func tick() async {
+            await keeper.stepTickOnce()
+            await keeper.waitForRecorderSubmissionsForTesting()
+            await harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+            await harness.waitForSubmissions()
+        }
+
+        /// Each path's recorder frames, as JSON, entry by entry.
+        func frames() async throws -> (keeper: [String], core: [String]) {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            func encoded(_ k: LandKeeper<CoreDiffState>) async throws -> [String] {
+                let recorder = try #require(await k.getReevaluationRecorder())
+                return try await recorder.getAllFrames().map { String(decoding: try encoder.encode($0), as: UTF8.self) }
+            }
+            return (try await encoded(keeper), try await encoded(source))
+        }
+
+        /// The two traces, entry by entry, and the two records.
+        /// `failed`: the land failed in the step. The keeper's teardown then runs from the staged
+        /// start (`landDidFail`, then the destroy's `onLandDestroyed`); the core's finds no keeper
+        /// (K2-1b routes the teardown, plan §16 item 13), so those two are compared apart.
+        func expectSameTrace(_ step: String, failed: Bool = false, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+            var k = keeperTrace.all
+            let c = coreTrace.all
+            if failed {
+                await keeper.waitUntilDrainStartedForTesting()
+                await keeper.waitUntilDrained()
+                k = keeperTrace.all
+                let teardown = k.filter { $0.hasPrefix("landDidFail") || $0 == "onLandDestroyed" }
+                #expect(teardown.count == 2 && teardown.last == "onLandDestroyed", "\(step): the keeper's teardown \(teardown)", sourceLocation: sourceLocation)
+                #expect(Array(k.suffix(2)) == teardown, "\(step): the teardown comes last \(k)", sourceLocation: sourceLocation)
+                k.removeLast(2)
+                #expect(!c.contains { $0.hasPrefix("landDidFail") || $0 == "onLandDestroyed" }, "\(step): \(c)", sourceLocation: sourceLocation)
+            }
+            #expect(k.count == c.count, "\(step): \(k.count) vs \(c.count) entries\n keeper \(k)\n core   \(c)", sourceLocation: sourceLocation)
+            for (index, pair) in zip(k, c).enumerated() where pair.0 != pair.1 {
+                Issue.record("\(step): entry \(index) differs:\n keeper \(pair.0)\n core   \(pair.1)", sourceLocation: sourceLocation)
+            }
+            let (kf, cf) = try await frames()
+            #expect(kf == cf, "\(step): the records differ\n keeper \(kf)\n core   \(cf)", sourceLocation: sourceLocation)
+        }
+    }
+
+    @Test("The ordered trace on an eventful tick: the same port calls with the same events, the same flush effects and the same record, entry by entry (§6)")
+    func orderedTraceOnAnEventfulTick() async throws {
+        let pair = try await TracePair.make("trace")
+        await pair.tick()
+        try await pair.expectSameTrace("after the tick")
+        #expect(pair.coreTrace.all.contains { $0.hasPrefix("runSyncPhaseInTurn") && $0.contains("CoreDiffServerEvent") }, "\(pair.coreTrace.all)")
+        #expect(pair.coreTrace.all.contains { $0.hasPrefix("flush: submission") }, "the record's hand-off is traced: \(pair.coreTrace.all)")
+        let (frames, _) = try await pair.frames()
+        #expect(frames.count >= 1)
+    }
+
+    @Test("The ordered trace on a refusal path: a port callback re-enters mid-step, is refused, and the land ends in that step the same way on both paths (§6)")
+    func orderedTraceOnARefusedCallback() async throws {
+        let pair = try await TracePair.make("trace-refusal")
+        pair.keeperTransport.armReentry(pair.keeper)
+        pair.coreTransport.armReentry(pair.source)
+        await pair.tick()
+        try await pair.expectSameTrace("after the refused callback", failed: true)
+        #expect(pair.coreTrace.all.contains("re-enter submitSyncStream"))
+        let keeperFailure = await pair.keeper.differentialReadForTesting().failure
+        let coreFailure = await pair.harness.differentialRead().failure
+        #expect(keeperFailure != nil && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
+        #expect(keeperFailure?.kind == .keeperReentry)
+    }
+
+    @Test("The tokenless step: a .tickDue carries no binding token, its handler reaches a guarded entry outside callOut, and the land ends in that same step by the keeper's route (§4.2 point 3)")
+    func tokenlessStepBackstop() async throws {
+        let pair = try await TracePair.make("tokenless")
+        CoreDiffHandlerReentry.register(pair.keeperLandID) { [keeper = pair.keeper] in
+            keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the handler's re-entry the sentinel refuses
+        }
+        CoreDiffHandlerReentry.register(pair.coreLandID) { [source = pair.source] in
+            source.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the handler's re-entry the sentinel refuses
+        }
+        let keeperLateBefore = await pair.keeper.lateReentriesAppliedForTesting
+        let coreLateBefore = await pair.source.lateReentriesAppliedForTesting
+        await pair.tick()
+        try await pair.expectSameTrace("after the handler's re-entry", failed: true)
+        let keeperFailure = await pair.keeper.differentialReadForTesting().failure
+        let coreFailure = await pair.harness.differentialRead().failure
+        #expect(coreFailure != nil && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
+        // The same route on both paths: the refusal noted the failure in the mailbox the step
+        // reads (the core's is the source's, as the facade's will be the core's), and the tick's
+        // body applied it in that step, before its sync phase (the trace has none). The backstop
+        // count moves alike on both.
+        let keeperLate = await pair.keeper.lateReentriesAppliedForTesting - keeperLateBefore
+        let coreLate = await pair.source.lateReentriesAppliedForTesting - coreLateBefore
+        #expect(keeperLate == coreLate, "backstop: keeper \(keeperLate), core \(coreLate)")
+        #expect(!pair.coreTrace.all.contains { $0.hasPrefix("runSyncPhaseInTurn") }, "no sync phase after the trip: \(pair.coreTrace.all)")
+    }
+
+    @Test("The core's flush sends an input and then asks a query: the query is answered in place, before the queued input steps (§16 item 5)")
+    func flushSendsThenQueries() async throws {
+        let shape = CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false)
+        let source = LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: "core-diff:flush-query:\(UUID().uuidString)")
+        await source.awaitInitialization()
+        let harness = KeeperCoreHarness(await source.coreTwinForTesting(transport: FoldRecordingTransport(records: true)))
+        await harness.start()
+        let before = await harness.differentialRead().model
+        // The only K2-1 output is a fold, so the armed flush is `.syncDue`'s: it sends a tick and
+        // asks for a tick land's action intake.
+        await harness.armFlush(send: .tickDue(fold: nil, foldStart: nil, syncsInTurn: true),
+                               thenAsk: .admitAction(envelope(CoreDiffAction(n: 3, fails: false)), caller("p1", "c1")))
+        let deadline = ContinuousClock.now
+        await harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false, syncsInTurn: true))
+        let answers = await harness.flushQueryAnswers
+        try #require(answers.count == 1, "the fold's flush ran the armed calls")
+        guard case .actionSubmission = answers[0].answer else {
+            Issue.record("the query's answer: \(answers[0].answer)")
+            return
+        }
+        // Answered in place, as its own step: the sent tick hadn't stepped yet.
+        #expect(answers[0].tickAtQuery == before.lastCommittedTickId, "\(answers[0].tickAtQuery)")
+        let after = await harness.differentialRead().model
+        #expect(after.lastCommittedTickId == before.lastCommittedTickId + 1, "the sent tick stepped after the flush")
+        #expect(await harness.inputsSeen.suffix(2) == ["syncDue", "tickDue"])
+    }
+
 }

@@ -71,6 +71,7 @@ enum KeeperCensus {
             "actor.freezeWaitWatchersForTesting": .replaced(by: "K2"),
             "actor.holds": .testHook,
             "actor.inTurnYieldForTesting": .testHook,
+            "actor.reentryGateForTesting": .testHook,
             "actor.initializationTask": .replaced(by: "K5"),
             "actor.initializationWaitWatchers": .replaced(by: "K2"),
             "actor.initializationWaits": .replaced(by: "K2"),
@@ -134,6 +135,7 @@ enum KeeperCensus {
             "turnSide.failures": .outside(.failureTable),
             "turnSide.debugDrainWaiters": .replaced(by: "K7"),
             "turnSide.probe": .testHook,
+            "turnSide.flushTraceForTesting": .testHook,
             "turnSide.holdPoints": .testHook,
             // Copies of the keeper's references, for the bodies (#700 K1b-5 move): the homes of
             // the members they copy.
@@ -302,6 +304,7 @@ extension KeeperCensus {
         "turnSide.failureWaitersForTesting": "test waiters on replies",
         "turnSide.replay": "dropped: nil on the live keepers the core serves; the replay owner keeps the actor's path until #612",
         "turnSide.probe": "a test hook on the behavior",
+        "turnSide.flushTraceForTesting": "a test hook on the behavior, with the probe",
         "turnSide.holdPoints": "a test hook on the behavior",
         "turnSide.lateStepOutputAssertsForTesting": "a test hook on the behavior",
         "turnSide.serverInputMaxInFlight": "the behavior's config",

@@ -110,6 +110,11 @@ package struct KeeperTurnSide {
     /// Tests only: called at the probe labels ("turn-begin", "turn-end", ...) on the keeper's
     /// executor.
     var probe: (@Sendable (String) -> Void)?
+    /// Tests only (#700 K2-1's ordered trace): called for each effect a flush runs, in order,
+    /// before it runs: "submission <label>" or "staged action".
+    var flushTraceForTesting: (@Sendable (String) -> Void)?
+    /// Tests: the tracker of this side's record submissions, which a test core waits on.
+    var submissionsForTesting: ReevaluationSubmissionTracker { submissions }
     /// Tests only: a copy of the keeper's hold points, which `installHolds` sets with the keeper's,
     /// for the tasks a body's staged starts begin.
     var holdPoints = HoldPoints<LandKeeperHoldPoint>()
@@ -322,8 +327,10 @@ package struct KeeperTurnSide {
         for effect in outputs.takeAll() {
             switch effect {
             case let .submission(label, apply):
+                flushTraceForTesting?("submission \(label)")
                 outputs.lastSubmission = RecorderSubmission(task: submissions.submit(label: label, apply))
             case let .action(action):
+                flushTraceForTesting?("staged action")
                 action()
             }
         }
