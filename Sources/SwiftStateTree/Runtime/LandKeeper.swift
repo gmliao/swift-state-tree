@@ -1927,7 +1927,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 try await awaitLeaveEnd(of: decided.playerID)
                 // A cancel whose hop came after the release found the waiter gone: honored in
                 // J2c's segment, before it can insert (#943), and after its drain check, so a
-                // land that is ending still answers `landShuttingDown`.
+                // land that is ending still answers `landShuttingDown` (W6d). A cancel whose hop
+                // beats the release throws `CancellationError` from `awaitLeaveEnd` instead: on a
+                // draining land, the answer depends on when the hop lands.
                 let cancelledWhileWaiting = Task.isCancelled
                 request = try withTurn { m, side, outputs in
                     guard !side.isDraining else { throw JoinError.landShuttingDown }

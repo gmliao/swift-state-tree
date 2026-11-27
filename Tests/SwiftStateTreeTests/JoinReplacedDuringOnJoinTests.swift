@@ -1033,6 +1033,46 @@ struct JoinReplacedDuringOnJoinTests {
         #expect(await f.keeper.playerCount() == 0)
     }
 
+    @Test("W6d: W6c on a draining land: a rejoin's cancel that lands after the drain released its waiter gets landShuttingDown, since J2c checks the drain before the cancel (#943)", arguments: [false, true])
+    func cancelAfterTheDrainReleased(tick: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: true)
+        let key = ReplacedJoinGates.freshKey()
+        let gate = ReplacedJoinGates.gate(key)
+        defer { gate.release() }
+        let clientA = ClientID("lgate-\(key)")
+        guard let (leaveA, joinC) = try await rejoinWaitingForTheLeave(f, clientA: clientA, sessionA: SessionID("s-a"), leaveGate: gate) else { return }
+        // C's cancel is held before it looks for its waiter; the drain releases the waiter
+        // meanwhile, while A's leave is still in its OnLeave resolver.
+        let atCancel = TestGate()
+        defer { atCancel.open() }
+        let cancelled = EventLog()
+        await f.keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>()
+            .on(.leaveEndWaiterCancel) { await atCancel.arrive() }
+            .on(.leaveEndWaiterCancelled) { cancelled.append("cancelled") }
+            .hook)
+        joinC.cancel()
+        #expect(await atCancel.waitForArrivals(1))
+        let shutdown = Task { await f.keeper.forceShutdown() }
+        defer { shutdown.cancel() }
+        // C resumed from the drain's release, cancelled: J2c answers the drain first.
+        guard let errorC = await valueWithinHangBound(joinC) else {
+            Issue.record("tick=\(tick): C's join didn't end after the drain's release")
+            return
+        }
+        var shuttingDown = false
+        if case .landShuttingDown? = errorC as? JoinError { shuttingDown = true }
+        #expect(shuttingDown, "tick=\(tick): C's join \(describe(errorC))")
+        #expect(await f.keeper.leaveEndWaiterCountForTesting(f.player) == 0)
+        atCancel.open()
+        #expect(await cancelled.waitFor("cancelled"), "the cancel never ran")
+        let cancels = await f.keeper.leaveEndWaiterCancelsForTesting()
+        #expect(cancels.removed == 0 && cancels.foundGone == 1, "cancels \(cancels)")
+        gate.release()
+        _ = await valueWithinHangBound(leaveA)
+        _ = await valueWithinHangBound(shutdown)
+        #expect(await f.keeper.playerCount() == 0)
+    }
+
     @Test("W3b: a join that decided its kick before the player's own leave started waits for that leave at J2c: join A, leave A, join C (#943)", arguments: [false, true], [false, true])
     func kickDecidedBeforeTheOwnLeaveWaitsAtJ2c(tick: Bool, reporting: Bool) async throws {
         let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
