@@ -9,6 +9,7 @@
 
 import Foundation
 import Testing
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTree
 
 @StateNodeBuilder
@@ -346,7 +347,7 @@ struct TicklessActionJobTests {
         guard await TicklessJobGates.gate(k).waitUntilEntered() else { return }
 
         let freeze = Task { () -> (frozen: Bool, filled: Bool) in
-            let frozen = await keeper.debugFreeze(generation: 1, timeout: .seconds(30))
+            let frozen = await keeper.debugFreeze(generation: 1, timeout: freezeWithoutDeadline)
             return (frozen, await keeper.actionSlotIsFilledForTesting(sequence))
         }
         // The freeze is waiting on the job (the keeper reports the work in flight).

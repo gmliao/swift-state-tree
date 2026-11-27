@@ -16,6 +16,11 @@ import SwiftStateTreeTransport
 /// it; it states its own short bound instead.
 package let testHangBound: Duration = .seconds(60)
 
+/// A freeze, settle or auto-resume deadline for tests that hold work while frozen: far above any
+/// runner stall, so only the test's release ends the wait. The suite's time limit bounds a hang.
+/// A test of the deadline itself sets its own short value (#904, #928).
+package let freezeWithoutDeadline: Duration = .seconds(3600)
+
 /// Whether the test support (and so the package) was built in debug. A test whose ordering
 /// depends on a wait probe that returns at once outside DEBUG builds gates on it
 /// (`.enabled(if: isDebugBuild, …)`), so a release run reports it skipped. A test that only

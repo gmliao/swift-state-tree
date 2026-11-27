@@ -6,6 +6,7 @@
 
 import Foundation
 import Testing
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTree
 
 // MARK: - Test lands
@@ -187,11 +188,6 @@ private func settleScheduler() async {
 private func envelope<A: ActionPayload>(_ action: A) -> ActionEnvelope {
     ActionEnvelope(typeIdentifier: String(describing: A.self), payload: AnyCodable(action))
 }
-
-/// A freeze deadline for tests that hold in-flight work and assert that the freeze waits for it:
-/// far above any runner stall, so only the release ends the wait. The suite's time limit bounds a
-/// hang. The deadline itself is tested in "The drain has a deadline" (#904).
-private let freezeWithoutDeadline: Duration = .seconds(3600)
 
 // MARK: - Tests
 
