@@ -1656,9 +1656,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             await withCheckedContinuation { continuation in
                 turnSide.debugDrainWaiters[waiterID] = continuation
-                let watchers = freezeWaitWatchersForTesting
-                freezeWaitWatchersForTesting.removeAll()
-                watchers.forEach { $0.resume() }
+                freezeRegistrationsForTesting += 1
+                let registered = freezeRegistrationsForTesting
+                let ready = freezeWaitWatchersForTesting.filter { $0.count <= registered }
+                freezeWaitWatchersForTesting.removeAll { $0.count <= registered }
+                ready.forEach { $0.continuation.resume() }
             }
             timer.cancel()
         }
@@ -2203,6 +2205,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         precondition(model.initializationFailure == nil, "coreTwinForTesting: the initialization failed")
         // A drain still scheduled would be copied as scheduled, and the core would never run one.
         precondition(!model.inputDrainScheduled, "coreTwinForTesting: an input drain is still scheduled; wait for the keeper's work first")
+        // The model's slots would be copied without the side's failure table and job tasks.
+        precondition(model.actionSlots.isEmpty && model.actionJobs.isEmpty, "coreTwinForTesting: the source holds action jobs or slots")
         // The twin shares the source's mailbox and sentinel (Review round 2 on #938): it starts
         // from an empty mailbox, and one source closes at most one twin's gate, so a second twin
         // with a transport can't replace the first one's gate unseen.
@@ -2235,6 +2239,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         side.playerServices = turnSide.playerServices
         // The source's test holds, so a staged start on the core reaches the same hold points.
         side.holdPoints = turnSide.holdPoints
+        // The source's mid-step audit of the action tables (tests turn it on for both paths).
+        side.actions.auditOn = turnSide.actions.auditOn
         // A guarded entry refused on this keeper while the core steps (they share the sentinel)
         // closes the twin's gate, as the keeper's own refusal closes its transport's.
         // Only a twin with a transport sets the gate, so a later twin without one can't clear it.
@@ -2322,8 +2328,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The abandoned resolvers of a completed job ended: it leaves the caps.
     fileprivate func releaseCompletedActionJob(_ sequence: Int64) {
         withTurn { m, side, outputs in
-            guard m.actionJobs[sequence]?.completed == true else { return }
-            m.removeActionJob(behavior, &side, &outputs, sequence)
+            m.releaseCompletedActionJobBody(behavior, &side, &outputs, sequence)
         }
     }
 
@@ -2488,15 +2493,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Test hook: whether the land is frozen.
     /// Test hook, observation only: returns once a freeze is waiting for in-flight work (it
     /// registered its waiter, in the same segment that checked the work).
+    /// Returns once a freeze caller waits (or has waited: the count is of registrations).
     package func waitUntilFreezeWaitsForTesting() async {
-        guard turnSide.debugDrainWaiters.isEmpty else { return }
+        await waitUntilFreezeRegistrationsForTesting(1)
+    }
+
+    /// Returns once `count` freeze callers have registered as waiting, ever: a monotonic count
+    /// of registration events, so a caller that registered and timed out before this was
+    /// called still counts (#948 round 3: a watcher counts events, it doesn't read state).
+    package func waitUntilFreezeRegistrationsForTesting(_ count: Int) async {
+        guard freezeRegistrationsForTesting < count else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            freezeWaitWatchersForTesting.append(continuation)
+            freezeWaitWatchersForTesting.append((count, continuation))
         }
     }
 
-    /// Callers of `waitUntilFreezeWaitsForTesting` waiting for a freeze to wait.
-    private var freezeWaitWatchersForTesting: [CheckedContinuation<Void, Never>] = []
+    /// How many freeze callers have registered as waiting (tests).
+    private var freezeRegistrationsForTesting = 0
+    /// Callers of `waitUntilFreezeRegistrationsForTesting` waiting for a registration count.
+    private var freezeWaitWatchersForTesting: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     package func debugIsFrozenForTesting() -> Bool {
         model.debugFrozen
@@ -2531,7 +2546,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func watchActionSlotForTesting(_ sequence: Int64, waiter: Bool) -> AsyncStream<Void> {
         let key = KeeperSlotWatchKey(waiter: waiter, sequence: sequence)
         let (stream, continuation) = AsyncStream<Void>.makeStream()
-        let already = waiter ? turnSide.actions.slotWaiters[sequence] != nil : model.actionSlots[sequence]?.result != nil
+        let already = waiter
+            ? turnSide.actions.slotWaiters[sequence] != nil || turnSide.coreInputReplies.slots.waits[sequence] != nil
+            : model.actionSlots[sequence]?.result != nil
         if already {
             continuation.yield()
             continuation.finish()
@@ -2860,10 +2877,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await debugWaitWhileFrozen()
         }
         // The intake's segment (A1), in the same actor segment as the wait above: the work count
-        // begins in it, with the append and the waiter's turn.
+        // begins in it, with the append and the waiter's turn. The caller's cancellation is read
+        // here, in the caller's task, and passed in.
+        let callerCancelled = Task.isCancelled
         let request = try withTurn { m, side, outputs in
             try m.actionIntakeBody(behavior, &side, &outputs, envelope, playerID: playerID, clientID: clientID, sessionID: sessionID,
-                                 enforcingLimits: enforcingLimits, isTickless: isTickless)
+                                 enforcingLimits: enforcingLimits, isTickless: isTickless, callerCancelled: callerCancelled)
         }
         switch request {
         case .done(let submission):
@@ -5351,6 +5370,10 @@ extension KeeperModel {
         if let id = initializationFailure { owners[id, default: 0] += 1 }
         for slot in actionSlots.values { if case .failed(let id)? = slot.result { owners[id, default: 0] += 1 } }
         for result in inputTurnResults.values { if case .failed(let id) = result { owners[id, default: 0] += 1 } }
+        for id in inFlightRecordResults.keys { owners[id, default: 0] += 1 }
+        if !side.coreInputReplies.onCore, !inFlightRecordResults.isEmpty {
+            violations.append("in-flight record results \(inFlightRecordResults.values.sorted()) on the keeper's side")
+        }
         for (id, count) in owners where count > 1 { violations.append("\(id) has \(count) owners") }
         for id in owners.keys where side.failures[id] == nil { violations.append("\(id) has no table entry") }
         for id in side.failures.keys where owners[id] == nil { violations.append("\(id) has no owner") }
@@ -5359,10 +5382,19 @@ extension KeeperModel {
         if !coreReplies.onCore, !coreReplies.waits.isEmpty || !coreReplies.dropped.isEmpty {
             violations.append("core input waits \(coreReplies.waits.keys.sorted()) (\(coreReplies.dropped.count) dropped) on the keeper's side")
         }
-        // K2-1 routes the action intake without jobs; K2-2 routes them on the core (plan §16
-        // item 17). A job a core's intake registered has nothing that runs or completes it.
-        if coreReplies.onCore, !actionJobs.isEmpty || !actionSlots.isEmpty {
-            violations.append("core side: a job intake \(actionJobs.keys.sorted()), routed in K2-2")
+        // The core's job lane (K2-2 plan, commit 0): its starts, releases and slot waits live on
+        // a core's side only, and a slot wait has its slot, as a keeper's waiter does.
+        if !coreReplies.onCore, !coreReplies.jobStarts.isEmpty || !coreReplies.jobReleases.isEmpty
+            || !coreReplies.slots.waits.isEmpty || !coreReplies.slots.ready.isEmpty {
+            violations.append("core job lane entries on the keeper's side")
+        }
+        if !coreReplies.onCore, !coreBarrierWaits.isEmpty {
+            violations.append("core barrier waits on the keeper's side")
+        }
+        for sequence in coreReplies.slots.waits.keys {
+            if actionSlots[sequence] == nil { violations.append("core slot wait \(sequence) without a slot") }
+            if actionSlots[sequence]?.result != nil { violations.append("slot \(sequence) holds a result and a core wait") }
+            if actions.slotWaiters[sequence] != nil { violations.append("slot \(sequence) has a keeper waiter and a core wait") }
         }
         for refusal in coreReplies.refusals { violations.append("core side: refused \(refusal)") }
         // A sync follow-up that slipped past the refusal (Review round 2 on #938): its work count
@@ -5405,17 +5437,29 @@ extension KeeperModel {
         let sequence = item.sequence
         let resolverContext = makeResolverContext(behavior, ctx)
         let keeperReference = side.keeperReference
+        // On a core the release is an effect its completion starts (`.actionJobRelease`); the
+        // keeper's comes from the abandonment's end.
+        let onCore = side.coreInputReplies.onCore
         let abandonment = ResolverAbandonment(
             kind: .action,
             counter: side.sharedAbandonmentCounter,
             metrics: ResolverDeadline.metrics
         ) { [weak keeperReference] in
+            guard !onCore else { return }
             Task { await (keeperReference?.keeper as? LandKeeper<State>)?.releaseCompletedActionJob(sequence) }
         }
         actionSlots[sequence] = KeeperActionSlot()
         actionJobs[sequence] = KeeperActionJob(item: item, ticket: ticket, input: input)
         let box = side.actions.insertJobTask(sequence, abandonment: abandonment)
         actionJobsStarted += 1
+        if onCore {
+            // The step's end runs it as `.actionJob` (K2-2 plan, commit 0); `perform` installs
+            // its task in the box, as the staged start below does.
+            side.coreInputReplies.jobStarts.append(KeeperActionJobStart(
+                sequence: sequence, box: box, executors: executors, resolverContext: resolverContext, landContext: ctx))
+            checkActionTables(behavior, side, #function)
+            return
+        }
         // A copy, so the task doesn't hop to the keeper for it: with no hook it returns at once.
         let holds = side.holdPoints
         outputs.stage { [weak keeperReference] in
@@ -5486,16 +5530,17 @@ extension KeeperModel {
         clientID: ClientID,
         sessionID: SessionID,
         enforcingLimits: Bool,
-        isTickless: Bool
+        isTickless: Bool,
+        callerCancelled: Bool
     ) throws -> ActionIntakeRequest {
         guard isTickless else {
             return try actionIntake(behavior, &side, &outputs, envelope, playerID: playerID, clientID: clientID, sessionID: sessionID,
-                                    enforcingLimits: enforcingLimits, isTickless: false)
+                                    enforcingLimits: enforcingLimits, isTickless: false, callerCancelled: callerCancelled)
         }
         debugBeginWork()
         do {
             let request = try actionIntake(behavior, &side, &outputs, envelope, playerID: playerID, clientID: clientID,
-                                           sessionID: sessionID, enforcingLimits: enforcingLimits, isTickless: true)
+                                           sessionID: sessionID, enforcingLimits: enforcingLimits, isTickless: true, callerCancelled: callerCancelled)
             // Kept on return: a job's work ends when its response exists (`fillActionSlot`), a
             // delivered action's after its input turn (the driver).
             return request
@@ -5514,7 +5559,8 @@ extension KeeperModel {
         clientID: ClientID,
         sessionID: SessionID,
         enforcingLimits: Bool,
-        isTickless: Bool
+        isTickless: Bool,
+        callerCancelled: Bool
     ) throws -> ActionIntakeRequest {
         let definition = behavior.definition
         let typeIdentifier = envelope.typeIdentifier
@@ -5603,7 +5649,9 @@ extension KeeperModel {
             // in the caller's task: the job's task wouldn't inherit the cancellation. An action
             // delivered below isn't checked: one whose closure built nothing is handled like an
             // action without resolvers, which a cancelled caller's submit still delivers.
-            try Task.checkCancellation()
+            // The caller's cancellation, read in the caller's segment and passed in: a core step
+            // runs on the core's driver task, whose own cancellation isn't the caller's.
+            if callerCancelled { throw CancellationError() }
             // A tickless job's work ends when its response exists (`fillActionSlot`).
             if isTickless { ticklessJobWork.insert(sequence) }
             startActionJob(behavior, &side, &outputs,
@@ -5861,6 +5909,8 @@ extension KeeperModel {
     mutating func scheduleInputDrain(_ side: KeeperTurnSide, _ outputs: inout TurnOutputs) {
         guard !inputDrainScheduled else { return }
         inputDrainScheduled = true
+        // On a core the step that set the flag queues `.inputDrainDue` itself (K2-2 commit 0).
+        guard !side.coreInputReplies.onCore else { return }
         let keeperReference = side.keeperReference
         outputs.stage { [weak keeperReference] in
             let keeper = keeperReference?.keeper as? LandKeeper<State>
@@ -5967,6 +6017,10 @@ extension KeeperModel {
         if let waiter = side.actions.slotWaiters.removeValue(forKey: sequence) {
             actionSlots.removeValue(forKey: sequence)
             resume { waiter.resume(with: outcome) }
+        } else if let caller = side.coreInputReplies.slots.waits.removeValue(forKey: sequence) {
+            // A core's waiting caller: the step's end replies (K2-2 plan, commit 0).
+            actionSlots.removeValue(forKey: sequence)
+            side.coreInputReplies.slots.ready.append((caller, outcome))
         } else {
             // `held` writes the model, and an optional-chain assignment begins its access to the
             // model before it evaluates its right side: run it first, or the two accesses overlap.
@@ -5997,6 +6051,50 @@ extension KeeperModel {
         #endif
     }
 
+    /// The abandoned resolvers of a completed job ended: it leaves the caps (the keeper's
+    /// `releaseCompletedActionJob`, and a core's `.actionJobReleased`).
+    mutating func releaseCompletedActionJobBody(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ sequence: Int64
+    ) {
+        guard actionJobs[sequence]?.completed == true else { return }
+        removeActionJob(behavior, &side, &outputs, sequence)
+    }
+
+    /// A core's `awaitActionResult` (K2-2 plan, commit 0), as the keeper's runs it in its one
+    /// segment: the outcome when the slot holds it (the slot leaves), nil when the caller now
+    /// waits on it, or `ActionResultUnavailable` (no slot, or a waiter already). The caller's
+    /// cancel is its own: it cancels the job's box, as the keeper's handler does, so this body
+    /// doesn't read `Task.isCancelled` (a core step runs on the core's task).
+    mutating func awaitActionResultBody(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ sequence: Int64,
+        caller: InputID?
+    ) -> Result<InputOutcome, any Error>? {
+        guard let slot = actionSlots[sequence], side.actions.slotWaiters[sequence] == nil,
+              side.coreInputReplies.slots.waits[sequence] == nil else {
+            return .failure(ActionResultUnavailable(sequence: sequence))
+        }
+        if let result = slot.result {
+            actionSlots.removeValue(forKey: sequence)
+            let outcome = taken(behavior, &side, result, path: .slot, sequence: sequence)
+            checkActionTables(behavior, side, "awaitActionResult(sequence:)")
+            return outcome
+        }
+        side.coreInputReplies.slots.waits[sequence] = caller
+        checkActionTables(behavior, side, "awaitActionResult(sequence:)")
+        // The waiter's watchers (tests), as the keeper's handler wakes them once it waits. They
+        // wake inline: a test stream's yield runs no keeper code.
+        for watcher in side.takeSlotWatchers(KeeperSlotWatchKey(waiter: true, sequence: sequence)) {
+            watcher.yield()
+            watcher.finish()
+        }
+        return nil
+    }
+
     /// The worker's segment (A2): delivers the result like any input, with the intake's ticket
     /// checked against the current state, and fills the job's slot with the outcome. The slot's
     /// resume and the drain's task are staged.
@@ -6012,9 +6110,13 @@ extension KeeperModel {
         // is there; an optional read keeps the guard above the only early return.
         let jobTask = side.actions.jobTasks[sequence]
         // The job's place in the caps lasts until its resolvers' task ends.
-        if jobTask?.abandonment.isRunning == true {
+        if let jobTask, jobTask.abandonment.isRunning {
             job.completed = true
             actionJobs[sequence] = job
+            // A core's release is the effect's: it waits for the abandoned resolvers to end.
+            if side.coreInputReplies.onCore {
+                side.coreInputReplies.jobReleases.append((sequence, jobTask.abandonment))
+            }
         } else {
             removeActionJob(behavior, &side, &outputs, sequence)
         }
@@ -8530,7 +8632,8 @@ extension KeeperModel {
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         port: any LandKeeperTransport,
-        fence: SettleFence
+        fence: SettleFence,
+        owner: (any AnyObject & Sendable)? = nil
     ) -> SettleTurnOutcome {
         requestedSyncTurnsForTesting[.settle, default: 0] += 1
         guard behavior.config.mode == .live, side.failure == nil, !side.isDraining else { return .closed(side.failure) }
@@ -8547,8 +8650,12 @@ extension KeeperModel {
         // never attached, its sync requester (#546 L2d). Checked without binding; a settle binds
         // the requester only once every check has passed, so a refused one changes nothing.
         let markBeforePort = recorderSubmissionCount
+        // `owner`: a core's query names the owner, whose side has no keeper reference.
         let runsInTurn: Bool
-        switch callOut(behavior, &side, &outputs, { _, side in side.keeperReference.keeper.map { port.runsSyncPhaseInTurn(of: $0) } ?? false }) {
+        switch callOut(behavior, &side, &outputs, { _, side in
+            let witnessOwner: AnyObject? = owner ?? side.keeperReference.keeper
+            return witnessOwner.map { port.runsSyncPhaseInTurn(of: $0) } ?? false
+        }) {
         case .refused(let refused):
             enqueueTicklessTurnEnd(behavior, side, since: markBeforePort)
             return .failed(side.failure ?? refused)
