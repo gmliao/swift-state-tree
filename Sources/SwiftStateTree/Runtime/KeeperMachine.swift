@@ -66,7 +66,10 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     case shutdown
     case awaitInitialized
     case awaitResume
-    case syncStreamDraft([SyncStreamDraft])
+    /// `submitSyncStream`'s drafts (the adapter's awaited callers: the `.legacyCycle` branch, the
+    /// disconnect's clear). `outsideTurn`: the adapter's standalone registration and fallback
+    /// admission, as the keeper's entry takes it (K2 §16 item 6).
+    case syncStreamDraft([SyncStreamDraft], outsideTurn: Bool)
 
     // Results of `run`.
     /// A join's resolvers returned: the stage names the segment that resumes, with what it
@@ -112,10 +115,10 @@ enum KeeperInputRoutes {
         .tickDue, .syncDue, .recordTaken, .inputDrainDue, .join, .joinStepped, .leave, .leaveStepped, .action, .clientEvent, .startLand,
         .actionResolved, .actionJobReleased, .awaitActionResult,
         .freeze, .resume, .awaitResume, .awaitInitialized, .freezeTimedOut,
+        .syncStreamDraft,
     ]
     static let deferred: [KeeperInputRoute: String] = [
         .shutdown: "K2-2 commit 1: it ends in the destroy drain (after K2-1b)",
-        .syncStreamDraft: "K2-2",
         .initializeResolved: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
         .destroyHandlerResolved: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
         .drainFinished: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
@@ -475,6 +478,11 @@ extension KeeperModel: TurnMachine {
             } else {
                 coreBarrierWaits.initialized.append(caller)
             }
+        case let .syncStreamDraft(drafts, outsideTurn):
+            // The keeper's `submitSyncStream` body: the drafts' factories run in the step; one
+            // that re-enters is refused, and the frame's backstop ends the land in this step (the
+            // keeper's body applies it in place: compare the two in the differential).
+            step(behavior, store) { m, side, _ in m.recordSyncStream(behavior, side, drafts, outsideTurn: outsideTurn) }
         case let .awaitActionResult(sequence):
             let caller = turn.input
             let outcome = step(behavior, store) { m, side, _ in m.awaitActionResultBody(behavior, &side, sequence, caller: caller) }
