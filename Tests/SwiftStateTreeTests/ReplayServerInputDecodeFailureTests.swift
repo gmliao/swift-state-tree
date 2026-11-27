@@ -100,6 +100,13 @@ private func replaySIStackAddress() -> Int {
     return withUnsafeMutablePointer(to: &local) { Int(bitPattern: $0) }
 }
 
+#if canImport(Glibc)
+/// glibc's `pthread_getattr_np`, a GNU extension Swift's Glibc module doesn't expose: bound by
+/// its symbol name (as cloud probe 874-p2 did on Swift 6.4.3).
+@_silgen_name("pthread_getattr_np")
+private func replaySIPthreadGetattrNP(_ thread: pthread_t, _ attributes: UnsafeMutablePointer<pthread_attr_t>) -> Int32
+#endif
+
 /// Whether `replaySIThreadStackTop` knows this platform. Where it doesn't, the replay runs and
 /// its assertions hold, but the stack isn't measured.
 private let replaySICanMeasureStack: Bool = {
@@ -111,14 +118,14 @@ private let replaySICanMeasureStack: Bool = {
 }()
 
 /// The top (highest address) of the current thread's stack. A per-platform call: Darwin has
-/// `pthread_get_stackaddr_np`, glibc has `pthread_getattr_np`, Windows has
+/// `pthread_get_stackaddr_np`, glibc has `pthread_getattr_np` (declared above), Windows has
 /// `GetCurrentThreadStackLimits`, and Foundation has none of them.
 private func replaySIThreadStackTop() -> Int? {
     #if canImport(Darwin)
     return Int(bitPattern: pthread_get_stackaddr_np(pthread_self()))
     #elseif canImport(Glibc)
     var attributes = pthread_attr_t()
-    guard pthread_getattr_np(pthread_self(), &attributes) == 0 else { return nil }
+    guard replaySIPthreadGetattrNP(pthread_self(), &attributes) == 0 else { return nil }
     defer { pthread_attr_destroy(&attributes) }
     var base: UnsafeMutableRawPointer?
     var size = 0
