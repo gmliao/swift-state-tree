@@ -455,6 +455,45 @@ struct LandRouterJoinAttemptTests {
         #expect(!(await h.router.hasHandshakePhase(session)), "nothing re-added it since")
     }
 
+    @Test("A stale attempt's undo after its admission spares a new connection that joined under the same ID (#945)")
+    func staleUndoSparesAReusedID() async throws {
+        let h = try await AttemptHarness.make()
+        let session = SessionID("s-reused-after-admit")
+        // One entry: the next session to end evicts this one, as 4096 would. An ID in the
+        // ended set can't be admitted again, so only an evicted one can take a new connection.
+        await h.adapter.setEndedSessionCapacityForTesting(1)
+        _ = await h.connect(session)
+        let oldGeneration = try #require(await h.transport.connectionGeneration(for: session))
+        // Only the first attempt holds (arrival 1).
+        let (gate, _) = await h.holdCounting(at: .afterAdmit)
+        let oldJoin = try h.startJoin(session, requestID: "join-old", player: "p1")
+        #expect(await gate.waitForArrivals(1))
+        // The first attempt goes stale; its disconnect reaches the adapter, then another
+        // session's end evicts the ID from the ended set.
+        await h.transport.handleDisconnection(sessionID: session)
+        await h.router.waitForDisconnectForwardsForTesting()
+        await h.adapter.onDisconnect(sessionID: SessionID("s-evictor"), clientID: ClientID("c-evictor"))
+
+        // A new connection under the same ID joins, while the first attempt is held.
+        let reused = await h.connect(session)
+        let reusedGeneration = try #require(await h.transport.connectionGeneration(for: session))
+        #expect(reusedGeneration != oldGeneration)
+        await h.router.onMessage(try h.joinFrame("join-new", player: "p1"), from: session)
+        #expect(await reused.waitForJoinResponse(), "the new connection's join was answered")
+        #expect(await h.adapter.isJoined(sessionID: session))
+
+        // The first attempt's undo is for its own connection only.
+        gate.open()
+        await oldJoin.value
+        await h.adapter.waitForOutboundIdleForTesting()
+        #expect(await h.adapter.isJoined(sessionID: session), "the stale undo removed the new connection's membership")
+        #expect(await h.players == ["p1"])
+        #expect(await h.keeper.playerCount() == 1)
+        #expect(await h.router.getBoundLandID(for: session) == h.container.landID)
+        #expect(await !reused.closed)
+        await h.keeper.forceShutdown()
+    }
+
     @Test("A reconnect with a new SessionID while the old join is held: each touches only its own session")
     func reconnectWithNewID() async throws {
         let h = try await AttemptHarness.make()
@@ -633,6 +672,76 @@ struct LandRouterFlipFailureGenerationTests {
         await h.transport.flushSessionQueues()
         #expect(await reused.frames == [Data("hello".utf8)])
         #expect(await !reused.closed, "the old connection's close closed the new one")
+        await h.router.installHolds(nil)
+        await h.keeper.forceShutdown()
+    }
+
+    /// How the pending join fails at its flip in `flipStageJoinDeniedSparesAReusedID`.
+    enum FlipStageFailure: String, CaseIterable, Sendable, CustomTestStringConvertible {
+        /// A newer join of the player is admitted while the flip waits.
+        case superseded
+        /// The land is torn down while the flip waits.
+        case landClosed
+        var testDescription: String { rawValue }
+    }
+
+    @Test(
+        "A flip-stage JOIN_DENIED is for the connection that joined: a new connection that took the ID doesn't get it (#941)",
+        arguments: FlipStageFailure.allCases
+    )
+    func flipStageJoinDeniedSparesAReusedID(_ stage: FlipStageFailure) async throws {
+        let h = try await AttemptHarness.make()
+        let a = SessionID("s-a-\(stage.rawValue)")
+        // A's join stays pending (no flip) until the failure below ends it.
+        await h.adapter.setJoinFlipHeldForTesting(true)
+        await h.adapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
+        let first = await h.connect(a)
+        let oldGeneration = try #require(await h.transport.connectionGeneration(for: a))
+        try await h.startJoin(a, requestID: "join-a", player: "p1").value
+        #expect(await h.router.isJoinPending(a), "admitted, waiting for its flip")
+
+        // The failure path is held after it read A's generation and ended the attempt,
+        // before it sends the JOIN_DENIED.
+        let failed = TestGate(), handled = TestGate()
+        handled.open()
+        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.flipFailed, arrival: 1) { await failed.arrive() }
+            .on(.flipFailureHandled, arrival: 1) { await handled.arrive() }
+            .hook)
+        // The newer join's handler, when there is one; awaited after the release.
+        var newerJoin: Task<Void, Never>?
+        switch stage {
+        case .superseded:
+            // A newer join of p1, on another session, supersedes A; A's 4017 goes out.
+            let a2 = SessionID("s-a2-\(stage.rawValue)")
+            _ = await h.connect(a2)
+            newerJoin = try h.startJoin(a2, requestID: "join-a2", player: "p1")
+            #expect(await failed.waitForArrivals(1), "A's join failed (superseded) and its failure path is held")
+            #expect(await first.waitUntilClosed(), "A was closed by its supersede")
+        case .landClosed:
+            await h.adapter.endSessionTicketsForTeardown()
+            #expect(await failed.waitForArrivals(1), "A's join failed (land closed) and its failure path is held")
+        }
+
+        // While the router holds A's failure, A's client goes and a new connection takes the ID.
+        await h.transport.handleDisconnection(sessionID: a)
+        let reused = AttemptConnection()
+        #expect(await h.transport.handleConnection(sessionID: a, connection: reused, authInfo: nil) == .accepted)
+        let reusedGeneration = try #require(await h.transport.connectionGeneration(for: a))
+        #expect(reusedGeneration != oldGeneration)
+        let staleDropsBefore = await h.transport.framesDroppedStaleGeneration
+
+        failed.open()
+        #expect(await handled.waitForArrivals(1), "the router's failure path for A ended")
+        await newerJoin?.value
+        await h.adapter.waitForOutboundIdleForTesting()
+        await h.transport.flushSessionQueues()
+        // A is back in the handshake, so the error took the transport branch, named for A's
+        // old connection, which is gone: the transport drops it.
+        #expect(await h.transport.framesDroppedStaleGeneration == staleDropsBefore + 1, "the JOIN_DENIED wasn't named for A's old connection")
+        let reusedCodes = await reused.errorCodes
+        #expect(reusedCodes.isEmpty, "the new connection got A's error: \(reusedCodes)")
+        #expect(await !reused.closed)
         await h.router.installHolds(nil)
         await h.keeper.forceShutdown()
     }
