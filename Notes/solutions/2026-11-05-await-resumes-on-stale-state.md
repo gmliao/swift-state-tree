@@ -53,3 +53,5 @@ The rule in `CLAUDE.md` / `AGENTS.md` § Reentrancy, from [the reentrancy helper
 
 - Before writing `await` in an actor, list the state read before it that the code after it depends on. If there is any, either move the act into a turn input or capture a ticket.
 - Pin each fix with a test that holds the code at the `await` and runs the competing call there (see [hold points, not timing](2026-11-05-hold-points-not-timing-in-race-tests.md)). TSan doesn't catch this class.
+- A re-check after an `await` covers every exit of the resuming segment, not only the one that acts: the success path, a timeout and a thrown error each decide something (#946: the drain check sat in the apply, and the timeout and `.failLand` exits before it still failed the initialization with the resolver's error and staged a second teardown).
+- A teardown decision keyed on an outcome that is still racing must key on what had applied. The drain ran the destroy handlers when `initializationFailure` was nil, which it also was while OnInitialize's resolvers were still running; the drain now asks whether OnInitialize had applied (#946).
