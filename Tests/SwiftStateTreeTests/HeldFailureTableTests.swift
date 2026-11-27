@@ -43,6 +43,19 @@ private func expectAligned(_ keeper: LandKeeper<HeldFailureState>, _ step: Strin
 
 @Suite("The failure table and the action tables", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct HeldFailureTableTests {
+    @Test("A core's input-turn wait on the keeper's own side is a violation, counted at a check site (#700 K2-1)")
+    func coreInputWaitOnTheKeepersSideIsAViolation() async throws {
+        let keeper = await keeper(tick: false)
+        await expectAligned(keeper, "before")
+        await keeper.putCoreInputWaitForTesting(sequence: 41)
+        let violations = await keeper.actionTableViolationsForTesting()
+        #expect(violations.count == 1 && violations.first?.contains("core input waits [41]") == true, "\(violations)")
+        // A site that checks the tables counts it: a client event's input turn resumes its waiters.
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        _ = try? await keeper.handleClientEvent(AnyClientEvent(HeldFailureEvent(token: 3)), playerID: p1, clientID: c1, sessionID: s1)
+        #expect(await keeper.alignmentViolationsForTesting() > 0)
+    }
+
     @Test("The table holds an unread failure until it is read, and nothing after", arguments: [true, false])
     func failureTableHoldsOnlyWhatIsUnread(tick: Bool) async throws {
         let keeper = await keeper(tick: tick)
