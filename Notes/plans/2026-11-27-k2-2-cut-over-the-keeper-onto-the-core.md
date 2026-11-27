@@ -70,16 +70,16 @@ Tests: the differential gets a job case per lane shape (a resolver job that succ
 
 ### 3.1 Commit 1's mapping of K2-1b's requests
 
-This follows #942's boundary table (K2-1b plan, § "The boundary with K2-2", c6e88d72), with Review's correction of the `.waitForTick` row. On a land with a recorder, K2-2 keeps `ticksInFlight` and the work count until `.recordTaken` (K2 plan §18, #938's note). So the drain's first segment waits for `.recordTaken`, not just for the tick's step. Where the two disagree, #942's merged table governs, and this table is updated in the same PR.
+This follows #942's boundary table (K2-1b plan, § "The boundary with K2-2", at d7fb97d8, which carries Review's correction of the `.waitForTick` row). On a land with a recorder, K2-2 keeps `ticksInFlight` and the work count until `.recordTaken` (K2 plan §18, #938's note). So the drain's first segment waits for `.recordTaken`, not just for the tick's step. Where the two disagree, #942's merged table governs, and this table is updated in the same PR.
 
 | K2-1b request or staged call | On the core | Result input | Routed in |
 |---|---|---|---|
 | `.runResolvers` (initialization) | the resolver effect | `.initializeResolved` (deferred at #938) | 1 |
 | `.submitRecord` | the record effect | `.initializeRecorded` (new) | 1 |
-| `.startLoops` | an **owner call after the step**: it writes the actor fields `tickTask` and `syncTask`. It stays so until #762's core timers replace the loops; commit 4's drivers keep it | `.initializeDone` (new; sets `didInitialize`) | 1 |
+| `.startLoops` | an **owner call after the step**: it writes the actor fields `tickTask` and `syncTask`. It stays so until #762's core timers replace the loops; commit 4's drivers keep it | `.initializeDone(loopsConfigured:)` (new; sets `didInitialize` after the loops, and asserts they are configured on a tick land) | 1 |
 | `fail`'s staged teardown (`Task { tearDownAfterFailedInitialization }`) | an **effect**, `.teardownAfterFailedInitialization`, whose `perform` calls the owner. It must not be dropped: mutant 5 and `LandManagerFailedInitializationTests` pin it | none: the teardown starts its own leave and drain flows | 1 |
 | `.replayHeader` (re-evaluation) | none: re-evaluation keepers keep the non-turn path until #612 | `initializeAfterReplay`: **outside the routed subset**, in a third route set, `legacyOnly`, that names #612 | not routed |
-| `.waitForTick` | a **barrier**: the drain's first step records its waiter while a tick's record is not yet taken (`ticksInFlight > 0`), and the `.recordTaken` step answers it. With no tick in flight, it replies at once | `.drainAfterTicks` (new) | 1 |
+| `.waitForTick` | a **barrier**: the drain's first step records its waiter while a tick's record is not yet taken (`ticksInFlight > 0`), and the `.recordTaken` step answers it (or the drain's start is deferred until that step). Without a recorder, the tick's step ends the hold, so it replies at once | `.drainAfterTicks` (new) | 1 |
 | `.runDestroyResolvers` | the resolver effect | `.destroyHandlerResolved` (deferred at #938) | 1 |
 | `.runAfterFinalize` | an effect: the land's AfterFinalize handler runs off the core with the snapshot, in its scope | `.drainAfterFinalize` (new) | 1 |
 | `.notifyTransport` | the port effect | `.drainFinished` (deferred at #938); then `setTransport(nil)`, which is the driver's owner call until commit 3's binding token makes it a step | 1 (3 for `setTransport`) |
