@@ -354,11 +354,102 @@ struct RoutedJoinSupersededTests {
             Issue.record("the routed join never kicked A")
             return
         }
-        // The direct join arrives later, finds the slot empty and joins.
-        guard await h.directJoin() else { return }
+        // The direct join arrives later and waits for the kick's leave (#943): A's entry is
+        // gone, its OnLeave not yet appended.
+        let keeper = h.container.keeper
+        let direct = Task { () -> (any Error)? in
+            do {
+                try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c-direct"), sessionID: SessionID("s-direct"))
+                return nil
+            } catch {
+                return error
+            }
+        }
+        defer { direct.cancel() }
+        guard await withinHangBound({ await keeper.waitForLeaveEndWaitersForTesting(PlayerID("p1"), count: 1) }) else {
+            Issue.record("the direct join never waited for the kick's leave")
+            return
+        }
 
-        // The kick returns: a later join arrived, so the routed join is fenced out.
+        // The kick returns: a later join arrived, so the routed join is fenced out, and the
+        // direct join joins after A's OnLeave.
         leaveA.open()
+        let directEnded = EventLog()
+        Task {
+            _ = await direct.value
+            directEnded.append("ended")
+        }
+        guard await directEnded.waitFor("ended") else {
+            Issue.record("the direct join didn't end after the kick")
+            return
+        }
+        let directError = await direct.value
+        #expect(directError == nil, "the direct join threw \(String(describing: directError))")
+        await h.expectSupersededAnswer(connection, joins: ["c-a", "c-direct"])
+        #expect(gate.arrivalCount == 0, "the routed join reached its OnJoin resolvers")
+        #expect(await adapter.inTurnAdmissionCountForTesting == admissionsBefore, "the routed join was admitted")
+        let bookkeeping = await adapter.joinBookkeepingForTesting(session)
+        #expect(bookkeeping.expectedAdmission == false && bookkeeping.memberJoinAttempt == false, "left behind: \(bookkeeping)")
+    }
+
+    @Test("A routed join parked behind its player's leave in flight, and superseded by a later join parked behind it too, gets the 4017 close, never reaches OnJoin or the admission, and leaves no join bookkeeping (#943)")
+    func parkedLoserClosesWith4017() async throws {
+        let h = try await RoutedSupersedeHarness.make(joinBudget: .zero)
+        let adapter = h.container.transportAdapter
+        let keeper = h.container.keeper
+        let player = PlayerID("p1")
+        // A holds the player; its own leave is held in OnLeave's resolver.
+        let sessionA = RoutedLeaveHold.gates.fresh { SessionID("s-a-leave-\($0)") }
+        let leaveA = RoutedLeaveHold.gates.gate(sessionA)
+        defer { leaveA.open() }
+        try await keeper.join(playerID: player, clientID: ClientID("c-a"), sessionID: sessionA)
+        let leaving = Task { try await keeper.leave(playerID: player, clientID: ClientID("c-a"), sessionID: sessionA) }
+        guard await leaveA.waitForArrivals(1) else {
+            Issue.record("A's leave never reached its OnLeave resolver")
+            return
+        }
+
+        // The routed join parks behind A's leave.
+        let (session, connection, gate) = await h.connect()
+        defer { gate.open() }
+        let admissionsBefore = await adapter.inTurnAdmissionCountForTesting
+        let routedEnded = TestGate()
+        defer { routedEnded.open() }
+        let routed = try h.startRoutedJoin(session, ended: routedEnded)
+        defer { routed.cancel() }
+        guard await withinHangBound({ await keeper.waitForLeaveEndWaitersForTesting(player, count: 1) }) else {
+            Issue.record("the routed join never parked behind A's leave")
+            return
+        }
+        // A later direct join parks behind it: the latest arrival.
+        let direct = Task { () -> (any Error)? in
+            do {
+                try await keeper.join(playerID: player, clientID: ClientID("c-direct"), sessionID: SessionID("s-direct"))
+                return nil
+            } catch {
+                return error
+            }
+        }
+        defer { direct.cancel() }
+        guard await withinHangBound({ await keeper.waitForLeaveEndWaitersForTesting(player, count: 2) }) else {
+            Issue.record("the direct join never parked behind A's leave")
+            return
+        }
+
+        // A's leave ends: both resume; the routed join is fenced out, and the direct one joins.
+        leaveA.open()
+        try await leaving.value
+        let directEnded = EventLog()
+        Task {
+            _ = await direct.value
+            directEnded.append("ended")
+        }
+        guard await directEnded.waitFor("ended") else {
+            Issue.record("the direct join didn't end after A's leave")
+            return
+        }
+        let directError = await direct.value
+        #expect(directError == nil, "the direct join threw \(String(describing: directError))")
         await h.expectSupersededAnswer(connection, joins: ["c-a", "c-direct"])
         #expect(gate.arrivalCount == 0, "the routed join reached its OnJoin resolvers")
         #expect(await adapter.inTurnAdmissionCountForTesting == admissionsBefore, "the routed join was admitted")
@@ -489,11 +580,37 @@ struct StandaloneJoinSupersededTests {
             Issue.record("the adapter's join never kicked A")
             return
         }
-        // The direct join arrives later, finds the slot empty and joins.
-        guard await h.directJoin() else { return }
+        // The direct join arrives later and waits for the kick's leave (#943): A's entry is
+        // gone, its OnLeave not yet appended.
+        let keeper = h.keeper
+        let direct = Task { () -> (any Error)? in
+            do {
+                try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c-direct"), sessionID: SessionID("s-direct"))
+                return nil
+            } catch {
+                return error
+            }
+        }
+        defer { direct.cancel() }
+        guard await withinHangBound({ await keeper.waitForLeaveEndWaitersForTesting(PlayerID("p1"), count: 1) }) else {
+            Issue.record("the direct join never waited for the kick's leave")
+            return
+        }
 
-        // The kick returns: a later join arrived, so the adapter's join is fenced out.
+        // The kick returns: a later join arrived, so the adapter's join is fenced out, and the
+        // direct join joins after A's OnLeave.
         leaveA.open()
+        let directEnded = EventLog()
+        Task {
+            _ = await direct.value
+            directEnded.append("ended")
+        }
+        guard await directEnded.waitFor("ended") else {
+            Issue.record("the direct join didn't end after the kick")
+            return
+        }
+        let directError = await direct.value
+        #expect(directError == nil, "the direct join threw \(String(describing: directError))")
         await h.expectSupersededAnswer(session, connection, ended: ended, joins: ["c-a", "c-direct"])
         #expect(gate.arrivalCount == 0, "the adapter's join reached its OnJoin resolvers")
     }
