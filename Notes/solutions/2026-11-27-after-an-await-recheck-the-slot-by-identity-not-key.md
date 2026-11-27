@@ -53,7 +53,8 @@ The insert also never carries the pending mark over: an entry whose OnJoin is st
 
 - Whatever a segment checked before an await, it re-checks after it by identity (a generation or ticket captured before the await), in the same segment as the act. A key lookup that finds something is not that check.
 - When the re-check finds a newer identity, refuse the stale actor (a fencing check) instead of acting again: a retry that can itself be overtaken has no bound, and the newer actor already carries the intent.
-- The fencing token is per attempt, taken when the attempt arrives, not read from the shared state the attempts fight over: that state can be empty, or hold an older attempt's write, while a newer attempt is still on its way.
+- The fencing token is per attempt, taken when the attempt arrives, not read from the shared state the attempts fight over. A fencing check that reads the current holder's identity forgets every newer attempt once the slot is empty, or holds an older attempt's write, while a newer attempt is still on its way. The token has to outlive the holder: keep the highest one seen per resource, pruned only when no attempt is in flight.
+- Check the resource's own end first (here, the drain): a land that is ending answers `landShuttingDown`, not `superseded`.
 - An act that removes state names it by identity too, not by the IDs it carries: a newer entry can carry the same ones.
 - A test for it holds the first actor in the await and lets a second one change the slot (here, three joins: one held in the kick's OnLeave, one held in its own OnJoin; a kick held before its leave, while a reconnect with the kicked IDs replaces the entry; and four joins whose two kicks return oldest first).
 - See [A callback that outlives its instance clears state by key alone](2026-11-05-callback-outlives-its-instance-clears-by-key.md) for the removal side of the same rule.

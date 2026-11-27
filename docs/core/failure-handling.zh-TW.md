@@ -101,7 +101,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 
 - **4016 `landFailed`：** 因失敗而結束的 land 以此關閉其 session，不論是直接建立還是由 host 管理。有 host 時，失敗的拆除與管理端停止一樣停止 land（detach、每個 session 的 leave、關閉），而 close code 在每個 session 的關閉請求發出時才讀取：管理端停止進行中 land 失敗時，關閉請求在失敗之後發出的每個 session 都收到 4016。已關閉、或關閉請求在失敗之前就發出的 session 維持 4014；請求送往 transport 的最後一段途中才失敗的也一樣。host 關機流程一旦接手 session 自行關閉（`closeSessionsForShutdown`），之後才失敗的 land，其 session 以關機的 1001 關閉。
 - **4012 `unencodableView`：** 保留不用，不再送出（#535）。在此之前，resync 或第一次 view 的 frame 持續無法編碼時會以它關閉 session；現在這類失敗以 4016 結束 land。
-- **4017 `superseded`：** 同一個玩家的較新 join 取代了這個 session（每個玩家一個 session，最新者勝，#92 與 #531）。只有這條連線被關閉，reason 為 "logged in elsewhere"，close grace 為 500 ms；玩家與 land 在較新的 session 中繼續。client 不應在此 code 上重連：同一玩家的兩個 client 會互相取代而形成迴圈（#861）。#861 之前這個關閉只是普通的 1000。在 OnJoin resolver 執行期間被取代或離開的 join 以 `JoinError.superseded` 失敗（#860）：它的 OnJoin input 與移除它的那次 leave 的 OnLeave 都會被丟棄，但它的 OnJoin resolver 已經執行過（resolver 的副作用見 [Resolvers](resolver.zh-TW.md)）。經由 router 時，session 會先收到作為最後一個 frame 的 `JOIN_DENIED`，再收到這個 4017 關閉。
+- **4017 `superseded`：** 同一個玩家的較新 join 取代了這個 session（每個玩家一個 session，最新者勝，#92 與 #531）。只有這條連線被關閉，reason 為 "logged in elsewhere"，close grace 為 500 ms；玩家與 land 在較新的 session 中繼續。client 不應在此 code 上重連：同一玩家的兩個 client 會互相取代而形成迴圈（#861）。#861 之前這個關閉只是普通的 1000。join 在兩種情況下以 `JoinError.superseded` 失敗（#860）。若它在 OnJoin resolver 執行期間被取代或離開，它的 OnJoin input 與移除它的那次 leave 的 OnLeave 都會被丟棄，但它的 OnJoin resolver 已經執行過（resolver 的副作用見 [Resolvers](resolver.zh-TW.md)）。若它在踢掉該玩家舊 session 的期間，同一玩家有更晚的 join 抵達，kick 返回時它會被 fence 掉：它不插入任何東西、不執行任何 OnJoin resolver，由最後抵達的 join 保有該玩家。經由 router 時，session 會先收到作為最後一個 frame 的 `JOIN_DENIED`，再收到這個 4017 關閉。
 - **4014 `landStopped`：** 管理端停止一個沒有失敗的 land。
 
 ## 其他系統的做法
