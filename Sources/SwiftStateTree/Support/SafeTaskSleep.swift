@@ -72,26 +72,47 @@ public func safeTaskSleep(for duration: Duration) async throws {
     try await Task.sleep(nanoseconds: totalNanos)
 }
 
-/// The longest single sleep of `safeTaskSleep(until:)`: one hour. A longer wait sleeps in chunks
-/// and reads the clock between them, so no sleep is given a length near the range's end.
+/// The longest single sleep of `safeTaskSleep(until:)`: one hour.
+///
+/// This cap is the loop's spin guard, not only a convenience. `safeTaskSleep(for:)` returns at
+/// once, without throwing, when its nanoseconds overflow `UInt64` (about 584 years). A far
+/// deadline sleeping its whole remainder would make every pass return at once, read the clock and
+/// go round again: a busy spin that never reaches a suspension point, so it ignores cancellation
+/// too. With the cap, every sleep is a real one, and a longer wait is taken in chunks.
 private let longestDeadlineSleepChunk: Duration = .seconds(3600)
 
 /// Sleeps until `deadline` on the continuous clock, without `Task.sleep(until:clock:)`.
 ///
 /// **DO NOT use `Task.sleep(until:clock:)` directly in library code**, for the same reason as
 /// `Task.sleep(for:)`: it was not shown safe against the macOS release-build crash.
+/// `scripts/lint-lessons.sh` (`task-sleep`) rejects both.
 ///
 /// It returns at once for a deadline that has already passed. Otherwise it sleeps the time left
-/// with `safeTaskSleep(for:)` and reads the clock again after each wake, so a timed sleep that
-/// wakes early sleeps on for what is left (as `SystemTurnClock` does). It returns only once the
-/// clock has reached `deadline`, unless the task is cancelled.
+/// with `safeTaskSleep(for:)` (at most one hour at a time, see `longestDeadlineSleepChunk`) and
+/// reads the clock again after each wake, so a timed sleep that wakes early sleeps on for what is
+/// left (as `SystemTurnClock` does). It returns only once the clock has reached `deadline`,
+/// unless the task is cancelled.
 ///
 /// - Parameter deadline: The instant on `ContinuousClock` to sleep until.
 /// - Throws: `CancellationError` if the task is cancelled during sleep.
 package func safeTaskSleep(until deadline: ContinuousClock.Instant) async throws {
+    try await safeTaskSleep(
+        until: deadline,
+        now: { ContinuousClock.now },
+        sleepFor: { try await safeTaskSleep(for: $0) }
+    )
+}
+
+/// `safeTaskSleep(until:)` with its clock and its sleeper passed in, so a test can script the
+/// durations asked for and the clock's progress between wakes.
+package func safeTaskSleep(
+    until deadline: ContinuousClock.Instant,
+    now: @Sendable () -> ContinuousClock.Instant,
+    sleepFor: @Sendable (Duration) async throws -> Void
+) async throws {
     while true {
-        let remaining = deadline - ContinuousClock.now
+        let remaining = deadline - now()
         guard remaining > .zero else { return }
-        try await safeTaskSleep(for: min(remaining, longestDeadlineSleepChunk))
+        try await sleepFor(min(remaining, longestDeadlineSleepChunk))
     }
 }
