@@ -69,7 +69,7 @@ The dependency chain flows: `SwiftStateTurns` → `SwiftStateTree` → `SwiftSta
 
 **Language:** All code comments (`///` and `//`) must be in English. Respond to user in their language.
 
-**Concurrency:** Always use `safeTaskSleep(for: Duration)` (in `Sources/SwiftStateTree/Support/SafeTaskSleep.swift`) instead of `Task.sleep(for:)` in library code — the latter has a Swift runtime crash bug on macOS release builds under load.
+**Concurrency:** Always use `safeTaskSleep(for: Duration)` (in `Sources/SwiftStateTree/Support/SafeTaskSleep.swift`) instead of `Task.sleep(for:)`, and `safeTaskSleep(until:)` for deadline sleeps instead of `Task.sleep(until:)`, in library code — `Task.sleep(for:)` has a Swift runtime crash bug on macOS release builds under load, and `Task.sleep(until:)` was not shown safe.
 
 **String formatting:** Never use `%s` with Swift `String` in `String(format:)` — it expects a C string pointer and crashes in release builds. Use string interpolation or `%@` instead.
 

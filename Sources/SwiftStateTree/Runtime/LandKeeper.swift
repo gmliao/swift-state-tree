@@ -1843,10 +1843,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - Player Lifecycle
 
-    /// Handles a player joining the Land (legacy method for backward compatibility).
-    ///
-    /// This method creates a PlayerSession internally and calls the new join method.
-    /// For new code, consider using the overload that accepts PlayerSession.
+    /// Joins `playerID` through the land's admission (CanJoin, `MaxPlayers`), as
+    /// `join(session:clientID:sessionID:services:)` with a `PlayerSession` of that player ID (no
+    /// device ID, not a guest, no metadata). A denial throws `JoinError.custom` with CanJoin's
+    /// reason; a join past the player limit throws `JoinError.roomIsFull`. The player admitted is
+    /// the one CanJoin's `.allow(playerID:)` names, which can differ from `playerID`; this method
+    /// returns nothing, so a caller that needs the decision (the admitted ID) uses
+    /// `join(session:clientID:sessionID:services:)`.
     ///
     /// - Parameters:
     ///   - playerID: The player's unique identifier.
@@ -1859,54 +1862,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         services: LandServices = LandServices()
     ) async throws {
-        try await ensureInitializedForJoin()
-        await holds.at(.join)
-        let call = LegacyJoinCall(playerID: playerID, clientID: clientID, sessionID: sessionID, services: services)
-        var request = try withTurn { m, side, outputs in try m.legacyJoinBegin(behavior, &side, &outputs, call) }
-        while true {
-            switch request {
-            case let .kick(oldClientID, oldSessionID):
-                // Kick old connection by calling leave
-                // This will call OnLeave handler and clean up state
-                try await leave(playerID: playerID, clientID: oldClientID, sessionID: oldSessionID)
-                request = try withTurn { m, side, outputs in try m.legacyJoinInsert(behavior, &side, &outputs, call) }
-            case let .runOnJoinResolvers(capture, resolverContext, landContext):
-                let resolverOutputs = try await runOnJoinResolvers(capture, resolverContext, landContext)
-                request = try withTurn { m, side, outputs in
-                    // Bind to the tick that was current when resolvers completed
-                    try m.legacyJoinAppend(behavior, &side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: m.lastCommittedTickId)
-                }
-            case let .awaitInputTurn(sequence):
-                // Registered in the same segment as the append's: no suspension since it.
-                _ = try await awaitInputTurn(sequence: sequence)
-                return
-            case .done:
-                return
-            }
-        }
+        let decision = try await join(
+            session: PlayerSession(playerID: playerID.rawValue),
+            clientID: clientID,
+            sessionID: sessionID,
+            services: services
+        )
+        if case .deny(let reason) = decision { throw JoinError.custom(reason ?? "join denied") }
     }
 
-    /// The legacy join's requests (#700 K1b-5b §4.2): no CanJoin, no cap, no admission.
-    fileprivate enum LegacyJoinRequest {
-        /// The old session's leave (§4.3's flow); G2 follows it.
-        case kick(oldClientID: ClientID, oldSessionID: SessionID?)
-        case runOnJoinResolvers(OnJoinCapture, ResolverContext, LandContext)
-        case awaitInputTurn(sequence: Int64)
-        case done
-    }
-
-    /// The legacy join's call.
-    fileprivate struct LegacyJoinCall {
-        let playerID: PlayerID
-        let clientID: ClientID
-        let sessionID: SessionID
-        let services: LandServices
-    }
-
-
-
-
-    /// What a join carries from its insert to its OnJoin append (G2 → G4, J3 → J4).
+    /// What a join carries from its insert to its OnJoin append (J3 → J4).
     fileprivate struct OnJoinCapture {
         let playerID: PlayerID
         let clientID: ClientID
@@ -4625,7 +4590,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // If we're already past the scheduled time, execute immediately
                 // Otherwise, sleep until the scheduled time
                 if now < nextSyncTime {
-                    try? await Task.sleep(until: nextSyncTime, clock: .continuous)
+                    try? await safeTaskSleep(until: nextSyncTime)
                 }
 
                 guard let keeper = self else { return }
@@ -5046,8 +5011,6 @@ extension KeeperModel {
     fileprivate typealias JoinRequest = LandKeeper<State>.JoinRequest
     fileprivate typealias LeaveCapture = LandKeeper<State>.LeaveCapture
     fileprivate typealias LeaveRequest = LandKeeper<State>.LeaveRequest
-    fileprivate typealias LegacyJoinCall = LandKeeper<State>.LegacyJoinCall
-    fileprivate typealias LegacyJoinRequest = LandKeeper<State>.LegacyJoinRequest
     fileprivate typealias OnJoinCapture = LandKeeper<State>.OnJoinCapture
     typealias JoinOutcome = LandKeeper<State>.JoinOutcome
     typealias PendingLifecycleItem = LandKeeper<State>.PendingLifecycleItem
@@ -6328,87 +6291,6 @@ extension KeeperModel {
         return .admit(decided, joinSequence: capture.sequence)
     }
 
-    /// G1: the kick target, after the hold. Without one it goes on to G2 in this segment.
-    fileprivate mutating func legacyJoinBegin(
-        _ behavior: KeeperBehavior<State>,
-        _ side: inout KeeperTurnSide,
-        _ outputs: inout TurnOutputs,
-        _ call: LegacyJoinCall
-    ) throws -> LegacyJoinRequest {
-        // Check for duplicate playerID login (Kick Old strategy)
-        if let existingSession = players[call.playerID], let oldClientID = existingSession.clientID {
-            behavior.logger.info("Duplicate playerID login detected: \(call.playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
-            return .kick(oldClientID: oldClientID, oldSessionID: existingSession.lastSessionID)
-        }
-        return try legacyJoinInsert(behavior, &side, &outputs, call)
-    }
-
-    /// G2: the insert, after the kick if there was one, and the OnJoin request.
-    fileprivate mutating func legacyJoinInsert(
-        _ behavior: KeeperBehavior<State>,
-        _ side: inout KeeperTurnSide,
-        _ outputs: inout TurnOutputs,
-        _ call: LegacyJoinCall
-    ) throws -> LegacyJoinRequest {
-        let playerID = call.playerID
-        var session = players[playerID] ?? KeeperPlayerEntry()
-        let isFirst = session.clientID == nil
-
-        session.clientID = call.clientID
-        session.lastSessionID = call.sessionID
-        // Checked in the same synchronous segment as the insert: a destruction that started
-        // during this join's awaits must not get a player after it stopped the loops.
-        guard !side.isDraining else { throw JoinError.landShuttingDown }
-        let entryGeneration = entryGenerations.next()
-        session.generation = entryGeneration
-        players[playerID] = session
-        side.playerServices[playerID] = (generation: entryGeneration, services: call.services)
-
-        side.cancelDestroy()
-
-        // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
-        // so they are not added to game state (which would create an extra player in the replay).
-        guard isFirst, behavior.definition.lifetimeHandlers.onJoin != nil, behavior.config.mode != .reevaluation else { return .done }
-
-        let capture = OnJoinCapture(
-            playerID: playerID,
-            clientID: call.clientID,
-            sessionID: call.sessionID,
-            services: call.services,
-            deviceID: session.deviceID,
-            isGuest: session.isGuest,
-            metadata: session.metadata,
-            contextCarriesIdentity: false,
-            entryGeneration: entryGeneration,
-            // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
-            sequence: sequence.take(),
-            // Snapshot tick at request time; update after resolver completion for async determinism.
-            resolvedAtTick: lastCommittedTickId
-        )
-        // Execute resolvers in parallel if any are declared
-        if let (resolverContext, landContext) = onJoinResolverRequest(behavior, &side, &outputs, capture) {
-            return .runOnJoinResolvers(capture, resolverContext, landContext)
-        }
-        return try legacyJoinAppend(behavior, &side, &outputs, capture, resolverOutputs: [:], resolvedAtTick: capture.resolvedAtTick)
-    }
-
-    /// G4: the OnJoin append. A tickless land waits for its input turn.
-    fileprivate mutating func legacyJoinAppend(
-        _ behavior: KeeperBehavior<State>,
-        _ side: inout KeeperTurnSide,
-        _ outputs: inout TurnOutputs,
-        _ capture: OnJoinCapture,
-        resolverOutputs: [String: HeldResolverOutput],
-        resolvedAtTick: Int64
-    ) throws -> LegacyJoinRequest {
-        try appendOnJoin(&side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: resolvedAtTick)
-        // A tickless land applies it now, in an input turn the caller waits for.
-        if behavior.definition.lifetimeHandlers.tickHandler == nil {
-            return .awaitInputTurn(sequence: capture.sequence)
-        }
-        return .done
-    }
-
     /// J4b: after the admission of a join with an OnJoin input.
     fileprivate mutating func joinAfterAdmission(
         _ behavior: KeeperBehavior<State>,
@@ -6431,7 +6313,7 @@ extension KeeperModel {
         return .awaitInputTurn(outcome, sequence: sequence)
     }
 
-    /// The OnJoin input's append (G4, J4), with the drain check in the same segment.
+    /// The OnJoin input's append (J4), with the drain check in the same segment.
     fileprivate mutating func appendOnJoin(
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
