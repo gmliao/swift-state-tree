@@ -1660,9 +1660,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 turnSide.debugDrainWaiters[waiterID] = continuation
                 freezeRegistrationsForTesting += 1
                 let registered = freezeRegistrationsForTesting
-                let ready = freezeWaitWatchersForTesting.filter { $0.count <= registered }
-                freezeWaitWatchersForTesting.removeAll { $0.count <= registered }
-                ready.forEach { $0.continuation.resume() }
+                let ready = freezeWaitWatchersForTesting.filter { $0.value.count <= registered }
+                ready.keys.forEach { freezeWaitWatchersForTesting[$0] = nil }
+                ready.values.forEach { $0.continuation.resume(returning: true) }
             }
             timer.cancel()
         }
@@ -2499,27 +2499,45 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Test hook: whether the land is frozen.
-    /// Test hook, observation only: returns once a freeze is waiting for in-flight work (it
-    /// registered its waiter, in the same segment that checked the work).
-    /// Returns once a freeze caller waits (or has waited: the count is of registrations).
-    package func waitUntilFreezeWaitsForTesting() async {
-        await waitUntilFreezeRegistrationsForTesting(1)
+    /// Test hook, observation only: returns once a freeze caller waits for in-flight work, or
+    /// has waited (the count is of registrations; it registered its waiter in the same segment
+    /// that checked the work). False if none registered within `bound`.
+    @discardableResult
+    package func waitUntilFreezeWaitsForTesting(within bound: Duration = .seconds(30)) async -> Bool {
+        await waitUntilFreezeRegistrationsForTesting(1, within: bound)
     }
 
-    /// Returns once `count` freeze callers have registered as waiting, ever: a monotonic count
-    /// of registration events, so a caller that registered and timed out before this was
+    /// Returns true once `count` freeze callers have registered as waiting, ever: a monotonic
+    /// count of registration events, so a caller that registered and timed out before this was
     /// called still counts (#948 round 3: a watcher counts events, it doesn't read state).
-    package func waitUntilFreezeRegistrationsForTesting(_ count: Int) async {
-        guard freezeRegistrationsForTesting < count else { return }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            freezeWaitWatchersForTesting.append((count, continuation))
+    /// False once `bound` passes first: a caller that never registers (it answered without
+    /// waiting) fails the case instead of hanging it (Review r4 on #948). The bound orders
+    /// nothing; it only ends a wait that correct code never reaches.
+    @discardableResult
+    package func waitUntilFreezeRegistrationsForTesting(_ count: Int, within bound: Duration = .seconds(30)) async -> Bool {
+        guard freezeRegistrationsForTesting < count else { return true }
+        nextFreezeWatcherForTesting += 1
+        let id = nextFreezeWatcherForTesting
+        let timer = Task { [weak self] in
+            try? await safeTaskSleep(for: bound)
+            await self?.expireFreezeWatcherForTesting(id)
         }
+        defer { timer.cancel() }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            freezeWaitWatchersForTesting[id] = (count, continuation)
+        }
+    }
+
+    private func expireFreezeWatcherForTesting(_ id: Int) {
+        freezeWaitWatchersForTesting.removeValue(forKey: id)?.continuation.resume(returning: false)
     }
 
     /// How many freeze callers have registered as waiting (tests).
     private var freezeRegistrationsForTesting = 0
-    /// Callers of `waitUntilFreezeRegistrationsForTesting` waiting for a registration count.
-    private var freezeWaitWatchersForTesting: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var nextFreezeWatcherForTesting = 0
+    /// Callers of `waitUntilFreezeRegistrationsForTesting` waiting for a registration count,
+    /// by watcher.
+    private var freezeWaitWatchersForTesting: [Int: (count: Int, continuation: CheckedContinuation<Bool, Never>)] = [:]
 
     package func debugIsFrozenForTesting() -> Bool {
         model.debugFrozen

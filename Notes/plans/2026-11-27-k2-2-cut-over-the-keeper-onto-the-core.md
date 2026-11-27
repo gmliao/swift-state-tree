@@ -30,6 +30,8 @@ K2-3, in the same PR, deletes the paths K2-2 made unreachable on live keepers an
 
 Two PRs (K22-Q4, Main's lean, 2026-11-27): **K2-2a**, commits 0–3, still unwired, so the differential grows with them and the PR builds green on its own, as K2-1 did; **K2-2b**, commits 4–6, the cut-over, reviewable on its own. One commit per step, each building green.
 
+**As merged (2026-11-27, §12):** K2-2a is #948, commits 0, 2 and 3. Commit 1 follows as two PRs of its own, both before K2-2b: **1a**, the initialization; **1b**, the destroy drain, the stop and the tick-record hold (§11.1), after #953.
+
 **Commit 1 is blocked on K2-1b**, which waits on the maintainer (#117). Commits 0, 2 and 3 don't depend on it: none of them routes the initialization, the destroy drain or anything that ends in them. Where a commit-2 flow ends in one of those (the stop's drain, an initialization barrier still closed), that part is commit 1's, named below. K2-2a can merge without commit 1; K2-2b needs it, since the wiring needs the routed subset total.
 
 **0. The action jobs on the core** (K2 §16 item 17). The job lane's four keeper-only parts move together:
@@ -350,3 +352,27 @@ What it shows:
 | M9 | `runAfterFinalize` runs in `openStepScope(…, droppingInto: destroyHandlerOutputsDropped)` | "an effect … in its scope" | the effect carries the scope's counter from the side |
 | M10 | `.notifyTransport`: the port is `transport ?? boundSyncRequester`; after `drainFinished`, `releasedTransport = …` and then `setTransport(nil)` | `setTransport(nil)` only | the port effect takes the bound requester as a fallback. Two owner calls follow the step, in that order |
 | M12 | — | §3.2 | commit 1 lifts none of #938's refusals. It lifts #948's tick-land `.freeze` refusal, through the tick-record hold that `.waitForTick` and the stop's barrier also need, so the hold is built once. The tickless `.admitServerInput` precondition stays with K2-2b (§10) |
+
+## 12. Commit 1a as built (2026-11-27, its own PR after #948)
+
+K2-2a merged as #948 without commit 1 (§3). Commit 1a routes the initialization; 1b takes the rest of §11.
+
+**One phase per flow.** The initialization's state is one enum, `InitializationPhase`, in the model: `.notStarted`, `.replaying` (the keeper's legacy re-evaluation path, #612), `.resolving(sequence:)`, `.recording(sequence:)`, `.finishing`, `.startingLoops`, `.done`, `.failed`. It replaces the `didInitialize` flag, which is now computed (`isOver`: done or failed).
+- Each segment sets the phase it enters, in the shared bodies, so the keeper's path and the core's write the same field and the differential compares it.
+- Each result step on the core (`.initialize`, `.initializeResolved`, `.initializeRecorded`, `.initializeFinish`, `.initializeDone`) switches over all eight phases. The phase its request left runs; every other phase is named in a `preconditionFailure`. Only the flow's own effects and queue send those inputs, and until 1b no drain or failure moves the phase from outside the flow, so another phase is a broken flow, not a race.
+- The rule is the maintainer's, for every multi-step flow moved onto the core, after #952 r1's two must-fixes: one exit of three checked, and a teardown keyed on a still-racing outcome.
+- **#952's `initializationApplied` flag becomes part of `InitializationPhase`** once #952 lands: its "OnInitialize applied" is the phases after `.resolving` (`.recording`, `.finishing`, `.startingLoops`, `.done`). #954 is the later flow version, where each link of the chain is an effect plus a result input and the helper does the ticket and phase check. 1a's hand-written version is the baseline for that swap.
+
+**What 1a routes.** §3.1 and §11.2's M1–M4 and M6, as written there. The re-evaluation pair (M3) is a `preconditionFailure` on the core (#612). The test switch `LandKeeperTesting.defersInitialization` is `package`, and a census case checks that no source in the package sets it.
+
+**Left for 1b.**
+- M5's `loopEpoch` goes with the tick-record hold, since the epoch guards the stale `.tickDue` that the tick routing reads.
+- M7–M10 and M12: the drain, the stop and the tick-land `.freeze` refusal.
+- `initializeFail` stages its teardown through `keeperReference`, which is empty on the core twin, so no teardown runs on the core in 1a. That's 1b's drain.
+
+**Round 4's leftovers on #948, carried here.**
+- A cancel concurrent with the resume: `parkedCallerCancelRacesResume`, 8 runs. Either outcome, consistent on each path, and nothing left waiting.
+- The registration watcher is bounded: it returns false after `within:`.
+- `actionJobCallerCancel` waits for the resolver at its gate before the cancel.
+- `firstSignal`'s doc.
+
