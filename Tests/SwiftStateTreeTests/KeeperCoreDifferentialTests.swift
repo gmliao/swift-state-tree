@@ -212,8 +212,11 @@ struct CoreDiffShape: Sendable, CustomStringConvertible {
     var destroysWhenEmpty = false
     /// The destroy timer's delay: 50 ms where a case waits for it to fire, 1 h where it must not.
     var destroyDelay: Duration = .milliseconds(50)
-    /// OnInitialize with a resolver (tickless, no destroy timer): it logs "init:<value>".
+    /// OnInitialize with a resolver (tickless, no destroy timer): it logs "init:<value>", then
+    /// fires the land's `CoreDiffHandlerReentry` hook (the keeper's T11 shape, when registered).
     var onInitialize = false
+    /// OnInitialize in two stages whose `validate` throws (Review on #966, MF2 (b)).
+    var initializeRefuses = false
 
     var description: String {
         "\(tick ? "tick" : "tickless"), join resolvers \(joinResolvers), leave resolver \(leaveResolver)\(noOnLeave ? ", no OnLeave" : "")\(destroysWhenEmpty ? ", destroys when empty" : "")"
@@ -273,10 +276,15 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
         }
         // `Lifetime`'s builder takes no `if`: one block per combination. Two events per tick: the
         // eventful path (§16 item 11).
-        if shape.onInitialize {
+        if shape.initializeRefuses {
             Lifetime {
-                OnInitialize(resolvers: { _, ctx in CoreDiffInitResolver(landID: ctx.landID) }) { state, output, _ in
+                OnInitialize(validate: { _, _ in throw CoreDiffError(token: -2) }, apply: { state, _ in state.log.append("init:applied") })
+            }
+        } else if shape.onInitialize {
+            Lifetime {
+                OnInitialize(resolvers: { _, ctx in CoreDiffInitResolver(landID: ctx.landID) }) { state, output, ctx in
                     state.log.append("init:\(output?.value ?? -1)")
+                    CoreDiffHandlerReentry.fire(ctx.landID)
                 }
             }
         } else if shape.tick && shape.destroysWhenEmpty {
@@ -2780,6 +2788,60 @@ extension KeeperCoreDifferentialTests {
         let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
         #expect(keeperLog == ["init:1"] && coreLog == ["init:1"], "still applied: keeper \(keeperLog), core \(coreLog)")
         await pair.expectSame("after the drain during the record")
+    }
+
+    @Test("OnInitialize's validate refuses: the phase is .failed, nothing applies, no loop starts, and an early and a late waiter both get the failure, on both paths (Review on #966, MF2 (b))")
+    func initializationValidateRefuses() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, initializeRefuses: true)
+        let pair = await CoreDiffPair.make(shape, "init-refuses", initializes: false, autoStartLoops: true)
+        let early = Task { try await pair.harness.call(.awaitInitialized) }
+        await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
+        await pair.keeper.awaitInitialization()
+        await pair.harness.drive(.initialize)
+        await #expect(throws: LandInitializationError.self) { _ = try await early.value }
+        await #expect(throws: LandInitializationError.self) { _ = try await pair.harness.call(.awaitInitialized) }
+        let keeperPhase = await pair.keeper.differentialReadForTesting().model.initializationPhase
+        let corePhase = await pair.harness.differentialRead().model.initializationPhase
+        #expect(keeperPhase == .failed && corePhase == .failed, "keeper \(keeperPhase), core \(corePhase)")
+        #expect(!(await pair.harness.flushed.contains { if case .startLoops = $0 { true } else { false } }), "no loop after a refusal")
+        let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
+        #expect(keeperLog.isEmpty && coreLog.isEmpty, "keeper \(keeperLog), core \(coreLog)")
+    }
+
+    @Test("OnInitialize's late re-entry (the keeper's T11): the backstop fails the land in OnInitialize's step, so the finish starts no loop; the initialization itself ended .done, on both paths (Review on #966, MF2 (d))")
+    func initializationLateReentry() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let pair = await CoreDiffPair.make(shape, "init-reentry", initializes: false, autoStartLoops: true)
+        let source = try #require(pair.source)
+        defer { CoreDiffHandlerReentry.clear(pair.landID) }
+        // One path at a time: the hook is one-shot and keyed by the land ID both share.
+        CoreDiffHandlerReentry.register(pair.landID) { [keeper = pair.keeper] in
+            keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: OnInitialize's re-entry the sentinel refuses
+        }
+        await pair.keeper.awaitInitialization()
+        CoreDiffHandlerReentry.register(pair.landID) { [source] in
+            source.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: OnInitialize's re-entry the sentinel refuses
+        }
+        let waiter = Task { try await pair.harness.call(.awaitInitialized) }
+        await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
+        await pair.harness.drive(.initialize)
+        let answer = await Result { try await waiter.value }
+
+        #expect(await pair.keeper.lateReentriesAppliedForTesting == 1)
+        #expect(await source.lateReentriesAppliedForTesting == 1)
+        let keeperFailure = await pair.keeper.differentialReadForTesting().failure
+        let coreFailure = await pair.harness.differentialRead().failure
+        #expect(coreFailure?.kind == .keeperReentry && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
+        #expect(!(await pair.harness.flushed.contains { if case .startLoops = $0 { true } else { false } }), "no loop after the backstop failed the land")
+        #expect(await pair.keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
+        let keeperPhase = await pair.keeper.differentialReadForTesting().model.initializationPhase
+        let corePhase = await pair.harness.differentialRead().model.initializationPhase
+        // The initialization itself succeeded (OnInitialize applied); the land failed after it,
+        // in that step's backstop. So the phase ends `.done` with no loop on both paths, and the
+        // waiter is answered `.done`, as the keeper's `awaitInitialization` returns: the land's
+        // failure, not the initialization's, ends what comes next.
+        #expect(keeperPhase == .done && corePhase == .done, "keeper \(keeperPhase), core \(corePhase)")
+        guard case .success(.done) = answer else { Issue.record("the core's waiter: \(answer)"); return }
     }
 
     @Test("autoStartLoops: the core's .startLoops is answered by the owner's .initializeDone, which ends the phase and answers the waiter, on both paths (Review on #966, MF2 (c))")
