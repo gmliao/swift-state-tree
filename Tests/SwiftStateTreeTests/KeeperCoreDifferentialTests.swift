@@ -343,11 +343,9 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         send(input)
     }
 
-    /// `cancellation`: `.cancelsCall` for a case whose caller is cancelled after its send, so
-    /// the core steps `handleCallerCancelled`; every other case keeps waiting.
-    func call(_ input: KeeperInput<State>, cancellation: CallerCancellation = .ignoresCancel) async throws -> KeeperReply<State> {
+    func call(_ input: KeeperInput<State>) async throws -> KeeperReply<State> {
         note(input)
-        return try await sendAndWait(input, cancellation: cancellation)
+        return try await sendAndWait(input, cancellation: .ignoresCancel)
     }
 
     /// The box of the job `sequence` (the side's job table): a waiting caller cancels the job
@@ -803,12 +801,18 @@ private struct CoreDiffPair {
 
     /// The two paths' digests match, nothing is left on the core's side, and no deferred input
     /// reached the machine.
-    func expectSame(_ step: String, sourceLocation: SourceLocation = #_sourceLocation) async {
+    /// `logOrderFree`: the state's log is compared as a multiset, for a case whose keeper order
+    /// is the scheduler's (the case asserts the core's order itself).
+    func expectSame(_ step: String, logOrderFree: Bool = false, sourceLocation: SourceLocation = #_sourceLocation) async {
         // The keeper's drain yields before it ends (`runInputDrain`), after the call that
         // started it returned: read it once its work and its drain are done.
         await keeper.waitForInFlightWorkForTesting()
         await keeper.waitForInputDrainIdleForTesting()
-        let (keeperDigest, coreDigest) = await digests()
+        var (keeperDigest, coreDigest) = await digests()
+        if logOrderFree {
+            keeperDigest.log.sort()
+            coreDigest.log.sort()
+        }
         // The whole-model comparison compares something: the model has dozens of other fields.
         #expect(coreDigest.otherModelFields.count > 20, "\(step): \(coreDigest.otherModelFields.keys.sorted())", sourceLocation: sourceLocation)
         #expect(keeperDigest == coreDigest, "\(step): differ in \(keeperDigest.differingFields(from: coreDigest))\n keeper \(keeperDigest)\n core   \(coreDigest)", sourceLocation: sourceLocation)
@@ -842,6 +846,18 @@ private func session(_ player: String) -> PlayerSession { PlayerSession(playerID
 
 /// Whether `task` ends within `seconds`, so a task that never ends fails an expectation instead
 /// of hanging the suite.
+/// Whether `signal` yields within `seconds`. Both children end on cancellation (a stream's
+/// iteration and the sleep do), so the group never waits on uncancellable work.
+private func firstSignal(_ signal: AsyncStream<Void>, withinSeconds seconds: Int) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask { for await _ in signal { return true }; return false }
+        group.addTask { try? await safeTaskSleep(for: .seconds(seconds)); return false }
+        let first = await group.next() ?? false
+        group.cancelAll()
+        return first
+    }
+}
+
 private func boundedEnd(_ task: Task<Void, Never>, seconds: Int) async -> Bool {
     await withTaskGroup(of: Bool.self) { group in
         group.addTask { await task.value; return true }
@@ -1949,9 +1965,9 @@ extension KeeperCoreDifferentialTests {
         // case waits for: its timer can't fire before the segment that registers it ends, so
         // both wait when the short one times out (Review r2 on #948, MF3).
         let keeperLong = Task { await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(3600)) }
-        await pair.keeper.waitUntilFreezeWaitsForTesting(count: 1)
+        await pair.keeper.waitUntilFreezeRegistrationsForTesting(1)
         let keeperShort = Task { await pair.keeper.debugFreeze(generation: 1, timeout: .milliseconds(50)) }
-        await pair.keeper.waitUntilFreezeWaitsForTesting(count: 2)
+        await pair.keeper.waitUntilFreezeRegistrationsForTesting(2)
         let keeperShortFroze = await keeperShort.value
         kg.release()
         let keeperLongFroze = await keeperLong.value
@@ -1996,7 +2012,7 @@ extension KeeperCoreDifferentialTests {
         await pair.keeper.waitUntilFreezeWaitsForTesting()
         let keeperSecond = Task { await pair.keeper.debugFreeze(generation: 2, timeout: .seconds(3600)) }
         // Both callers wait before the work ends (Review r2 on #948, MF3).
-        await pair.keeper.waitUntilFreezeWaitsForTesting(count: 2)
+        await pair.keeper.waitUntilFreezeRegistrationsForTesting(2)
         kg.release()
         let keeperAnswers = (await keeperFirst.value, await keeperSecond.value)
         await pair.keeper.debugResume(generation: 2)
@@ -2015,11 +2031,16 @@ extension KeeperCoreDifferentialTests {
         // The answers are the events (Review r2 on #948, MF3): the clock is manual and isn't
         // advanced, so a caller answered only at its timeout never returns, and the hang bound
         // fails the case. A count of results noted in `perform` would run before their steps.
-        let answeredAtWorkEnd = await boundedEnd(Task { _ = await coreFirst.value; _ = await coreSecond.value }, seconds: 30)
+        // The bound waits on a signal, never on the calls themselves (`.ignoresCancel`, so a
+        // cancelled wait wouldn't end them; #940's R13): on a timeout the clock is advanced
+        // first, which answers both, and only then are they joined (Review r3 on #948).
+        let (answered, signal) = AsyncStream<Void>.makeStream()
+        let watcher = Task { _ = await coreFirst.value; _ = await coreSecond.value; signal.yield() }
+        let answeredAtWorkEnd = await firstSignal(answered, withinSeconds: 30)
         #expect(answeredAtWorkEnd, "every generation's callers answered at the work's end")
-        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.freeze.isEmpty)
-        // Unsticks a caller the expectation above found (it would otherwise wait an hour).
         if !answeredAtWorkEnd { clock.advance(by: .seconds(3601)) }
+        await watcher.value
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.freeze.isEmpty)
         let coreAnswers = (await coreFirst.value, await coreSecond.value)
         await pair.harness.drive(.resume(generation: 2))
         _ = await coreAct.value
@@ -2158,7 +2179,7 @@ extension KeeperCoreDifferentialTests {
         await pair.expectSame("after the held action")
     }
 
-    @Test("Two held intakes, an action and a client event, are released in arrival order by the resume, on both paths: the core runs both in the resume's step (Review r2 on #948, a stated choice)")
+    @Test("Two held intakes, an action and a client event, are released by the resume on both paths; the core runs both in arrival order in the resume's step, while the keeper's order is the scheduler's (each resumed caller re-enters on its own), so only the core's order is asserted (Review r2 on #948, a stated choice; r3)")
     func twoHeldIntakesReleasedInOrder() async throws {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "barrier-two")
         _ = await bothJoin(pair, "p1", "c1")
@@ -2190,10 +2211,11 @@ extension KeeperCoreDifferentialTests {
         #expect(keeperResults.0 == .completed(2) && coreResults.0 == .completed(2), "keeper \(keeperResults.0), core \(coreResults.0)")
         #expect(keeperResults.1 == "done" && coreResults.1 == "done", "keeper \(keeperResults.1), core \(coreResults.1)")
         let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
-        #expect(keeperLog == coreLog, "keeper \(keeperLog), core \(coreLog)")
         let applied = coreLog.filter { $0 == "action:2" || $0 == "event:9" }
-        #expect(applied == ["action:2", "event:9"], "arrival order: \(applied)")
-        await pair.expectSame("after two held intakes")
+        #expect(applied == ["action:2", "event:9"], "the core's arrival order: \(applied)")
+        // The keeper's two re-entries are enqueued in either order: compare as multisets.
+        #expect(keeperLog.sorted() == coreLog.sorted(), "keeper \(keeperLog), core \(coreLog)")
+        await pair.expectSame("after two held intakes", logOrderFree: true)
     }
 
     @Test("A held intake goes on when the land fails while frozen, and gets the same answer on both paths: no caller waits for a resume that never comes (Review on #948, MF3)")
@@ -2288,7 +2310,9 @@ extension KeeperCoreDifferentialTests {
         await pair.expectSame("after the cancelled caller")
     }
 
-    @Test("A caller held at the freeze's barrier and cancelled before the resume gets CancellationError and starts no job, on both paths: its cancellation reaches the core after the send (Review r2 on #948, MF2)")
+    /// The other order, a caller cancelled after the resume released its intake and its job
+    /// started, is `actionJobCallerCancel`'s: that cancel rides the job's box.
+    @Test("A caller held at the freeze's barrier and cancelled before the resume gets CancellationError and starts no job, on both paths, with the resume sent right after cancel() returns (Review r3 on #948, MF1)")
     func parkedCallerCancelledBeforeResume() async throws {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "parked-cancelled")
         _ = await bothJoin(pair, "p1", "c1")
@@ -2296,7 +2320,8 @@ extension KeeperCoreDifferentialTests {
         #expect(await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
         #expect(await coreFreeze(pair, 1, .seconds(5)) == true)
 
-        // The keeper: held in `debugWaitWhileFrozen`, cancelled, then resumed.
+        // The keeper: held in `debugWaitWhileFrozen`. `cancel()` sets the task's flag
+        // synchronously, and the resume's re-check reads it.
         let (keeperHeld, keeperProbe) = probeEvents("input-held-frozen")
         await pair.keeper.setInTurnProbeForTesting(keeperProbe)
         let keeperAct = Task {
@@ -2304,30 +2329,36 @@ extension KeeperCoreDifferentialTests {
         }
         var keeperHolds = keeperHeld.makeAsyncIterator()
         _ = await keeperHolds.next()
+        await pair.keeper.setInTurnProbeForTesting(nil)
         keeperAct.cancel()
         await pair.keeper.debugResume(generation: 1)
         let keeperResult = await keeperAct.value
 
-        // The core: held at the barrier in its step, the caller cancelled (the hook marks the
-        // held action), then the resume releases it.
+        // The core: held at the barrier in its step. The caller's `onCancel` sets the flag the
+        // input carries, synchronously, inside `cancel()`, so a `.resume` sent right after it,
+        // with no await between, finds it set: no hop can lose to the thaw.
+        let flag = ActionJobCallerCancellation()
         let (coreHeld, coreProbe) = probeEvents("input-held-frozen")
         await pair.harness.setProbe(coreProbe)
         let coreAct = Task { () -> String in
             do {
-                guard case let .action(result) = try await pair.harness.call(.action(jobEnvelope(action), caller("p1", "c1")), cancellation: .cancelsCall) else { return "not an action reply" }
+                let reply = try await withTaskCancellationHandler {
+                    try await pair.harness.call(.action(jobEnvelope(action), caller("p1", "c1"), cancellation: flag))
+                } onCancel: {
+                    flag.set()
+                }
+                guard case let .action(result) = reply else { return "not an action reply" }
                 return describeJob(result.map { _ in InputOutcome.none })
-            } catch is CancellationError {
-                return "cancelled"
             } catch {
                 return "core: \(error)"
             }
         }
         var coreHolds = coreHeld.makeAsyncIterator()
         _ = await coreHolds.next()
-        coreAct.cancel()
-        let coreResult = await coreAct.value
         await pair.harness.setProbe(nil)
+        coreAct.cancel()
         await pair.harness.drive(.resume(generation: 1))
+        let coreResult = await coreAct.value
 
         #expect(keeperResult == "cancelled" && coreResult == "cancelled", "keeper \(keeperResult), core \(coreResult)")
         let seen = await pair.harness.inputsSeen

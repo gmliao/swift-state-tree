@@ -48,7 +48,11 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     // Entries.
     /// `cancelled`: the caller's task's cancellation, read by the sender (a core step runs on
     /// the core's driver task, so it can't read the caller's; Review on #948, as #944 did).
-    case action(ActionEnvelope, KeeperCaller, cancelled: Bool = false)
+    /// `cancellation`: the set-once flag the caller's `onCancel` sets, synchronously, once it is
+    /// cancelled after the send; the intake's step reads it where the keeper reads
+    /// `Task.isCancelled`, after the freeze's barrier (#948 round 3, as `awaitActionResult`'s
+    /// `box.callerCancelled`).
+    case action(ActionEnvelope, KeeperCaller, cancelled: Bool = false, cancellation: ActionJobCallerCancellation? = nil)
     case clientEvent(AnyClientEvent, KeeperCaller)
     /// A join. `syncsInTurn`: the driver's read of whether the attached transport runs the
     /// sync phase in turn, which the transport's admission needs (see `.tickDue`); the join's
@@ -290,7 +294,7 @@ struct KeeperCoreInputReplies: Sendable {
 /// A core's refusal of an input K2-1 doesn't route on the core (`KeeperCoreInputReplies.refusals`).
 /// A tickless intake held at the freeze's barrier, with what its step needs to run again.
 enum KeeperHeldIntake: Sendable {
-    case action(ActionEnvelope, KeeperCaller, cancelled: Bool, caller: InputID?)
+    case action(ActionEnvelope, KeeperCaller, cancelled: Bool, cancellation: ActionJobCallerCancellation?, caller: InputID?)
     case clientEvent(AnyClientEvent, KeeperCaller, caller: InputID?)
 }
 
@@ -429,9 +433,9 @@ extension KeeperModel: TurnMachine {
             inputDrainStep(behavior, store, &turn, endsTickWork: false)
         case .startLand:
             _ = turn.start(.land)
-        case let .action(envelope, who, cancelled):
+        case let .action(envelope, who, cancelled, cancellation):
             let caller = turn.input
-            actionStep(behavior, store, &turn, envelope, who, caller: caller, cancelled: cancelled)
+            actionStep(behavior, store, &turn, envelope, who, caller: caller, cancelled: cancelled, cancellation: cancellation)
         case let .clientEvent(event, who):
             let caller = turn.input
             clientEventStep(behavior, store, &turn, event, who, caller: caller)
@@ -658,29 +662,6 @@ extension KeeperModel: TurnMachine {
         for release in releases { turn.run(.actionJobRelease(sequence: release.sequence, release.abandonment)) }
         for (caller, outcome) in ready {
             if let caller { turn.reply(to: caller, .success(.input(outcome))) }
-        }
-    }
-
-    /// A caller cancelled after its input stepped (`TurnMachine.handleCallerCancelled`): an
-    /// action the freeze's barrier holds for it is marked cancelled, so its release throws
-    /// `CancellationError` and starts no job, as the keeper's `submit` does when it reads
-    /// `Task.isCancelled` after `debugWaitWhileFrozen` (#948 round 2). The sender's read covers
-    /// a caller cancelled before the send; this covers one cancelled after it. A held client
-    /// event goes on: the keeper's event intake reads no cancellation after its wait.
-    ///
-    /// A cancellation isn't a recorded input, so this changes only the side's bookkeeping about
-    /// held callers, never the model (checked in debug builds).
-    mutating func handleCallerCancelled(_ caller: InputID, _ turn: inout MailTurn<KeeperModel<State>>) {
-        guard let store = turn.behavior.sideStore else { preconditionFailure("K2-2: a core-driven keeper needs its side store") }
-        #if DEBUG
-        let before = String(reflecting: self)
-        defer { assert(String(reflecting: self) == before, "handleCallerCancelled changed the model") }
-        #endif
-        store.withSide { side in
-            side.coreInputReplies.heldWhileFrozen = side.coreInputReplies.heldWhileFrozen.map { intake in
-                guard case let .action(envelope, who, _, held) = intake, held == caller else { return intake }
-                return .action(envelope, who, cancelled: true, caller: held)
-            }
         }
     }
 
@@ -1083,8 +1064,8 @@ extension KeeperModel {
         }
         for intake in held {
             switch intake {
-            case let .action(envelope, who, cancelled, caller):
-                actionStep(behavior, store, &turn, envelope, who, caller: caller, cancelled: cancelled, held: true)
+            case let .action(envelope, who, cancelled, cancellation, caller):
+                actionStep(behavior, store, &turn, envelope, who, caller: caller, cancelled: cancelled, cancellation: cancellation, held: true)
             case let .clientEvent(event, who, caller):
                 clientEventStep(behavior, store, &turn, event, who, caller: caller, held: true)
             }
@@ -1103,6 +1084,7 @@ extension KeeperModel {
         _ who: KeeperCaller,
         caller: InputID?,
         cancelled: Bool,
+        cancellation: ActionJobCallerCancellation?,
         held: Bool = false
     ) {
         precondition(behavior.isTickless, "K2-1: a tick land's action is the .admitAction query")
@@ -1117,12 +1099,15 @@ extension KeeperModel {
                 return
             }
         }
-        if holdAtFreezeBarrier(store, .action(envelope, who, cancelled: cancelled, caller: caller)) { return }
+        if holdAtFreezeBarrier(store, .action(envelope, who, cancelled: cancelled, cancellation: cancellation, caller: caller)) { return }
+        // The keeper reads `Task.isCancelled` here, after `debugWaitWhileFrozen`: the send's read,
+        // or the flag the caller's `onCancel` set since, synchronously (#948 round 3).
+        let callerCancelled = cancelled || cancellation?.isSet == true
         let intake = step(behavior, store) { m, side, outputs in
             Result {
                 try m.actionIntakeBody(behavior, &side, &outputs, envelope, playerID: who.playerID, clientID: who.clientID,
                                        sessionID: who.sessionID ?? behavior.config.systemSessionID, enforcingLimits: true, isTickless: true,
-                                       callerCancelled: cancelled)
+                                       callerCancelled: callerCancelled)
             }
         }
         switch intake {

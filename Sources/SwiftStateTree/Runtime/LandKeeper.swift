@@ -1739,9 +1739,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             await withCheckedContinuation { continuation in
                 turnSide.debugDrainWaiters[waiterID] = continuation
-                let waiting = turnSide.debugDrainWaiters.count
-                let ready = freezeWaitWatchersForTesting.filter { $0.count <= waiting }
-                freezeWaitWatchersForTesting.removeAll { $0.count <= waiting }
+                freezeRegistrationsForTesting += 1
+                let registered = freezeRegistrationsForTesting
+                let ready = freezeWaitWatchersForTesting.filter { $0.count <= registered }
+                freezeWaitWatchersForTesting.removeAll { $0.count <= registered }
                 ready.forEach { $0.continuation.resume() }
             }
             timer.cancel()
@@ -2389,16 +2390,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Test hook: whether the land is frozen.
     /// Test hook, observation only: returns once a freeze is waiting for in-flight work (it
     /// registered its waiter, in the same segment that checked the work).
-    /// `count`: returns once that many freeze callers are registered as waiting, so a test
-    /// knows a second caller waits before it ends the work (#948 round 2).
-    package func waitUntilFreezeWaitsForTesting(count: Int = 1) async {
-        guard turnSide.debugDrainWaiters.count < count else { return }
+    /// Returns once a freeze caller waits (or has waited: the count is of registrations).
+    package func waitUntilFreezeWaitsForTesting() async {
+        await waitUntilFreezeRegistrationsForTesting(1)
+    }
+
+    /// Returns once `count` freeze callers have registered as waiting, ever: a monotonic count
+    /// of registration events, so a caller that registered and timed out before this was
+    /// called still counts (#948 round 3: a watcher counts events, it doesn't read state).
+    package func waitUntilFreezeRegistrationsForTesting(_ count: Int) async {
+        guard freezeRegistrationsForTesting < count else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             freezeWaitWatchersForTesting.append((count, continuation))
         }
     }
 
-    /// Callers of `waitUntilFreezeWaitsForTesting` waiting for `count` freeze callers to wait.
+    /// How many freeze callers have registered as waiting (tests).
+    private var freezeRegistrationsForTesting = 0
+    /// Callers of `waitUntilFreezeRegistrationsForTesting` waiting for a registration count.
     private var freezeWaitWatchersForTesting: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     package func debugIsFrozenForTesting() -> Bool {

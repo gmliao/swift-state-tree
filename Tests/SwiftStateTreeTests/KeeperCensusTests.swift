@@ -69,6 +69,7 @@ enum KeeperCensus {
             "actor.drainHandle": .replaced(by: "K7"),
             "actor.forceShutdownFlight": .replaced(by: "K7"),
             "actor.freezeWaitWatchersForTesting": .replaced(by: "K2"),
+            "actor.freezeRegistrationsForTesting": .replaced(by: "K2"),
             "actor.holds": .testHook,
             "actor.inTurnYieldForTesting": .testHook,
             "actor.reentryGateForTesting": .testHook,
