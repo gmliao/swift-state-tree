@@ -5279,6 +5279,11 @@ extension KeeperModel {
         if !coreReplies.onCore, !coreReplies.waits.isEmpty || !coreReplies.dropped.isEmpty {
             violations.append("core input waits \(coreReplies.waits.keys.sorted()) (\(coreReplies.dropped.count) dropped) on the keeper's side")
         }
+        // K2-1 routes the action intake without jobs; K2-2 routes them on the core (plan §16
+        // item 17). A job a core's intake registered has nothing that runs or completes it.
+        if coreReplies.onCore, !actionJobs.isEmpty || !actionSlots.isEmpty {
+            violations.append("core side: a job intake \(actionJobs.keys.sorted()), routed in K2-2")
+        }
         return violations
     }
 
@@ -5382,7 +5387,7 @@ extension KeeperModel {
         }
     }
 
-    fileprivate mutating func actionIntakeBody(
+    mutating func actionIntakeBody(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,

@@ -109,6 +109,9 @@ enum KeeperCoreInputWait: Sendable {
     case join(KeeperJoinOutcome, KeeperJoinDecided, caller: InputID?)
     /// L2's wait: L3 runs, then the leave's continuation.
     case leave(KeeperContinuation)
+    /// A tickless delivered action's wait: the intake's work count ends, then the caller gets
+    /// the turn's outcome as `.completed`.
+    case action(caller: InputID?)
 }
 
 /// The core's input-turn waits, by input sequence, and the ones a drop of the pending inputs
@@ -174,6 +177,8 @@ enum KeeperOutput: Sendable {
 /// answers `.join` with its own result, a leave `.done` or its error.
 enum KeeperReply<State: StateNodeProtocol>: Sendable {
     case join(Result<LandKeeper<State>.JoinOutcome, any Error>)
+    /// A tickless action's submission: a job's `.pending`, or the input turn's `.completed`.
+    case action(Result<ActionSubmission, any Error>)
     case input(Result<InputOutcome, any Error>)
     case done
 }
@@ -206,6 +211,9 @@ extension KeeperModel: TurnMachine {
             inputDrainStep(behavior, store, &turn, endsTickWork: endsTickWork)
         case .inputDrainDue:
             inputDrainStep(behavior, store, &turn, endsTickWork: false)
+        case let .action(envelope, who):
+            let caller = turn.input
+            actionStep(behavior, store, &turn, envelope, who, caller: caller)
         case let .join(call, syncsInTurn):
             let caller = turn.input
             joinDrive(behavior, store, &turn, call: call, caller: caller, syncsInTurn: syncsInTurn, decided: nil) { m, side, outputs in
@@ -251,6 +259,20 @@ extension KeeperModel: TurnMachine {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
         switch query {
+        case let .admitAction(envelope, caller):
+            // The keeper's `submit` on a tick land: the intake's segment, answered at once (the
+            // append's ACK, or a job's `.pending`; jobs run on the core from K2-2).
+            precondition(!behavior.isTickless, "K2-1: a tickless land's action is the .action input")
+            let result = step(behavior, store) { m, side, outputs in
+                Result {
+                    try m.actionIntakeBody(behavior, &side, &outputs, envelope, playerID: caller.playerID, clientID: caller.clientID,
+                                           sessionID: caller.sessionID ?? behavior.config.systemSessionID, enforcingLimits: true, isTickless: false)
+                }
+            }
+            return .actionSubmission(result.map { request in
+                guard case let .done(submission) = request else { preconditionFailure("K2-1: a tick land's intake doesn't wait") }
+                return submission
+            })
         case let .admitServerInput(input):
             // The driver's segment S1 (`submitServerInputErased`): the check, the sequence and
             // the append in one body.
@@ -478,6 +500,51 @@ extension KeeperModel {
         }
     }
 
+    /// A tickless land's action (`.action`), as the keeper's `submit` runs it: the closed-land
+    /// check, the intake's segment, then the input turn's wait for a delivered action. The
+    /// freeze's wait is `.awaitResume`'s barrier (K2-2's input policy), not a step's.
+    mutating func actionStep(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        _ envelope: ActionEnvelope,
+        _ who: KeeperCaller,
+        caller: InputID?
+    ) {
+        precondition(behavior.isTickless, "K2-1: a tick land's action is the .admitAction query")
+        func reply(_ result: Result<ActionSubmission, any Error>, _ turn: inout Turn<KeeperModel<State>>) {
+            if let caller { turn.reply(to: caller, .success(.action(result))) }
+        }
+        do {
+            try store.withSide { side in try side.rejectIfLandClosed() }
+        } catch {
+            reply(.failure(error), &turn)
+            return
+        }
+        let intake = step(behavior, store) { m, side, outputs in
+            Result {
+                try m.actionIntakeBody(behavior, &side, &outputs, envelope, playerID: who.playerID, clientID: who.clientID,
+                                       sessionID: who.sessionID ?? behavior.config.systemSessionID, enforcingLimits: true, isTickless: true)
+            }
+        }
+        switch intake {
+        case let .failure(error):
+            reply(.failure(error), &turn)
+        case let .success(.done(submission)):
+            reply(.success(submission), &turn)
+        case let .success(.awaitInputTurn(sequence)):
+            // `rejectIfAppendedInputDropped`: the land failed in the segment and the failure
+            // dropped the input it appended.
+            let failed = store.withSide { side in side.failure } != nil
+            if failed, inputTurnResults[sequence] == nil, !pendingItems.contains(where: { $0.sequence == sequence }) {
+                store.withSide { side in debugEndWork(&side) }
+                reply(.failure(LandInputRejection.landClosed), &turn)
+                return
+            }
+            awaitCoreInputTurn(behavior, store, &turn, sequence, .action(caller: caller))
+        }
+    }
+
     /// `.joinStepped`: the segment after the join's resolvers, as the keeper's loop runs it.
     mutating func joinStepped(
         _ behavior: KeeperBehavior<State>,
@@ -613,6 +680,10 @@ extension KeeperModel {
         switch wait {
         case let .join(outcome, decided, caller):
             finishJoin(behavior, store, &turn, result.map { _ in outcome }, decided: decided, caller: caller)
+        case let .action(caller):
+            // The keeper's `defer { debugEndWork() }` after the input turn, on success and on a throw.
+            store.withSide { side in debugEndWork(&side) }
+            if let caller { turn.reply(to: caller, .success(.action(result.map { .completed($0) }))) }
         case let .leave(continuation):
             switch result {
             case let .failure(error):
