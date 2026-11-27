@@ -506,3 +506,12 @@ Each line is checked in K2-1's PR body, with its anchor at the PR's base. The an
 | 6 shoulds, 3 nits | Tracked as the K2-1 PR checklist; the three nits are fixed here | §16, §4.2, §7.2 |
 
 **Probes:** none new. The MF is about routing: which step kinds receive `turn.behavior` is in the core's signatures (Machine.swift:47–56), not a Swift-semantics question. K2-1's tokenless-step test is the evidence.
+
+## 19. Draft 9 → draft 10 (K2-2's plan, 2026-11-27)
+
+§6 defines K2-2 and K2-3 as one PR. They are now two PRs (K2-2 plan, K22-Q4, Review's answer on rev 2):
+- **K2-2a**, commits 0–3: the action jobs, the initialization and the destroy drain (after K2-1b), the barriers and the freeze, and the sync entries. It stays unwired, so the differential grows with it, as K2-1 did.
+- **K2-2b**, commits 4–6: the cut-over, the K2-Q1 docs, and K2-3's deletions.
+
+§6's conditions are unchanged. Each one applies to the PR that holds its commit. K2-2b's wiring needs the routed subset total and no refusal reachable (K2-2 plan §3.2).
+
