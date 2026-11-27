@@ -701,13 +701,19 @@ struct LandRouterFlipFailureGenerationTests {
         #expect(await h.router.isJoinPending(a), "admitted, waiting for its flip")
 
         // The failure path is held after it read A's generation and ended the attempt,
-        // before it sends the JOIN_DENIED.
-        let failed = TestGate(), handled = TestGate()
+        // before it sends the JOIN_DENIED. For a supersede, the router's handling of the 4017's
+        // disconnect is held at its entry too: otherwise it ends A's attempt before the flip
+        // wait resumes, and the failure path returns without an answer.
+        let failed = TestGate(), handled = TestGate(), disconnect = TestGate()
         handled.open()
-        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>()
+        defer { disconnect.open() }
+        let holds = HoldRegistry<LandRouterHoldPoint>()
             .on(.flipFailed, arrival: 1) { await failed.arrive() }
             .on(.flipFailureHandled, arrival: 1) { await handled.arrive() }
-            .hook)
+        if stage == .superseded {
+            _ = holds.on(.disconnectEntry, arrival: 1) { await disconnect.arrive() }
+        }
+        await h.router.installHolds(holds.hook)
         // The newer join's handler, when there is one; awaited after the release.
         var newerJoin: Task<Void, Never>?
         switch stage {
@@ -717,14 +723,21 @@ struct LandRouterFlipFailureGenerationTests {
             _ = await h.connect(a2)
             newerJoin = try h.startJoin(a2, requestID: "join-a2", player: "p1")
             #expect(await failed.waitForArrivals(1), "A's join failed (superseded) and its failure path is held")
+            // The server close tells the router first, then closes the connection; the
+            // connection's own disconnect callback follows, and A's client is gone.
+            #expect(await disconnect.waitForArrivals(1), "the 4017's disconnect reached the router")
+            disconnect.open()
             #expect(await first.waitUntilClosed(), "A was closed by its supersede")
+            await h.transport.handleDisconnection(sessionID: a)
+            #expect(await attemptPoll { await !h.router.hasHandshakePhase(a) }, "the router handled A's disconnect")
         case .landClosed:
             await h.adapter.endSessionTicketsForTeardown()
             #expect(await failed.waitForArrivals(1), "A's join failed (land closed) and its failure path is held")
+            // A's client goes.
+            await h.transport.handleDisconnection(sessionID: a)
         }
 
-        // While the router holds A's failure, A's client goes and a new connection takes the ID.
-        await h.transport.handleDisconnection(sessionID: a)
+        // While the router holds A's failure, a new connection takes the ID.
         let reused = AttemptConnection()
         #expect(await h.transport.handleConnection(sessionID: a, connection: reused, authInfo: nil) == .accepted)
         let reusedGeneration = try #require(await h.transport.connectionGeneration(for: a))
