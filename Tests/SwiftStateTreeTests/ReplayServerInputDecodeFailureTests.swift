@@ -101,31 +101,37 @@ private func replaySIStackAddress() -> Int {
 }
 
 #if canImport(Glibc)
-/// glibc's `pthread_getattr_np`, a GNU extension Swift's Glibc module doesn't expose: bound by
-/// its symbol name (as cloud probe 874-p2 did on Swift 6.4.3).
-@_silgen_name("pthread_getattr_np")
-private func replaySIPthreadGetattrNP(_ thread: pthread_t, _ attributes: UnsafeMutablePointer<pthread_attr_t>) -> Int32
+/// glibc's `pthread_getattr_np`, a GNU extension Swift's Glibc module doesn't expose, looked up
+/// at run time and called with the C convention. Nil when the lookup fails: the stack can't be
+/// measured there.
+private typealias ReplaySIPthreadGetattrNP = @convention(c) (pthread_t, UnsafeMutablePointer<pthread_attr_t>) -> Int32
+private let replaySIPthreadGetattrNP: ReplaySIPthreadGetattrNP? = {
+    guard let symbol = dlsym(nil, "pthread_getattr_np") else { return nil }
+    return unsafeBitCast(symbol, to: ReplaySIPthreadGetattrNP.self)
+}()
 #endif
 
-/// Whether `replaySIThreadStackTop` knows this platform. Where it doesn't, the replay runs and
-/// its assertions hold, but the stack isn't measured.
+/// Whether `replaySIThreadStackTop` can find the current thread's stack top here. Where it
+/// can't, the replay runs and its assertions hold, but the stack isn't measured.
 private let replaySICanMeasureStack: Bool = {
-    #if canImport(Darwin) || canImport(Glibc) || canImport(WinSDK)
+    #if canImport(Darwin) || canImport(WinSDK)
     return true
+    #elseif canImport(Glibc)
+    return replaySIPthreadGetattrNP != nil
     #else
     return false
     #endif
 }()
 
 /// The top (highest address) of the current thread's stack. A per-platform call: Darwin has
-/// `pthread_get_stackaddr_np`, glibc has `pthread_getattr_np` (declared above), Windows has
+/// `pthread_get_stackaddr_np`, glibc has `pthread_getattr_np` (looked up above), Windows has
 /// `GetCurrentThreadStackLimits`, and Foundation has none of them.
 private func replaySIThreadStackTop() -> Int? {
     #if canImport(Darwin)
     return Int(bitPattern: pthread_get_stackaddr_np(pthread_self()))
     #elseif canImport(Glibc)
     var attributes = pthread_attr_t()
-    guard replaySIPthreadGetattrNP(pthread_self(), &attributes) == 0 else { return nil }
+    guard let getattr = replaySIPthreadGetattrNP, getattr(pthread_self(), &attributes) == 0 else { return nil }
     defer { pthread_attr_destroy(&attributes) }
     var base: UnsafeMutableRawPointer?
     var size = 0
@@ -149,19 +155,21 @@ final class ReplaySIStackReach: @unchecked Sendable {
     private var notes = 0
     private var refusals = 0
 
-    func note() {
+    func note() { record(refusal: false) }
+
+    /// The reader's refusal of the deep tree: the deepest sampled point.
+    func noteRefusal() { record(refusal: true) }
+
+    /// One sample, in one locked update: a refusal counts only when its depth was measured, so
+    /// `refusalCount > 0` can't hold with nothing measured.
+    private func record(refusal: Bool) {
         guard let top = replaySIThreadStackTop() else { return }
         let used = top - replaySIStackAddress()
         lock.withLock {
             deepest = max(deepest, used)
             notes += 1
+            if refusal { refusals += 1 }
         }
-    }
-
-    /// The reader's refusal of the deep tree: the deepest sampled point.
-    func noteRefusal() {
-        note()
-        lock.withLock { refusals += 1 }
     }
 
     var bytes: Int { lock.withLock { deepest } }
