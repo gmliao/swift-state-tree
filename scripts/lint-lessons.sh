@@ -4,7 +4,9 @@
 #   task-sleep  `Task.sleep(for:` and `Task.sleep(until:` (also `Task<…>.sleep(…)`) in Sources/,
 #               except Sources/SwiftStateTree/Support/SafeTaskSleep.swift: `for:` crashes the Swift
 #               runtime on macOS release builds under load, and `until:` was not shown safe. Use
-#               `safeTaskSleep(for:)` or `safeTaskSleep(until:)`.
+#               `safeTaskSleep(for:)` or `safeTaskSleep(until:)`. Only a `Task` receiver is
+#               matched: a Swift `Clock`'s own sleep (`ContinuousClock().sleep(`) is not, and
+#               none exists in Sources/ today.
 #   format-s    a `%s` specifier (not `%%s`) in a `String(format:` call in Sources/ or Examples/:
 #               `%s` reads a C string pointer, and a Swift String there crashes release builds. Use
 #               `%@` or interpolation.

@@ -92,6 +92,12 @@ struct SafeTaskSleepUntilTests {
                     sleepFor: { duration in
                         outcome.recordRequest(duration)
                         await armed.arrive()
+                        // A request above the cap is the no-cap bug: the real sleeper would return
+                        // at once on overflow and the loop would spin, so fail here and end it.
+                        guard duration <= .seconds(3600) else {
+                            Issue.record("the sleep asked for \(duration), above the one-hour cap", sourceLocation: sourceLocation)
+                            throw UncappedRequest()
+                        }
                         try await safeTaskSleep(for: duration)
                     }
                 )
@@ -149,19 +155,36 @@ struct SafeTaskSleepUntilTests {
         // The sleeper's progress per wake: full, early (100 s of a 3600 s request), full, full.
         let progress: [Duration] = [.seconds(3600), .seconds(100), .seconds(3600), .seconds(1700)]
         let call = SleepCounter()
-        try await safeTaskSleep(
-            until: base + .seconds(9000),
-            now: { clock.now },
-            sleepFor: { duration in
-                requests.recordRequest(duration)
-                let index = call.next()
-                clock.advance(by: progress[index])
-            }
-        )
+        // A sleep asked for past the script (an extra request, as a `>=` guard or a clock read
+        // hoisted out of the loop makes) records an issue and throws, ending the loop as a failure
+        // instead of indexing past the end.
+        do {
+            try await safeTaskSleep(
+                until: base + .seconds(9000),
+                now: { clock.now },
+                sleepFor: { duration in
+                    requests.recordRequest(duration)
+                    let index = call.next()
+                    guard index < progress.count else {
+                        Issue.record("unexpected request \(duration) after the script")
+                        throw ScriptExhausted()
+                    }
+                    clock.advance(by: progress[index])
+                }
+            )
+        } catch is ScriptExhausted {
+            // Recorded above.
+        }
         #expect(requests.requests == [.seconds(3600), .seconds(3600), .seconds(3600), .seconds(1700)])
         #expect(clock.now >= base + .seconds(9000))
     }
 }
+
+/// Thrown by a scripted sleeper that is asked for more than its script holds.
+private struct ScriptExhausted: Error {}
+
+/// Thrown by the cancellation tests' sleeper when asked for more than the one-hour cap.
+private struct UncappedRequest: Error {}
 
 /// A counter for the scripted sleeper.
 private final class SleepCounter: @unchecked Sendable {
