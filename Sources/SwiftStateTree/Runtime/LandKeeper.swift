@@ -1918,6 +1918,50 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// The drain's requests (#700 K2-1b): each segment returns the await it needs.
+    fileprivate enum DrainRequest {
+        case waitForTick
+        case runDestroyResolvers(DestroyHandlerStep)
+        case runAfterFinalize(AfterFinalizeStep)
+        /// `onLandDestroyed`, then `drainFinished` and the detach.
+        case notifyTransport
+    }
+
+    /// The destroy handlers in their order; the drain runs those the land declares.
+    fileprivate enum DestroyHandlerKind: Int {
+        case onDestroyWhenEmpty
+        case onFinalize
+        case afterFinalize
+
+        var name: String {
+            switch self {
+            case .onDestroyWhenEmpty: return "onDestroyWhenEmpty"
+            case .onFinalize: return "OnFinalize"
+            case .afterFinalize: return "AfterFinalize"
+            }
+        }
+    }
+
+    /// A destroy handler (OnDestroyWhenEmpty, OnFinalize) whose resolvers run: built in the
+    /// segment the handler's turn follows, from the State it will see.
+    fileprivate struct DestroyHandlerStep {
+        let kind: DestroyHandlerKind
+        let ctx: LandContext
+        let resolvers: [any AnyResolverExecutor]
+        let resolverContext: ResolverContext
+        /// The drain's one detached generator (`drainAfterTicks`).
+        let random: DeterministicRngService
+        let handler: @Sendable (inout State, LandContext) -> Void
+    }
+
+    /// AfterFinalize, with the snapshot it gets.
+    fileprivate struct AfterFinalizeStep {
+        let snapshot: State
+        let ctx: LandContext
+        let random: DeterministicRngService
+        let handler: @Sendable (State, LandContext) async -> Void
+    }
+
     /// The initialization's requests (#700 K2-1b): each segment returns the await it needs.
     fileprivate enum InitializeRequest {
         /// Re-evaluation: the record's header checks (the legacy replay path, until #612).
@@ -4660,142 +4704,59 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await drainAfterIdleCheck()
     }
 
+    /// The drain's driver (#700 K2-1b): each segment runs in a turn body and returns the await
+    /// it needs. After the tick wait no ticket is needed: intake, deliveries and every
+    /// lifecycle append are rejected while draining, no tick starts, and no input is pending;
+    /// each segment after `drainAfterTicks` asserts that instead of relying on prose.
     fileprivate func drainAfterIdleCheck() async {
         await holds.at(.drainStart)
-        // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting
-        // This must be done before executing destroy handlers to ensure no ticks/syncs run after destroy
+        // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting. They
+        // are actor fields until K2-2's core timers.
         tickTask?.cancel()
         tickTask = nil
         syncTask?.cancel()
         syncTask = nil
 
-        turnSide.cancelDestroy()
-
-        // No tick starts from now on (`isDraining`); one already running finishes whole.
-        await waitForTickInFlight()
-        // Intake has been closed since `isDraining` was set, so the pending inputs are all
-        // there will be: they are dropped and their waiting callers get `.landClosed`.
-        model.dropPendingInputs(behavior, &turnSide, reason: "drain")
-        model.destroyHandlersStarted = true
-
-        // A land whose initialization failed (#104) never ran OnInitialize: its destroy handlers
-        // would act on (or save) a state that was never set up, so they are skipped.
-        guard model.initializationFailure == nil else {
-            await notifyTransportDestroyedAndRelease()
-            return
-        }
-
-        // A reevaluation keeper runs land code only for recorded inputs: the record holds no
-        // destroy or finalize event, so nothing would verify these handlers against the record,
-        // and their resolvers and AfterFinalize could reach outside services (#826).
-        guard behavior.config.mode == .live else {
-            await notifyTransportDestroyedAndRelease()
-            return
-        }
-
-        // Each destroy handler: its resolvers first, then the handler in one synchronous
-        // segment. Nothing else changes the state across those awaits: intake, deliveries and
-        // every lifecycle append are rejected while draining, no tick starts, and no input is
-        // pending. That is why the handlers need no ticket.
-        //
-        // The drain's handlers aren't repeated from the record, so their draws come from one
-        // copy of the land's generator, never written back: OnDestroyWhenEmpty, OnFinalize and
-        // AfterFinalize continue one sequence instead of repeating each other's.
-        let drainRandom = detachedRandom()
-        if let onDestroyWhenEmptyHandler = definition.lifetimeHandlers.onDestroyWhenEmpty {
-            let handlers = definition.lifetimeHandlers
-            await runDestroyHandler(
-                "onDestroyWhenEmpty",
-                resolvers: { _, _ in handlers.onDestroyWhenEmptyResolverExecutors },
-                random: drainRandom,
-                handler: onDestroyWhenEmptyHandler
-            )
-        }
-        if let onFinalizeHandler = definition.lifetimeHandlers.onFinalize {
-            let handlers = definition.lifetimeHandlers
-            await runDestroyHandler(
-                "OnFinalize",
-                resolvers: { state, ctx in handlers.onFinalizeResolvers?.build(state, ctx) ?? [] },
-                random: drainRandom,
-                handler: onFinalizeHandler
-            )
-        }
-
-        // Execute AfterFinalize handler (async cleanup)
-        if let afterFinalizeHandler = definition.lifetimeHandlers.afterFinalize {
-            let snapshot = model.state
-            let ctx = model.makeContext(behavior, turnSide,
-                playerID: behavior.config.systemPlayerID,
-                clientID: behavior.config.systemClientID,
-                sessionID: behavior.config.systemSessionID
-            )
-            // Its outputs are dropped: nothing takes them after the drain began, and one made
-            // after an internal await would reach the collector off the keeper (#893).
-            let (scoped, scope) = openStepScope(ctx, random: drainRandom, droppingInto: destroyHandlerOutputsDropped)
-            defer { scope.close() }
-            await afterFinalizeHandler(snapshot, scoped)
-        }
-
-        // Notify transport that land has been destroyed
-        // This allows transport layer to perform cleanup (e.g., remove from LandManager)
-        // Note: tickTask and syncTask were already cancelled at the start of shutdownIfIdle
-        await notifyTransportDestroyedAndRelease()
-    }
-
-    /// The destruction's last call to the transport, `onLandDestroyed`, then this instance drops
-    /// its link to it. The transport (the adapter) holds this keeper, so the link is a reference
-    /// cycle: kept, it would keep the keeper, its state and the adapter alive after the land is
-    /// gone (#346). Dropped by this instance at the end of its own teardown, after the last call.
-    private func notifyTransportDestroyedAndRelease() async {
-        // A keeper never attached tells the adapter bound by its first sync request (#546 L2a).
-        await (transport ?? boundSyncRequester)?.onLandDestroyed()
-        boundRequester.object = nil
-        model.destructionFinished = true
-        releasedTransport = ReleasedLandTransport(landID: behavior.config.actualLandID ?? definition.id, logger: behavior.logger)
-        setTransport(nil)
-    }
-
-    /// One destroy handler (OnDestroyWhenEmpty, OnFinalize): its resolvers, then the handler
-    /// in one synchronous segment. A resolver failure is logged and skips the handler; the drain
-    /// goes on.
-    ///
-    /// No ticket is captured across the resolvers: by now intake is closed (every input and
-    /// lifecycle append checks `isDraining`), no tick runs and nothing is pending, so nothing
-    /// else can change the state before the handler's segment.
-    private func runDestroyHandler(
-        _ name: String,
-        resolvers buildResolvers: (State, ValidateContext) -> [any AnyResolverExecutor],
-        random: DeterministicRngService,
-        handler: @Sendable (inout State, LandContext) -> Void
-    ) async {
-        let ctx = model.makeContext(behavior, turnSide,
-            playerID: behavior.config.systemPlayerID,
-            clientID: behavior.config.systemClientID,
-            sessionID: behavior.config.systemSessionID
-        )
-        var updatedCtx = ctx
-        // Built from the State the handler will see: nothing changes it before the handler's
-        // segment (see the caller).
-        let resolvers = buildResolvers(model.state, ValidateContext(ctx))
-        if !resolvers.isEmpty {
-            let resolverContext = makeResolverContext(ctx)
-            do {
-                updatedCtx = try await ResolverExecutor.executeResolversWithoutDeadline(
-                    executors: resolvers,
-                    resolverContext: resolverContext,
-                    landContext: ctx
-                )
-            } catch {
-                behavior.logger.error("❌ \(name) resolvers failed: the handler is skipped", metadata: [
-                    "error": .string(String(describing: error)),
-                ])
+        var request = withTurn { m, side, outputs in m.drainBegin(behavior, &side, &outputs) }
+        while true {
+            switch request {
+            case .waitForTick:
+                // No tick starts from now on (`isDraining`); one already running finishes whole.
+                await waitForTickInFlight()
+                request = withTurn { m, side, outputs in m.drainAfterTicks(behavior, &side, &outputs) }
+            case let .runDestroyResolvers(step):
+                let result: Result<LandContext, any Error>
+                do {
+                    result = .success(try await ResolverExecutor.executeResolversWithoutDeadline(
+                        executors: step.resolvers,
+                        resolverContext: step.resolverContext,
+                        landContext: step.ctx
+                    ))
+                } catch {
+                    result = .failure(error)
+                }
+                request = withTurn { m, side, outputs in m.destroyHandlerResolved(behavior, &side, &outputs, step, result) }
+            case let .runAfterFinalize(step):
+                // Its outputs are dropped: nothing takes them after the drain began, and one made
+                // after an internal await would reach the collector off the keeper (#893).
+                let (scoped, scope) = openStepScope(step.ctx, random: step.random, droppingInto: destroyHandlerOutputsDropped)
+                await step.handler(step.snapshot, scoped)
+                scope.close()
+                request = withTurn { m, side, outputs in m.drainAfterFinalize(behavior, &side, &outputs) }
+            case .notifyTransport:
+                // The destruction's last call to the transport, `onLandDestroyed`, then this
+                // instance drops its link to it. The transport (the adapter) holds this keeper,
+                // so the link is a reference cycle: kept, it would keep the keeper, its state and
+                // the adapter alive after the land is gone (#346). A keeper never attached tells
+                // the adapter bound by its first sync request (#546 L2a).
+                await (transport ?? boundSyncRequester)?.onLandDestroyed()
+                withTurn { m, side, outputs in m.drainFinished(behavior, &side, &outputs) }
+                // With no await since the turn: the released stand-in, then the detach, at depth
+                // zero (a body's `setTransport` is refused).
+                releasedTransport = ReleasedLandTransport(landID: behavior.config.actualLandID ?? definition.id, logger: behavior.logger)
+                setTransport(nil)
                 return
             }
-        }
-        // The handler can't throw (#593): the land is ending, so nothing would act on a refusal.
-        // Its outputs are dropped: nothing takes them after the drain began (#893).
-        model.withHandlerStep(behavior, turnSide, updatedCtx, random: .detached(random), dropsOutputs: true) { m, ctx in
-            handler(&m.state, ctx)
         }
     }
 
@@ -4932,6 +4893,10 @@ extension KeeperModel {
     fileprivate typealias JoinDecided = LandKeeper<State>.JoinDecided
     fileprivate typealias JoinRequest = LandKeeper<State>.JoinRequest
     fileprivate typealias InitializeRequest = LandKeeper<State>.InitializeRequest
+    fileprivate typealias DrainRequest = LandKeeper<State>.DrainRequest
+    fileprivate typealias DestroyHandlerKind = LandKeeper<State>.DestroyHandlerKind
+    fileprivate typealias DestroyHandlerStep = LandKeeper<State>.DestroyHandlerStep
+    fileprivate typealias AfterFinalizeStep = LandKeeper<State>.AfterFinalizeStep
     fileprivate typealias InitializeResolving = LandKeeper<State>.InitializeResolving
     fileprivate typealias LeaveCapture = LandKeeper<State>.LeaveCapture
     fileprivate typealias LeaveRequest = LandKeeper<State>.LeaveRequest
@@ -7602,6 +7567,156 @@ extension KeeperModel {
         guard !results.isEmpty else { return }
         // Non-empty results: the pass applied at least one join before the report.
         _ = callOut(behavior, &side, &outputs, endsInputs: true, appliedInputs: true, { _, side in side.noteJoinInputsConsumed(behavior, results) })
+    }
+
+    // MARK: Drain segments (#700 K2-1b)
+
+    /// D1: no destroy timer from now on; then the tick in flight, if any.
+    fileprivate mutating func drainBegin(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> DrainRequest {
+        side.cancelDestroy()
+        if ticksInFlight > 0 { return .waitForTick }
+        return drainAfterTicks(behavior, &side, &outputs)
+    }
+
+    /// D2: no tick runs. Intake has been closed since `isDraining` was set, so the pending
+    /// inputs are all there will be: they are dropped and their waiting callers get
+    /// `.landClosed`. Then the destroy handlers, except on a land whose initialization failed
+    /// (#104: they would act on, or save, a state never set up) or a re-evaluation keeper (#826:
+    /// the record holds no destroy or finalize event to verify them against, and their resolvers
+    /// and AfterFinalize could reach outside services).
+    fileprivate mutating func drainAfterTicks(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> DrainRequest {
+        dropPendingInputs(behavior, &side, reason: "drain")
+        destroyHandlersStarted = true
+        guard initializationFailure == nil, behavior.config.mode == .live else { return .notifyTransport }
+        // The drain's handlers aren't repeated from the record, so their draws come from one
+        // copy of the land's generator, never written back: OnDestroyWhenEmpty, OnFinalize and
+        // AfterFinalize continue one sequence instead of repeating each other's.
+        return nextDestroyStep(behavior, &side, &outputs, from: .onDestroyWhenEmpty, random: detachedRandom(behavior))
+    }
+
+    /// The destroy handlers after the tick wait run with no ticket: nothing else can change the
+    /// state across their awaits.
+    private func assertDrainIsClosed(_ side: KeeperTurnSide) {
+        assert(side.isDraining && ticksInFlight == 0 && pendingItems.isEmpty, "the drain's handlers run with intake closed, no tick and nothing pending")
+    }
+
+    /// The next destroy handler the land declares, from `kind` on. One with resolvers returns
+    /// them, built from the State it will see; one without runs in this segment and the drain
+    /// goes on. AfterFinalize returns its snapshot. Then `onLandDestroyed`.
+    private mutating func nextDestroyStep(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        from kind: DestroyHandlerKind,
+        random: DeterministicRngService
+    ) -> DrainRequest {
+        assertDrainIsClosed(side)
+        let handlers = behavior.definition.lifetimeHandlers
+        var next: DestroyHandlerKind? = kind
+        while let current = next {
+            next = DestroyHandlerKind(rawValue: current.rawValue + 1)
+            let ctx = makeContext(behavior, side,
+                playerID: behavior.config.systemPlayerID,
+                clientID: behavior.config.systemClientID,
+                sessionID: behavior.config.systemSessionID
+            )
+            let handler: @Sendable (inout State, LandContext) -> Void
+            let resolvers: [any AnyResolverExecutor]
+            switch current {
+            case .onDestroyWhenEmpty:
+                guard let onDestroyWhenEmpty = handlers.onDestroyWhenEmpty else { continue }
+                handler = onDestroyWhenEmpty
+                resolvers = handlers.onDestroyWhenEmptyResolverExecutors
+            case .onFinalize:
+                guard let onFinalize = handlers.onFinalize else { continue }
+                handler = onFinalize
+                // Built from the State the handler will see: OnDestroyWhenEmpty's write is in.
+                resolvers = handlers.onFinalizeResolvers?.build(state, ValidateContext(ctx)) ?? []
+            case .afterFinalize:
+                guard let afterFinalize = handlers.afterFinalize else { continue }
+                return .runAfterFinalize(AfterFinalizeStep(snapshot: state, ctx: ctx, random: random, handler: afterFinalize))
+            }
+            if !resolvers.isEmpty {
+                return .runDestroyResolvers(DestroyHandlerStep(
+                    kind: current,
+                    ctx: ctx,
+                    resolvers: resolvers,
+                    resolverContext: makeResolverContext(behavior, ctx),
+                    random: random,
+                    handler: handler
+                ))
+            }
+            applyDestroyHandler(behavior, side, handler, ctx: ctx, random: random)
+        }
+        return .notifyTransport
+    }
+
+    /// A destroy handler in one synchronous segment. It can't throw (#593): the land is ending,
+    /// so nothing would act on a refusal. Its outputs are dropped: nothing takes them after the
+    /// drain began (#893).
+    private mutating func applyDestroyHandler(
+        _ behavior: KeeperBehavior<State>,
+        _ side: KeeperTurnSide,
+        _ handler: @Sendable (inout State, LandContext) -> Void,
+        ctx: LandContext,
+        random: DeterministicRngService
+    ) {
+        withHandlerStep(behavior, side, ctx, random: .detached(random), dropsOutputs: true) { m, ctx in
+            handler(&m.state, ctx)
+        }
+    }
+
+    /// D3: a destroy handler's resolvers ended. A failure is logged and skips the handler; the
+    /// drain goes on.
+    fileprivate mutating func destroyHandlerResolved(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ step: DestroyHandlerStep,
+        _ result: Result<LandContext, any Error>
+    ) -> DrainRequest {
+        assertDrainIsClosed(side)
+        switch result {
+        case let .success(ctx):
+            applyDestroyHandler(behavior, side, step.handler, ctx: ctx, random: step.random)
+        case let .failure(error):
+            behavior.logger.error("❌ \(step.kind.name) resolvers failed: the handler is skipped", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+        }
+        guard let next = DestroyHandlerKind(rawValue: step.kind.rawValue + 1) else { return .notifyTransport }
+        return nextDestroyStep(behavior, &side, &outputs, from: next, random: step.random)
+    }
+
+    /// D4: AfterFinalize returned.
+    fileprivate mutating func drainAfterFinalize(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> DrainRequest {
+        assertDrainIsClosed(side)
+        return .notifyTransport
+    }
+
+    /// D5: `onLandDestroyed` returned. The destruction is finished (a later `setTransport`
+    /// attaches the released stand-in), and the bound requester is dropped (#546 L2a). Ends
+    /// #522's exception: this bookkeeping is a turn's.
+    fileprivate mutating func drainFinished(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) {
+        assertDrainIsClosed(side)
+        side.sharedBoundRequester.object = nil
+        destructionFinished = true
     }
 
     // MARK: Initialization segments (#700 K2-1b)
