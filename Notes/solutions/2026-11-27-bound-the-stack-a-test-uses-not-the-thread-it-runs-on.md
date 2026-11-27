@@ -36,8 +36,8 @@ The reason for the precondition had also gone away. The test dated from when a d
 ## Fix
 
 Measure instead of pinning:
-- `CanonicalMessagePack.stackProbeForTesting` (debug only) is called at every codec probe point, now including the reader's refusal leaf in `enter()`. Each call notes `threadTop − SP`, where `threadTop` comes from `pthread_get_stackaddr_np` on Darwin, and from `pthread_getattr_np` + `pthread_attr_getstack` on glibc, for whichever thread it runs on.
-- The test asserts that the deepest point is under a stated bound and prints it.
+- `CanonicalMessagePack.stackProbeForTesting` (debug only) is called at every codec probe point, plus a second hook, `depthRefusalProbeForTesting`, on the reader's refusal leaf in `enter()`. Each call notes `threadTop − SP` for whichever thread it runs on. `threadTop` comes from `pthread_get_stackaddr_np` on Darwin, `pthread_getattr_np` + `pthread_attr_getstack` on glibc, and `GetCurrentThreadStackLimits` on Windows.
+- The test asserts that the refusal was sampled (so the bound can't pass on the shallow decodes alone), and that the deepest sampled point is under a stated bound, and prints it. On a platform with none of those calls, it skips only the measurement, by name.
 - The executor stays as a preference.
 
 The bound is derived, not guessed:
@@ -45,12 +45,13 @@ The bound is derived, not guessed:
 - a pool worker's job starts shallower than the executor's run loop (624 bytes from the top against 1,632), so nothing is taken off for that;
 - the reserve is a quarter of the thread.
 
-That gives 392 KiB against the measured 249 KiB. On Linux a pool thread gets the soft `RLIMIT_STACK` at process start, 8 MiB in CI (`pthread_getattr_np`; `Thread.stackSize` reads 8 MiB for every pthread there, so it tells you nothing), so Darwin's bound is the one that binds.
+That gives 393 KiB against the measured 249 KiB. On Linux a pool thread gets the soft `RLIMIT_STACK` at process start, 8 MiB in CI (`pthread_getattr_np`; `Thread.stackSize` reads 8 MiB for every pthread there, so it tells you nothing), so Darwin's bound is the one that binds.
 
 ## Prevention
 
 - When a test needs a resource (stack, memory) that only a particular thread is sure to have, assert the resource use against the smallest thread it can land on. Don't assert the thread. A thread-identity check is only as good as the scheduler's promise, and a task executor preference promises nothing across an actor's resumes.
 - Measure the use from the thread's top, not from a point inside the test. That way, frames above the code under test (the test runner, the keeper, the replay loop) count too, and a regression there fails the bound.
-- Probe the leaf, not just the entries. A refusal throws from a frame below the last visit probe.
+- Probe the leaf, not just the entries: a refusal throws from a frame below the last visit probe. Then assert the leaf was sampled, since a bound met by the shallow paths alone checks nothing.
+- Give every platform the CI runs a measurement, or skip the measurement there explicitly. An `#else return nil` turns into a failure on a platform nobody built locally: Windows, in #935's first round.
 - Read a pool thread's size from inside a task on that thread (`pthread_get_stacksize_np`, `pthread_getattr_np`). Don't use `Thread.stackSize`, and don't take a figure from another note.
 - The trade-off: a regression large enough to overflow a pool thread still crashes on the rare run that lands there, but on the usual run (on the executor) it fails the bound by name, and the bound sits a quarter below the overflow point.
