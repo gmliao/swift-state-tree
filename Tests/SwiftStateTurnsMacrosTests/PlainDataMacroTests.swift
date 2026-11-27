@@ -607,6 +607,71 @@ struct PlainDataMacroTests {
         #expect(backticked == ["@PlainData can't check enum cases that share the base name 'item'; give each case its own name"])
     }
 
+    @Test("A case name declared only inside `#if` blocks may repeat across separate blocks, at any depth; within one clause it clashes (#797)")
+    func caseNamesInSeparateIfBlocks() {
+        let shared = "@PlainData can't check enum cases that share the base name 'fast'; give each case its own name"
+        // The issue's enum: only one of the two blocks compiles in a build.
+        let (text, separate) = expand("""
+            @PlainData
+            enum Mode {
+                #if FLAG
+                case fast(Int)
+                #endif
+                #if !FLAG
+                case fast(String)
+                #endif
+                case other
+            }
+            """)
+        #expect(separate.isEmpty, "\(separate)")
+        #expect(text.contains("extension Mode"))
+        // Each check stays under its own condition.
+        #expect(text.contains("#if FLAG if case let .fast(v0) = value { SwiftStateTurns.PlainDataCheck.field(v0) } #endif"), "\(text)")
+        #expect(text.contains("#if !FLAG if case let .fast(v0) = value { SwiftStateTurns.PlainDataCheck.field(v0) } #endif"), "\(text)")
+        // Separate blocks nested in one clause, and a third block beside it.
+        let (_, nested) = expand("""
+            @PlainData
+            enum Nested {
+                #if os(Linux)
+                #if DEBUG
+                case fast(Int)
+                #endif
+                #if !DEBUG
+                case fast(label: String)
+                #endif
+                #endif
+                #if !os(Linux)
+                case fast
+                #endif
+            }
+            """)
+        #expect(nested.isEmpty, "\(nested)")
+        // Within one clause the name is declared twice in every build that compiles it.
+        let (_, oneClause) = expand("""
+            @PlainData
+            enum OneClause {
+                #if FLAG
+                case fast(Int)
+                case fast(label: String)
+                #endif
+            }
+            """)
+        #expect(oneClause == [shared])
+        // A clause's direct case clashes with a block nested in the same clause.
+        let (_, inner) = expand("""
+            @PlainData
+            enum Inner {
+                #if FLAG
+                case fast(Int)
+                #if DEBUG
+                case fast(label: String)
+                #endif
+                #endif
+            }
+            """)
+        #expect(inner == [shared])
+    }
+
     @Test("A nested type's field of an enclosing type's generic parameter adds that parameter's constraint; an unused one adds none (#782)")
     func enclosingGenericParameters() {
         let (text, messages) = expand("""

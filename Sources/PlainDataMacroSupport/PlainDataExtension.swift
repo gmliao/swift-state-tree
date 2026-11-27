@@ -116,39 +116,52 @@ public enum PlainDataExtension {
     /// Cases that share a base name (`case item(count: Int)` and `case item(label: String)`) are
     /// refused: `if case let .item(v0) = value` is ambiguous, and a labelled pattern doesn't
     /// pick one when the arities differ.
+    ///
+    /// A name may repeat only when every declaration of it is inside an `#if`: in the clauses of
+    /// one block, or in separate blocks (#797). The macro can't evaluate the conditions, so it
+    /// can't tell that separate blocks exclude each other; the user must make them so. If two
+    /// such cases are active in one build, the expansion's per-case `if case let .name(…) = value`
+    /// lines fail to compile (an ambiguous use, or a tuple binding that isn't plain data), and
+    /// Swift refuses a case without a payload beside one with a payload as a redeclaration. So a
+    /// payload is never left unchecked; the error is only less clear than this diagnostic. That
+    /// argument rests on those per-case lines: an expansion that stops writing one line per case
+    /// must revisit this rule.
     private static func diagnoseSharedCaseNames(
         _ members: MemberBlockItemListSyntax,
         failed: inout Bool,
         _ context: some MacroExpansionContext
     ) {
-        // Each `#if` clause starts from the names seen before it: only one clause is active in a
-        // build, so two clauses may declare the same case. A name from any clause still clashes
-        // with the enclosing list after the `#if`.
-        func walk(_ members: MemberBlockItemListSyntax, _ seen: inout Set<String>) {
+        // `direct` holds the names every build of this list declares: its own cases and the
+        // enclosing lists' direct names. `inIf` holds the names its `#if` blocks declare. A case
+        // clashes with either. A clause starts from the current `direct`, so it clashes with the
+        // list's cases before the block; its names go into `inIf`, so they clash with the list's
+        // cases after it, but never with another clause's or another block's names. Returns the
+        // names the list declares, direct or in a block, beyond `enclosing`.
+        func walk(_ members: MemberBlockItemListSyntax, enclosing: Set<String>) -> Set<String> {
+            var direct = enclosing
+            var inIf: Set<String> = []
             for member in members {
                 if let ifConfig = member.decl.as(IfConfigDeclSyntax.self) {
-                    var union = seen
                     for clause in ifConfig.clauses {
-                        var local = seen
-                        if case .decls(let nested) = clause.elements { walk(nested, &local) }
-                        union.formUnion(local)
+                        if case .decls(let nested) = clause.elements {
+                            inIf.formUnion(walk(nested, enclosing: direct))
+                        }
                     }
-                    seen = union
                     continue
                 }
                 guard let cases = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
                 for element in cases.elements {
                     // `item` and `` `item` `` are one name.
                     let name = element.name.identifier?.name ?? element.name.text
-                    if !seen.insert(name).inserted {
+                    if inIf.contains(name) || !direct.insert(name).inserted {
                         context.diagnose(Diagnostic(node: element.name, message: PlainDataDiagnostic.sharedCaseName(name)))
                         failed = true
                     }
                 }
             }
+            return direct.subtracting(enclosing).union(inIf)
         }
-        var seen: Set<String> = []
-        walk(members, &seen)
+        _ = walk(members, enclosing: [])
     }
 
     /// A generic parameter's name without backticks: `T` and `` `T` `` are one.
