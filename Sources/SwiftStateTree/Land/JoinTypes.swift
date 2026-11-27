@@ -63,4 +63,7 @@ public enum JoinError: Error, Sendable {
     /// The Land is shutting down (it became empty and is being destroyed). Retry the join:
     /// `LandManager.getOrCreateLand` creates a fresh instance for the same ID.
     case landShuttingDown
+    /// The join's entry was replaced by a newer join of the same player, or removed by a leave,
+    /// before its OnJoin applied; the join had no effect (#860).
+    case superseded
 }

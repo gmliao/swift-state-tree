@@ -1663,6 +1663,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // The land started its destruction during this join, or its previous instance has
             // not finished destruction yet: a later join gets a fresh instance for the same ID.
             return (.joinDenied, "Land is shutting down, retry the join")
+        case .superseded:
+            // A newer join of the same player replaced this one, or a leave removed it, before
+            // its OnJoin applied: the newer session is the player's.
+            return (.joinDenied, "Join superseded by a newer join of the player")
         }
     }
 
