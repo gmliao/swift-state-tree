@@ -8,6 +8,9 @@
 // - the join appends no OnJoin and throws `JoinError.superseded`;
 // - the leave that removed the entry (a newer login's kick, or the session's own leave) appends
 //   no OnLeave.
+// A kick's leave awaits too: a third login meanwhile finds the slot empty and inserts its own
+// entry. The kicking join re-checks the slot by the kicked entry's generation, and kicks that
+// entry too instead of taking it over (R8).
 // K6 (#588) turns a duplicate login into a rebind; the invariant carries over, and so does
 // this suite as its regression test.
 
@@ -31,14 +34,51 @@ struct ReplacedJoinOutput: ResolverOutput {
 
 struct ReplacedJoinResolverFailure: Error, Equatable {}
 
+@Payload
+struct ReplacedJoinEvent: ServerEventPayload {
+    let client: String
+}
+
+/// Emits `ReplacedJoinEvent` for its sender: a server event after a sequence gap (R7b).
+@Payload
+struct ReplacedJoinEmitAction: ActionPayload {
+    typealias Response = ReplacedJoinAck
+    let n: Int
+}
+
+/// Its resolver waits on gate `key` (R8, R9).
+@Payload
+struct ReplacedJoinGatedAction: ActionPayload {
+    typealias Response = ReplacedJoinAck
+    let key: Int
+}
+
+@Payload
+struct ReplacedJoinAck: ResponsePayload {
+    let ok: Bool
+}
+
+@PlainData
+struct ReplacedJoinActionResolver: Resolver {
+    typealias Dependencies = NoServices
+    typealias Output = ReplacedJoinOutput
+    let key: Int
+
+    func resolve(_ deps: NoServices) async throws -> ReplacedJoinOutput {
+        let key = key
+        await ReplacedJoinGates.gate(key).enterAndWait()
+        return ReplacedJoinOutput(value: key)
+    }
+}
+
 enum ReplacedJoinGates {
     private static let keys = KeyedGates(firstKey: 11_000) { WatermarkGate() }
     static func freshKey() -> Int { keys.freshKey() }
     static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
-/// A client ID "gate-<n>" waits on gate n; "fail-<n>" waits on gate n, then throws; any other
-/// client passes.
+/// OnJoin's resolver: a client ID "gate-<n>" waits on gate n; "fail-<n>" waits on gate n, then
+/// throws; any other client passes.
 struct ReplacedJoinResolver: ContextResolver {
     typealias Output = ReplacedJoinOutput
     static func resolve(ctx: ResolverContext) async throws -> ReplacedJoinOutput {
@@ -52,15 +92,38 @@ struct ReplacedJoinResolver: ContextResolver {
     }
 }
 
+/// OnLeave's resolver: a leaving client "lgate-<n>" waits on gate n; any other client passes.
+struct ReplacedLeaveResolver: ContextResolver {
+    typealias Output = ReplacedJoinOutput
+    static func resolve(ctx: ResolverContext) async throws -> ReplacedJoinOutput {
+        let client = ctx.clientID.rawValue
+        if client.hasPrefix("lgate-"), let key = Int(client.dropFirst("lgate-".count)) {
+            await ReplacedJoinGates.gate(key).enterAndWait()
+        }
+        return ReplacedJoinOutput(value: 0)
+    }
+}
+
 private func makeDefinition(tick: Bool) -> LandDefinition<ReplacedJoinState> {
     if tick {
         return Land("replaced-join", using: ReplacedJoinState.self) {
+            ServerEvents { Register(ReplacedJoinEvent.self) }
             Rules {
                 OnJoin(resolvers: ReplacedJoinResolver.self) { state, _, ctx in
                     state.log.append("join:\(ctx.clientID.rawValue)")
                 }
-                OnLeave { state, ctx in
+                OnLeave(resolvers: ReplacedLeaveResolver.self) { state, _, ctx in
                     state.log.append("leave:\(ctx.clientID.rawValue)")
+                }
+                HandleAction(ReplacedJoinEmitAction.self) { state, action, ctx in
+                    state.log.append("emit:\(action.n)")
+                    ctx.emitEvent(ReplacedJoinEvent(client: ctx.clientID.rawValue), to: .all)
+                    return ReplacedJoinAck(ok: true)
+                }
+                HandleAction(ReplacedJoinGatedAction.self, resolvers: { _, action, _ in ReplacedJoinActionResolver(key: action.key) }) {
+                    state, action, _, _ in
+                    state.log.append("action:\(action.key)")
+                    return ReplacedJoinAck(ok: true)
                 }
             }
             Lifetime {
@@ -69,12 +132,23 @@ private func makeDefinition(tick: Bool) -> LandDefinition<ReplacedJoinState> {
         }
     }
     return Land("replaced-join", using: ReplacedJoinState.self) {
+        ServerEvents { Register(ReplacedJoinEvent.self) }
         Rules {
             OnJoin(resolvers: ReplacedJoinResolver.self) { state, _, ctx in
                 state.log.append("join:\(ctx.clientID.rawValue)")
             }
-            OnLeave { state, ctx in
+            OnLeave(resolvers: ReplacedLeaveResolver.self) { state, _, ctx in
                 state.log.append("leave:\(ctx.clientID.rawValue)")
+            }
+            HandleAction(ReplacedJoinEmitAction.self) { state, action, ctx in
+                state.log.append("emit:\(action.n)")
+                ctx.emitEvent(ReplacedJoinEvent(client: ctx.clientID.rawValue), to: .all)
+                return ReplacedJoinAck(ok: true)
+            }
+            HandleAction(ReplacedJoinGatedAction.self, resolvers: { _, action, _ in ReplacedJoinActionResolver(key: action.key) }) {
+                state, action, _, _ in
+                state.log.append("action:\(action.key)")
+                return ReplacedJoinAck(ok: true)
             }
         }
     }
@@ -135,6 +209,47 @@ private struct ReplacedJoinFixture {
     var log: [String] {
         get async { await keeper.currentState().log }
     }
+
+    /// Submits a gated action for the player's `client`; its sequence, or nil (recorded) when it
+    /// isn't a pending job.
+    func submitGated(_ key: Int, client: ClientID, session: SessionID, sourceLocation: SourceLocation = #_sourceLocation) async throws -> Int64? {
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: ReplacedJoinGatedAction.self),
+            payload: AnyCodable(ReplacedJoinGatedAction(key: key))
+        )
+        let submission = try await keeper.submitAction(envelope, playerID: player, clientID: client, sessionID: session)
+        guard case .pending(let sequence) = submission else {
+            Issue.record("Expected a pending job, got \(submission)", sourceLocation: sourceLocation)
+            return nil
+        }
+        return sequence
+    }
+
+    /// The emitting action, from the player's `client`.
+    func emit(_ n: Int, client: ClientID, session: SessionID) async throws {
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: ReplacedJoinEmitAction.self),
+            payload: AnyCodable(ReplacedJoinEmitAction(n: n))
+        )
+        _ = try await keeper.handleActionEnvelope(envelope, playerID: player, clientID: client, sessionID: session)
+    }
+}
+
+/// Whether the action's outcome is a rejection, read without waiting on a held resolver: call
+/// it once the slot is filled.
+private func isRejected(_ keeper: LandKeeper<ReplacedJoinState>, _ sequence: Int64) async -> Bool {
+    do {
+        _ = try await keeper.awaitActionResult(sequence: sequence)
+        return false
+    } catch {
+        return true
+    }
+}
+
+private func tempRecordPath(_ name: String) -> String {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("replaced-join-\(name)-\(UUID().uuidString).json")
+        .path
 }
 
 private func isSuperseded(_ error: (any Error)?) -> Bool {
@@ -269,32 +384,6 @@ struct JoinReplacedDuringOnJoinTests {
         #expect(isSuperseded(errorA), "A's join \(describe(errorA))")
     }
 
-    @Test("R7: the kick's skipped OnLeave takes no sequence; A's dropped OnJoin leaves a one-number gap", arguments: [false, true])
-    func skippedLeaveTakesNoSequence(tick: Bool) async throws {
-        let f = await ReplacedJoinFixture(tick: tick, reporting: true, recording: true)
-        let key = ReplacedJoinGates.freshKey()
-        let gate = ReplacedJoinGates.gate(key)
-        defer { gate.release() }
-        let clientA = ClientID("gate-\(key)"), clientB = ClientID("c-b")
-
-        // An anchor: another player's join, recorded with sequence x.
-        try await f.keeper.join(playerID: PlayerID("p0"), clientID: ClientID("c-0"), sessionID: SessionID("s-0"))
-        await f.settle()
-
-        // A takes x + 1 at its insert; B's kick of A must take none; B takes x + 2.
-        let joinA = f.joinInTask(clientA, SessionID("s-a"))
-        guard await gate.waitUntilEntered() else { return }
-        try await f.join(clientB, SessionID("s-b"))
-        gate.release()
-        _ = await joinA.value
-        await f.settle()
-
-        let recorder = try #require(await f.keeper.getReevaluationRecorder())
-        let sequences = await recorder.getAllFrames().flatMap { $0.lifecycleEvents.map(\.sequence) }
-        let anchor = try #require(sequences.first)
-        #expect(sequences == [anchor, anchor + 2], "tick=\(tick): recorded lifecycle sequences \(sequences)")
-    }
-
     @Test("R6: A's OnJoin resolvers throw after the kick: A's join fails with their error, and B's entry is untouched", arguments: [false, true], [false, true])
     func resolverFailureAfterKick(tick: Bool, reporting: Bool) async throws {
         let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
@@ -321,5 +410,169 @@ struct JoinReplacedDuringOnJoinTests {
         try await f.keeper.leave(playerID: f.player, clientID: clientB, sessionID: sessionB)
         await f.settle()
         #expect(await f.log == ["join:\(clientB.rawValue)", "leave:\(clientB.rawValue)"])
+    }
+
+    @Test("R7: the kick's skipped OnLeave takes no sequence; A's dropped OnJoin leaves a one-number gap", arguments: [false, true])
+    func skippedLeaveTakesNoSequence(tick: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: true, recording: true)
+        let key = ReplacedJoinGates.freshKey()
+        let gate = ReplacedJoinGates.gate(key)
+        defer { gate.release() }
+        let clientA = ClientID("gate-\(key)"), clientB = ClientID("c-b")
+
+        // An anchor: another player's join, recorded with sequence x.
+        try await f.keeper.join(playerID: PlayerID("p0"), clientID: ClientID("c-0"), sessionID: SessionID("s-0"))
+        await f.settle()
+
+        // A takes x + 1 at its insert; B's kick of A must take none; B takes x + 2.
+        let joinA = f.joinInTask(clientA, SessionID("s-a"))
+        guard await gate.waitUntilEntered() else { return }
+        try await f.join(clientB, SessionID("s-b"))
+        gate.release()
+        _ = await joinA.value
+        await f.settle()
+
+        let recorder = try #require(await f.keeper.getReevaluationRecorder())
+        let sequences = await recorder.getAllFrames().flatMap { $0.lifecycleEvents.map(\.sequence) }
+        let anchor = try #require(sequences.first)
+        #expect(sequences == [anchor, anchor + 2], "tick=\(tick): recorded lifecycle sequences \(sequences)")
+    }
+
+    @Test("R4b: tick land, a second login after A's append but before the tick applies it: join A, leave A, join B", arguments: [false, true])
+    func kickBetweenAppendAndApply(reporting: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: true, reporting: reporting)
+        let key = ReplacedJoinGates.freshKey()
+        let gate = ReplacedJoinGates.gate(key)
+        defer { gate.release() }
+        let clientA = ClientID("gate-\(key)"), clientB = ClientID("c-b")
+
+        // A's resolvers end and its OnJoin is appended; no tick has applied it yet.
+        let joinA = f.joinInTask(clientA, SessionID("s-a"))
+        guard await gate.waitUntilEntered() else { return }
+        gate.release()
+        let errorA = await joinA.value
+        #expect(errorA == nil, "A's join \(describe(errorA))")
+        #expect(await f.log == [])
+
+        // The append cleared A's pending mark: the kick appends A's OnLeave behind its OnJoin.
+        try await f.join(clientB, SessionID("s-b"))
+        await f.settle()
+
+        let log = await f.log
+        #expect(log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)", "join:\(clientB.rawValue)"], "reporting=\(reporting): log \(log)")
+    }
+
+    @Test("R7b: R1's shape replays: the gaps are stepped over, a later event keeps its sequence, and every state hash matches", arguments: [false, true])
+    func replacedJoinReplays(tick: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: true, recording: true)
+        let key = ReplacedJoinGates.freshKey()
+        let gate = ReplacedJoinGates.gate(key)
+        defer { gate.release() }
+        let clientA = ClientID("gate-\(key)"), clientB = ClientID("c-b"), sessionB = SessionID("s-b")
+        let path = tempRecordPath("r7b")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let joinA = f.joinInTask(clientA, SessionID("s-a"))
+        guard await gate.waitUntilEntered() else { return }
+        try await f.join(clientB, sessionB)
+        gate.release()
+        #expect(isSuperseded(await joinA.value))
+        await f.settle()
+        // After A's dropped OnJoin: an event that takes the next sequence.
+        try await f.emit(1, client: clientB, session: sessionB)
+        await f.settle()
+        #expect(await f.log == ["join:\(clientB.rawValue)", "emit:1"])
+
+        let recorder = try #require(await f.keeper.getReevaluationRecorder())
+        let recordedEvents = await recorder.getAllFrames().flatMap(\.serverEvents)
+        #expect(recordedEvents.count == 1, "tick=\(tick): recorded events \(recordedEvents)")
+        try await recorder.save(to: path)
+
+        let result = try await ReevaluationEngine.run(
+            definition: makeDefinition(tick: tick),
+            initialState: ReplacedJoinState(),
+            recordFilePath: path
+        )
+        #expect(result.serverEventVerification == .passed, "tick=\(tick): \(result.serverEventMismatches)")
+        #expect(result.recordedPassMismatches.isEmpty, "tick=\(tick): \(result.recordedPassMismatches)")
+        // A tick land records a state hash per tick; a tickless land's passes are checked
+        // through `recordedPassMismatches` above.
+        if tick { #expect(!result.recordedStateHashes.isEmpty) }
+        for (tickId, recorded) in result.recordedStateHashes {
+            #expect(result.tickHashes[tickId] == recorded, "tick=\(tick): state hash of tick \(tickId)")
+        }
+    }
+
+    @Test("R8: a third login during the kick's OnLeave resolvers is kicked too, not taken over: join A, leave A, join B", arguments: [false, true], [false, true])
+    func thirdLoginDuringTheKickIsKickedToo(tick: Bool, reporting: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
+        let leaveKey = ReplacedJoinGates.freshKey(), joinKey = ReplacedJoinGates.freshKey(), actionKey = ReplacedJoinGates.freshKey()
+        let leaveGate = ReplacedJoinGates.gate(leaveKey), joinGate = ReplacedJoinGates.gate(joinKey), actionGate = ReplacedJoinGates.gate(actionKey)
+        defer { leaveGate.release(); joinGate.release(); actionGate.release() }
+        let clientA = ClientID("lgate-\(leaveKey)"), clientB = ClientID("c-b"), clientC = ClientID("gate-\(joinKey)")
+        let sessionB = SessionID("s-b"), sessionC = SessionID("s-c")
+
+        try await f.join(clientA, SessionID("s-a"))
+        await f.settle()
+
+        // B kicks A: A's entry goes, and B waits in A's OnLeave resolvers.
+        let joinB = f.joinInTask(clientB, sessionB)
+        guard await leaveGate.waitUntilEntered() else { return }
+        // C finds the slot empty, inserts its entry, and waits in its OnJoin resolvers; an
+        // action of C's is a job held in its resolver.
+        let joinC = f.joinInTask(clientC, sessionC)
+        guard await joinGate.waitUntilEntered() else { return }
+        guard let actionC = try await f.submitGated(actionKey, client: clientC, session: sessionC) else { return }
+        guard await actionGate.waitUntilEntered() else { return }
+
+        // B resumes: the slot holds C's entry, not the one it kicked, so B kicks C too.
+        leaveGate.release()
+        let errorB = await joinB.value
+        #expect(errorB == nil, "B's join \(describe(errorB))")
+        // C's kick cancelled its job: rejected while its resolver still holds.
+        #expect(await f.keeper.actionSlotIsFilledForTesting(actionC), "C's entry was taken over, not kicked")
+
+        joinGate.release()
+        let errorC = await joinC.value
+        actionGate.release()
+        await f.settle()
+
+        let log = await f.log
+        #expect(log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)", "join:\(clientB.rawValue)"], "tick=\(tick) reporting=\(reporting): log \(log), C's join \(describe(errorC))")
+        #expect(isSuperseded(errorC), "C's join \(describe(errorC))")
+        #expect(await isRejected(f.keeper, actionC))
+        #expect(await f.keeper.playerCount() == 1)
+
+        // B's entry joined: its own leave applies.
+        try await f.keeper.leave(playerID: f.player, clientID: clientB, sessionID: sessionB)
+        await f.settle()
+        #expect(await f.log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)", "join:\(clientB.rawValue)", "leave:\(clientB.rawValue)"])
+    }
+
+    @Test("R9: A's OnJoin resolvers fail: an action submitted for A meanwhile is rejected at once, its resolver still held", arguments: [false, true])
+    func failedOnJoinCancelsItsActionJobs(tick: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: true)
+        let joinKey = ReplacedJoinGates.freshKey(), actionKey = ReplacedJoinGates.freshKey()
+        let joinGate = ReplacedJoinGates.gate(joinKey), actionGate = ReplacedJoinGates.gate(actionKey)
+        defer { joinGate.release(); actionGate.release() }
+        let clientA = ClientID("fail-\(joinKey)"), sessionA = SessionID("s-a")
+
+        let joinA = f.joinInTask(clientA, sessionA)
+        guard await joinGate.waitUntilEntered() else { return }
+        guard let action = try await f.submitGated(actionKey, client: clientA, session: sessionA) else { return }
+        guard await actionGate.waitUntilEntered() else { return }
+
+        // A's resolvers throw: the rollback removes A's entry and cancels its job.
+        joinGate.release()
+        let errorA = await joinA.value
+        #expect(isResolverFailure(errorA), "A's join \(describe(errorA))")
+        #expect(await f.keeper.actionSlotIsFilledForTesting(action), "the job kept its slot until its resolver ends")
+
+        actionGate.release()
+        #expect(await isRejected(f.keeper, action))
+        await f.keeper.waitForActionJobsForTesting()
+        #expect(await f.keeper.actionJobCountsForTesting().jobs == 0)
+        await f.settle()
+        #expect(await f.log == [])
     }
 }
