@@ -1990,11 +1990,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 reserved = decided.reservation.map { ($0, decided.playerID) }
                 await holds.at(.join)
                 request = try withTurn { m, side, outputs in try m.joinKickCheck(behavior, &side, &outputs, decided) }
-            case let .kick(decided, oldClientID, oldSessionID):
+            case let .kick(decided, oldClientID, oldSessionID, kickedGeneration):
                 // Kick old connection by calling leave
                 // This will call OnLeave handler and clean up state
                 try await leave(playerID: decided.playerID, clientID: oldClientID, sessionID: oldSessionID)
-                request = try withTurn { m, side, outputs in try m.joinInsert(behavior, &side, &outputs, decided) }
+                request = try withTurn { m, side, outputs in
+                    try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: kickedGeneration)
+                }
             case let .admit(decided, joinSequence):
                 // Between two segments, at depth zero, with no suspension since the insert or
                 // the append (§3.5): the admission may call back into the keeper.
@@ -2027,8 +2029,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         /// J2 decided and reserved: the driver ends the reservation on every exit, runs the
         /// `.join` hold, then J2b.
         case holdThenKickCheck(JoinDecided)
-        /// The old session's leave (§4.3's flow); J3 follows it.
-        case kick(JoinDecided, oldClientID: ClientID, oldSessionID: SessionID?)
+        /// The old session's leave (§4.3's flow), of the entry with `kickedGeneration`; J2c
+        /// follows it.
+        case kick(JoinDecided, oldClientID: ClientID, oldSessionID: SessionID?, kickedGeneration: Epoch)
         /// The transport's admission, between two segments; `joinSequence` is nil without an
         /// OnJoin input (J3a), else the appended input's (J4).
         case admit(JoinDecided, joinSequence: Int64?)
@@ -5880,7 +5883,8 @@ extension KeeperModel {
         let outcome: Result<InputOutcome, any Error>
         do {
             try validateDelivery(behavior, side, of: job.item, ticket: job.ticket, input: job.input)
-            // Unreachable from the two callers (a leave ended the entry, or the land drains).
+            // Unreachable from the callers (a leave or a failed join ended the entry, or the land
+            // drains).
             outcome = .failure(CancellationError())
         } catch {
             outcome = .failure(error)
@@ -6204,7 +6208,24 @@ extension KeeperModel {
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[decided.playerID], let oldClientID = existingSession.clientID {
             behavior.logger.info("Duplicate playerID login detected: \(decided.playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
-            return .kick(decided, oldClientID: oldClientID, oldSessionID: existingSession.lastSessionID)
+            return .kick(decided, oldClientID: oldClientID, oldSessionID: existingSession.lastSessionID, kickedGeneration: existingSession.generation)
+        }
+        return try joinInsert(behavior, &side, &outputs, decided)
+    }
+
+    /// J2c: after the kick's leave, which awaited. Another join of the player may have inserted
+    /// its own entry meanwhile: the slot is checked by identity (the kicked entry's generation),
+    /// not by key, and a different entry is kicked too instead of taken over (#860). Taking it
+    /// over would keep its join's pending OnJoin, which that join then drops as superseded.
+    fileprivate mutating func joinAfterKick(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ decided: JoinDecided,
+        kickedGeneration: Epoch
+    ) throws -> JoinRequest {
+        if let entry = players[decided.playerID], entry.generation != kickedGeneration {
+            return try joinKickCheck(behavior, &side, &outputs, decided)
         }
         return try joinInsert(behavior, &side, &outputs, decided)
     }
@@ -6225,7 +6246,10 @@ extension KeeperModel {
             isGuest: session.isGuest,
             metadata: session.metadata
         )
-        let isFirst = playerSession.clientID == nil
+        // An entry whose OnJoin is still pending never joined: this join runs its own OnJoin,
+        // and the flag isn't carried over (#860). J2c kicks such an entry before this point.
+        let isFirst = playerSession.clientID == nil || playerSession.onJoinPending
+        playerSession.onJoinPending = false
 
         playerSession.clientID = decided.call.clientID
         playerSession.lastSessionID = decided.call.sessionID
@@ -6294,7 +6318,7 @@ extension KeeperModel {
         resolverOutputs: [String: HeldResolverOutput],
         resolvedAtTick: Int64
     ) throws -> JoinRequest {
-        try appendOnJoin(&side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: resolvedAtTick)
+        try appendOnJoin(behavior, &side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: resolvedAtTick)
         // Admitted in the same segment as the append, before the OnJoin turn can run.
         guard decided.call.admitThroughTransport else {
             return joinAfterAdmission(behavior, &side, &outputs, decided, sequence: capture.sequence, admission: .notAdmitted)
@@ -6326,6 +6350,7 @@ extension KeeperModel {
 
     /// The OnJoin input's append (J4), with the drain check in the same segment.
     fileprivate mutating func appendOnJoin(
+        _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         _ capture: OnJoinCapture,
@@ -6341,6 +6366,9 @@ extension KeeperModel {
                 players.removeValue(forKey: capture.playerID)
                 side.removePlayerServices(of: capture.playerID, generation: capture.entryGeneration)
             }
+            // Actions submitted for this entry during the resolvers can't be delivered, as after
+            // a leave (their tickets name the entry).
+            cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: capture.entryGeneration)
             throw JoinError.landShuttingDown
         }
         // Same segment as the append: a newer join of the player replaced this entry, or a leave
@@ -6381,6 +6409,10 @@ extension KeeperModel {
             side.removePlayerServices(of: capture.playerID, generation: capture.entryGeneration)
             scheduleDestroyIfNeeded(behavior, &side, &outputs)
         }
+        // Actions submitted for this entry during the resolvers can't be delivered, as after a
+        // leave: their jobs release their slots now, not when their resolvers end. A leave or a
+        // kick that removed the entry first already cancelled them, so this finds none then.
+        cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: capture.entryGeneration)
     }
 
     /// The OnJoin resolvers' request, nil when the land declares none.

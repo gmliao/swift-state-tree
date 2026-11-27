@@ -1189,6 +1189,25 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 logger.error("Join failed: session=\(sessionID.rawValue), error=\(error)")
                 return
             }
+            if case .superseded? = error as? JoinError {
+                // A newer join of the player replaced this one during its OnJoin resolvers
+                // (#860): the error is the session's last frame, with the supersede's 4017
+                // close behind it, as on the flip-stage supersede (#861), so the client doesn't
+                // rejoin into a kick loop. The connection, read in the segment of the check: the
+                // frame and the close must not reach a later connection under the same ID (#911).
+                let connectionGeneration = sessionToConnectionGeneration[sessionID]
+                endAttempt(sessionID)
+                // The session's close decision, seen in this segment (#912): every later frame
+                // is dropped until the close is reported.
+                refusedSessions.insert(sessionID)
+                if let errorData = joinErrorData(requestID: requestID, code: errorCode, message: errorMessage) {
+                    await adapter.sendFinalFrameAndClose(errorData, kind: .text, to: sessionID, generation: connectionGeneration, close: .superseded)
+                } else {
+                    await transport.closeSession(sessionID, with: .superseded, generation: connectionGeneration)
+                }
+                logger.info("Join superseded during its OnJoin resolvers: session=\(sessionID.rawValue)")
+                return
+            }
             endAttempt(sessionID)
             await sendJoinError(
                 requestID: requestID,

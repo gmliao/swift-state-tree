@@ -50,7 +50,8 @@ public struct PlayerSession: Sendable {
 
 // MARK: - Join Errors
 
-/// Errors that can be thrown during join validation in the CanJoin handler.
+/// Errors a join can fail with: thrown by the CanJoin handler to refuse it (`roomIsFull`,
+/// `levelTooLow`, `banned`, `custom`), or by the keeper (`landShuttingDown`, `superseded`).
 public enum JoinError: Error, Sendable {
     /// The room has reached its maximum player capacity.
     case roomIsFull
@@ -64,6 +65,9 @@ public enum JoinError: Error, Sendable {
     /// `LandManager.getOrCreateLand` creates a fresh instance for the same ID.
     case landShuttingDown
     /// The join's entry was replaced by a newer join of the same player, or removed by a leave,
-    /// before its OnJoin applied; the join had no effect (#860).
+    /// before its OnJoin input was appended (#860). Its OnJoin input and the OnLeave of the
+    /// leave that removed the entry are both dropped. Its OnJoin resolvers ran, so whatever
+    /// they did outside the land is not undone. Through the router, the session gets
+    /// `JOIN_DENIED` as its last frame, then the 4017 `superseded` close.
     case superseded
 }
