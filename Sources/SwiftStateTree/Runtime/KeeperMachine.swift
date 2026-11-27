@@ -27,12 +27,10 @@ struct KeeperCoreBarrierWaits: Sendable, Equatable {
     /// A freeze's callers, by generation: answered true once the in-flight work is 0 with that
     /// generation still in effect, false at its timeout or its release.
     var freeze: [UInt64: [InputID]] = [:]
-    /// Tickless intakes waiting for the resume (the keeper's `debugWaitWhileFrozen`).
-    var resume: [InputID] = []
     /// Callers waiting for the initialization (its closed case is answered in commit 1).
     var initialized: [InputID] = []
 
-    var isEmpty: Bool { freeze.isEmpty && resume.isEmpty && initialized.isEmpty }
+    var isEmpty: Bool { freeze.isEmpty && initialized.isEmpty }
 }
 
 /// Who an entry speaks for: the three identities every player entry takes.
@@ -47,7 +45,9 @@ struct KeeperCaller: Sendable {
 /// when its request went out, which the step checks against the current state first.
 enum KeeperInput<State: StateNodeProtocol>: Sendable {
     // Entries.
-    case action(ActionEnvelope, KeeperCaller)
+    /// `cancelled`: the caller's task's cancellation, read by the sender (a core step runs on
+    /// the core's driver task, so it can't read the caller's; Review on #948, as #944 did).
+    case action(ActionEnvelope, KeeperCaller, cancelled: Bool = false)
     case clientEvent(AnyClientEvent, KeeperCaller)
     /// A join. `syncsInTurn`: the driver's read of whether the attached transport runs the
     /// sync phase in turn, which the transport's admission needs (see `.tickDue`); the join's
@@ -68,7 +68,6 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     case resume(generation: UInt64)
     case shutdown
     case awaitInitialized
-    case awaitResume
     /// `submitSyncStream`'s drafts (the adapter's awaited callers: the `.legacyCycle` branch, the
     /// disconnect's clear). `outsideTurn`: the adapter's standalone registration and fallback
     /// admission, as the keeper's entry takes it (K2 §16 item 6).
@@ -118,7 +117,7 @@ enum KeeperInputRoutes {
     static let routed: Set<KeeperInputRoute> = [
         .tickDue, .syncDue, .recordTaken, .inputDrainDue, .join, .joinStepped, .leave, .leaveStepped, .action, .clientEvent, .startLand,
         .actionResolved, .actionJobReleased, .awaitActionResult,
-        .freeze, .resume, .awaitResume, .awaitInitialized, .freezeTimedOut,
+        .freeze, .resume, .awaitInitialized, .freezeTimedOut,
         .syncStreamDraft,
     ]
     static let deferred: [KeeperInputRoute: String] = [
@@ -157,7 +156,7 @@ extension KeeperQuery {
 /// Each `KeeperInput` case by name: `route` is exhaustive, so a new case needs a route here, and
 /// the census checks that every route is routed or deferred.
 enum KeeperInputRoute: String, CaseIterable, Sendable {
-    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, awaitResume, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initializeResolved, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut
+    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initializeResolved, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut
 }
 
 extension KeeperInput {
@@ -174,7 +173,6 @@ extension KeeperInput {
         case .resume: .resume
         case .shutdown: .shutdown
         case .awaitInitialized: .awaitInitialized
-        case .awaitResume: .awaitResume
         case .syncStreamDraft: .syncStreamDraft
         case .joinStepped: .joinStepped
         case .leaveStepped: .leaveStepped
@@ -282,9 +280,19 @@ struct KeeperCoreInputReplies: Sendable {
     /// the input and why. A core path that reaches one is a bug in K2-1; `actionTableViolations`
     /// reports each, so the differential's invariant fails on it.
     var refusals: [String] = []
+    /// Tickless intakes held while frozen (the keeper's `debugWaitWhileFrozen`), in arrival
+    /// order: the intake's own step is the barrier, so no freeze can settle between the wait
+    /// and the intake (Review on #948). Each steps again when the land thaws or drains.
+    var heldWhileFrozen: [KeeperHeldIntake] = []
 }
 
 /// A core's refusal of an input K2-1 doesn't route on the core (`KeeperCoreInputReplies.refusals`).
+/// A tickless intake held at the freeze's barrier, with what its step needs to run again.
+enum KeeperHeldIntake: Sendable {
+    case action(ActionEnvelope, KeeperCaller, cancelled: Bool, caller: InputID?)
+    case clientEvent(AnyClientEvent, KeeperCaller, caller: InputID?)
+}
+
 struct KeeperCoreRefusal: Error, Sendable {
     let reason: String
 }
@@ -293,7 +301,7 @@ struct KeeperCoreRefusal: Error, Sendable {
 enum KeeperQuery: Sendable {
     /// `enforcingLimits`: the entry's choice, as the keeper's two entries make it
     /// (`submitAction` enforces the job caps, `handleActionEnvelope` doesn't).
-    case admitAction(ActionEnvelope, KeeperCaller, enforcingLimits: Bool)
+    case admitAction(ActionEnvelope, KeeperCaller, enforcingLimits: Bool, cancelled: Bool = false)
     case admitClientEvent(AnyClientEvent, KeeperCaller)
     case admitServerInput(any ServerInputPayload)
     /// The sync entries (K2-2 commit 3). Each carries its port and the sender's
@@ -407,9 +415,9 @@ extension KeeperModel: TurnMachine {
             inputDrainStep(behavior, store, &turn, endsTickWork: false)
         case .startLand:
             _ = turn.start(.land)
-        case let .action(envelope, who):
+        case let .action(envelope, who, cancelled):
             let caller = turn.input
-            actionStep(behavior, store, &turn, envelope, who, caller: caller)
+            actionStep(behavior, store, &turn, envelope, who, caller: caller, cancelled: cancelled)
         case let .clientEvent(event, who):
             let caller = turn.input
             clientEventStep(behavior, store, &turn, event, who, caller: caller)
@@ -475,14 +483,6 @@ extension KeeperModel: TurnMachine {
                 step(behavior, store) { _, side, _ in side.coreInputReplies.waits[kick] = .serverInputKick }
             }
             if let caller = turn.input { turn.reply(to: caller, .success(.done)) }
-        case .awaitResume:
-            // The keeper's `debugWaitWhileFrozen`: open when not frozen, or once the land drains.
-            guard let caller = turn.input else { break }
-            if debugFrozen, !store.withSide({ side in side.isDraining }) {
-                coreBarrierWaits.resume.append(caller)
-            } else {
-                turn.reply(to: caller, .success(.done))
-            }
         case .awaitInitialized:
             // Open once OnInitialize ran; a failed initialization is not reported here, as
             // `awaitInitialization` doesn't. The closed case's answer is commit 1's (the step
@@ -494,10 +494,14 @@ extension KeeperModel: TurnMachine {
                 coreBarrierWaits.initialized.append(caller)
             }
         case let .syncStreamDraft(drafts, outsideTurn):
-            // The keeper's `submitSyncStream` body: the drafts' factories run in the step; one
-            // that re-enters is refused, and the frame's backstop ends the land in this step (the
-            // keeper's body applies it in place: compare the two in the differential).
-            step(behavior, store) { m, side, _ in m.recordSyncStream(behavior, side, drafts, outsideTurn: outsideTurn) }
+            // The keeper's `submitSyncStream` body: the drafts' factories run in the step, and one
+            // that re-entered ends the land in this body, in place, as the keeper's does (no late
+            // backstop: Review on #948).
+            step(behavior, store) { m, side, outputs in
+                let before = behavior.reentrySentinel.reentryViolations
+                m.recordSyncStream(behavior, side, drafts, outsideTurn: outsideTurn)
+                if behavior.reentrySentinel.reentryViolations != before { _ = m.applyReentryFailure(behavior, &side, &outputs) }
+            }
         case let .awaitActionResult(sequence):
             let caller = turn.input
             let outcome = step(behavior, store) { m, side, _ in m.awaitActionResultBody(behavior, &side, sequence, caller: caller) }
@@ -506,6 +510,8 @@ extension KeeperModel: TurnMachine {
             // `KeeperInputRoutes.deferred` names where each of these is routed.
             preconditionFailure("K2-1: \(input.routeName) is routed in \(KeeperInputRoutes.deferred[input.route] ?? "an unnamed PR")")
         }
+        // The barrier's held intakes, when this step thawed or drained the land.
+        releaseCoreHeldIntakes(behavior, store, &turn)
         // A drop of the pending inputs in this step failed the core's waits on them.
         answerDroppedCoreInputWaits(behavior, store, &turn)
         runCoreJobEffects(store, &turn)
@@ -535,12 +541,29 @@ extension KeeperModel: TurnMachine {
             return
         }
         guard let caller else { return }
+        // An expired budget with work in flight: `debugFreeze` returns false without waiting.
+        guard timeout > .zero else {
+            turn.reply(to: caller, .success(.frozen(false)))
+            return
+        }
         coreBarrierWaits.freeze[generation, default: []].append(caller)
+        // The keeper numbers each drain wait (`debugFreeze`'s waiter ID): the same count here.
+        debugNextWaiterID &+= 1
         // One timer per caller, as `debugFreeze` gives each call its own deadline.
         _ = turn.start(.freezeWait(caller))
+        turn.timer(at: Self.freezeDeadline(turn.now, timeout), for: .freezeWait(caller), .freezeTimedOut(generation: generation, caller: caller))
+    }
+
+    /// `now + timeout`, saturating at the range's end (`TurnInstant`'s `+` wraps, and
+    /// `Duration`'s components overflow `Int64` nanoseconds for a large timeout).
+    static func freezeDeadline(_ now: TurnInstant, _ timeout: Duration) -> TurnInstant {
         let (seconds, attoseconds) = timeout.components
-        let nanoseconds = seconds * 1_000_000_000 + attoseconds / 1_000_000_000
-        turn.timer(at: TurnInstant(nanoseconds: turn.now.nanoseconds + nanoseconds), for: .freezeWait(caller), .freezeTimedOut(generation: generation, caller: caller))
+        let (scaled, overflow) = seconds.multipliedReportingOverflow(by: 1_000_000_000)
+        guard !overflow else { return TurnInstant(nanoseconds: .max) }
+        let (nanoseconds, overflow2) = scaled.addingReportingOverflow(attoseconds / 1_000_000_000)
+        guard !overflow2 else { return TurnInstant(nanoseconds: .max) }
+        let (deadline, overflow3) = now.nanoseconds.addingReportingOverflow(nanoseconds)
+        return TurnInstant(nanoseconds: overflow3 ? .max : deadline)
     }
 
     /// `debugResume` as a step: the generation is released; when it is the one in effect, the
@@ -573,9 +596,7 @@ extension KeeperModel: TurnMachine {
                 if scheduleInputDrain() { turn.queue(.inputDrainDue, behind: .land) }
             }
         }
-        let held = coreBarrierWaits.resume
-        coreBarrierWaits.resume.removeAll()
-        for caller in held { turn.reply(to: caller, .success(.done)) }
+        // The held intakes go on at the handler's end (`releaseCoreHeldIntakes`).
         // `debugResume` wakes every drain waiter; each re-checks and returns false.
         let waits = coreBarrierWaits.freeze
         coreBarrierWaits.freeze.removeAll()
@@ -631,6 +652,7 @@ extension KeeperModel: TurnMachine {
         // drop), which fails the core's waits on them: answered here, as `handle` does. K2-1's
         // two routed queries are a tick land's, which has no input-turn waits, so none is
         // reachable yet; K2-2's tickless intakes are.
+        releaseCoreHeldIntakes(behavior, store, &turn)
         answerDroppedCoreInputWaits(behavior, store, &turn)
         // A tick land's job intake is this query's (`.admitAction`): its start runs here.
         runCoreJobEffects(store, &turn)
@@ -640,14 +662,15 @@ extension KeeperModel: TurnMachine {
 
     private mutating func answerQuery(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ query: KeeperQuery) -> KeeperAnswer<State> {
         switch query {
-        case let .admitAction(envelope, caller, enforcingLimits):
+        case let .admitAction(envelope, caller, enforcingLimits, cancelled):
             // The keeper's `submit` on a tick land: the intake's segment, answered at once (the
             // append's ACK, or a job's `.pending`; jobs run on the core from K2-2).
             precondition(!behavior.isTickless, "K2-1: a tickless land's action is the .action input")
             let result = step(behavior, store) { m, side, outputs in
                 Result {
                     try m.actionIntakeBody(behavior, &side, &outputs, envelope, playerID: caller.playerID, clientID: caller.clientID,
-                                           sessionID: caller.sessionID ?? behavior.config.systemSessionID, enforcingLimits: enforcingLimits, isTickless: false)
+                                           sessionID: caller.sessionID ?? behavior.config.systemSessionID, enforcingLimits: enforcingLimits, isTickless: false,
+                                           callerCancelled: cancelled)
                 }
             }
             return .actionSubmission(result.map { request in
@@ -727,6 +750,11 @@ extension KeeperModel {
         }
         // `.startLand` starts the core's key and reads no binding.
         if case .startLand = input { return nil }
+        // A tick land's freeze answers from the work count, and the core doesn't yet hold the
+        // tick's count across its record's submission, as the keeper does (Review on #948).
+        if case .freeze = input, !behavior.isTickless {
+            return "a tick land's freeze needs the tick record's hold (K2-2 commit 1)"
+        }
         if behavior.isTickless, hasTransport {
             return "a tickless land with a transport needs the binding token (K2-2)"
         }
@@ -972,31 +1000,70 @@ extension KeeperModel {
         }
     }
 
+    /// The keeper's `debugWaitWhileFrozen` in the intake's step: while frozen and not draining,
+    /// the intake is held (re-checked each time it steps, as the keeper's loop re-checks).
+    func holdAtFreezeBarrier(_ store: KeeperSideStore, _ intake: KeeperHeldIntake) -> Bool {
+        let frozen = debugFrozen
+        return store.withSide { side in
+            guard frozen, !side.isDraining else { return false }
+            side.coreInputReplies.heldWhileFrozen.append(intake)
+            side.probe?("input-held-frozen")
+            return true
+        }
+    }
+
+    /// The held intakes step again once the barrier opens: the resume thawed the land, or the
+    /// land drains (the keeper's `debugResume` and `releaseHeldInputsForDrain` resume them).
+    /// Run at the end of every step, in arrival order; each re-checks the barrier.
+    mutating func releaseCoreHeldIntakes(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        let frozen = debugFrozen
+        let held: [KeeperHeldIntake] = store.withSide { side in
+            guard !side.coreInputReplies.heldWhileFrozen.isEmpty, !frozen || side.isDraining else { return [] }
+            defer { side.coreInputReplies.heldWhileFrozen.removeAll() }
+            return side.coreInputReplies.heldWhileFrozen
+        }
+        for intake in held {
+            switch intake {
+            case let .action(envelope, who, cancelled, caller):
+                actionStep(behavior, store, &turn, envelope, who, caller: caller, cancelled: cancelled, held: true)
+            case let .clientEvent(event, who, caller):
+                clientEventStep(behavior, store, &turn, event, who, caller: caller, held: true)
+            }
+        }
+    }
+
     /// A tickless land's action (`.action`), as the keeper's `submit` runs it: the closed-land
-    /// check, the intake's segment, then the input turn's wait for a delivered action. The
-    /// freeze's wait is `.awaitResume`'s barrier (K2-2's input policy), not a step's.
+    /// check, the freeze's barrier, the intake's segment, then the input turn's wait for a
+    /// delivered action. `held`: the step runs again after the barrier held it, so the
+    /// closed-land check, which the keeper makes once before its wait, is not made again.
     mutating func actionStep(
         _ behavior: KeeperBehavior<State>,
         _ store: KeeperSideStore,
         _ turn: inout Turn<KeeperModel<State>>,
         _ envelope: ActionEnvelope,
         _ who: KeeperCaller,
-        caller: InputID?
+        caller: InputID?,
+        cancelled: Bool,
+        held: Bool = false
     ) {
         precondition(behavior.isTickless, "K2-1: a tick land's action is the .admitAction query")
         func reply(_ result: Result<ActionSubmission, any Error>, _ turn: inout Turn<KeeperModel<State>>) {
             if let caller { turn.reply(to: caller, .success(.action(result))) }
         }
-        do {
-            try store.withSide { side in try side.rejectIfLandClosed() }
-        } catch {
-            reply(.failure(error), &turn)
-            return
+        if !held {
+            do {
+                try store.withSide { side in try side.rejectIfLandClosed() }
+            } catch {
+                reply(.failure(error), &turn)
+                return
+            }
         }
+        if holdAtFreezeBarrier(store, .action(envelope, who, cancelled: cancelled, caller: caller)) { return }
         let intake = step(behavior, store) { m, side, outputs in
             Result {
                 try m.actionIntakeBody(behavior, &side, &outputs, envelope, playerID: who.playerID, clientID: who.clientID,
-                                       sessionID: who.sessionID ?? behavior.config.systemSessionID, enforcingLimits: true, isTickless: true)
+                                       sessionID: who.sessionID ?? behavior.config.systemSessionID, enforcingLimits: true, isTickless: true,
+                                       callerCancelled: cancelled)
             }
         }
         switch intake {
@@ -1026,18 +1093,22 @@ extension KeeperModel {
         _ turn: inout Turn<KeeperModel<State>>,
         _ event: AnyClientEvent,
         _ who: KeeperCaller,
-        caller: InputID?
+        caller: InputID?,
+        held: Bool = false
     ) {
         precondition(behavior.isTickless, "K2-1: a tick land's client event is the .admitClientEvent query")
         func reply(_ result: Result<Void, any Error>, _ turn: inout Turn<KeeperModel<State>>) {
             if let caller { turn.reply(to: caller, result.map { _ in KeeperReply<State>.done }) }
         }
-        do {
-            try store.withSide { side in try side.rejectIfLandClosed() }
-        } catch {
-            reply(.failure(error), &turn)
-            return
+        if !held {
+            do {
+                try store.withSide { side in try side.rejectIfLandClosed() }
+            } catch {
+                reply(.failure(error), &turn)
+                return
+            }
         }
+        if holdAtFreezeBarrier(store, .clientEvent(event, who, caller: caller)) { return }
         let intake = step(behavior, store) { m, side, _ in
             Result {
                 try m.clientEventIntake(behavior, &side, event, playerID: who.playerID, clientID: who.clientID,

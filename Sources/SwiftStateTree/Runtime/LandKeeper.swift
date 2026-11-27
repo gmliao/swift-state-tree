@@ -2746,10 +2746,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await debugWaitWhileFrozen()
         }
         // The intake's segment (A1), in the same actor segment as the wait above: the work count
-        // begins in it, with the append and the waiter's turn.
+        // begins in it, with the append and the waiter's turn. The caller's cancellation is read
+        // here, in the caller's task, and passed in.
+        let callerCancelled = Task.isCancelled
         let request = try withTurn { m, side, outputs in
             try m.actionIntakeBody(behavior, &side, &outputs, envelope, playerID: playerID, clientID: clientID, sessionID: sessionID,
-                                 enforcingLimits: enforcingLimits, isTickless: isTickless)
+                                 enforcingLimits: enforcingLimits, isTickless: isTickless, callerCancelled: callerCancelled)
         }
         switch request {
         case .done(let submission):
@@ -5472,16 +5474,17 @@ extension KeeperModel {
         clientID: ClientID,
         sessionID: SessionID,
         enforcingLimits: Bool,
-        isTickless: Bool
+        isTickless: Bool,
+        callerCancelled: Bool
     ) throws -> ActionIntakeRequest {
         guard isTickless else {
             return try actionIntake(behavior, &side, &outputs, envelope, playerID: playerID, clientID: clientID, sessionID: sessionID,
-                                    enforcingLimits: enforcingLimits, isTickless: false)
+                                    enforcingLimits: enforcingLimits, isTickless: false, callerCancelled: callerCancelled)
         }
         debugBeginWork()
         do {
             let request = try actionIntake(behavior, &side, &outputs, envelope, playerID: playerID, clientID: clientID,
-                                           sessionID: sessionID, enforcingLimits: enforcingLimits, isTickless: true)
+                                           sessionID: sessionID, enforcingLimits: enforcingLimits, isTickless: true, callerCancelled: callerCancelled)
             // Kept on return: a job's work ends when its response exists (`fillActionSlot`), a
             // delivered action's after its input turn (the driver).
             return request
@@ -5500,7 +5503,8 @@ extension KeeperModel {
         clientID: ClientID,
         sessionID: SessionID,
         enforcingLimits: Bool,
-        isTickless: Bool
+        isTickless: Bool,
+        callerCancelled: Bool
     ) throws -> ActionIntakeRequest {
         let definition = behavior.definition
         let typeIdentifier = envelope.typeIdentifier
@@ -5589,7 +5593,9 @@ extension KeeperModel {
             // in the caller's task: the job's task wouldn't inherit the cancellation. An action
             // delivered below isn't checked: one whose closure built nothing is handled like an
             // action without resolvers, which a cancelled caller's submit still delivers.
-            try Task.checkCancellation()
+            // The caller's cancellation, read in the caller's segment and passed in: a core step
+            // runs on the core's driver task, whose own cancellation isn't the caller's.
+            if callerCancelled { throw CancellationError() }
             // A tickless job's work ends when its response exists (`fillActionSlot`).
             if isTickless { ticklessJobWork.insert(sequence) }
             startActionJob(behavior, &side, &outputs,
