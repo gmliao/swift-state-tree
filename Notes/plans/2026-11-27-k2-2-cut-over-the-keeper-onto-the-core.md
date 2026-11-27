@@ -1,6 +1,6 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
-Revision 1 (2026-11-27): P-K22-1 run, P-K22-2 settled by reading the code, P-K22-3 sent to a cloud worker; two PRs (K22-Q4); commits 0, 2 and 3 independent of commit 1. Revision 0 was the prep draft. It is based on K2-1's shape in #938 (head 25ec1efb), which is still in review. Each point that depends on Review's verdict on #938 is marked **[#938]**. The parent plan is `Notes/plans/2026-11-25-k2-cut-over-onto-the-turn-core.md` (here "K2 §n"), whose §6 defines K2-2 and K2-3 as one PR, and whose §16 items 14–18 are left open for K2-2.
+Revision 2 (2026-11-27): P-K22-3's Linux output quoted (§7). Revision 1: P-K22-1 run, P-K22-2 settled by reading the code; two PRs (K22-Q4); commits 0, 2 and 3 independent of commit 1. Revision 0 was the prep draft. It is based on K2-1's shape in #938 (head 25ec1efb), which is still in review. Each point that depends on Review's verdict on #938 is marked **[#938]**. The parent plan is `Notes/plans/2026-11-25-k2-cut-over-onto-the-turn-core.md` (here "K2 §n"), whose §6 defines K2-2 and K2-3 as one PR, and whose §16 items 14–18 are left open for K2-2.
 
 ## 1. Goal
 
@@ -113,4 +113,12 @@ So passing `isolation:` changes the frame's own isolation and nothing staged fro
 
 **P-K22-2 (commit 0): settled by reading the code, no probe.** The core's side is pinned by its own test: CancellationTests.swift:78, test 24, `.cancelsCall` after the step, where "the work goes on and its reply finds no waiter". The keeper's side is `awaitActionResult`'s cancel handler and `.actionResolved`'s segment at #938's head (LK:2370, LK:5963). The two differ, and commit 0's caller-cancel bullet keeps the box for that reason. The differential case in commit 0 is the evidence once written.
 
-**P-K22-3 (commit 4): sent to a cloud worker.** Three actors share one executor (the adapter's `unownedExecutor` is the facade's, the facade's is `LiveLandTurns`'), and the facade forwards with `live.assumeIsolated`. The probe's question is whether `assumeIsolated` traps, so it is faultable and doesn't run on the Mac. Two-level sharing is already production evidence: the adapter runs on the keeper's executor (TA:113) and calls `keeper.assumeIsolated` (TA:3831). The probe adds the third level. Rev 2 quotes its output.
+**P-K22-3 (commit 4): run on Linux only.** Three actors share one executor: the adapter's `unownedExecutor` is the facade's, and the facade's is `LiveLandTurns`'. The adapter calls `facade.assumeIsolated`, and the facade forwards with `live.assumeIsolated`; each level checks the others with `preconditionIsolated`. A wrong executor traps, so the probe ran in a throwaway `swift:6.4.3-noble` container (x86_64, "Swift version 6.4.3 (swift-6.4.3-RELEASE)"), not on macOS. Output, the same plain and with `-O`:
+
+```
+$ swiftc -swift-version 6 p_k22_3.swift -o p     # no diagnostics, rc 0
+$ ./p
+steps: 1 2 3 - one executor, no trap             # exit 0
+```
+
+So the three-level chain compiles under Swift 6's checking and runs on one serial executor, which is §3 commit 4's layout. Two-level sharing is already production evidence: the adapter runs on the keeper's executor (TA:113) and calls `keeper.assumeIsolated` (TA:3831). macOS is not run; K2-2b's own suites, on both platforms, are the evidence there.
