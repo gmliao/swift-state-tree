@@ -36,6 +36,11 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// every exit, so the map holds only players with an attempt in flight.
     var latestJoinArrivals: [PlayerID: Epoch] = [:]
     var joinArrivals: EpochCounter = EpochCounter()
+    /// The players whose leave is between its entry's removal and its OnLeave's append (#943),
+    /// by the leaving entry's generation: L1 sets it when the OnLeave resolvers run, and the
+    /// segment that ends that window ends it. A join of the player meanwhile waits for it
+    /// (J2b's `.awaitLeave`), so no OnJoin of the player is appended before that OnLeave.
+    var leavesInFlight: [PlayerID: Epoch] = [:]
 
     // Queues, jobs and results.
     var pendingItems: [LandKeeper<State>.PendingItem] = []

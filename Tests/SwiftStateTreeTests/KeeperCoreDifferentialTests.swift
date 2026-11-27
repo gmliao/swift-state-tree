@@ -1182,6 +1182,16 @@ struct KeeperCoreDifferentialTests {
         #expect(after == before, "the refused join changed the core:\n before \(before)\n after  \(after)")
     }
 
+    @Test("The core's refusals are named: one reason per refused shape, each with its own message and the K2-2 commit that lifts it (commit 4 requires none left)")
+    func refusalReasonsAreNamed() {
+        let reasons = KeeperCoreRefusalReason.allCases
+        #expect(Set(reasons.map(\.rawValue)) == ["joinSyncingInTurn", "ticklessLandWithTransport", "joinAwaitingLeaveInFlight"], "a refusal was added or lifted: update this list and the K2-2 plan's §3.2 table")
+        #expect(Set(reasons.map(\.message)).count == reasons.count, "two refusals share a message")
+        for reason in reasons {
+            #expect(reason.liftedIn.hasPrefix("K2-2 commit "), "\(reason) names no lifting commit")
+        }
+    }
+
     @Test("Any input of a tickless land with a transport attached is refused on the core (its input turn reads the binding inside the drain)")
     func ticklessLandWithATransportIsRefused() async {
         let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false)

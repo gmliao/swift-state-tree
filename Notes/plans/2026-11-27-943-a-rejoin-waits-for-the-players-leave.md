@@ -7,6 +7,8 @@ Revision 1 (2026-11-27): Review's GO on rev 0 (4f21c0cf), with no must-fix and Q
 
 Q3 now names the case that can fire. Prior art is in §3.2. Q2 waits on the maintainer (decision #120).
 
+Code PR (2026-11-27): Q2 is decided (maintainer, decision #120): **wait**. A rejoin during OnLeave waits, the latest arrival wins, and the rest get `.superseded`, as §3.2 says. The code's deviations from this plan are in §8.
+
 Revision 0 (2026-11-27). Plan only. The fix builds on #940 (the join's arrival token and the kick by generation), so it lands after #940 merges. Line numbers are at #940's head 7b2dda84 (`LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, `KM` is `KeeperMachine.swift`, `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`).
 
 ## 1. The problem
@@ -146,7 +148,7 @@ The mutants go to the cloud.
 ## 6. Questions
 
 - **Q1 (Review): (b) over (a).** The marker keeps every reader of `players` as it is. Does Review agree that the window belongs to the leave, not to the entry?
-- **Q2 (maintainer): wait, not refuse or fence.** A rejoin during a slow OnLeave resolver waits for it, as it already does through the adapter's queue. Is a bound needed? A resolver deadline already bounds OnLeave (`ResolverDeadline`), so the wait is bounded by it.
+- **Q2 (maintainer), decided: wait** (decision #120, 2026-11-27). Was: wait, not refuse or fence. A rejoin during a slow OnLeave resolver waits for it, as it already does through the adapter's queue. Is a bound needed? A resolver deadline already bounds OnLeave (`ResolverDeadline`), so the wait is bounded by it.
 - **Q3 (a follow-up): a destroy timer scheduled earlier in the window.** L2 and L3 schedule the destroy at or after the marker's end, and the waiting join's insert cancels it, so that path can't destroy a land a join waits on. The case that can is a timer scheduled while A's leave is already in flight and `players` is empty, by something else: another player's failed join, or another player's kick's leave. If it fires before A's resolvers return, the land drains with C still waiting, and C gets `landShuttingDown`, which a client retries. Today's kick has the same window. Proposal: a follow-up, which counts a leave in flight as "not empty" for the destroy check.
 
 ## 7. Probes
@@ -172,3 +174,13 @@ So the record keeps the live order with the sequences out of order (the OnLeave 
 **P2: settled by reading the code, no run.** The hosted path serializes the two. `_onDisconnectImpl` (TA:1282) runs `handleDisconnectQueued` in `enqueueMembership`, and that awaits `keeper.leave` to its end (TA:1337). `performJoinQueued` (TA:2265) runs in the same queue. `enqueueMembership` (TA:3115) chains every operation on `membershipQueueTail`, one queue per adapter, so a hosted rejoin starts only after the leave returned. The claim shapes the severity, not the design: the fix is in the keeper either way. W1 is the failing test the fix starts from.
 
 **P4: to run with the code.** That the driver registers the waiter's continuation before any suspension after J2b's segment, the way `awaitInputTurn` does. W1 pins it with a positive event: `waitForLeaveEndWaitersForTesting(player, 1)` must return while A is still held, and the marker's end must find exactly that waiter. W6b and W6c pin the cancel's two orders. Written as tests, not argued.
+
+## 8. Deviations in the code
+
+- **The drain's start ends the leaves in flight, not every teardown that clears `players`.** A tickless shutdown item clears `players` in its turn, before `shutdownIfIdle` sets the drain flag, and `runForceShutdown` resumes from a continuation in between. A waiter resumed there would pass J2c's `isDraining` check and insert after the shutdown turn, and `shutdownIfIdle` would then find the land not empty and skip the drain. `endAllLeavesInFlight` (the markers and their waiters) runs only after the flag: in `failLand` and in `shutdownIfIdle`, right after `drainFlag.set`. The shutdown item, `runForceShutdown`'s early path and `tearDownAfterFailedInitialization` leave the waiters to it.
+- **#852's `newerLoginEndsFirst` can't be reached any more.** Its newer login inserted into the slot that the older login's kick had emptied; with the marker, it waits. It becomes `newerLoginWaitsForTheKick`: the newer login waits, a newcomer gets `roomIsFull`, the older login is superseded, the newer one is admitted, and after it leaves the place opens. §4 said that suite doesn't change.
+- **The routed `fencedAtTheKickClosesWith4017` waited for its direct join to end.** That join now waits for the kick, so the test starts it in a task, waits for `waitForLeaveEndWaitersForTesting(p1, 1)`, opens the kick and expects the direct join to succeed. The 4017 answer is the same.
+- **W6b waits for the cancel's hop.** The cancellation handler of a task already cancelled fires at once, so the hop runs and finds nothing (`foundGone == 1`); the test waits for its end hold point (`leaveEndWaiterCancelled`) before reading the outcome. Mutant 6c gives `removed == 1`.
+- **The keeper's waiter table is a small local helper**, `KeyedBarrierWaits<PlayerID>` (`Sources/SwiftStateTree/Support/`): park on a key, release the key from the step that ends the window, and the waiter's own cancel, so the move onto the turn core's generic barrier wait (#953, agreed after this plan) is a swap.
+- **The core refuses a join that would wait** (`.awaitLeave`, from J2b or J2c) with a named reason, `KeeperCoreRefusalReason.joinAwaitingLeaveInFlight`, one case of a `CaseIterable` enum over the core's refusals that commit 4's totality check requires to be empty. The case goes when #948's barrier waits or #953 land, and §3.3's barrier wait comes with it.
+- **Round 1 (Review on dacfa172):** J2c checks the marker too: a kick J2b decided turns into a no-op when the player's own leave starts first (W3b). The live shutdown turn releases the waiters in its own segment (`completeShutdownTurn`, which sets the flag). The driver checks cancellation after the wait, before J2c (W6c).
