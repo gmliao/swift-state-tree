@@ -73,6 +73,6 @@ package struct TickLoopClock: Sendable {
     package static let continuous = TickLoopClock(
         now: { ContinuousClock.now },
         sleepFor: { try? await safeTaskSleep(for: $0) },
-        sleepUntil: { try? await Task.sleep(until: $0, clock: .continuous) }
+        sleepUntil: { try? await safeTaskSleep(until: $0) }
     )
 }

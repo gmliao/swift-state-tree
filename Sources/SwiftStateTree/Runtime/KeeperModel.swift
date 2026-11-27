@@ -25,8 +25,8 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// (#852): one reservation per pending attempt, not one per player. The kick of the old
     /// session awaits and the player's entry is gone meanwhile; a reservation keeps its place, so a
     /// newcomer can't take it. Overlapping logins of one player each hold their own, so the end of
-    /// one never frees the place another still waits for. Only `joinReportingAdmission` reserves
-    /// (the legacy `join(playerID:…)` has no kick and no cap check); teardown clears them all.
+    /// one never frees the place another still waits for. Only `joinReportingAdmission` reserves;
+    /// teardown clears them all.
     var rejoinReservations: [PlayerID: Set<Epoch>] = [:]
     var rejoinReservationEpochs: EpochCounter = EpochCounter()
 

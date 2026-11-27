@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Lessons enforced in CI instead of prose (CLAUDE.md § Coding Conventions):
 #
-#   task-sleep  `Task.sleep(for:` (also `Task<…>.sleep(for:`) in Sources/, except
-#               Sources/SwiftStateTree/Support/SafeTaskSleep.swift: it crashes the Swift runtime on
-#               macOS release builds under load. Use `safeTaskSleep(for:)`.
+#   task-sleep  `Task.sleep(for:` and `Task.sleep(until:` (also `Task<…>.sleep(…)`) in Sources/,
+#               except Sources/SwiftStateTree/Support/SafeTaskSleep.swift: `for:` crashes the Swift
+#               runtime on macOS release builds under load, and `until:` was not shown safe. Use
+#               `safeTaskSleep(for:)` or `safeTaskSleep(until:)`. Only a `Task` receiver is
+#               matched: a Swift `Clock`'s own sleep (`ContinuousClock().sleep(`) is not, and
+#               none exists in Sources/ today.
 #   format-s    a `%s` specifier (not `%%s`) in a `String(format:` call in Sources/ or Examples/:
 #               `%s` reads a C string pointer, and a Swift String there crashes release builds. Use
 #               `%@` or interpolation.
@@ -28,7 +31,7 @@
 
 set -euo pipefail
 
-TASK_SLEEP='Task(<[^>]*>)?\.sleep\(for:'
+TASK_SLEEP='Task(<[^>]*>)?\.sleep\((for|until):'
 # A `%` not escaped as `%%`: preceded by an even number of `%`.
 FORMAT_S='String\(format:.*([^%]|^)(%%)*%[-+ #0]*[0-9*]*(\.[0-9*]+)?s'
 SAFE_TASK_SLEEP='Sources/SwiftStateTree/Support/SafeTaskSleep.swift'
@@ -109,6 +112,9 @@ try await Task<Never, Never>.sleep(for: .seconds(1))
 print("lint-allow: task-sleep"); try await Task.sleep(for: .seconds(1))
 let e = String(format: "100%%s", x)
 let f = String(format: "%%%s", name)
+try await Task.sleep(until: deadline, clock: .continuous)
+try await Task<Never, Never>.sleep(until: deadline, clock: .continuous)
+try await Task.sleep(until: deadline, clock: .continuous) // lint-allow: task-sleep
 SWIFT
   echo 'try await Task.sleep(for: .seconds(1))' > "$tmp/seeded/Sources/SwiftStateTree/Support/SafeTaskSleep.swift"
   echo 'try await Task.sleep(for: .seconds(1))' > "$tmp/seeded/Sources/A/Support/SafeTaskSleep.swift"
@@ -153,11 +159,13 @@ Sources/A/Bad.swift:3: [format-s] let b = String(format: "%-27s|%.1f", name, x)
 Sources/A/Bad.swift:8: [task-sleep] try await Task<Never, Never>.sleep(for: .seconds(1))
 Sources/A/Bad.swift:9: [task-sleep] print("lint-allow: task-sleep"); try await Task.sleep(for: .seconds(1))
 Sources/A/Bad.swift:11: [format-s] let f = String(format: "%%%s", name)
+Sources/A/Bad.swift:12: [task-sleep] try await Task.sleep(until: deadline, clock: .continuous)
+Sources/A/Bad.swift:13: [task-sleep] try await Task<Never, Never>.sleep(until: deadline, clock: .continuous)
 Sources/A/Support/SafeTaskSleep.swift:1: [task-sleep] try await Task.sleep(for: .seconds(1))
 Sources/SwiftStateTreeTransport/Tickets.swift:7: [ticket-after-await] let t = tickets.ticket(for: k) ?? tickets.issue(k)
 Sources/SwiftStateTreeTransport/Tickets.swift:10: [ticket-after-await] let e = await read(k); let t = tickets.issue(k)
 Sources/SwiftStateTreeTransport/Tickets.swift:26: [ticket-after-await] let t = tickets.issue(k)
-lint-lessons: 11 finding(s)
+lint-lessons: 13 finding(s)
 OUT
 )
   set +e; out=$(lint "$tmp/seeded"); status=$?; set -e
