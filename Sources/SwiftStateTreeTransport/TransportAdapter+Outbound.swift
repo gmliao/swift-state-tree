@@ -83,9 +83,9 @@ extension TransportAdapter {
 
     /// Sends `data` to the session as its last frame, then closes the session with `close`: one
     /// writer element holding the frame, and the close behind it
-    /// (`Transport.closeSessionAfterQueuedFrames`), so the close can't overtake the frame. Later frames for the session are dropped. On NIO the
-    /// frame is handed to the channel before the close; a client that stopped reading may still
-    /// not receive it.
+    /// (`Transport.closeSessionAfterQueuedFrames`), so the close can't overtake the frame. Later
+    /// frames for the session are dropped. On NIO the frame is handed to the channel before the
+    /// close; a client that stopped reading may still not receive it.
     ///
     /// The frame and every close carry the session's connection generation, `generation` or else
     /// the one recorded for it, so none of them reaches a later connection that reuses the ID

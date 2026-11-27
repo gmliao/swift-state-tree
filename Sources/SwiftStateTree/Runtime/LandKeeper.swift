@@ -1993,7 +1993,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             case let .kick(decided, oldClientID, oldSessionID, kickedGeneration):
                 // Kick old connection by calling leave
                 // This will call OnLeave handler and clean up state
-                try await leave(playerID: decided.playerID, clientID: oldClientID, sessionID: oldSessionID)
+                try await leave(playerID: decided.playerID, clientID: oldClientID, sessionID: oldSessionID, entryGeneration: kickedGeneration)
                 request = try withTurn { m, side, outputs in
                     try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: kickedGeneration)
                 }
@@ -2451,10 +2451,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// entry records a session, the leave applies only to that session. Client IDs are short and
     /// can collide, so a client's leave can't remove another client's entry that shares its ID.
     public func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?) async throws {
+        try await leave(playerID: playerID, clientID: clientID, sessionID: sessionID, entryGeneration: nil)
+    }
+
+    /// The leave, applying only to the entry of `entryGeneration` when given: a join's kick
+    /// names the entry it decided to kick (#860), since the leave can suspend at its hold before
+    /// its checks, and a replacement with the same client and session IDs may hold the slot by
+    /// then. That entry is the kick's re-check's to handle (`joinAfterKick`).
+    private func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?, entryGeneration: Epoch?) async throws {
         try await ensureInitialized()
         await holds.at(.leave)
         let request = withTurn { m, side, outputs in
-            m.leaveBegin(behavior, &side, &outputs, playerID: playerID, clientID: clientID, sessionID: sessionID)
+            m.leaveBegin(behavior, &side, &outputs, playerID: playerID, clientID: clientID, sessionID: sessionID, entryGeneration: entryGeneration)
         }
         try await driveLeave(request)
     }
@@ -6050,11 +6058,20 @@ extension KeeperModel {
         _ outputs: inout TurnOutputs,
         playerID: PlayerID,
         clientID: ClientID,
-        sessionID: SessionID?
+        sessionID: SessionID?,
+        entryGeneration: Epoch? = nil
     ) -> LeaveRequest {
         guard let session = players[playerID] else {
             if behavior.logger.logLevel <= .debug {
                 behavior.logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
+            }
+            return .done
+        }
+        // A kick's leave of an entry that a newer one replaced meanwhile: the slot is no longer
+        // the kicked entry, whatever IDs it carries (#860).
+        if let entryGeneration, session.generation != entryGeneration {
+            if behavior.logger.logLevel <= .debug {
+                behavior.logger.debug("Kick's leave for player \(playerID.rawValue) found a newer entry: left to the kick's re-check")
             }
             return .done
         }
@@ -6088,7 +6105,7 @@ extension KeeperModel {
         // The entry's OnJoin hasn't been appended (its resolvers still run): no OnLeave either,
         // decided before a sequence is taken. The join's append drops its OnJoin (#860).
         if session.onJoinPending {
-            behavior.logger.info("Player \(playerID.rawValue) left before its OnJoin applied: OnJoin and OnLeave are both dropped")
+            behavior.logger.info("Player \(playerID.rawValue) left before its OnJoin was appended: OnJoin and OnLeave are both dropped")
             scheduleDestroyIfNeeded(behavior, &side, &outputs)
             return .done
         }
@@ -6205,6 +6222,9 @@ extension KeeperModel {
         _ outputs: inout TurnOutputs,
         _ decided: JoinDecided
     ) throws -> JoinRequest {
+        // A drain clears `players` in the segment that sets the flag, so this is reached only
+        // through a test's flag (`markDrainingForTesting`); the join isn't inserted then either.
+        guard !side.isDraining else { throw JoinError.landShuttingDown }
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[decided.playerID], let oldClientID = existingSession.clientID {
             behavior.logger.info("Duplicate playerID login detected: \(decided.playerID.rawValue), kicking old client: \(oldClientID.rawValue)")

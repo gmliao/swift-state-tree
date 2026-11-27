@@ -122,10 +122,21 @@ public final class JoinTimeoutMetrics: @unchecked Sendable {
 /// the JoinResponse is enqueued; the router reads it, because its own phase learns of the flip
 /// later (its flip wait resumes in a Task of its own), while the client already holds the
 /// response and may send another join.
+///
+/// `keeperJoinStarted` (#860): the admission passed its checks and called the keeper's join.
+/// The adapter marks it in the segment of those checks. From then on the keeper's outcome is
+/// the attempt's answer, even once the join has returned and the adapter no longer expects the
+/// admission: `endJoinBeforeAdmission` reads it, so a timer that runs before the router resumes
+/// can't take a finished join for one never started.
 final class JoinAttemptEnd: @unchecked Sendable {
     private let lock = NSLock()
     private var ended = false
     private var flipped = false
+    private var keeperJoinStarted = false
+
+    var isKeeperJoinStarted: Bool { lock.withLock { keeperJoinStarted } }
+
+    func markKeeperJoinStarted() { lock.withLock { keeperJoinStarted = true } }
 
     var isFlipped: Bool { lock.withLock { flipped } }
 

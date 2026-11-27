@@ -3,8 +3,10 @@
 // A routed join whose keeper entry is replaced while its OnJoin resolvers run fails with
 // `JoinError.superseded` (#860). The router answers it like the flip-stage supersede (#861): the
 // `JOIN_DENIED` error is the session's last frame, with the 4017 `superseded` close behind it, so
-// the client doesn't rejoin into a kick loop. Hosted joins of one player are serialized by the
-// adapter's membership queue, so here a direct keeper caller makes the newer join.
+// the client doesn't rejoin into a kick loop. That holds whoever answers: the join's handler, or
+// the join budget's timer that the handler left the answer to. Hosted joins of one player are
+// serialized by the adapter's membership queue, so here a direct keeper caller makes the newer
+// join.
 
 import Foundation
 import Testing
@@ -37,31 +39,38 @@ struct RoutedSupersedeResolver: ContextResolver {
     }
 }
 
-/// Records what the transport sends to one session and how it was closed. Tests wait on these
-/// events (`waitFor`), not on time.
+/// Records what the transport sends to one session and how it was closed, as one ordered log:
+/// `error:<code>:<message>` for an error frame, `frame` for any other, `close:<code>`. Tests
+/// wait on the log (`waitFor`), not on time.
 private actor RoutedSupersedeConnection: WebSocketConnection {
-    private(set) var messages: [Data] = []
-    private(set) var closes: [SessionClose] = []
-    private var waiters: [UInt64: (condition: @Sendable ([Data], [SessionClose]) -> Bool, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private(set) var events: [String] = []
+    private var waiters: [UInt64: (condition: @Sendable ([String]) -> Bool, continuation: CheckedContinuation<Void, Never>)] = [:]
     private var nextWaiter: UInt64 = 0
 
     func send(_ data: Data, kind: WebSocketFrameKind) async throws {
-        messages.append(data)
-        resumeWaiters()
+        if let message = try? JSONDecoder().decode(TransportMessage.self, from: data),
+           case .error(let payload) = message.payload {
+            append("error:\(payload.code):\(payload.message)")
+        } else {
+            append("frame")
+        }
     }
 
-    func close() async throws { record(.normal) }
-    func close(with close: SessionClose) async throws { record(close) }
+    func close() async throws { append("close:\(SessionClose.normal.code)") }
+    func close(with close: SessionClose) async throws { append("close:\(close.code)") }
 
-    private func record(_ close: SessionClose) {
-        closes.append(close)
-        resumeWaiters()
+    private func append(_ event: String) {
+        events.append(event)
+        for (id, waiter) in waiters where waiter.condition(events) {
+            waiters.removeValue(forKey: id)
+            waiter.continuation.resume()
+        }
     }
 
-    /// Returns once `condition` holds, or once the task is cancelled (the suite's time limit);
-    /// the expectations after the wait then fail.
-    func waitFor(_ condition: @escaping @Sendable ([Data], [SessionClose]) -> Bool) async {
-        if condition(messages, closes) || Task.isCancelled { return }
+    /// Returns once `condition` holds, or once the task is cancelled (`withinHangBound`); the
+    /// expectations after the wait then fail.
+    func waitFor(_ condition: @escaping @Sendable ([String]) -> Bool) async {
+        if condition(events) || Task.isCancelled { return }
         nextWaiter += 1
         let id = nextWaiter
         await withTaskCancellationHandler {
@@ -78,27 +87,24 @@ private actor RoutedSupersedeConnection: WebSocketConnection {
         waiters.removeValue(forKey: id)?.continuation.resume()
     }
 
-    private func resumeWaiters() {
-        for (id, waiter) in waiters where waiter.condition(messages, closes) {
-            waiters.removeValue(forKey: id)
-            waiter.continuation.resume()
-        }
-    }
-
-    /// Each error frame's code and message, in order.
-    var errors: [(code: String, message: String)] {
-        messages.compactMap { data in
-            guard let message = try? JSONDecoder().decode(TransportMessage.self, from: data),
-                  case .error(let payload) = message.payload else { return nil }
-            return (payload.code, payload.message)
-        }
-    }
+    /// The error frames and the closes, in order.
+    var answer: [String] { events.filter { $0.hasPrefix("error:") || $0.hasPrefix("close:") } }
 }
 
-@Suite("A routed join superseded during its OnJoin resolvers (#860)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
-struct RoutedJoinSupersededTests {
-    @Test("Its JOIN_DENIED is the session's last frame, with the 4017 superseded close behind it; the newer join keeps the player")
-    func supersededJoinClosesWith4017() async throws {
+/// What a superseded session gets: the error as its last frame, then the 4017 close.
+private let supersededAnswer = [
+    "error:\(ErrorCode.joinDenied.rawValue):Join superseded by a newer join of the player",
+    "close:\(SessionClose.Code.superseded)",
+]
+
+/// A router with a refused-frame budget of 0, so a counted refusal closes with 1008 at once
+/// (the router closes on count > budget), its transport, its manager and the land ("one").
+private struct RoutedSupersedeHarness {
+    let transport: WebSocketTransport
+    let router: LandRouter<RoutedSupersedeState>
+    let container: LandContainer<RoutedSupersedeState>
+
+    static func make(joinBudget: Duration? = nil) async throws -> RoutedSupersedeHarness {
         let definition = Land("routed-supersede", using: RoutedSupersedeState.self) {
             Rules {
                 OnJoin(resolvers: RoutedSupersedeResolver.self) { state, _, ctx in
@@ -116,68 +122,183 @@ struct RoutedJoinSupersededTests {
             initialStateFactory: { _ in RoutedSupersedeState() },
             transport: transport
         )
-        // A budget of one refused frame: a supersede that counted would close with 1008.
         let router = LandRouter<RoutedSupersedeState>(
             landManager: manager,
             landTypeRegistry: registry,
             transport: transport,
             allowAutoCreateOnJoin: true,
             transportEncoding: .json,
-            maxRefusedHandshakeFrames: 1
+            maxRefusedHandshakeFrames: 0
         )
         await transport.setDelegate(router)
+        if let joinBudget { await router.setJoinTimeoutForTesting(joinBudget) }
+        let landID = LandID(landType: "routed-supersede", instanceId: "one")
+        let container = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: RoutedSupersedeState(), metadata: [:])
+        return RoutedSupersedeHarness(transport: transport, router: router, container: container)
+    }
 
-        let session = SessionID("s-routed")
+    /// A connected session with a fresh key, and the gate its OnJoin resolver holds on.
+    func connect() async -> (SessionID, RoutedSupersedeConnection, TestGate) {
+        let session = RoutedSupersedeHold.gates.fresh { SessionID("s-routed-\($0)") }
         let connection = RoutedSupersedeConnection()
         await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
-        let gate = RoutedSupersedeHold.gates.register(session)
-        defer { gate.open() }
+        return (session, connection, RoutedSupersedeHold.gates.gate(session))
+    }
 
-        // The routed join: its OnJoin resolver holds.
+    /// The routed join of p1, sent from its own task: the transport handles the frame through
+    /// the router's join, which parks at the held resolver. `ended` is arrived at once the
+    /// router's handling returns.
+    func startRoutedJoin(_ session: SessionID, ended: TestGate) throws -> Task<Void, Never> {
         let join = try JSONEncoder().encode(TransportMessage.join(
             requestID: "join-1", landType: "routed-supersede", landInstanceId: "one",
             playerID: "p1", deviceID: nil, metadata: StateUpdateFeature.joinMetadata
         ))
-        // Sent from its own task: the transport handles the frame through the router's join,
-        // which parks at the held resolver.
-        let routed = Task { await transport.handleIncomingMessage(sessionID: session, data: join) }
-        defer { routed.cancel() }
-        guard await gate.waitForArrivals(1) else {
-            Issue.record("the routed join's OnJoin resolver never ran")
-            return
+        let transport = self.transport
+        return Task {
+            await transport.handleIncomingMessage(sessionID: session, data: join)
+            await ended.arrive()
         }
+    }
 
-        // A direct keeper join of the same player kicks the pending entry and joins. It runs in
-        // its own task and reports its end at `directEnded`: the test never awaits a call that a
-        // regression could park.
-        let container = try #require(await manager.getLand(landID: LandID(landType: "routed-supersede", instanceId: "one")))
-        let directEnded = TestGate()
-        defer { directEnded.open() }
+    /// A direct keeper join of p1, which kicks the routed join's pending entry and joins. It
+    /// runs in its own task and reports its end through a gate: the test never awaits a call
+    /// that a regression could park. True when it ended without an error.
+    func directJoin() async -> Bool {
+        let keeper = container.keeper
+        let ended = TestGate()
+        defer { ended.open() }
         let direct = Task { () -> (any Error)? in
-            defer { Task { await directEnded.arrive() } }
+            defer { Task { await ended.arrive() } }
             do {
-                try await container.keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c-direct"), sessionID: SessionID("s-direct"))
+                try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c-direct"), sessionID: SessionID("s-direct"))
                 return nil
             } catch {
                 return error
             }
         }
-        guard await directEnded.waitForArrivals(1) else {
+        guard await ended.waitForArrivals(1) else {
             Issue.record("the direct join didn't end while the routed join was held")
+            return false
+        }
+        let error = await direct.value
+        #expect(error == nil, "the direct join threw \(String(describing: error))")
+        return error == nil
+    }
+
+    /// Waits for the session's close, then checks it got exactly the superseded answer and that
+    /// the direct join keeps the player.
+    func expectSupersededAnswer(_ connection: RoutedSupersedeConnection, sourceLocation: SourceLocation = #_sourceLocation) async {
+        let closed = await withinHangBound { await connection.waitFor { $0.contains { $0.hasPrefix("close:") } } }
+        #expect(closed, "the session wasn't closed", sourceLocation: sourceLocation)
+        let events = await connection.events
+        #expect(await connection.answer == supersededAnswer, "events \(events)", sourceLocation: sourceLocation)
+        #expect(events.last?.hasPrefix("close:") == true, "nothing after the close: \(events)", sourceLocation: sourceLocation)
+        #expect(await container.keeper.currentState().joins == ["c-direct"], sourceLocation: sourceLocation)
+    }
+}
+
+@Suite("A routed join superseded during its OnJoin resolvers (#860)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
+struct RoutedJoinSupersededTests {
+    @Test("Its JOIN_DENIED is the session's last frame, with the 4017 superseded close behind it; the newer join keeps the player")
+    func supersededJoinClosesWith4017() async throws {
+        let h = try await RoutedSupersedeHarness.make()
+        let (session, connection, gate) = await h.connect()
+        defer { gate.open() }
+        let routedEnded = TestGate()
+        defer { routedEnded.open() }
+        let routed = try h.startRoutedJoin(session, ended: routedEnded)
+        defer { routed.cancel() }
+        guard await gate.waitForArrivals(1) else {
+            Issue.record("the routed join's OnJoin resolver never ran")
             return
         }
-        let directError = await direct.value
-        #expect(directError == nil, "the direct join threw \(String(describing: directError))")
+        guard await h.directJoin() else { return }
 
         gate.open()
-        let closed = await withinHangBound { await connection.waitFor { _, closes in !closes.isEmpty } }
-        #expect(closed, "the session wasn't closed")
+        await h.expectSupersededAnswer(connection)
+    }
 
-        let errors = await connection.errors
-        #expect(errors.map(\.code) == [ErrorCode.joinDenied.rawValue], "errors \(errors)")
-        #expect(errors.first?.message == "Join superseded by a newer join of the player")
-        let closes = await connection.closes
-        #expect(closes.map(\.code) == [SessionClose.Code.superseded], "closes \(closes)")
-        #expect(await container.keeper.currentState().joins == ["c-direct"])
+    @Test("The budget runs out during the resolvers, and the handler leaves its supersede to the timer: the timer answers it with the 4017 close")
+    func timerAnswersTheLeftSupersede() async throws {
+        let h = try await RoutedSupersedeHarness.make(joinBudget: .milliseconds(20))
+        let answered = TestGate()
+        defer { answered.open() }
+        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.joinBudgetAdmissionAnswered, arrival: 1) { await answered.arrive() }
+            .hook)
+        let (session, connection, gate) = await h.connect()
+        defer { gate.open() }
+        let routedEnded = TestGate()
+        defer { routedEnded.open() }
+        let routed = try h.startRoutedJoin(session, ended: routedEnded)
+        defer { routed.cancel() }
+        guard await gate.waitForArrivals(1) else {
+            Issue.record("the routed join's OnJoin resolver never ran")
+            return
+        }
+        // The budget ran out while the resolver holds: the adapter said the admission is in
+        // the keeper's join, and the timer is held before it re-checks the attempt (`expiring`).
+        guard await answered.waitForArrivals(1) else {
+            Issue.record("the budget's timer never asked the adapter")
+            return
+        }
+        guard await h.directJoin() else { return }
+
+        gate.open()
+        // The handler saw `.superseded` while the attempt was expiring: it left the answer.
+        guard await routedEnded.waitForArrivals(1) else {
+            Issue.record("the routed join's handler didn't return")
+            return
+        }
+        #expect(await connection.answer.isEmpty, "the handler left its answer to the timer")
+
+        answered.open()
+        await h.expectSupersededAnswer(connection)
+    }
+
+    @Test("The budget's timer runs after the keeper threw, before the router resumed: the timer leaves it to the handler, which answers with the 4017 close")
+    func timerAfterTheKeeperThrewLeavesItToTheHandler() async throws {
+        let h = try await RoutedSupersedeHarness.make(joinBudget: .milliseconds(20))
+        let timer = TestGate(), afterAdmit = TestGate(), answered = TestGate()
+        // `answered` only signals: the timer passes it at once.
+        answered.open()
+        defer { timer.open(); afterAdmit.open() }
+        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.joinBudgetExpired, arrival: 1) { await timer.arrive() }
+            .on(.afterAdmit, arrival: 1) { await afterAdmit.arrive() }
+            .on(.joinBudgetAdmissionAnswered, arrival: 1) { await answered.arrive() }
+            .hook)
+        let (session, connection, gate) = await h.connect()
+        defer { gate.open() }
+        let routedEnded = TestGate()
+        defer { routedEnded.open() }
+        let routed = try h.startRoutedJoin(session, ended: routedEnded)
+        defer { routed.cancel() }
+        guard await gate.waitForArrivals(1) else {
+            Issue.record("the routed join's OnJoin resolver never ran")
+            return
+        }
+        guard await timer.waitForArrivals(1) else {
+            Issue.record("the budget's timer never fired")
+            return
+        }
+        guard await h.directJoin() else { return }
+
+        // The keeper throws `.superseded`; the adapter's admission has returned (its expected
+        // admission is gone), and the router is held before it resumes.
+        gate.open()
+        guard await afterAdmit.waitForArrivals(1) else {
+            Issue.record("the routed join's admission didn't return")
+            return
+        }
+        timer.open()
+        guard await answered.waitForArrivals(1) else {
+            Issue.record("the budget's timer never asked the adapter")
+            return
+        }
+        #expect(await connection.answer.isEmpty, "the timer didn't take a finished join for one never started")
+
+        afterAdmit.open()
+        await h.expectSupersededAnswer(connection)
     }
 }
