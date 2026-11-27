@@ -1333,6 +1333,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return initializationWaits >= count
     }
 
+    /// Tests: how many calls have waited on a running initialization so far.
+    package func initializationWaitsForTesting() -> Int {
+        initializationWaits
+    }
+
     private func cancelInitializationWaitWatcher(_ id: UUID) {
         resumeInitializationWaitWatchers { $0.id == id }
     }
@@ -1472,15 +1477,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 } catch {
                     result = .failure(error)
                 }
-                request = withTurn { m, side, outputs in m.initializeResolved(behavior, &side, &outputs, resolving, result) }
+                // Read here, on the initialization's task: a core step (K2-2) has no such task.
+                let cancelled = Task.isCancelled
+                request = withTurn { m, side, outputs in
+                    m.initializeResolved(behavior, &side, &outputs, resolving, result, cancelled: cancelled)
+                }
             case let .submitRecord(record):
                 await submitTurnRecord(record)
                 request = withTurn { m, side, outputs in m.initializeRecorded(behavior, &side, &outputs) }
+            case .finish:
+                // A turn of its own after OnInitialize's: that turn's late re-entry backstop has
+                // run, so the guard sees a failure it applied.
+                request = withTurn { m, side, outputs in m.initializeFinish(behavior, &side, &outputs) }
             case .startLoops:
                 // In the segment the request came from: no await since its drain check.
                 configureLoops()
-                let loopsConfigured = tickLoopConfiguredAt != nil
-                withTurn { m, side, outputs in m.initializeDone(behavior, &side, &outputs, loopsConfigured: loopsConfigured) }
+                let tickLoopConfigured = tickLoopConfiguredAt != nil, syncLoopConfigured = syncTask != nil
+                withTurn { m, side, outputs in
+                    m.initializeDone(behavior, &side, &outputs, tickLoopConfigured: tickLoopConfigured, syncLoopConfigured: syncLoopConfigured)
+                }
                 resumeInitializationWaitWatchers { _ in true }
                 return
             case .done:
@@ -1964,6 +1979,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// The initialization's requests (#700 K2-1b): each segment returns the await it needs.
     fileprivate enum InitializeRequest {
+        /// `initializeFinish`, in a turn of its own after OnInitialize's.
+        case finish
         /// Re-evaluation: the record's header checks (the legacy replay path, until #612).
         case checkReplayHeader(any ReevaluationSource)
         /// Re-evaluation: OnInitialize replayed before tick 0 (legacy, until #612).
@@ -7578,7 +7595,12 @@ extension KeeperModel {
         _ outputs: inout TurnOutputs
     ) -> DrainRequest {
         side.cancelDestroy()
-        if ticksInFlight > 0 { return .waitForTick }
+        if ticksInFlight > 0 {
+            // Tests: fired in this segment, so a test's next keeper call runs once the drain
+            // is parked at the tick wait.
+            side.probe?("drain-waits-for-tick")
+            return .waitForTick
+        }
         return drainAfterTicks(behavior, &side, &outputs)
     }
 
@@ -7828,11 +7850,17 @@ extension KeeperModel {
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         _ resolving: InitializeResolving,
-        _ result: Result<LandContext, any Error>
+        _ result: Result<LandContext, any Error>,
+        cancelled: Bool
     ) -> InitializeRequest {
-        // Nothing but this initialization took a number during the resolvers: every intake
-        // awaits `ensureInitialized` before it takes one, and the loops aren't configured yet.
-        assert(sequence.next == resolving.sequenceAfterTake, "a sequence number was taken during OnInitialize's resolvers")
+        // No intake that waits for the initialization took a number during the resolvers:
+        // every join, leave, action, client event, server input and `forceShutdown` awaits
+        // `ensureInitialized` first, and the loops aren't configured yet. A failure the
+        // transport reported meanwhile is the one exception (`numbersTakenOnlyByLandFailures`).
+        assert(
+            numbersTakenOnlyByLandFailures(since: resolving.sequenceAfterTake, side),
+            "an intake took a sequence number during OnInitialize's resolvers"
+        )
         var ctx = resolving.ctx
         switch result {
         case let .success(resolved):
@@ -7849,7 +7877,7 @@ extension KeeperModel {
             if LandKeeper<State>.initializeResolverFailureFailsLand(
                 error,
                 policy: behavior.definition.lifetimeHandlers.onInitializeResolverFailure,
-                shuttingDown: side.isDraining || Task.isCancelled
+                shuttingDown: side.isDraining || cancelled
             ) {
                 // A resolver threw, with `.failLand` (#238): the same as a timeout.
                 ResolverDeadline.metrics.noteInitFailed()
@@ -7865,6 +7893,20 @@ extension KeeperModel {
             ])
         }
         return initializeApply(behavior, &side, &outputs, handler: resolving.handler, ctx: ctx, sequence: resolving.sequence)
+    }
+
+    /// Whether every sequence number taken since `start` was taken by a failure the transport
+    /// reported from outside a turn (`submitLandFailure`), the one taker that doesn't wait for
+    /// the initialization. One still pending is a `.landFailure` item; once one has applied, the
+    /// land is draining, and the rest of the gap isn't checked.
+    private func numbersTakenOnlyByLandFailures(since start: Int64, _ side: KeeperTurnSide) -> Bool {
+        let gap = sequence.next - start
+        if gap == 0 || side.isDraining { return true }
+        let taken = pendingItems.filter { $0.sequence >= start }
+        return taken.count == gap && taken.allSatisfy {
+            if case .landFailure = $0 { return true }
+            return false
+        }
     }
 
     /// OnInitialize's turn body; then its record, if the land records.
@@ -7888,7 +7930,9 @@ extension KeeperModel {
         case let .success(initialized):
             output = initialized
         }
-        guard behavior.reevaluationRecorder != nil else { return initializeFinish(behavior, &side, &outputs) }
+        // Without a record, the guard runs in a turn of its own: this turn's late re-entry
+        // backstop (`withTurn`'s defer) can fail the land after the body (#944).
+        guard behavior.reevaluationRecorder != nil else { return .finish }
         let recorded = ReevaluationRecordedLifecycleEvent(
             kind: LandKeeper<State>.LifecycleKind.initialize.rawValue,
             sequence: taken,
@@ -7933,7 +7977,7 @@ extension KeeperModel {
         _ outputs: inout TurnOutputs
     ) -> InitializeRequest {
         guard behavior.config.autoStartLoops, !side.isDraining else {
-            initializeDone(behavior, &side, &outputs, loopsConfigured: false)
+            initializeDone(behavior, &side, &outputs, tickLoopConfigured: false, syncLoopConfigured: false)
             return .done
         }
         return .startLoops
@@ -7941,17 +7985,24 @@ extension KeeperModel {
 
     /// I4: the initialization is done. Runs after the driver configured the loops, so
     /// `didInitialize` follows the loops, and it is set before the initialization's task ends,
-    /// so a waiter that resumes before the starter sees it (#934). `loopsConfigured`: whether
-    /// the tick loop is configured (`tickLoopConfiguredAt`, an actor field).
+    /// so a waiter that resumes before the starter sees it (#934). The two flags say whether
+    /// the tick and sync loops are configured (`tickLoopConfiguredAt`, `syncTask`: actor
+    /// fields).
     fileprivate mutating func initializeDone(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
-        loopsConfigured: Bool
+        tickLoopConfigured: Bool,
+        syncLoopConfigured: Bool
     ) {
         let handlers = behavior.definition.lifetimeHandlers
+        let startsNoLoop = !behavior.config.autoStartLoops || side.isDraining
         if handlers.tickHandler != nil, handlers.tickInterval != nil {
-            assert(!behavior.config.autoStartLoops || side.isDraining || loopsConfigured, "didInitialize before the tick loop was configured")
+            assert(startsNoLoop || tickLoopConfigured, "didInitialize before the tick loop was configured")
+        }
+        // The sync loop runs at the sync interval, or else at the tick interval (`configureLoops`).
+        if handlers.syncInterval != nil || handlers.tickInterval != nil {
+            assert(startsNoLoop || syncLoopConfigured, "didInitialize before the sync loop was configured")
         }
         didInitialize = true
     }
