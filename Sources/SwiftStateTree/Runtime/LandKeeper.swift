@@ -1997,8 +1997,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let handler: InitializeHandler<State>
         let ctx: LandContext
         let sequence: Int64
-        /// `sequence.next` right after the take: nothing else takes a number during the
-        /// resolvers (every intake awaits `ensureInitialized` first, and no loop runs yet).
+        /// `sequence.next` right after the take. During the resolvers only a failure the
+        /// transport reports takes a number; every intake awaits `ensureInitialized` first, and
+        /// no loop runs yet (`numbersTakenOnlyByLandFailures`).
         let sequenceAfterTake: Int64
         let executors: [any AnyResolverExecutor]
         let resolverContext: ResolverContext
@@ -7897,8 +7898,11 @@ extension KeeperModel {
 
     /// Whether every sequence number taken since `start` was taken by a failure the transport
     /// reported from outside a turn (`submitLandFailure`), the one taker that doesn't wait for
-    /// the initialization. One still pending is a `.landFailure` item; once one has applied, the
-    /// land is draining, and the rest of the gap isn't checked.
+    /// the initialization. While the land is open the check is exact: each pending
+    /// `.landFailure` item at or after `start` accounts for one number. Once a failure has
+    /// applied, the land is draining and any gap is accepted, so an unrelated take before that
+    /// drain would go unnoticed; no caller can make one today, since every other taker waits
+    /// for the initialization.
     private func numbersTakenOnlyByLandFailures(since start: Int64, _ side: KeeperTurnSide) -> Bool {
         let gap = sequence.next - start
         if gap == 0 || side.isDraining { return true }

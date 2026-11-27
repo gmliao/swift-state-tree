@@ -37,10 +37,31 @@ struct SegmentInput: ServerInputPayload {
 struct SegmentResolverFailure: Error {}
 
 /// One gate per test, keyed by the number in the land ID ("seg-<phase>:<key>"). Only the step
-/// named by `<phase>` waits on it: "init" and "initfail" (OnInitialize's resolver; the second
-/// throws after the release), "dwe" (OnDestroyWhenEmpty's resolver), "fin" (OnFinalize's
+/// named by `<phase>` waits on it: "init", "initfail" and "reinit" (OnInitialize's resolver;
+/// "initfail" throws after the release, and with "reinit" OnInitialize re-enters its keeper), "dwe" (OnDestroyWhenEmpty's resolver), "fin" (OnFinalize's
 /// resolver), "after" (AfterFinalize). Any other phase passes every step.
 private let segmentGates = KeyedGates<Int, WatermarkGate>(firstKey: 12_000) { WatermarkGate() }
+
+/// The keepers whose OnInitialize re-enters them ("reinit"), by land ID.
+private final class SegmentReentryKeepers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var keepers: [String: LandKeeper<SegmentState>] = [:]
+
+    subscript(_ landID: String) -> LandKeeper<SegmentState>? {
+        get { lock.withLock { keepers[landID] } }
+        set { lock.withLock { keepers[landID] = newValue } }
+    }
+}
+
+private let segmentReentryKeepers = SegmentReentryKeepers()
+
+/// OnInitialize's body, after its log write: on a "reinit" land, a synchronous re-entry that the
+/// sentinel refuses. With no transport, nothing in the body's output path applies the refusal,
+/// so the turn's late backstop does, after the body.
+private func reenterIfAsked(_ ctx: LandContext) {
+    guard let keeper = segmentReentryKeepers[ctx.landID] else { return }
+    keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the synchronous callback the sentinel refuses
+}
 
 private func segmentGate(_ landID: String, phase: String) -> WatermarkGate? {
     let parts = landID.split(separator: ":")
@@ -61,7 +82,7 @@ struct SegmentInitResolver: Resolver {
     let landID: String
 
     func resolve(_ deps: NoServices) async throws -> SegmentOutput {
-        if let gate = segmentGate(landID, phase: "init") { await gate.enterAndWait() }
+        if let gate = segmentGate(landID, phase: "init") ?? segmentGate(landID, phase: "reinit") { await gate.enterAndWait() }
         if let gate = segmentGate(landID, phase: "initfail") {
             await gate.enterAndWait()
             throw SegmentResolverFailure()
@@ -107,8 +128,9 @@ private func makeSegmentDefinition(tick: Bool) -> LandDefinition<SegmentState> {
             }
             Lifetime {
                 Tick(every: .seconds(3600)) { state, _ in state.log.append("tick") }
-                OnInitialize(resolvers: { _, ctx in SegmentInitResolver(landID: ctx.landID) }) { state, output, _ in
+                OnInitialize(resolvers: { _, ctx in SegmentInitResolver(landID: ctx.landID) }) { state, output, ctx in
                     state.log.append("init:\(output?.value ?? -1)")
+                    reenterIfAsked(ctx)
                 }
                 DestroyWhenEmpty(after: .seconds(3600)) { state, _ in
                     state.log.append("destroyWhenEmpty")
@@ -131,8 +153,9 @@ private func makeSegmentDefinition(tick: Bool) -> LandDefinition<SegmentState> {
                 }
             }
             Lifetime {
-                OnInitialize(resolvers: { _, ctx in SegmentInitResolver(landID: ctx.landID) }) { state, output, _ in
+                OnInitialize(resolvers: { _, ctx in SegmentInitResolver(landID: ctx.landID) }) { state, output, ctx in
                     state.log.append("init:\(output?.value ?? -1)")
+                    reenterIfAsked(ctx)
                 }
                 DestroyWhenEmpty(after: .seconds(3600)) { state, _ in
                     state.log.append("destroyWhenEmpty")
@@ -387,10 +410,21 @@ struct InitAndDrainSegmentTests {
         guard await gate.waitUntilEntered("OnInitialize's resolver") else { return }
 
         // `submitLandFailure` doesn't wait for the initialization: it takes a number now.
-        await keeper.submitLandFailure(LandFailure(kind: .syncPlan, detail: "test", position: LandFailurePosition(stage: .syncPhase)))
+        let failure = LandFailure(kind: .syncPlan, detail: "test", position: LandFailurePosition(stage: .syncPhase))
+        await keeper.submitLandFailure(failure)
+        if tick {
+            // A tick land applies failures in its next tick: both stay pending through the
+            // resolvers, and the check counts the two of them against the gap.
+            await keeper.submitLandFailure(failure)
+            #expect(await keeper.lifecycleFlagsForTesting().pendingInputs == 2)
+        } else {
+            // A tickless land applies it in its own turn, during the resolvers: the land is
+            // draining before the release, so the check takes its drain branch.
+            #expect(await keeper.waitForFailureForTesting(), "the failure ended the land")
+            #expect(keeper.isDraining)
+        }
         gate.release()
         await keeper.awaitInitialization()
-        // A tickless land applies the failure in its own turn; a tick land in its next tick.
         if tick { await keeper.stepTickOnce() }
         #expect(await keeper.waitForFailureForTesting(), "the failure ended the land")
         #expect(await withinHangBound { await keeper.waitUntilDrainStartedForTesting() }, "the failure's teardown never started")
@@ -399,6 +433,25 @@ struct InitAndDrainSegmentTests {
         #expect(done.didInitialize)
         #expect(done.destructionFinished)
         #expect(done.tickLoopConfigured == false)
+    }
+
+    @Test("T11: OnInitialize's late re-entry fails the land in its own turn, before the loop guard: no loop is configured")
+    func lateReentryInOnInitializeStartsNoLoop() async throws {
+        let (landID, gate) = segmentLandID("reinit")
+        defer { gate.release() }
+        // No recorder and no transport, with loops on: the guard follows OnInitialize's turn.
+        let keeper = makeSegmentKeeper(tick: true, landID: landID, autoStartLoops: true)
+        segmentReentryKeepers[landID] = keeper
+        defer { segmentReentryKeepers[landID] = nil }
+        guard await gate.waitUntilEntered("OnInitialize's resolver") else { return }
+
+        gate.release()
+        await keeper.awaitInitialization()
+        #expect(await keeper.lateReentriesAppliedForTesting == 1)
+        #expect(keeper.failure?.kind == .keeperReentry)
+        // Under one turn, the guard ran before the backstop failed the land, and the driver
+        // configured the loop; `tickLoopConfiguredAt` outlives the teardown.
+        #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
     }
 
     // MARK: Drain
