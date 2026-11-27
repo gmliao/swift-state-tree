@@ -69,6 +69,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case join
     /// The start of `leave(playerID:clientID:sessionID:)`.
     case leave
+    /// The initialization's starter (the caller that created its task), after the task ended
+    /// and before the starter clears it (#934): a waiter that resumes first runs here.
+    case initializationStarterResumed
     /// The start of each input drain, before its first turn.
     case inputDrain
     /// A tickless server input's task, before it waits for (or runs) the turn applying it.
@@ -724,15 +727,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
     private var initializationTask: Task<Void, Never>?
 
-    /// Holds `error` as the initialization's failure, wrapped as every caller gets it (#700 K1b-2).
-    private func failInitialization(with error: any Error) {
-        // Minting the ID writes the model. A plain assignment evaluates its right side first, so
-        // this split is a precaution, kept in the shape of the slot fill's (`fillActionSlot`).
-        let failure = model.recordFailure(&turnSide, LandInitializationError(underlying: error))
-        model.initializationFailure = failure
-        model.checkActionTables(behavior, turnSide, #function)
-    }
-
     /// Throws the initialization's failure, if it failed. Every caller gets the same value: the
     /// entry is read, never taken.
     private func throwIfInitializationFailed() throws {
@@ -980,6 +974,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Tests only: the sequences of the queued inputs, in queue order.
     func pendingItemSequencesForTesting() -> [Int64] {
         model.pendingItems.map(\.sequence)
+    }
+
+    /// Tests only (#700 K2-1b): the initialization's and the drain's flags, read while a test
+    /// holds one of their awaits.
+    struct LifecycleFlagsForTesting: Sendable, Equatable {
+        var didInitialize: Bool
+        var initializationFailed: Bool
+        var destroyHandlersStarted: Bool
+        var destructionFinished: Bool
+        var pendingInputs: Int
+        var tickLoopConfigured: Bool
+        var hasBoundRequester: Bool
+    }
+
+    /// Tests only: see `LifecycleFlagsForTesting`.
+    func lifecycleFlagsForTesting() -> LifecycleFlagsForTesting {
+        LifecycleFlagsForTesting(
+            didInitialize: model.didInitialize,
+            initializationFailed: model.initializationFailure != nil,
+            destroyHandlersStarted: model.destroyHandlersStarted,
+            destructionFinished: model.destructionFinished,
+            pendingInputs: model.pendingItems.count,
+            tickLoopConfigured: tickLoopConfiguredAt != nil,
+            hasBoundRequester: boundRequester.object != nil
+        )
     }
 
     /// Tests only: the queued inputs, in queue order (#700 K1a: whether each holds its bytes).
@@ -1280,9 +1299,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         initializationTask = task
         await task.value
+        await holds.at(.initializationStarterResumed)
+        // `didInitialize` was set by the initialization's last segment, before the task ended,
+        // so a waiter that resumes first sees it too (#934).
         initializationTask = nil
-        model.didInitialize = true
-        resumeInitializationWaitWatchers { _ in true }
         try throwIfInitializationFailed()
     }
 
@@ -1330,6 +1350,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return initializationWaits >= count
     }
 
+    /// Tests: how many calls have waited on a running initialization so far.
+    package func initializationWaitsForTesting() -> Int {
+        initializationWaits
+    }
+
     private func cancelInitializationWaitWatcher(_ id: UUID) {
         resumeInitializationWaitWatchers { $0.id == id }
     }
@@ -1350,7 +1375,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// destroy handlers (`initializationFailure` is set). Started from `performInitialization`,
     /// in a Task of its own: the drain's `forceShutdown` path would otherwise wait for the
     /// initialization it is part of.
-    private func tearDownAfterFailedInitialization() async {
+    fileprivate func tearDownAfterFailedInitialization() async {
         model.players.removeAll()
         turnSide.playerServices.removeAll()
         model.rejoinReservations.removeAll()
@@ -1429,190 +1454,77 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return !(shuttingDown && ResolverExecutionError.isCancellation(error))
     }
 
+    /// The initialization's driver (#700 K2-1b): each segment runs in a turn body and returns
+    /// the await it needs; the driver performs it and runs the next segment. A segment never
+    /// awaits, and keeper state is written only in segments, except the loops' tasks, which are
+    /// actor fields until K2-2's core timers.
     private func performInitialization() async {
-        // The backstop for a keeper no registration checked (#535 §4): a state type that fails
-        // the synced-state rows, a definition with two handlers for one client-event or
-        // server-input type, or a node it declares once declared twice (#586, #796), one whose
-        // client event registrations and handlers disagree
-        // (#771), or one holding a node its builder doesn't recognize (#794), fails initialization, as an OnInitialize resolver timeout does, before
-        // any handler runs. One cached lookup per state type.
-        let problems = SyncRegistration.cachedProblems(State.self)
-        // #769 §3.4: a live keeper for a land that declares services needs its services value; a
-        // replay never calls `resolve`.
-        let missingServices = behavior.config.mode == .live && behavior.resolverServices == nil
-            ? definition.servicesType.map { String(reflecting: $0) } : nil
-        // A value of another type would fail every resolving input with `servicesMismatch`. A land
-        // that declares no services takes `NoServices`, which an erased factory can replace too.
-        var wrongServices: String?
-        if behavior.config.mode == .live, let value = behavior.resolverServices {
-            let declared: Any.Type = definition.servicesType ?? NoServices.self
-            let accepts = definition.acceptsServices ?? { $0 is NoServices }
-            if !accepts(value) {
-                wrongServices = "declared \(String(reflecting: declared)), given \(String(reflecting: type(of: value)))"
-            }
-        }
-        if !problems.isEmpty || !definition.duplicateHandlers.isEmpty || !definition.clientEventMismatches.isEmpty
-            || !definition.unrecognizedNodes.isEmpty || !definition.resolverDeclarationProblems.isEmpty
-            || missingServices != nil || wrongServices != nil {
-            let error = LandRegistrationError(
-                landType: definition.id,
-                payload: nil,
-                sync: problems.isEmpty ? nil : SyncRegistrationError(problems: problems),
-                duplicateHandlers: definition.duplicateHandlers,
-                clientEventMismatches: definition.clientEventMismatches,
-                unrecognizedNodes: definition.unrecognizedNodes,
-                missingServices: missingServices,
-                wrongServices: wrongServices,
-                resolverDeclarations: definition.resolverDeclarationProblems
-            )
-            behavior.logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
-                "error": .string(error.description),
-            ])
-            failInitialization(with: error)
-            Task { await self.tearDownAfterFailedInitialization() }
-            return
-        }
-        if behavior.config.mode == .reevaluation {
-            // A record whose payloads this replay has no decoder for is refused before anything
-            // is replayed (#700 K1a): `ReevaluationRecordPayloadError.noDecoder`.
-            // A source whose metadata can't be read is refused too (fails closed).
-            if let source = turnSide.replay?.reevaluationSource {
+        var request = withTurn { m, side, outputs in m.initializeBegin(behavior, &side, &outputs) }
+        while true {
+            switch request {
+            case let .checkReplayHeader(source):
+                // A record whose payloads this replay has no decoder for is refused before
+                // anything is replayed (#700 K1a): `ReevaluationRecordPayloadError.noDecoder`.
+                // A source whose metadata can't be read is refused too (fails closed). The
+                // legacy replay path, until #612.
+                var encoding: RecordPayloadEncoding?
+                var failure: (any Error)?
                 do {
-                    turnSide.replay!.replayHeaderPayloadEncoding = try await source.getMetadata().effectivePayloadEncoding
+                    encoding = try await source.getMetadata().effectivePayloadEncoding
                     try await behavior.payloadDecoders.check(source)
                 } catch {
-                    behavior.logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
-                        "error": .string(String(describing: error)),
-                    ])
-                    failInitialization(with: error)
-                    Task { await self.tearDownAfterFailedInitialization() }
-                    return
+                    failure = error
                 }
-            }
-            await replayInitializeBeforeTickZero()
-        }
-        // Execute OnInitialize immediately in live mode (preserve existing semantics).
-        // Record it as a lifecycle event under tick 0 so replay can apply it deterministically
-        // before the first tick handler runs.
-        if behavior.config.mode == .live, let handler = definition.lifetimeHandlers.onInitialize {
-            let sequence = model.sequence.take()
-
-            var ctx = model.makeContext(behavior, turnSide,
-                playerID: behavior.config.systemPlayerID,
-                clientID: behavior.config.systemClientID,
-                sessionID: behavior.config.systemSessionID,
-                tickId: model.lastCommittedTickId
-            )
-
-            // Execute resolvers in parallel if any are declared: the values are built from the
-            // initial State, here, before the group runs (#769). A closure that built none has
-            // no group to run.
-            if let declaration = definition.lifetimeHandlers.onInitializeResolvers,
-               case let executors = declaration.build(model.state, ValidateContext(ctx)), !executors.isEmpty {
-                let resolverContext = makeResolverContext(ctx)
+                request = withTurn { m, side, outputs in
+                    m.initializeAfterReplayHeader(behavior, &side, &outputs, encoding: encoding, failure: failure)
+                }
+            case .runReplayBeforeTickZero:
+                // The legacy replay path, until #612.
+                await replayInitializeBeforeTickZero()
+                request = withTurn { m, side, outputs in m.initializeFinish(behavior, &side, &outputs) }
+            case let .runResolvers(resolving):
+                let result: Result<LandContext, any Error>
                 do {
-                    ctx = try await ResolverExecutor.executeInitializeResolvers(
-                        executors: executors,
-                        resolverContext: resolverContext,
-                        landContext: ctx,
+                    result = .success(try await ResolverExecutor.executeInitializeResolvers(
+                        executors: resolving.executors,
+                        resolverContext: resolving.resolverContext,
+                        landContext: resolving.ctx,
                         abandonment: resolverAbandonment(.onInitialize)
-                    )
-                } catch {
-                    if case ResolverExecutionError.timedOut = error {
-                        // Timed out (#104): the initialization fails. OnInitialize doesn't run,
-                        // and the land is torn down; its waiters get the error from
-                        // `ensureInitialized`.
-                        behavior.logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
-                            "error": .string(String(describing: error)),
-                        ])
-                        failInitialization(with: error)
-                        Task { await self.tearDownAfterFailedInitialization() }
-                        return
-                    }
-                    if Self.initializeResolverFailureFailsLand(
-                        error,
-                        policy: definition.lifetimeHandlers.onInitializeResolverFailure,
-                        shuttingDown: isDraining || Task.isCancelled
-                    ) {
-                        // A resolver threw, with `.failLand` (#238): the same as a timeout.
-                        ResolverDeadline.metrics.noteInitFailed()
-                        behavior.logger.error("❌ OnInitialize resolvers failed: the land is torn down", metadata: [
-                            "error": .string(String(describing: error)),
-                        ])
-                        failInitialization(with: error)
-                        Task { await self.tearDownAfterFailedInitialization() }
-                        return
-                    }
-                    // `.continue`, or cancelled by the land's shutdown: OnInitialize runs without
-                    // the group's outputs.
-                    behavior.logger.error("❌ OnInitialize resolvers failed", metadata: [
-                        "error": .string(String(describing: error)),
-                    ])
-                }
-            }
-
-            // OnInitialize's step through its output step is one turn body (#700 K1b-5a step 2).
-            let initialized = withTurn { m, side, outputs in
-                m.initializeTurnBody(behavior, &side, &outputs, handler: handler, ctx: ctx, sequence: sequence)
-            }
-            let initializeRecord: ReevaluationRecordedInitialize?
-            let initializeMarker: ReevaluationRecordedSyncMarker?
-            switch initialized {
-            case let .failure(error):
-                // A refusal fails the initialization, as a resolver failure with `.failLand`
-                // does: nothing was written, `validate` emitted nothing, and nothing is recorded.
-                behavior.logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
-                    "error": .string(String(describing: error)),
-                ])
-                failInitialization(with: error)
-                Task { await self.tearDownAfterFailedInitialization() }
-                return
-            case let .success(output):
-                initializeRecord = output.record
-                initializeMarker = output.marker
-            }
-
-            if let recorder = reevaluationRecorder {
-                let resolverOutputsDict = ctx.getAllResolverOutputs().recordedEntries
-                let recorded = ReevaluationRecordedLifecycleEvent(
-                    kind: LifecycleKind.initialize.rawValue,
-                    sequence: sequence,
-                    tickId: 0,
-                    playerID: nil,
-                    clientID: nil,
-                    sessionID: nil,
-                    deviceID: nil,
-                    isGuest: nil,
-                    metadata: [:],
-                    resolverOutputs: resolverOutputsDict,
-                    resolvedAtTick: model.lastCommittedTickId
-                )
-                if routesThroughTurn {
-                    // OnInitialize's server events belong to tick -1, which no frame's
-                    // `serverEvents` records; the initialize record keeps them for verification.
-                    await submitTurnRecord(ReevaluationTickRecord(
-                        tickId: 0,
-                        lifecycleEvents: [recorded],
-                        syncMarkers: initializeMarker.map { [$0] } ?? [],
-                        initialize: initializeRecord
                     ))
-                } else {
-                    await recorder.record(
-                        tickId: 0,
-                        actions: [],
-                        clientEvents: [],
-                        lifecycleEvents: [recorded]
-                    )
-                    // A tickless land's OnInitialize is one turn record (#327).
-                    await recorder.recordTick(ReevaluationTickRecord(tickId: 0, initialize: initializeRecord), endsTurn: isTickless)
+                } catch {
+                    result = .failure(error)
                 }
+                // Read here, on the initialization's task: a core step (K2-2) has no such task.
+                let cancelled = Task.isCancelled
+                request = withTurn { m, side, outputs in
+                    m.initializeResolved(behavior, &side, &outputs, resolving, result, cancelled: cancelled)
+                }
+            case let .submitRecord(record):
+                await submitTurnRecord(record)
+                request = withTurn { m, side, outputs in m.initializeRecorded(behavior, &side, &outputs) }
+            case .finish:
+                // A turn of its own after OnInitialize's: that turn's late re-entry backstop has
+                // run, so the guard sees a failure it applied.
+                request = withTurn { m, side, outputs in m.initializeFinish(behavior, &side, &outputs) }
+            case .startLoops:
+                // In the segment the request came from: no await since its drain check.
+                configureLoops()
+                let tickLoopConfigured = tickLoopConfiguredAt != nil, syncLoopConfigured = syncTask != nil
+                withTurn { m, side, outputs in
+                    m.initializeDone(behavior, &side, &outputs, tickLoopConfigured: tickLoopConfigured, syncLoopConfigured: syncLoopConfigured)
+                }
+                resumeInitializationWaitWatchers { _ in true }
+                return
+            case .done:
+                resumeInitializationWaitWatchers { _ in true }
+                return
             }
         }
+    }
 
-        // Then, start tick and sync loops if configured (only after OnInitialize completes). Not on
-        // a land that is ending: a refusal in initialization's turn failed it, or a drain began
-        // during the record's await, and the drain has stopped (or will not see) the loops.
-        guard behavior.config.autoStartLoops, !isDraining else { return }
+    /// The tick and sync loops, once OnInitialize has completed. Synchronous: `initializeDone`
+    /// follows with no await between (#700 K2-1b).
+    private func configureLoops() {
         let tickInterval = definition.lifetimeHandlers.tickInterval
         let syncInterval = definition.lifetimeHandlers.syncInterval
 
@@ -1620,7 +1532,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if let interval = tickInterval,
            definition.lifetimeHandlers.tickHandler != nil
         {
-            await configureTickLoop(interval: interval)
+            configureTickLoop(interval: interval)
         }
 
         // Start sync loop: use configured interval, or fallback to tick interval if not configured
@@ -1643,7 +1555,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         if let interval = effectiveSyncInterval {
-            await configureSyncLoop(interval: interval)
+            configureSyncLoop(interval: interval)
         }
     }
 
@@ -1977,11 +1889,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try await ensureInitializedForJoin()
         let call = JoinCall(session: session, clientID: clientID, sessionID: sessionID, services: services, admitThroughTransport: admitThroughTransport)
         var request = try withTurn { m, side, outputs in try m.joinBegin(behavior, &side, &outputs, call) }
-        // The attempt's rejoin reservation, ended on every exit (the insert ends it too).
+        // The attempt's rejoin reservation, ended on every exit (the insert ends it too), and its
+        // arrival token, removed on every exit if no later attempt replaced it.
         var reserved: (epoch: Epoch, playerID: PlayerID)?
+        var arrived: (arrival: Epoch, playerID: PlayerID)?
         defer {
-            if let reserved {
-                withTurn { m, _, _ in m.endRejoinReservation(reserved.epoch, of: reserved.playerID) }
+            if reserved != nil || arrived != nil {
+                withTurn { m, _, _ in
+                    if let reserved { m.endRejoinReservation(reserved.epoch, of: reserved.playerID) }
+                    if let arrived { m.endJoinArrival(arrived.arrival, of: arrived.playerID) }
+                }
             }
         }
         while true {
@@ -1995,15 +1912,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 )
                 request = try withTurn { m, side, outputs in try m.joinDecide(behavior, &side, &outputs, call, canJoinContext: ctx) }
             case let .holdThenKickCheck(decided):
-                // J2 took the reservation in the segment that just ended: no suspension since.
+                // J2 took the reservation and the arrival in the segment that just ended: no
+                // suspension since.
                 reserved = decided.reservation.map { ($0, decided.playerID) }
+                arrived = (decided.arrival, decided.playerID)
                 await holds.at(.join)
                 request = try withTurn { m, side, outputs in try m.joinKickCheck(behavior, &side, &outputs, decided) }
-            case let .kick(decided, oldClientID, oldSessionID):
+            case let .kick(decided, oldClientID, oldSessionID, kickedGeneration):
                 // Kick old connection by calling leave
                 // This will call OnLeave handler and clean up state
-                try await leave(playerID: decided.playerID, clientID: oldClientID, sessionID: oldSessionID)
-                request = try withTurn { m, side, outputs in try m.joinInsert(behavior, &side, &outputs, decided) }
+                try await leave(playerID: decided.playerID, clientID: oldClientID, sessionID: oldSessionID, entryGeneration: kickedGeneration)
+                request = try withTurn { m, side, outputs in
+                    try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: kickedGeneration)
+                }
             case let .admit(decided, joinSequence):
                 // Between two segments, at depth zero, with no suspension since the insert or
                 // the append (§3.5): the admission may call back into the keeper.
@@ -2030,14 +1951,87 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// The drain's requests (#700 K2-1b): each segment returns the await it needs.
+    fileprivate enum DrainRequest {
+        case waitForTick
+        case runDestroyResolvers(DestroyHandlerStep)
+        case runAfterFinalize(AfterFinalizeStep)
+        /// `onLandDestroyed`, then `drainFinished` and the detach.
+        case notifyTransport
+    }
+
+    /// The destroy handlers in their order; the drain runs those the land declares.
+    fileprivate enum DestroyHandlerKind: Int {
+        case onDestroyWhenEmpty
+        case onFinalize
+        case afterFinalize
+
+        var name: String {
+            switch self {
+            case .onDestroyWhenEmpty: return "onDestroyWhenEmpty"
+            case .onFinalize: return "OnFinalize"
+            case .afterFinalize: return "AfterFinalize"
+            }
+        }
+    }
+
+    /// A destroy handler (OnDestroyWhenEmpty, OnFinalize) whose resolvers run: built in the
+    /// segment the handler's turn follows, from the State it will see.
+    fileprivate struct DestroyHandlerStep {
+        let kind: DestroyHandlerKind
+        let ctx: LandContext
+        let resolvers: [any AnyResolverExecutor]
+        let resolverContext: ResolverContext
+        /// The drain's one detached generator (`drainAfterTicks`).
+        let random: DeterministicRngService
+        let handler: @Sendable (inout State, LandContext) -> Void
+    }
+
+    /// AfterFinalize, with the snapshot it gets.
+    fileprivate struct AfterFinalizeStep {
+        let snapshot: State
+        let ctx: LandContext
+        let random: DeterministicRngService
+        let handler: @Sendable (State, LandContext) async -> Void
+    }
+
+    /// The initialization's requests (#700 K2-1b): each segment returns the await it needs.
+    fileprivate enum InitializeRequest {
+        /// `initializeFinish`, in a turn of its own after OnInitialize's.
+        case finish
+        /// Re-evaluation: the record's header checks (the legacy replay path, until #612).
+        case checkReplayHeader(any ReevaluationSource)
+        /// Re-evaluation: OnInitialize replayed before tick 0 (legacy, until #612).
+        case runReplayBeforeTickZero
+        case runResolvers(InitializeResolving)
+        case submitRecord(ReevaluationTickRecord)
+        /// The driver configures the loops, then runs `initializeDone`.
+        case startLoops
+        case done
+    }
+
+    /// A live OnInitialize whose resolvers run: what `initializeBegin` built for it.
+    fileprivate struct InitializeResolving {
+        let handler: InitializeHandler<State>
+        let ctx: LandContext
+        let sequence: Int64
+        /// `sequence.next` right after the take. During the resolvers only a failure the
+        /// transport reports takes a number; every intake awaits `ensureInitialized` first, and
+        /// no loop runs yet (`numbersTakenOnlyByLandFailures`).
+        let sequenceAfterTake: Int64
+        let executors: [any AnyResolverExecutor]
+        let resolverContext: ResolverContext
+    }
+
     /// The reporting join's requests (#700 K1b-5b §4.1): each segment returns the await it needs.
     enum JoinRequest: Sendable {
         case runCanJoinResolvers(ResolverContext, LandContext)
         /// J2 decided and reserved: the driver ends the reservation on every exit, runs the
         /// `.join` hold, then J2b.
         case holdThenKickCheck(JoinDecided)
-        /// The old session's leave (§4.3's flow); J3 follows it.
-        case kick(JoinDecided, oldClientID: ClientID, oldSessionID: SessionID?)
+        /// The old session's leave (§4.3's flow), of the entry with `kickedGeneration`; J2c
+        /// follows it.
+        case kick(JoinDecided, oldClientID: ClientID, oldSessionID: SessionID?, kickedGeneration: Epoch)
         /// The transport's admission, between two segments; `joinSequence` is nil without an
         /// OnJoin input (J3a), else the appended input's (J4).
         case admit(JoinDecided, joinSequence: Int64?)
@@ -2377,6 +2371,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         (model.actionJobs.count, model.actionSlots.count, model.actionJobsStarted)
     }
 
+    /// Test hook: the players with a join attempt in flight, by their latest arrival token.
+    package func latestJoinArrivalsForTesting() -> [PlayerID: Epoch] {
+        model.latestJoinArrivals
+    }
+
     /// Test hook: whether the slot of `sequence` holds its outcome, unread.
     package func actionSlotIsFilledForTesting(_ sequence: Int64) -> Bool {
         model.actionSlots[sequence]?.result != nil
@@ -2532,10 +2531,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// entry records a session, the leave applies only to that session. Client IDs are short and
     /// can collide, so a client's leave can't remove another client's entry that shares its ID.
     public func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?) async throws {
+        try await leave(playerID: playerID, clientID: clientID, sessionID: sessionID, entryGeneration: nil)
+    }
+
+    /// The leave, applying only to the entry of `entryGeneration` when given: a join's kick
+    /// names the entry it decided to kick (#860), since the leave can suspend at its hold before
+    /// its checks, and a replacement with the same client and session IDs may hold the slot by
+    /// then. That entry is the kick's re-check's to handle (`joinAfterKick`).
+    private func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?, entryGeneration: Epoch?) async throws {
         try await ensureInitialized()
         await holds.at(.leave)
         let request = withTurn { m, side, outputs in
-            m.leaveBegin(behavior, &side, &outputs, playerID: playerID, clientID: clientID, sessionID: sessionID)
+            m.leaveBegin(behavior, &side, &outputs, playerID: playerID, clientID: clientID, sessionID: sessionID, entryGeneration: entryGeneration)
         }
         try await driveLeave(request)
     }
@@ -3036,7 +3043,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// keeper was created (the continuous clock, unless a test bound a manual one).
     private let tickLoopClock = TickLoopClock.forNewKeepers
 
-    private func configureTickLoop(interval: Duration) async {
+    private func configureTickLoop(interval: Duration) {
         tickTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
         let clock = tickLoopClock
@@ -4556,7 +4563,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
 
-    private func configureSyncLoop(interval: Duration) async {
+    private func configureSyncLoop(interval: Duration) {
         syncTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
         appliedSyncPhaseOffset = phaseOffset
@@ -4706,142 +4713,59 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await drainAfterIdleCheck()
     }
 
+    /// The drain's driver (#700 K2-1b): each segment runs in a turn body and returns the await
+    /// it needs. After the tick wait no ticket is needed: intake, deliveries and every
+    /// lifecycle append are rejected while draining, no tick starts, and no input is pending;
+    /// each segment after `drainAfterTicks` asserts that instead of relying on prose.
     fileprivate func drainAfterIdleCheck() async {
         await holds.at(.drainStart)
-        // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting
-        // This must be done before executing destroy handlers to ensure no ticks/syncs run after destroy
+        // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting. They
+        // are actor fields until K2-2's core timers.
         tickTask?.cancel()
         tickTask = nil
         syncTask?.cancel()
         syncTask = nil
 
-        turnSide.cancelDestroy()
-
-        // No tick starts from now on (`isDraining`); one already running finishes whole.
-        await waitForTickInFlight()
-        // Intake has been closed since `isDraining` was set, so the pending inputs are all
-        // there will be: they are dropped and their waiting callers get `.landClosed`.
-        model.dropPendingInputs(behavior, &turnSide, reason: "drain")
-        model.destroyHandlersStarted = true
-
-        // A land whose initialization failed (#104) never ran OnInitialize: its destroy handlers
-        // would act on (or save) a state that was never set up, so they are skipped.
-        guard model.initializationFailure == nil else {
-            await notifyTransportDestroyedAndRelease()
-            return
-        }
-
-        // A reevaluation keeper runs land code only for recorded inputs: the record holds no
-        // destroy or finalize event, so nothing would verify these handlers against the record,
-        // and their resolvers and AfterFinalize could reach outside services (#826).
-        guard behavior.config.mode == .live else {
-            await notifyTransportDestroyedAndRelease()
-            return
-        }
-
-        // Each destroy handler: its resolvers first, then the handler in one synchronous
-        // segment. Nothing else changes the state across those awaits: intake, deliveries and
-        // every lifecycle append are rejected while draining, no tick starts, and no input is
-        // pending. That is why the handlers need no ticket.
-        //
-        // The drain's handlers aren't repeated from the record, so their draws come from one
-        // copy of the land's generator, never written back: OnDestroyWhenEmpty, OnFinalize and
-        // AfterFinalize continue one sequence instead of repeating each other's.
-        let drainRandom = detachedRandom()
-        if let onDestroyWhenEmptyHandler = definition.lifetimeHandlers.onDestroyWhenEmpty {
-            let handlers = definition.lifetimeHandlers
-            await runDestroyHandler(
-                "onDestroyWhenEmpty",
-                resolvers: { _, _ in handlers.onDestroyWhenEmptyResolverExecutors },
-                random: drainRandom,
-                handler: onDestroyWhenEmptyHandler
-            )
-        }
-        if let onFinalizeHandler = definition.lifetimeHandlers.onFinalize {
-            let handlers = definition.lifetimeHandlers
-            await runDestroyHandler(
-                "OnFinalize",
-                resolvers: { state, ctx in handlers.onFinalizeResolvers?.build(state, ctx) ?? [] },
-                random: drainRandom,
-                handler: onFinalizeHandler
-            )
-        }
-
-        // Execute AfterFinalize handler (async cleanup)
-        if let afterFinalizeHandler = definition.lifetimeHandlers.afterFinalize {
-            let snapshot = model.state
-            let ctx = model.makeContext(behavior, turnSide,
-                playerID: behavior.config.systemPlayerID,
-                clientID: behavior.config.systemClientID,
-                sessionID: behavior.config.systemSessionID
-            )
-            // Its outputs are dropped: nothing takes them after the drain began, and one made
-            // after an internal await would reach the collector off the keeper (#893).
-            let (scoped, scope) = openStepScope(ctx, random: drainRandom, droppingInto: destroyHandlerOutputsDropped)
-            defer { scope.close() }
-            await afterFinalizeHandler(snapshot, scoped)
-        }
-
-        // Notify transport that land has been destroyed
-        // This allows transport layer to perform cleanup (e.g., remove from LandManager)
-        // Note: tickTask and syncTask were already cancelled at the start of shutdownIfIdle
-        await notifyTransportDestroyedAndRelease()
-    }
-
-    /// The destruction's last call to the transport, `onLandDestroyed`, then this instance drops
-    /// its link to it. The transport (the adapter) holds this keeper, so the link is a reference
-    /// cycle: kept, it would keep the keeper, its state and the adapter alive after the land is
-    /// gone (#346). Dropped by this instance at the end of its own teardown, after the last call.
-    private func notifyTransportDestroyedAndRelease() async {
-        // A keeper never attached tells the adapter bound by its first sync request (#546 L2a).
-        await (transport ?? boundSyncRequester)?.onLandDestroyed()
-        boundRequester.object = nil
-        model.destructionFinished = true
-        releasedTransport = ReleasedLandTransport(landID: behavior.config.actualLandID ?? definition.id, logger: behavior.logger)
-        setTransport(nil)
-    }
-
-    /// One destroy handler (OnDestroyWhenEmpty, OnFinalize): its resolvers, then the handler
-    /// in one synchronous segment. A resolver failure is logged and skips the handler; the drain
-    /// goes on.
-    ///
-    /// No ticket is captured across the resolvers: by now intake is closed (every input and
-    /// lifecycle append checks `isDraining`), no tick runs and nothing is pending, so nothing
-    /// else can change the state before the handler's segment.
-    private func runDestroyHandler(
-        _ name: String,
-        resolvers buildResolvers: (State, ValidateContext) -> [any AnyResolverExecutor],
-        random: DeterministicRngService,
-        handler: @Sendable (inout State, LandContext) -> Void
-    ) async {
-        let ctx = model.makeContext(behavior, turnSide,
-            playerID: behavior.config.systemPlayerID,
-            clientID: behavior.config.systemClientID,
-            sessionID: behavior.config.systemSessionID
-        )
-        var updatedCtx = ctx
-        // Built from the State the handler will see: nothing changes it before the handler's
-        // segment (see the caller).
-        let resolvers = buildResolvers(model.state, ValidateContext(ctx))
-        if !resolvers.isEmpty {
-            let resolverContext = makeResolverContext(ctx)
-            do {
-                updatedCtx = try await ResolverExecutor.executeResolversWithoutDeadline(
-                    executors: resolvers,
-                    resolverContext: resolverContext,
-                    landContext: ctx
-                )
-            } catch {
-                behavior.logger.error("❌ \(name) resolvers failed: the handler is skipped", metadata: [
-                    "error": .string(String(describing: error)),
-                ])
+        var request = withTurn { m, side, outputs in m.drainBegin(behavior, &side, &outputs) }
+        while true {
+            switch request {
+            case .waitForTick:
+                // No tick starts from now on (`isDraining`); one already running finishes whole.
+                await waitForTickInFlight()
+                request = withTurn { m, side, outputs in m.drainAfterTicks(behavior, &side, &outputs) }
+            case let .runDestroyResolvers(step):
+                let result: Result<LandContext, any Error>
+                do {
+                    result = .success(try await ResolverExecutor.executeResolversWithoutDeadline(
+                        executors: step.resolvers,
+                        resolverContext: step.resolverContext,
+                        landContext: step.ctx
+                    ))
+                } catch {
+                    result = .failure(error)
+                }
+                request = withTurn { m, side, outputs in m.destroyHandlerResolved(behavior, &side, &outputs, step, result) }
+            case let .runAfterFinalize(step):
+                // Its outputs are dropped: nothing takes them after the drain began, and one made
+                // after an internal await would reach the collector off the keeper (#893).
+                let (scoped, scope) = openStepScope(step.ctx, random: step.random, droppingInto: destroyHandlerOutputsDropped)
+                await step.handler(step.snapshot, scoped)
+                scope.close()
+                request = withTurn { m, side, outputs in m.drainAfterFinalize(behavior, &side, &outputs) }
+            case .notifyTransport:
+                // The destruction's last call to the transport, `onLandDestroyed`, then this
+                // instance drops its link to it. The transport (the adapter) holds this keeper,
+                // so the link is a reference cycle: kept, it would keep the keeper, its state and
+                // the adapter alive after the land is gone (#346). A keeper never attached tells
+                // the adapter bound by its first sync request (#546 L2a).
+                await (transport ?? boundSyncRequester)?.onLandDestroyed()
+                withTurn { m, side, outputs in m.drainFinished(behavior, &side, &outputs) }
+                // With no await since the turn: the released stand-in, then the detach, at depth
+                // zero (a body's `setTransport` is refused).
+                releasedTransport = ReleasedLandTransport(landID: behavior.config.actualLandID ?? definition.id, logger: behavior.logger)
+                setTransport(nil)
                 return
             }
-        }
-        // The handler can't throw (#593): the land is ending, so nothing would act on a refusal.
-        // Its outputs are dropped: nothing takes them after the drain began (#893).
-        model.withHandlerStep(behavior, turnSide, updatedCtx, random: .detached(random), dropsOutputs: true) { m, ctx in
-            handler(&m.state, ctx)
         }
     }
 
@@ -4977,6 +4901,12 @@ extension KeeperModel {
     typealias FailurePath = LandKeeper<State>.FailurePath
     typealias JoinDecided = LandKeeper<State>.JoinDecided
     typealias JoinRequest = LandKeeper<State>.JoinRequest
+    fileprivate typealias InitializeRequest = LandKeeper<State>.InitializeRequest
+    fileprivate typealias DrainRequest = LandKeeper<State>.DrainRequest
+    fileprivate typealias DestroyHandlerKind = LandKeeper<State>.DestroyHandlerKind
+    fileprivate typealias DestroyHandlerStep = LandKeeper<State>.DestroyHandlerStep
+    fileprivate typealias AfterFinalizeStep = LandKeeper<State>.AfterFinalizeStep
+    fileprivate typealias InitializeResolving = LandKeeper<State>.InitializeResolving
     typealias LeaveCapture = LandKeeper<State>.LeaveCapture
     typealias LeaveRequest = LandKeeper<State>.LeaveRequest
     typealias OnJoinCapture = LandKeeper<State>.OnJoinCapture
@@ -5778,6 +5708,12 @@ extension KeeperModel {
         return (hash, snapshot)
     }
 
+    /// Removes one attempt's arrival token if it is still the player's latest; a later attempt's
+    /// token stays.
+    mutating func endJoinArrival(_ arrival: Epoch, of playerID: PlayerID) {
+        if latestJoinArrivals[playerID] == arrival { latestJoinArrivals[playerID] = nil }
+    }
+
     /// Ends one attempt's reservation; idempotent, and it leaves the player's other attempts' ones.
     mutating func endRejoinReservation(_ reservation: Epoch, of playerID: PlayerID) {
         guard var epochs = rejoinReservations[playerID] else { return }
@@ -5899,7 +5835,8 @@ extension KeeperModel {
         let outcome: Result<InputOutcome, any Error>
         do {
             try validateDelivery(behavior, side, of: job.item, ticket: job.ticket, input: job.input)
-            // Unreachable from the two callers (a leave ended the entry, or the land drains).
+            // Unreachable from the callers (a leave or a failed join ended the entry, or the land
+            // drains).
             outcome = .failure(CancellationError())
         } catch {
             outcome = .failure(error)
@@ -6119,11 +6056,20 @@ extension KeeperModel {
         _ outputs: inout TurnOutputs,
         playerID: PlayerID,
         clientID: ClientID,
-        sessionID: SessionID?
+        sessionID: SessionID?,
+        entryGeneration: Epoch? = nil
     ) -> LeaveRequest {
         guard let session = players[playerID] else {
             if behavior.logger.logLevel <= .debug {
                 behavior.logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
+            }
+            return .done
+        }
+        // A kick's leave of an entry that a newer one replaced meanwhile: the slot is no longer
+        // the kicked entry, whatever IDs it carries (#860).
+        if let entryGeneration, session.generation != entryGeneration {
+            if behavior.logger.logLevel <= .debug {
+                behavior.logger.debug("Kick's leave for player \(playerID.rawValue) found a newer entry: left to the kick's re-check")
             }
             return .done
         }
@@ -6153,6 +6099,14 @@ extension KeeperModel {
         side.removePlayerServices(of: playerID, generation: session.generation)
         // Its pending actions can't be delivered any more (the ticket names this entry).
         cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: session.generation)
+
+        // The entry's OnJoin hasn't been appended (its resolvers still run): no OnLeave either,
+        // decided before a sequence is taken. The join's append drops its OnJoin (#860).
+        if session.onJoinPending {
+            behavior.logger.info("Player \(playerID.rawValue) left before its OnJoin was appended: OnJoin and OnLeave are both dropped")
+            scheduleDestroyIfNeeded(behavior, &side, &outputs)
+            return .done
+        }
 
         // In reevaluation mode, replay viewers never ran OnJoin so skip OnLeave (no game state to clean).
         guard behavior.definition.lifetimeHandlers.onLeave != nil, behavior.config.mode != .reevaluation else {
@@ -6259,17 +6213,62 @@ extension KeeperModel {
         return .done
     }
 
-    /// J2b: the kick target, after the hold. Without one it goes on to J3 in this segment.
+    /// J2b: the kick target, after the hold, which is an await: a later attempt of the player
+    /// may have reached J2, and even inserted, since this join's J2. So the fence comes first,
+    /// as at J2c: with a later token, this join throws `.superseded` before it picks a kick
+    /// target or inserts. Without a kick target it goes on to J3 in this segment.
     mutating func joinKickCheck(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         _ decided: JoinDecided
     ) throws -> JoinRequest {
+        // A drain clears `players` in the segment that sets the flag, so this is reached only
+        // through a test's flag (`markDrainingForTesting`); the join isn't inserted then either.
+        guard !side.isDraining else { throw JoinError.landShuttingDown }
+        guard latestJoinArrivals[decided.playerID] == decided.arrival else {
+            behavior.logger.info("Join of player \(decided.playerID.rawValue) superseded before its kick check by a later join: the later join keeps the player")
+            throw JoinError.superseded
+        }
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[decided.playerID], let oldClientID = existingSession.clientID {
             behavior.logger.info("Duplicate playerID login detected: \(decided.playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
-            return .kick(decided, oldClientID: oldClientID, oldSessionID: existingSession.lastSessionID)
+            return .kick(decided, oldClientID: oldClientID, oldSessionID: existingSession.lastSessionID, kickedGeneration: existingSession.generation)
+        }
+        return try joinInsert(behavior, &side, &outputs, decided)
+    }
+
+    /// J2c: after the kick's leave, which awaited. Other joins of the player may have run
+    /// meanwhile, so the checks follow, in this order:
+    /// - **The drain.** A land that is ending answers `landShuttingDown`, as at J2b and the
+    ///   append.
+    /// - **The fence.** A later attempt reached J2 (`latestJoinArrivals` holds another token, or
+    ///   none: a later attempt that ended removed its own): this join throws `.superseded`, the
+    ///   way a stale fencing token is refused (Kleppmann 2016, "How to do distributed locking";
+    ///   ZooKeeper's zxid epochs). The token is the attempt's arrival, not the slot's entry: the
+    ///   slot can be empty while a later attempt waits in its own kick (#940). So the last
+    ///   attempt to arrive keeps the player, whichever kick returns first.
+    /// - **The slot, by identity** (the kicked entry's generation), not by key. Every insert is
+    ///   behind the fence (J2b and here), so while this join holds the latest token no other
+    ///   attempt inserts, and the kick's leave removed the kicked entry: another entry there is
+    ///   a broken invariant. It is refused, never taken over, since taking it over would keep
+    ///   its join's pending OnJoin (#860).
+    mutating func joinAfterKick(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ decided: JoinDecided,
+        kickedGeneration: Epoch
+    ) throws -> JoinRequest {
+        // A drain answers first, as at J2b and the append: the land is ending, not superseded.
+        guard !side.isDraining else { throw JoinError.landShuttingDown }
+        guard latestJoinArrivals[decided.playerID] == decided.arrival else {
+            behavior.logger.info("Join of player \(decided.playerID.rawValue) superseded during its kick by a later join: the later join keeps the player")
+            throw JoinError.superseded
+        }
+        if let entry = players[decided.playerID], entry.generation != kickedGeneration {
+            assertionFailure("Player \(decided.playerID.rawValue)'s slot holds an entry inserted while this join held the latest token")
+            throw JoinError.superseded
         }
         return try joinInsert(behavior, &side, &outputs, decided)
     }
@@ -6290,7 +6289,11 @@ extension KeeperModel {
             isGuest: session.isGuest,
             metadata: session.metadata
         )
-        let isFirst = playerSession.clientID == nil
+        // An entry whose OnJoin is still pending never joined: this join runs its own OnJoin,
+        // and the flag isn't carried over (#860). J2c kicks such an entry before this point, or
+        // refuses this join when a later attempt arrived.
+        let isFirst = playerSession.clientID == nil || playerSession.onJoinPending
+        playerSession.onJoinPending = false
 
         playerSession.clientID = decided.call.clientID
         playerSession.lastSessionID = decided.call.sessionID
@@ -6340,6 +6343,9 @@ extension KeeperModel {
         )
         // Execute resolvers in parallel if any are declared
         if let (resolverContext, landContext) = onJoinResolverRequest(behavior, &side, &outputs, capture) {
+            // Its OnJoin input comes after an await: a leave of this entry before then appends no
+            // OnLeave (`onJoinPending`, #860). A join without resolvers appends in this segment.
+            players[playerID]?.onJoinPending = true
             return .runOnJoinResolvers(decided, capture, resolverContext, landContext)
         }
         return try joinAppend(behavior, &side, &outputs, decided, capture, resolverOutputs: [:], resolvedAtTick: capture.resolvedAtTick)
@@ -6356,7 +6362,7 @@ extension KeeperModel {
         resolverOutputs: [String: HeldResolverOutput],
         resolvedAtTick: Int64
     ) throws -> JoinRequest {
-        try appendOnJoin(&side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: resolvedAtTick)
+        try appendOnJoin(behavior, &side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: resolvedAtTick)
         // Admitted in the same segment as the append, before the OnJoin turn can run.
         guard decided.call.admitThroughTransport else {
             return joinAfterAdmission(behavior, &side, &outputs, decided, sequence: capture.sequence, admission: .notAdmitted)
@@ -6388,6 +6394,7 @@ extension KeeperModel {
 
     /// The OnJoin input's append (J4), with the drain check in the same segment.
     fileprivate mutating func appendOnJoin(
+        _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         _ capture: OnJoinCapture,
@@ -6403,8 +6410,19 @@ extension KeeperModel {
                 players.removeValue(forKey: capture.playerID)
                 side.removePlayerServices(of: capture.playerID, generation: capture.entryGeneration)
             }
+            // Actions submitted for this entry during the resolvers can't be delivered, as after
+            // a leave (their tickets name the entry).
+            cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: capture.entryGeneration)
             throw JoinError.landShuttingDown
         }
+        // Same segment as the append: a newer join of the player replaced this entry, or a leave
+        // removed it, during the resolvers. That leave appended no OnLeave (`onJoinPending`), so
+        // this OnJoin is dropped too and the join had no effect (#860). Its sequence is a gap
+        // replay steps over.
+        guard players[capture.playerID]?.generation == capture.entryGeneration else {
+            throw JoinError.superseded
+        }
+        players[capture.playerID]?.onJoinPending = false
 
         let pendingItem = PendingItem.lifecycle(
             PendingLifecycleItem(
@@ -6435,6 +6453,10 @@ extension KeeperModel {
             side.removePlayerServices(of: capture.playerID, generation: capture.entryGeneration)
             scheduleDestroyIfNeeded(behavior, &side, &outputs)
         }
+        // Actions submitted for this entry during the resolvers can't be delivered, as after a
+        // leave: their jobs release their slots now, not when their resolvers end. A leave or a
+        // kick that removed the entry first already cancelled them, so this finds none then.
+        cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: capture.entryGeneration)
     }
 
     /// The OnJoin resolvers' request, nil when the land declares none.
@@ -7775,6 +7797,454 @@ extension KeeperModel {
         _ = callOut(behavior, &side, &outputs, endsInputs: true, appliedInputs: true, { _, side in side.noteJoinInputsConsumed(behavior, results) })
     }
 
+    // MARK: Drain segments (#700 K2-1b)
+
+    /// D1: no destroy timer from now on; then the tick in flight, if any.
+    fileprivate mutating func drainBegin(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> DrainRequest {
+        side.cancelDestroy()
+        if ticksInFlight > 0 {
+            // Tests: fired in this segment, so a test's next keeper call runs once the drain
+            // is parked at the tick wait.
+            side.probe?("drain-waits-for-tick")
+            return .waitForTick
+        }
+        return drainAfterTicks(behavior, &side, &outputs)
+    }
+
+    /// D2: no tick runs. Intake has been closed since `isDraining` was set, so the pending
+    /// inputs are all there will be: they are dropped and their waiting callers get
+    /// `.landClosed`. Then the destroy handlers, except on a land whose initialization failed
+    /// (#104: they would act on, or save, a state never set up) or a re-evaluation keeper (#826:
+    /// the record holds no destroy or finalize event to verify them against, and their resolvers
+    /// and AfterFinalize could reach outside services).
+    fileprivate mutating func drainAfterTicks(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> DrainRequest {
+        dropPendingInputs(behavior, &side, reason: "drain")
+        destroyHandlersStarted = true
+        guard initializationFailure == nil, behavior.config.mode == .live else { return .notifyTransport }
+        // The drain's handlers aren't repeated from the record, so their draws come from one
+        // copy of the land's generator, never written back: OnDestroyWhenEmpty, OnFinalize and
+        // AfterFinalize continue one sequence instead of repeating each other's.
+        return nextDestroyStep(behavior, &side, &outputs, from: .onDestroyWhenEmpty, random: detachedRandom(behavior))
+    }
+
+    /// The destroy handlers after the tick wait run with no ticket: nothing else can change the
+    /// state across their awaits.
+    private func assertDrainIsClosed(_ side: KeeperTurnSide) {
+        assert(side.isDraining && ticksInFlight == 0 && pendingItems.isEmpty, "the drain's handlers run with intake closed, no tick and nothing pending")
+    }
+
+    /// The next destroy handler the land declares, from `kind` on. One with resolvers returns
+    /// them, built from the State it will see; one without runs in this segment and the drain
+    /// goes on. AfterFinalize returns its snapshot. Then `onLandDestroyed`.
+    private mutating func nextDestroyStep(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        from kind: DestroyHandlerKind,
+        random: DeterministicRngService
+    ) -> DrainRequest {
+        assertDrainIsClosed(side)
+        let handlers = behavior.definition.lifetimeHandlers
+        var next: DestroyHandlerKind? = kind
+        while let current = next {
+            next = DestroyHandlerKind(rawValue: current.rawValue + 1)
+            let ctx = makeContext(behavior, side,
+                playerID: behavior.config.systemPlayerID,
+                clientID: behavior.config.systemClientID,
+                sessionID: behavior.config.systemSessionID
+            )
+            let handler: @Sendable (inout State, LandContext) -> Void
+            let resolvers: [any AnyResolverExecutor]
+            switch current {
+            case .onDestroyWhenEmpty:
+                guard let onDestroyWhenEmpty = handlers.onDestroyWhenEmpty else { continue }
+                handler = onDestroyWhenEmpty
+                resolvers = handlers.onDestroyWhenEmptyResolverExecutors
+            case .onFinalize:
+                guard let onFinalize = handlers.onFinalize else { continue }
+                handler = onFinalize
+                // Built from the State the handler will see: OnDestroyWhenEmpty's write is in.
+                resolvers = handlers.onFinalizeResolvers?.build(state, ValidateContext(ctx)) ?? []
+            case .afterFinalize:
+                guard let afterFinalize = handlers.afterFinalize else { continue }
+                return .runAfterFinalize(AfterFinalizeStep(snapshot: state, ctx: ctx, random: random, handler: afterFinalize))
+            }
+            if !resolvers.isEmpty {
+                return .runDestroyResolvers(DestroyHandlerStep(
+                    kind: current,
+                    ctx: ctx,
+                    resolvers: resolvers,
+                    resolverContext: makeResolverContext(behavior, ctx),
+                    random: random,
+                    handler: handler
+                ))
+            }
+            applyDestroyHandler(behavior, side, handler, ctx: ctx, random: random)
+        }
+        return .notifyTransport
+    }
+
+    /// A destroy handler in one synchronous segment. It can't throw (#593): the land is ending,
+    /// so nothing would act on a refusal. Its outputs are dropped: nothing takes them after the
+    /// drain began (#893).
+    private mutating func applyDestroyHandler(
+        _ behavior: KeeperBehavior<State>,
+        _ side: KeeperTurnSide,
+        _ handler: @Sendable (inout State, LandContext) -> Void,
+        ctx: LandContext,
+        random: DeterministicRngService
+    ) {
+        withHandlerStep(behavior, side, ctx, random: .detached(random), dropsOutputs: true) { m, ctx in
+            handler(&m.state, ctx)
+        }
+    }
+
+    /// D3: a destroy handler's resolvers ended. A failure is logged and skips the handler; the
+    /// drain goes on.
+    fileprivate mutating func destroyHandlerResolved(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ step: DestroyHandlerStep,
+        _ result: Result<LandContext, any Error>
+    ) -> DrainRequest {
+        assertDrainIsClosed(side)
+        switch result {
+        case let .success(ctx):
+            applyDestroyHandler(behavior, side, step.handler, ctx: ctx, random: step.random)
+        case let .failure(error):
+            behavior.logger.error("❌ \(step.kind.name) resolvers failed: the handler is skipped", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+        }
+        guard let next = DestroyHandlerKind(rawValue: step.kind.rawValue + 1) else { return .notifyTransport }
+        return nextDestroyStep(behavior, &side, &outputs, from: next, random: step.random)
+    }
+
+    /// D4: AfterFinalize returned.
+    fileprivate mutating func drainAfterFinalize(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> DrainRequest {
+        assertDrainIsClosed(side)
+        return .notifyTransport
+    }
+
+    /// D5: `onLandDestroyed` returned. The destruction is finished (a later `setTransport`
+    /// attaches the released stand-in), and the bound requester is dropped (#546 L2a). Ends
+    /// #522's exception: this bookkeeping is a turn's.
+    fileprivate mutating func drainFinished(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) {
+        assertDrainIsClosed(side)
+        side.sharedBoundRequester.object = nil
+        destructionFinished = true
+    }
+
+    // MARK: Initialization segments (#700 K2-1b)
+
+    /// I1: the registration checks, then the replay header, OnInitialize's resolvers, or
+    /// OnInitialize itself in this segment when it has none.
+    fileprivate mutating func initializeBegin(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> InitializeRequest {
+        let definition = behavior.definition
+        // The backstop for a keeper no registration checked (#535 §4): a state type that fails
+        // the synced-state rows, a definition with two handlers for one client-event or
+        // server-input type, or a node it declares once declared twice (#586, #796), one whose
+        // client event registrations and handlers disagree (#771), or one holding a node its
+        // builder doesn't recognize (#794), fails initialization, as an OnInitialize resolver
+        // timeout does, before any handler runs. One cached lookup per state type.
+        let problems = SyncRegistration.cachedProblems(State.self)
+        // #769 §3.4: a live keeper for a land that declares services needs its services value; a
+        // replay never calls `resolve`.
+        let missingServices = behavior.config.mode == .live && behavior.resolverServices == nil
+            ? definition.servicesType.map { String(reflecting: $0) } : nil
+        // A value of another type would fail every resolving input with `servicesMismatch`. A land
+        // that declares no services takes `NoServices`, which an erased factory can replace too.
+        var wrongServices: String?
+        if behavior.config.mode == .live, let value = behavior.resolverServices {
+            let declared: Any.Type = definition.servicesType ?? NoServices.self
+            let accepts = definition.acceptsServices ?? { $0 is NoServices }
+            if !accepts(value) {
+                wrongServices = "declared \(String(reflecting: declared)), given \(String(reflecting: type(of: value)))"
+            }
+        }
+        if !problems.isEmpty || !definition.duplicateHandlers.isEmpty || !definition.clientEventMismatches.isEmpty
+            || !definition.unrecognizedNodes.isEmpty || !definition.resolverDeclarationProblems.isEmpty
+            || missingServices != nil || wrongServices != nil {
+            let error = LandRegistrationError(
+                landType: definition.id,
+                payload: nil,
+                sync: problems.isEmpty ? nil : SyncRegistrationError(problems: problems),
+                duplicateHandlers: definition.duplicateHandlers,
+                clientEventMismatches: definition.clientEventMismatches,
+                unrecognizedNodes: definition.unrecognizedNodes,
+                missingServices: missingServices,
+                wrongServices: wrongServices,
+                resolverDeclarations: definition.resolverDeclarationProblems
+            )
+            behavior.logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
+                "error": .string(error.description),
+            ])
+            return initializeFail(behavior, &side, &outputs, error)
+        }
+        if behavior.config.mode == .reevaluation {
+            if let source = side.replay?.reevaluationSource { return .checkReplayHeader(source) }
+            return .runReplayBeforeTickZero
+        }
+        // Execute OnInitialize immediately in live mode (preserve existing semantics). Record it
+        // as a lifecycle event under tick 0 so replay can apply it deterministically before the
+        // first tick handler runs.
+        guard behavior.config.mode == .live, let handler = definition.lifetimeHandlers.onInitialize else {
+            return initializeFinish(behavior, &side, &outputs)
+        }
+        let taken = sequence.take()
+        let ctx = makeContext(behavior, side,
+            playerID: behavior.config.systemPlayerID,
+            clientID: behavior.config.systemClientID,
+            sessionID: behavior.config.systemSessionID,
+            tickId: lastCommittedTickId
+        )
+        // The resolvers' values are built from the initial State, here, before the group runs
+        // (#769). A closure that built none has no group to run.
+        if let declaration = definition.lifetimeHandlers.onInitializeResolvers,
+           case let executors = declaration.build(state, ValidateContext(ctx)), !executors.isEmpty {
+            return .runResolvers(InitializeResolving(
+                handler: handler,
+                ctx: ctx,
+                sequence: taken,
+                sequenceAfterTake: sequence.next,
+                executors: executors,
+                resolverContext: makeResolverContext(behavior, ctx)
+            ))
+        }
+        return initializeApply(behavior, &side, &outputs, handler: handler, ctx: ctx, sequence: taken)
+    }
+
+    /// Re-evaluation, after the header's reads: the payload encoding the record declares, or the
+    /// failure that refuses the record.
+    fileprivate mutating func initializeAfterReplayHeader(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        encoding: RecordPayloadEncoding?,
+        failure: (any Error)?
+    ) -> InitializeRequest {
+        if let encoding { side.replay!.replayHeaderPayloadEncoding = encoding }
+        if let failure {
+            behavior.logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
+                "error": .string(String(describing: failure)),
+            ])
+            return initializeFail(behavior, &side, &outputs, failure)
+        }
+        return .runReplayBeforeTickZero
+    }
+
+    /// I2: OnInitialize's resolvers ended. A timeout, or a failure under `.failLand`, fails the
+    /// initialization; otherwise OnInitialize runs, without the group's outputs on a failure.
+    fileprivate mutating func initializeResolved(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ resolving: InitializeResolving,
+        _ result: Result<LandContext, any Error>,
+        cancelled: Bool
+    ) -> InitializeRequest {
+        // No intake that waits for the initialization took a number during the resolvers:
+        // every join, leave, action, client event, server input and `forceShutdown` awaits
+        // `ensureInitialized` first, and the loops aren't configured yet. A failure the
+        // transport reported meanwhile is the one exception (`numbersTakenOnlyByLandFailures`).
+        assert(
+            numbersTakenOnlyByLandFailures(since: resolving.sequenceAfterTake, side),
+            "an intake took a sequence number during OnInitialize's resolvers"
+        )
+        var ctx = resolving.ctx
+        switch result {
+        case let .success(resolved):
+            ctx = resolved
+        case let .failure(error):
+            if case ResolverExecutionError.timedOut = error {
+                // Timed out (#104): the initialization fails. OnInitialize doesn't run, and the
+                // land is torn down; its waiters get the error from `ensureInitialized`.
+                behavior.logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
+                    "error": .string(String(describing: error)),
+                ])
+                return initializeFail(behavior, &side, &outputs, error)
+            }
+            if LandKeeper<State>.initializeResolverFailureFailsLand(
+                error,
+                policy: behavior.definition.lifetimeHandlers.onInitializeResolverFailure,
+                shuttingDown: side.isDraining || cancelled
+            ) {
+                // A resolver threw, with `.failLand` (#238): the same as a timeout.
+                ResolverDeadline.metrics.noteInitFailed()
+                behavior.logger.error("❌ OnInitialize resolvers failed: the land is torn down", metadata: [
+                    "error": .string(String(describing: error)),
+                ])
+                return initializeFail(behavior, &side, &outputs, error)
+            }
+            // `.continue`, or cancelled by the land's shutdown: OnInitialize runs without the
+            // group's outputs.
+            behavior.logger.error("❌ OnInitialize resolvers failed", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+        }
+        return initializeApply(behavior, &side, &outputs, handler: resolving.handler, ctx: ctx, sequence: resolving.sequence)
+    }
+
+    /// Whether every sequence number taken since `start` was taken by a failure the transport
+    /// reported from outside a turn (`submitLandFailure`), the one taker that doesn't wait for
+    /// the initialization. While the land is open the check is exact: each pending
+    /// `.landFailure` item at or after `start` accounts for one number. Once a failure has
+    /// applied, the land is draining and any gap is accepted, so an unrelated take before that
+    /// drain would go unnoticed; no caller can make one today, since every other taker waits
+    /// for the initialization.
+    private func numbersTakenOnlyByLandFailures(since start: Int64, _ side: KeeperTurnSide) -> Bool {
+        let gap = sequence.next - start
+        if gap == 0 || side.isDraining { return true }
+        let taken = pendingItems.filter { $0.sequence >= start }
+        return taken.count == gap && taken.allSatisfy {
+            if case .landFailure = $0 { return true }
+            return false
+        }
+    }
+
+    /// OnInitialize's turn body; then its record, if the land records.
+    private mutating func initializeApply(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        handler: InitializeHandler<State>,
+        ctx: LandContext,
+        sequence taken: Int64
+    ) -> InitializeRequest {
+        let output: InitializeTurnOutput
+        switch initializeTurnBody(behavior, &side, &outputs, handler: handler, ctx: ctx, sequence: taken) {
+        case let .failure(error):
+            // A refusal fails the initialization, as a resolver failure with `.failLand` does:
+            // nothing was written, `validate` emitted nothing, and nothing is recorded.
+            behavior.logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+            return initializeFail(behavior, &side, &outputs, error)
+        case let .success(initialized):
+            output = initialized
+        }
+        // Without a record, the guard runs in a turn of its own: this turn's late re-entry
+        // backstop (`withTurn`'s defer) can fail the land after the body (#944).
+        guard behavior.reevaluationRecorder != nil else { return .finish }
+        let recorded = ReevaluationRecordedLifecycleEvent(
+            kind: LandKeeper<State>.LifecycleKind.initialize.rawValue,
+            sequence: taken,
+            tickId: 0,
+            playerID: nil,
+            clientID: nil,
+            sessionID: nil,
+            deviceID: nil,
+            isGuest: nil,
+            metadata: [:],
+            resolverOutputs: ctx.getAllResolverOutputs().recordedEntries,
+            resolvedAtTick: lastCommittedTickId
+        )
+        // Only a live keeper runs OnInitialize here, and its initialization goes through the
+        // turn (`routesThroughTurn` is `mode == .live`): the record is the turn's.
+        assert(behavior.routesThroughTurn)
+        // OnInitialize's server events belong to tick -1, which no frame's `serverEvents`
+        // records; the initialize record keeps them for verification.
+        return .submitRecord(ReevaluationTickRecord(
+            tickId: 0,
+            lifecycleEvents: [recorded],
+            syncMarkers: output.marker.map { [$0] } ?? [],
+            initialize: output.record
+        ))
+    }
+
+    /// I3: after the record's await.
+    fileprivate mutating func initializeRecorded(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> InitializeRequest {
+        initializeFinish(behavior, &side, &outputs)
+    }
+
+    /// Then the tick and sync loops, if configured. Not on a land that is ending: a refusal in
+    /// initialization's turn failed it, or a drain began during the record's await, and the
+    /// drain has stopped (or will not see) the loops.
+    fileprivate mutating func initializeFinish(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> InitializeRequest {
+        guard behavior.config.autoStartLoops, !side.isDraining else {
+            initializeDone(behavior, &side, &outputs, tickLoopConfigured: false, syncLoopConfigured: false)
+            return .done
+        }
+        return .startLoops
+    }
+
+    /// I4: the initialization is done. Runs after the driver configured the loops, so
+    /// `didInitialize` follows the loops, and it is set before the initialization's task ends,
+    /// so a waiter that resumes before the starter sees it (#934). The two flags say whether
+    /// the tick and sync loops are configured (`tickLoopConfiguredAt`, `syncTask`: actor
+    /// fields).
+    fileprivate mutating func initializeDone(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        tickLoopConfigured: Bool,
+        syncLoopConfigured: Bool
+    ) {
+        let handlers = behavior.definition.lifetimeHandlers
+        let startsNoLoop = !behavior.config.autoStartLoops || side.isDraining
+        if handlers.tickHandler != nil, handlers.tickInterval != nil {
+            assert(startsNoLoop || tickLoopConfigured, "didInitialize before the tick loop was configured")
+        }
+        // The sync loop runs at the sync interval, or else at the tick interval (`configureLoops`).
+        if handlers.syncInterval != nil || handlers.tickInterval != nil {
+            assert(startsNoLoop || syncLoopConfigured, "didInitialize before the sync loop was configured")
+        }
+        didInitialize = true
+    }
+
+    /// The initialization failed: its failure is held as every caller gets it (#700 K1b-2), the
+    /// initialization is over, and the land's teardown is staged, to start once this turn's
+    /// segment ends, in a Task of its own (the drain's `forceShutdown` path would otherwise wait
+    /// for the initialization it is part of).
+    private mutating func initializeFail(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ error: any Error
+    ) -> InitializeRequest {
+        // Minting the ID writes the model. A plain assignment evaluates its right side first, so
+        // this split is a precaution, kept in the shape of the slot fill's (`fillActionSlot`).
+        let failure = recordFailure(&side, LandInitializationError(underlying: error))
+        initializationFailure = failure
+        checkActionTables(behavior, side, #function)
+        didInitialize = true
+        let keeperReference = side.keeperReference
+        outputs.stage { [weak keeperReference] in
+            guard let keeper = keeperReference?.keeper as? LandKeeper<State> else { return }
+            Task { await keeper.tearDownAfterFailedInitialization() }
+        }
+        return .done
+    }
+
     /// Initialization's turn, from OnInitialize's step through its output step, on the model the
     /// turn holds (#700 K1b-5a step 2). The failure is the error `validate` threw: nothing was
     /// written then. Each port call goes through `callOut`; a refusal ends the land in that call,
@@ -8122,7 +8592,11 @@ extension KeeperModel {
         // attempt ends only its own reservation, at the insert and on every other exit.
         let reservation = isReconnection ? rejoinReservationEpochs.next() : nil
         if let reservation { rejoinReservations[playerID, default: []].insert(reservation) }
-        return .holdThenKickCheck(JoinDecided(call: call, decision: decision, playerID: playerID, reservation: reservation))
+        // The attempt's fencing token: every attempt that reaches this point is a later arrival
+        // than every one before it (#940).
+        let arrival = joinArrivals.next()
+        latestJoinArrivals[playerID] = arrival
+        return .holdThenKickCheck(JoinDecided(call: call, decision: decision, playerID: playerID, reservation: reservation, arrival: arrival))
     }
 
     /// CanJoin's context, under a temporary player ID. A core's J2 builds it again with the

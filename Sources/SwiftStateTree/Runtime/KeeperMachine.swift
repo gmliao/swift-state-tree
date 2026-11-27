@@ -217,9 +217,10 @@ enum KeeperJoinStage<State: StateNodeProtocol>: Sendable {
 enum KeeperContinuation: Sendable {
     /// The flow's own caller gets the answer (nil: nobody waits).
     case reply(InputID?)
-    /// A join's kick of the player's old session: when the leave ends, J3 runs for `decided`
-    /// (a leave that fails fails the join, with the leave's own error), then the join goes on.
-    case joinAfterKick(KeeperJoinDecided, caller: InputID?, syncsInTurn: Bool)
+    /// A join's kick of the player's old session, the entry with `kickedGeneration`: when the
+    /// leave ends, J2c runs for `decided` (a leave that fails fails the join, with the leave's
+    /// own error), then the join goes on.
+    case joinAfterKick(KeeperJoinDecided, kickedGeneration: Epoch, caller: InputID?, syncsInTurn: Bool)
 }
 
 /// What a core step does when an input turn its flow waits for is recorded (#700 K2-1, the
@@ -974,8 +975,9 @@ extension KeeperModel {
 
     /// The keeper's `joinReportingAdmission` loop from `segment` on, in this step, until the
     /// join's next await (a `run`, or an input-turn wait) or its end. `decided`: the attempt's
-    /// decision once J2 made it; its reservation is ended on every exit (`finishJoin`), as the
-    /// keeper's `defer` does. The `.join` hold is the keeper's test hold, not a step's.
+    /// decision once J2 made it; its reservation and arrival token are ended on every exit
+    /// (`finishJoin`), as the keeper's `defer` does. The `.join` hold is the keeper's test
+    /// hold, not a step's.
     mutating func joinDrive(
         _ behavior: KeeperBehavior<State>,
         _ store: KeeperSideStore,
@@ -1002,15 +1004,16 @@ extension KeeperModel {
                 turn.run(.join(request, .canJoinResolvers(call, syncsInTurn: syncsInTurn), caller: caller))
                 return
             case let .holdThenKickCheck(made):
-                // J2 took the reservation in the segment that just ended.
+                // J2 took the reservation and the arrival in the segment that just ended.
                 decided = made
                 next = step(behavior, store) { m, side, outputs in Result { try m.joinKickCheck(behavior, &side, &outputs, made) } }
-            case let .kick(made, oldClientID, oldSessionID):
-                // The kick is the leave flow, nested: L1 in this step; J3 runs when it ends.
+            case let .kick(made, oldClientID, oldSessionID, kickedGeneration):
+                // The kick is the leave flow, nested, of the kicked entry alone: L1 in this
+                // step; J2c runs when it ends.
                 let leave = step(behavior, store) { m, side, outputs in
-                    m.leaveBegin(behavior, &side, &outputs, playerID: made.playerID, clientID: oldClientID, sessionID: oldSessionID)
+                    m.leaveBegin(behavior, &side, &outputs, playerID: made.playerID, clientID: oldClientID, sessionID: oldSessionID, entryGeneration: kickedGeneration)
                 }
-                leaveDrive(behavior, store, &turn, leave, .joinAfterKick(made, caller: caller, syncsInTurn: syncsInTurn))
+                leaveDrive(behavior, store, &turn, leave, .joinAfterKick(made, kickedGeneration: kickedGeneration, caller: caller, syncsInTurn: syncsInTurn))
                 return
             case let .admit(made, joinSequence):
                 // Between two segments, as on the keeper: the transport's admission is no body's.
@@ -1217,8 +1220,8 @@ extension KeeperModel {
         }
     }
 
-    /// The join's end, success or failure: its reservation ends (the keeper's `defer`, in a
-    /// segment of its own), then the caller gets the join's own result.
+    /// The join's end, success or failure: its reservation and its arrival token end (the
+    /// keeper's `defer`, in a segment of its own), then the caller gets the join's own result.
     mutating func finishJoin(
         _ behavior: KeeperBehavior<State>,
         _ store: KeeperSideStore,
@@ -1227,8 +1230,11 @@ extension KeeperModel {
         decided: KeeperJoinDecided?,
         caller: InputID?
     ) {
-        if let decided, let reservation = decided.reservation {
-            step(behavior, store) { m, _, _ in m.endRejoinReservation(reservation, of: decided.playerID) }
+        if let decided {
+            step(behavior, store) { m, _, _ in
+                if let reservation = decided.reservation { m.endRejoinReservation(reservation, of: decided.playerID) }
+                m.endJoinArrival(decided.arrival, of: decided.playerID)
+            }
         }
         if let caller { turn.reply(to: caller, .success(.join(result))) }
     }
@@ -1252,8 +1258,9 @@ extension KeeperModel {
         }
     }
 
-    /// A leave ended (`result`): its caller gets the answer, or, for a join's kick, J3 runs and
-    /// the join goes on; a failed kick fails the join with the leave's own error.
+    /// A leave ended (`result`): its caller gets the answer, or, for a join's kick, J2c runs
+    /// (the fence and the slot check) and the join goes on; a failed kick fails the join with
+    /// the leave's own error.
     mutating func continueAfterLeave(
         _ behavior: KeeperBehavior<State>,
         _ store: KeeperSideStore,
@@ -1264,13 +1271,13 @@ extension KeeperModel {
         switch continuation {
         case let .reply(caller):
             if let caller { turn.reply(to: caller, result.map { _ in KeeperReply<State>.done }) }
-        case let .joinAfterKick(decided, caller, syncsInTurn):
+        case let .joinAfterKick(decided, kickedGeneration, caller, syncsInTurn):
             switch result {
             case let .failure(error):
                 finishJoin(behavior, store, &turn, .failure(error), decided: decided, caller: caller)
             case .success:
                 joinDrive(behavior, store, &turn, call: decided.call, caller: caller, syncsInTurn: syncsInTurn, decided: decided) { m, side, outputs in
-                    try m.joinInsert(behavior, &side, &outputs, decided)
+                    try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: kickedGeneration)
                 }
             }
         }

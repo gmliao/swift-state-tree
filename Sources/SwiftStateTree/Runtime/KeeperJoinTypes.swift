@@ -20,6 +20,8 @@ struct KeeperJoinDecided: Sendable {
     let decision: JoinDecision
     let playerID: PlayerID
     let reservation: Epoch?
+    /// The attempt's fencing token, taken at J2 (`latestJoinArrivals`).
+    let arrival: Epoch
 }
 
 /// What `joinReportingAdmission` did.

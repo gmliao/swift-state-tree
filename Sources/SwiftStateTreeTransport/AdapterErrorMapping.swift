@@ -18,6 +18,10 @@ enum AdapterErrorMapping {
     }
 
     static func mapJoinFailure(_ error: Error) -> (ErrorCode, String) {
+        // The router's message for it (`LandRouter.joinErrorResponse`), not the case's name.
+        if case .superseded? = error as? JoinError {
+            return (.joinDenied, "Join superseded by a newer join of the player")
+        }
         if error.localizedDescription.localizedCaseInsensitiveContains("full") {
             return (.joinRoomFull, "Room is full")
         }

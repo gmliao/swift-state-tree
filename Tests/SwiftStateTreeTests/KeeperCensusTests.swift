@@ -221,6 +221,8 @@ enum KeeperCensus {
             "model.pendingItems": .model,
             "model.players": .model,
             "model.recorderSubmissionCount": .model,
+            "model.joinArrivals": .model,
+            "model.latestJoinArrivals": .model,
             "model.rejoinReservationEpochs": .model,
             "model.rejoinReservations": .model,
             "model.requestedSyncTurnsForTesting": .model,
