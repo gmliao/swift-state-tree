@@ -136,11 +136,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     private struct RefusedFrame {
         let generation: UInt64?
 
-        /// `nil` when the join failed because the land is shutting down: the client is told to
-        /// retry, and that isn't its frame's doing.
+        /// `nil` when the join failed because the land is shutting down (the client is told to
+        /// retry) or because a newer join of the player superseded it (#860): neither is its
+        /// frame's doing.
         func unlessServerCaused(_ error: any Error) -> RefusedFrame? {
-            if case .landShuttingDown? = error as? JoinError { return nil }
-            return self
+            switch error as? JoinError {
+            case .landShuttingDown?, .superseded?: return nil
+            default: return self
+            }
         }
     }
 

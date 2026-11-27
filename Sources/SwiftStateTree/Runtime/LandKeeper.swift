@@ -6081,6 +6081,14 @@ extension KeeperModel {
         // Its pending actions can't be delivered any more (the ticket names this entry).
         cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: session.generation)
 
+        // The entry's OnJoin hasn't been appended (its resolvers still run): no OnLeave either,
+        // decided before a sequence is taken. The join's append drops its OnJoin (#860).
+        if session.onJoinPending {
+            behavior.logger.info("Player \(playerID.rawValue) left before its OnJoin applied: OnJoin and OnLeave are both dropped")
+            scheduleDestroyIfNeeded(behavior, &side, &outputs)
+            return .done
+        }
+
         // In reevaluation mode, replay viewers never ran OnJoin so skip OnLeave (no game state to clean).
         guard behavior.definition.lifetimeHandlers.onLeave != nil, behavior.config.mode != .reevaluation else {
             scheduleDestroyIfNeeded(behavior, &side, &outputs)
@@ -6267,6 +6275,9 @@ extension KeeperModel {
         )
         // Execute resolvers in parallel if any are declared
         if let (resolverContext, landContext) = onJoinResolverRequest(behavior, &side, &outputs, capture) {
+            // Its OnJoin input comes after an await: a leave of this entry before then appends no
+            // OnLeave (`onJoinPending`, #860). A join without resolvers appends in this segment.
+            players[playerID]?.onJoinPending = true
             return .runOnJoinResolvers(decided, capture, resolverContext, landContext)
         }
         return try joinAppend(behavior, &side, &outputs, decided, capture, resolverOutputs: [:], resolvedAtTick: capture.resolvedAtTick)
@@ -6332,6 +6343,14 @@ extension KeeperModel {
             }
             throw JoinError.landShuttingDown
         }
+        // Same segment as the append: a newer join of the player replaced this entry, or a leave
+        // removed it, during the resolvers. That leave appended no OnLeave (`onJoinPending`), so
+        // this OnJoin is dropped too and the join had no effect (#860). Its sequence is a gap
+        // replay steps over.
+        guard players[capture.playerID]?.generation == capture.entryGeneration else {
+            throw JoinError.superseded
+        }
+        players[capture.playerID]?.onJoinPending = false
 
         let pendingItem = PendingItem.lifecycle(
             PendingLifecycleItem(
