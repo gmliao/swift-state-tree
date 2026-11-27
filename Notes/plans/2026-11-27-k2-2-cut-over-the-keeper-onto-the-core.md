@@ -1,6 +1,6 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
-Revision 3 (2026-11-27): Review's NOT GO on rev 2. Commit 1 maps every K2-1b request to its core effect, result input or owner call (§3.1, with #942's boundary table as Review corrected it). Every #938 refusal is mapped to the commit that lifts it, and commit 4's precondition includes "no refusal reachable" (§3.2). Commit 0's box table lives on the harness until commit 4. Item 16 lists its tests. Item 15 goes in commit 0. The parent's §6 is amended (§8). The [#938] points are refreshed at #938's round-3 head fbc27f72. Revision 2: P-K22-3's Linux output quoted (§7). Revision 1: P-K22-1 run, P-K22-2 settled by reading the code; two PRs (K22-Q4); commits 0, 2 and 3 independent of commit 1. Revision 0 was the prep draft. It is based on K2-1's shape in #938 (head 25ec1efb), which is still in review. Each point that depends on Review's verdict on #938 is marked **[#938]**. The parent plan is `Notes/plans/2026-11-25-k2-cut-over-onto-the-turn-core.md` (here "K2 §n"), whose §6 defines K2-2 and K2-3 as one PR, and whose §16 items 14–18 are left open for K2-2.
+Revision 4 (2026-11-27): item 15's two design points (K22-Q5, K22-Q6), found while drafting commit 0; §4 item 15's row. Revision 3 (2026-11-27): Review's NOT GO on rev 2. Commit 1 maps every K2-1b request to its core effect, result input or owner call (§3.1, with #942's boundary table as Review corrected it). Every #938 refusal is mapped to the commit that lifts it, and commit 4's precondition includes "no refusal reachable" (§3.2). Commit 0's box table lives on the harness until commit 4. Item 16 lists its tests. Item 15 goes in commit 0. The parent's §6 is amended (§8). The [#938] points are refreshed at #938's round-3 head fbc27f72. Revision 2: P-K22-3's Linux output quoted (§7). Revision 1: P-K22-1 run, P-K22-2 settled by reading the code; two PRs (K22-Q4); commits 0, 2 and 3 independent of commit 1. Revision 0 was the prep draft. It is based on K2-1's shape in #938 (head 25ec1efb), which is still in review. Each point that depends on Review's verdict on #938 is marked **[#938]**. The parent plan is `Notes/plans/2026-11-25-k2-cut-over-onto-the-turn-core.md` (here "K2 §n"), whose §6 defines K2-2 and K2-3 as one PR, and whose §16 items 14–18 are left open for K2-2.
 
 ## 1. Goal
 
@@ -113,7 +113,7 @@ So the cut-over can't wire while a refused shape is in place. Otherwise a live l
 | Item | K2-2's answer | Depends on |
 |---|---|---|
 | 14, the frame's isolation on the core | **keep K2-1's shape**: `preconditionOnOwner` at step entry, `withSide` per borrow, and every staged start begins with a call into the owner (§16 item 13's shape). Passing the owner as `isolation:` through `assumeIsolated` makes the frame's own `#isolation` the owner, but a Task staged in the flush closure still doesn't run on it (P-K22-1), so it buys nothing the check doesn't | [#938] if Review asks for a different frame shape |
-| 15, the tickless results onto the effect | in **commit 0** (the first commit that touches the action replies): `.awaitRecordTaken` and `.recordTaken` carry `[seq: Result<InputOutcome, any Error>]`, the waiters are answered from `.recordTaken`'s step, `inputTurnResults` and `coreInputReplies` go in commit 6 | [#938]: the reply plumbing (a) as merged |
+| 15, the tickless results onto the effect | in **commit 0** (the first commit that touches the action replies): `.awaitRecordTaken` and `.recordTaken` carry the batch's results as plain `[seq: InputResult]`: a failure is its `FailureID`, and the error stays in the side's failure table. The waiters are answered from `.recordTaken`'s step. `inputTurnResults` and `coreInputReplies` go in commit 6. Two points need an answer first. **K22-Q5**: the failure table's owner check. **K22-Q6**: what the differential compares. Both are in §4.2 | [#938]: the reply plumbing (a) as merged; K22-Q5, K22-Q6 |
 | 16, the input drain's hold and idle waiters | **proposal: drop the hold from the core path.** `.inputDrain` is a test hold; on the core, a test holds the drain by holding its effect (`.awaitRecordTaken`) in the harness's `perform`, which the differential already does (`recordGate`). The idle waiters become a test read of the core (`inputDrainScheduled` false and no drain step pending). The tests that use it today and their replacement are in §4.1 | Review (K22-Q1: yes, after the list) |
 | 17, the action jobs | commit 0, before the wiring | [#938]: `actionTableViolations`' entries as merged |
 | 18, init and the destroy drain | K2-1b, then commit 1 | K2-1b's merge |
@@ -149,6 +149,27 @@ The keeper-path versions of these tests stay as they are until commit 6, because
 
 `KeeperCoreDifferentialTests`' two keeper-side holds (`sourceDrainHold`) go with the twin hook in commit 6. The census row `actor.inputDrainIdleWaitersForTesting` stays `.replaced(by: "K2")` until commit 6.
 
+### 4.2 Item 15's two points (rev 4)
+
+Both were found while drafting commit 0, at #938's head fbc27f72. Each is a proposal for Review to answer.
+
+**K22-Q5, the failure table's owners.** `actionTableViolations` counts the owners of each held failure: the initialization failure, the action slots, and `inputTurnResults`' `.failed(id)` entries (LK:5313). A failure with no owner is a violation ("has no owner"). On the core path, a batch's results leave the model when the step runs `.awaitRecordTaken`. While the record is in flight, a failed input's `FailureID` would therefore have no owner, and the check would report a violation that isn't real.
+
+**Proposal:**
+- The effect carries `InputResult`, which is plain and holds the `FailureID`, not the error.
+- The side keeps an in-flight owner table, `inFlightRecordResults: [FailureID: Int64]`, mapping each failure to its sequence. The step that runs the effect writes it, and `.recordTaken`'s step clears it when it answers the waiter.
+- The owner count reads that table as a fourth owner.
+- A census row names the new table. Commit 6 removes `inputTurnResults` as an owner, and the in-flight table stays.
+
+**K22-Q6, what the differential compares.** #938's digest compares the model whole (`otherModelFields`), `inputTurnResults` included. In K2-2a the keeper path keeps that table until commit 6, and the core path doesn't. So the field differs while a record is in flight.
+
+**Proposal:**
+- `inputTurnResults` becomes a stated asymmetry, like `hasHeldTransport`, with its reason.
+- The digest compares instead each path's results as its callers received them: the `InputOutcome`, or the error's description, in sequence order.
+- `expectSame` also asserts that both sides hold none once the record is taken: `inputTurnResults` on the keeper path, and the in-flight table on the core path.
+
+The asymmetry goes with the keeper path in commit 6.
+
 ## 5. Tests and measurement
 
 - K2 §8's list, unchanged: each entry contract, the order test, the barriers, the result slot, cancellation with its mutant, the entry end and the seal; the census's `live.` group; the replay owner holds no `TurnCore` (a `Mirror` test).
@@ -165,6 +186,8 @@ The keeper-path versions of these tests stay as they are until commit 6, because
 | K22-Q2 | `.admitClientEvent`'s answer: no value, as today (commit 2)? | **No value** (Review, rev 2): no caller in Sources reads a sequence from the client-event intake. `Result<Int64>` is dropped |
 | K22-Q3 | The loop drivers: core timers only if #762 is in, else the loop Task sends with the existing loop generation as its epoch (commit 4)? | **Yes** (Review, rev 2), with the epoch named. Reading the loop code at #938's head shows there is **no** loop generation; see the note below the table |
 | K22-Q4 | One PR for K2-2 + K2-3 (K2 §6), or two: K2-2a (commits 0–3, unwired) and K2-2b (4–6, the cut-over)? | **Two** (Review, rev 2). The parent's §6 is amended in this PR (§8) |
+| K22-Q5 | Item 15: an in-flight owner table on the side for the failures a record effect carries (§4.2)? | Review (proposal) |
+| K22-Q6 | Item 15: `inputTurnResults` as a stated asymmetry, with the callers' results compared instead (§4.2)? | Review (proposal) |
 
 **The Q3 note.** There is no loop generation to reuse:
 - `configureTickLoop` (LK:3019 at fbc27f72) cancels the old `tickTask` and starts a new one. `configureSyncLoop` (LK:4539) does the same with `syncTask`.
