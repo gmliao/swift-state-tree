@@ -199,10 +199,13 @@ private final class SegmentTransport: LandKeeperTransport, @unchecked Sendable {
     func waitForWriterDrainForInTurnSync() async {}
 }
 
-/// Holds the first `.turnRecord` arrival on `gate`, and logs each `.drainStart` arrival.
+/// Holds the first `.turnRecord` arrival on `gate`, and logs each `.drainStart` arrival. With
+/// `holdsStarter`, also holds the initialization's starter after its task ended, on `starter`.
 private final class SegmentHolds: @unchecked Sendable {
     let gate = WatermarkGate()
+    let starter = WatermarkGate()
     let log = EventLog()
+    var holdsStarter = false
     private let lock = NSLock()
     private var records = 0
 
@@ -214,6 +217,8 @@ private final class SegmentHolds: @unchecked Sendable {
                 if first { await gate.enterAndWait() }
             case .drainStart:
                 log.append("drainStart")
+            case .initializationStarterResumed:
+                if holdsStarter { await starter.enterAndWait() }
             default:
                 break
             }
@@ -225,6 +230,21 @@ private let segP1 = PlayerID("p1")
 private let segC1 = ClientID("c1")
 private let segS1 = SessionID("s1")
 
+/// A recording, auto-starting keeper whose initialization is held at its record. Its
+/// initialization starts at creation, so OnInitialize's resolver is held first, and the record
+/// hold is installed before it is released. `nil` holds when a hold was never reached.
+private func keeperHeldAtInitializeRecord(tick: Bool, holdingStarter: Bool = false) async -> (LandKeeper<SegmentState>, SegmentHolds?) {
+    let (landID, resolverGate) = segmentLandID("init")
+    let keeper = makeSegmentKeeper(tick: tick, landID: landID, recording: true, autoStartLoops: true)
+    guard await resolverGate.waitUntilEntered("OnInitialize's resolver") else { return (keeper, nil) }
+    let holds = SegmentHolds()
+    holds.holdsStarter = holdingStarter
+    await holds.install(on: keeper)
+    resolverGate.release()
+    guard await holds.gate.waitUntilEntered("the initialization's record") else { return (keeper, nil) }
+    return (keeper, holds)
+}
+
 @Suite("Initialization and drain held at each await (#700 K2-1b)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct InitAndDrainSegmentTests {
     // MARK: Initialization
@@ -232,8 +252,9 @@ struct InitAndDrainSegmentTests {
     @Test("T1: held in OnInitialize's resolvers, the state is the initial one, didInitialize is false and a join waits", arguments: [false, true])
     func heldInInitializeResolvers(tick: Bool) async throws {
         let (landID, gate) = segmentLandID("init")
+        // The keeper starts its initialization at creation; the test never adds a waiter of
+        // its own before the one it counts.
         let keeper = makeSegmentKeeper(tick: tick, landID: landID)
-        let initialization = Task { await keeper.awaitInitialization() }
         guard await gate.waitUntilEntered("OnInitialize's resolver") else { return }
 
         #expect(await keeper.currentState().log.isEmpty, "OnInitialize hasn't applied")
@@ -242,7 +263,6 @@ struct InitAndDrainSegmentTests {
         #expect(await keeper.waitForInitializationWaitersForTesting(1), "the join waits for the initialization")
 
         gate.release()
-        await initialization.value
         try await join.value
         #expect(await keeper.currentState().log.first == "init:1")
         #expect(await keeper.lifecycleFlagsForTesting().didInitialize)
@@ -251,12 +271,8 @@ struct InitAndDrainSegmentTests {
 
     @Test("T2: held at the initialization's record, OnInitialize is applied, didInitialize is false and no loop is configured yet", arguments: [false, true])
     func heldAtInitializeRecord(tick: Bool) async throws {
-        let (landID, _) = segmentLandID("rec")
-        let keeper = makeSegmentKeeper(tick: tick, landID: landID, recording: true, autoStartLoops: true)
-        let holds = SegmentHolds()
-        await holds.install(on: keeper)
-        let initialization = Task { await keeper.awaitInitialization() }
-        guard await holds.gate.waitUntilEntered("the initialization's record") else { return }
+        let (keeper, holds) = await keeperHeldAtInitializeRecord(tick: tick)
+        guard let holds else { return }
 
         #expect(await keeper.currentState().log == ["init:1"])
         let held = await keeper.lifecycleFlagsForTesting()
@@ -264,7 +280,7 @@ struct InitAndDrainSegmentTests {
         #expect(held.tickLoopConfigured == false, "the loops start after the record")
 
         holds.gate.release()
-        await initialization.value
+        await keeper.awaitInitialization()
         let done = await keeper.lifecycleFlagsForTesting()
         #expect(done.didInitialize)
         #expect(done.tickLoopConfigured == tick, "a tick land's loop is configured after the record")
@@ -273,18 +289,14 @@ struct InitAndDrainSegmentTests {
 
     @Test("T2b: a land that fails while its initialization is held at the record configures no loop")
     func failedAtInitializeRecordStartsNoLoop() async throws {
-        let (landID, _) = segmentLandID("rec")
-        let keeper = makeSegmentKeeper(tick: true, landID: landID, recording: true, autoStartLoops: true)
-        let holds = SegmentHolds()
-        await holds.install(on: keeper)
-        let initialization = Task { await keeper.awaitInitialization() }
-        guard await holds.gate.waitUntilEntered("the initialization's record") else { return }
+        let (keeper, holds) = await keeperHeldAtInitializeRecord(tick: true)
+        guard let holds else { return }
 
         await keeper.failLandForTesting(LandFailure(kind: .syncPlan, detail: "test", position: LandFailurePosition(stage: .syncPhase)))
         #expect(keeper.isDraining)
 
         holds.gate.release()
-        await initialization.value
+        await keeper.awaitInitialization()
         #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false, "the drain began during the record: no loop")
         #expect(await pollUntil { await keeper.lifecycleFlagsForTesting().destructionFinished }, "the failure's teardown ends")
         #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
@@ -294,7 +306,6 @@ struct InitAndDrainSegmentTests {
     func initializeResolverFailsAfterTheHold(tick: Bool) async throws {
         let (landID, gate) = segmentLandID("initfail")
         let keeper = makeSegmentKeeper(tick: tick, landID: landID)
-        let initialization = Task { await keeper.awaitInitialization() }
         guard await gate.waitUntilEntered("OnInitialize's resolver") else { return }
 
         let join = Task { () -> (any Error)? in
@@ -309,7 +320,6 @@ struct InitAndDrainSegmentTests {
         #expect(await keeper.lifecycleFlagsForTesting().initializationFailed == false, "nothing failed before the release")
 
         gate.release()
-        await initialization.value
         let error = await join.value
         if case .landShuttingDown? = error as? JoinError {} else {
             Issue.record("the join got \(String(describing: error)), not landShuttingDown")
@@ -321,14 +331,10 @@ struct InitAndDrainSegmentTests {
         #expect(await pollUntil { await keeper.lifecycleFlagsForTesting().destructionFinished }, "the teardown ends")
     }
 
-    @Test("T9: a waiter the initialization resumes, and a join right after it, see the tick loop configured")
+    @Test("T9: a waiter the initialization resumes sees it done and the tick loop configured, before the starter resumes (#934); so does a join right after")
     func initializationWaiterSeesTheLoop() async throws {
-        let (landID, _) = segmentLandID("rec")
-        let keeper = makeSegmentKeeper(tick: true, landID: landID, recording: true, autoStartLoops: true)
-        let holds = SegmentHolds()
-        await holds.install(on: keeper)
-        let initialization = Task { await keeper.awaitInitialization() }
-        guard await holds.gate.waitUntilEntered("the initialization's record") else { return }
+        let (keeper, holds) = await keeperHeldAtInitializeRecord(tick: true, holdingStarter: true)
+        guard let holds else { return }
 
         let waiter = Task { () -> LandKeeper<SegmentState>.LifecycleFlagsForTesting in
             await keeper.awaitInitialization()
@@ -336,13 +342,15 @@ struct InitAndDrainSegmentTests {
         }
         #expect(await keeper.waitForInitializationWaitersForTesting(1))
         holds.gate.release()
-        await initialization.value
 
-        // The waiter wakes from the initialization task's end, which comes after the loops.
-        // Before K2-1b, `didInitialize` was set by the creator after its own wake, so the waiter
-        // could read it either way; what it must see is the loop.
+        // The starter is held after the task ended, so the waiter reads the flags first. The
+        // initialization's own last segment set `didInitialize`, after the loops (#934: the
+        // starter used to set it after its wake, so a waiter that resumed first read false).
+        guard await holds.starter.waitUntilEntered("the initialization's starter") else { return }
         let seen = await waiter.value
+        #expect(seen.didInitialize, "a waiter sees the initialization done (#934)")
         #expect(seen.tickLoopConfigured, "the waiter wakes after the loops are configured")
+        holds.starter.release()
         try await keeper.join(playerID: segP1, clientID: segC1, sessionID: segS1)
         #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured)
         await keeper.forceShutdown()

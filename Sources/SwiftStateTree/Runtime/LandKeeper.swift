@@ -69,6 +69,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case join
     /// The start of `leave(playerID:clientID:sessionID:)`.
     case leave
+    /// The initialization's starter (the caller that created its task), after the task ended
+    /// and before the starter clears it (#934): a waiter that resumes first runs here.
+    case initializationStarterResumed
     /// The start of each input drain, before its first turn.
     case inputDrain
     /// A tickless server input's task, before it waits for (or runs) the turn applying it.
@@ -717,15 +720,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
     private var initializationTask: Task<Void, Never>?
 
-    /// Holds `error` as the initialization's failure, wrapped as every caller gets it (#700 K1b-2).
-    private func failInitialization(with error: any Error) {
-        // Minting the ID writes the model. A plain assignment evaluates its right side first, so
-        // this split is a precaution, kept in the shape of the slot fill's (`fillActionSlot`).
-        let failure = model.recordFailure(&turnSide, LandInitializationError(underlying: error))
-        model.initializationFailure = failure
-        model.checkActionTables(behavior, turnSide, #function)
-    }
-
     /// Throws the initialization's failure, if it failed. Every caller gets the same value: the
     /// entry is read, never taken.
     private func throwIfInitializationFailed() throws {
@@ -1288,9 +1282,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         initializationTask = task
         await task.value
+        await holds.at(.initializationStarterResumed)
+        // `didInitialize` was set by the initialization's last segment, before the task ended,
+        // so a waiter that resumes first sees it too (#934).
         initializationTask = nil
-        model.didInitialize = true
-        resumeInitializationWaitWatchers { _ in true }
         try throwIfInitializationFailed()
     }
 
@@ -1358,7 +1353,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// destroy handlers (`initializationFailure` is set). Started from `performInitialization`,
     /// in a Task of its own: the drain's `forceShutdown` path would otherwise wait for the
     /// initialization it is part of.
-    private func tearDownAfterFailedInitialization() async {
+    fileprivate func tearDownAfterFailedInitialization() async {
         model.players.removeAll()
         turnSide.playerServices.removeAll()
         model.rejoinReservations.removeAll()
@@ -1437,183 +1432,67 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return !(shuttingDown && ResolverExecutionError.isCancellation(error))
     }
 
+    /// The initialization's driver (#700 K2-1b): each segment runs in a turn body and returns
+    /// the await it needs; the driver performs it and runs the next segment. A segment never
+    /// awaits, and keeper state is written only in segments, except the loops' tasks, which are
+    /// actor fields until K2-2's core timers.
     private func performInitialization() async {
-        // The backstop for a keeper no registration checked (#535 §4): a state type that fails
-        // the synced-state rows, a definition with two handlers for one client-event or
-        // server-input type, or a node it declares once declared twice (#586, #796), one whose
-        // client event registrations and handlers disagree
-        // (#771), or one holding a node its builder doesn't recognize (#794), fails initialization, as an OnInitialize resolver timeout does, before
-        // any handler runs. One cached lookup per state type.
-        let problems = SyncRegistration.cachedProblems(State.self)
-        // #769 §3.4: a live keeper for a land that declares services needs its services value; a
-        // replay never calls `resolve`.
-        let missingServices = behavior.config.mode == .live && behavior.resolverServices == nil
-            ? definition.servicesType.map { String(reflecting: $0) } : nil
-        // A value of another type would fail every resolving input with `servicesMismatch`. A land
-        // that declares no services takes `NoServices`, which an erased factory can replace too.
-        var wrongServices: String?
-        if behavior.config.mode == .live, let value = behavior.resolverServices {
-            let declared: Any.Type = definition.servicesType ?? NoServices.self
-            let accepts = definition.acceptsServices ?? { $0 is NoServices }
-            if !accepts(value) {
-                wrongServices = "declared \(String(reflecting: declared)), given \(String(reflecting: type(of: value)))"
-            }
-        }
-        if !problems.isEmpty || !definition.duplicateHandlers.isEmpty || !definition.clientEventMismatches.isEmpty
-            || !definition.unrecognizedNodes.isEmpty || !definition.resolverDeclarationProblems.isEmpty
-            || missingServices != nil || wrongServices != nil {
-            let error = LandRegistrationError(
-                landType: definition.id,
-                payload: nil,
-                sync: problems.isEmpty ? nil : SyncRegistrationError(problems: problems),
-                duplicateHandlers: definition.duplicateHandlers,
-                clientEventMismatches: definition.clientEventMismatches,
-                unrecognizedNodes: definition.unrecognizedNodes,
-                missingServices: missingServices,
-                wrongServices: wrongServices,
-                resolverDeclarations: definition.resolverDeclarationProblems
-            )
-            behavior.logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
-                "error": .string(error.description),
-            ])
-            failInitialization(with: error)
-            Task { await self.tearDownAfterFailedInitialization() }
-            return
-        }
-        if behavior.config.mode == .reevaluation {
-            // A record whose payloads this replay has no decoder for is refused before anything
-            // is replayed (#700 K1a): `ReevaluationRecordPayloadError.noDecoder`.
-            // A source whose metadata can't be read is refused too (fails closed).
-            if let source = turnSide.replay?.reevaluationSource {
+        var request = withTurn { m, side, outputs in m.initializeBegin(behavior, &side, &outputs) }
+        while true {
+            switch request {
+            case let .checkReplayHeader(source):
+                // A record whose payloads this replay has no decoder for is refused before
+                // anything is replayed (#700 K1a): `ReevaluationRecordPayloadError.noDecoder`.
+                // A source whose metadata can't be read is refused too (fails closed). The
+                // legacy replay path, until #612.
+                var encoding: RecordPayloadEncoding?
+                var failure: (any Error)?
                 do {
-                    turnSide.replay!.replayHeaderPayloadEncoding = try await source.getMetadata().effectivePayloadEncoding
+                    encoding = try await source.getMetadata().effectivePayloadEncoding
                     try await behavior.payloadDecoders.check(source)
                 } catch {
-                    behavior.logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
-                        "error": .string(String(describing: error)),
-                    ])
-                    failInitialization(with: error)
-                    Task { await self.tearDownAfterFailedInitialization() }
-                    return
+                    failure = error
                 }
-            }
-            await replayInitializeBeforeTickZero()
-        }
-        // Execute OnInitialize immediately in live mode (preserve existing semantics).
-        // Record it as a lifecycle event under tick 0 so replay can apply it deterministically
-        // before the first tick handler runs.
-        if behavior.config.mode == .live, let handler = definition.lifetimeHandlers.onInitialize {
-            let sequence = model.sequence.take()
-
-            var ctx = model.makeContext(behavior, turnSide,
-                playerID: behavior.config.systemPlayerID,
-                clientID: behavior.config.systemClientID,
-                sessionID: behavior.config.systemSessionID,
-                tickId: model.lastCommittedTickId
-            )
-
-            // Execute resolvers in parallel if any are declared: the values are built from the
-            // initial State, here, before the group runs (#769). A closure that built none has
-            // no group to run.
-            if let declaration = definition.lifetimeHandlers.onInitializeResolvers,
-               case let executors = declaration.build(model.state, ValidateContext(ctx)), !executors.isEmpty {
-                let resolverContext = makeResolverContext(ctx)
+                request = withTurn { m, side, outputs in
+                    m.initializeAfterReplayHeader(behavior, &side, &outputs, encoding: encoding, failure: failure)
+                }
+            case .runReplayBeforeTickZero:
+                // The legacy replay path, until #612.
+                await replayInitializeBeforeTickZero()
+                request = withTurn { m, side, outputs in m.initializeFinish(behavior, &side, &outputs) }
+            case let .runResolvers(resolving):
+                let result: Result<LandContext, any Error>
                 do {
-                    ctx = try await ResolverExecutor.executeInitializeResolvers(
-                        executors: executors,
-                        resolverContext: resolverContext,
-                        landContext: ctx,
+                    result = .success(try await ResolverExecutor.executeInitializeResolvers(
+                        executors: resolving.executors,
+                        resolverContext: resolving.resolverContext,
+                        landContext: resolving.ctx,
                         abandonment: resolverAbandonment(.onInitialize)
-                    )
+                    ))
                 } catch {
-                    if case ResolverExecutionError.timedOut = error {
-                        // Timed out (#104): the initialization fails. OnInitialize doesn't run,
-                        // and the land is torn down; its waiters get the error from
-                        // `ensureInitialized`.
-                        behavior.logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
-                            "error": .string(String(describing: error)),
-                        ])
-                        failInitialization(with: error)
-                        Task { await self.tearDownAfterFailedInitialization() }
-                        return
-                    }
-                    if Self.initializeResolverFailureFailsLand(
-                        error,
-                        policy: definition.lifetimeHandlers.onInitializeResolverFailure,
-                        shuttingDown: isDraining || Task.isCancelled
-                    ) {
-                        // A resolver threw, with `.failLand` (#238): the same as a timeout.
-                        ResolverDeadline.metrics.noteInitFailed()
-                        behavior.logger.error("❌ OnInitialize resolvers failed: the land is torn down", metadata: [
-                            "error": .string(String(describing: error)),
-                        ])
-                        failInitialization(with: error)
-                        Task { await self.tearDownAfterFailedInitialization() }
-                        return
-                    }
-                    // `.continue`, or cancelled by the land's shutdown: OnInitialize runs without
-                    // the group's outputs.
-                    behavior.logger.error("❌ OnInitialize resolvers failed", metadata: [
-                        "error": .string(String(describing: error)),
-                    ])
+                    result = .failure(error)
                 }
-            }
-
-            // OnInitialize's step through its output step is one turn body (#700 K1b-5a step 2).
-            let initialized = withTurn { m, side, outputs in
-                m.initializeTurnBody(behavior, &side, &outputs, handler: handler, ctx: ctx, sequence: sequence)
-            }
-            let initializeRecord: ReevaluationRecordedInitialize?
-            let initializeMarker: ReevaluationRecordedSyncMarker?
-            switch initialized {
-            case let .failure(error):
-                // A refusal fails the initialization, as a resolver failure with `.failLand`
-                // does: nothing was written, `validate` emitted nothing, and nothing is recorded.
-                behavior.logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
-                    "error": .string(String(describing: error)),
-                ])
-                failInitialization(with: error)
-                Task { await self.tearDownAfterFailedInitialization() }
+                request = withTurn { m, side, outputs in m.initializeResolved(behavior, &side, &outputs, resolving, result) }
+            case let .submitRecord(record):
+                await submitTurnRecord(record)
+                request = withTurn { m, side, outputs in m.initializeRecorded(behavior, &side, &outputs) }
+            case .startLoops:
+                // In the segment the request came from: no await since its drain check.
+                configureLoops()
+                let loopsConfigured = tickLoopConfiguredAt != nil
+                withTurn { m, side, outputs in m.initializeDone(behavior, &side, &outputs, loopsConfigured: loopsConfigured) }
+                resumeInitializationWaitWatchers { _ in true }
                 return
-            case let .success(output):
-                initializeRecord = output.record
-                initializeMarker = output.marker
-            }
-
-            if reevaluationRecorder != nil {
-                let resolverOutputsDict = ctx.getAllResolverOutputs().recordedEntries
-                let recorded = ReevaluationRecordedLifecycleEvent(
-                    kind: LifecycleKind.initialize.rawValue,
-                    sequence: sequence,
-                    tickId: 0,
-                    playerID: nil,
-                    clientID: nil,
-                    sessionID: nil,
-                    deviceID: nil,
-                    isGuest: nil,
-                    metadata: [:],
-                    resolverOutputs: resolverOutputsDict,
-                    resolvedAtTick: model.lastCommittedTickId
-                )
-                // This block runs only on a live keeper, whose initialization goes through the
-                // turn (`routesThroughTurn` is `mode == .live`): the record is the turn's (#700
-                // K2-1b).
-                assert(routesThroughTurn)
-                // OnInitialize's server events belong to tick -1, which no frame's
-                // `serverEvents` records; the initialize record keeps them for verification.
-                await submitTurnRecord(ReevaluationTickRecord(
-                    tickId: 0,
-                    lifecycleEvents: [recorded],
-                    syncMarkers: initializeMarker.map { [$0] } ?? [],
-                    initialize: initializeRecord
-                ))
+            case .done:
+                resumeInitializationWaitWatchers { _ in true }
+                return
             }
         }
+    }
 
-        // Then, start tick and sync loops if configured (only after OnInitialize completes). Not on
-        // a land that is ending: a refusal in initialization's turn failed it, or a drain began
-        // during the record's await, and the drain has stopped (or will not see) the loops.
-        guard behavior.config.autoStartLoops, !isDraining else { return }
+    /// The tick and sync loops, once OnInitialize has completed. Synchronous: `initializeDone`
+    /// follows with no await between (#700 K2-1b).
+    private func configureLoops() {
         let tickInterval = definition.lifetimeHandlers.tickInterval
         let syncInterval = definition.lifetimeHandlers.syncInterval
 
@@ -2037,6 +1916,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return outcome
             }
         }
+    }
+
+    /// The initialization's requests (#700 K2-1b): each segment returns the await it needs.
+    fileprivate enum InitializeRequest {
+        /// Re-evaluation: the record's header checks (the legacy replay path, until #612).
+        case checkReplayHeader(any ReevaluationSource)
+        /// Re-evaluation: OnInitialize replayed before tick 0 (legacy, until #612).
+        case runReplayBeforeTickZero
+        case runResolvers(InitializeResolving)
+        case submitRecord(ReevaluationTickRecord)
+        /// The driver configures the loops, then runs `initializeDone`.
+        case startLoops
+        case done
+    }
+
+    /// A live OnInitialize whose resolvers run: what `initializeBegin` built for it.
+    fileprivate struct InitializeResolving {
+        let handler: InitializeHandler<State>
+        let ctx: LandContext
+        let sequence: Int64
+        /// `sequence.next` right after the take: nothing else takes a number during the
+        /// resolvers (every intake awaits `ensureInitialized` first, and no loop runs yet).
+        let sequenceAfterTake: Int64
+        let executors: [any AnyResolverExecutor]
+        let resolverContext: ResolverContext
     }
 
     /// The reporting join's requests (#700 K1b-5b §4.1): each segment returns the await it needs.
@@ -5027,6 +4931,8 @@ extension KeeperModel {
     fileprivate typealias FailurePath = LandKeeper<State>.FailurePath
     fileprivate typealias JoinDecided = LandKeeper<State>.JoinDecided
     fileprivate typealias JoinRequest = LandKeeper<State>.JoinRequest
+    fileprivate typealias InitializeRequest = LandKeeper<State>.InitializeRequest
+    fileprivate typealias InitializeResolving = LandKeeper<State>.InitializeResolving
     fileprivate typealias LeaveCapture = LandKeeper<State>.LeaveCapture
     fileprivate typealias LeaveRequest = LandKeeper<State>.LeaveRequest
     fileprivate typealias OnJoinCapture = LandKeeper<State>.OnJoinCapture
@@ -7696,6 +7602,267 @@ extension KeeperModel {
         guard !results.isEmpty else { return }
         // Non-empty results: the pass applied at least one join before the report.
         _ = callOut(behavior, &side, &outputs, endsInputs: true, appliedInputs: true, { _, side in side.noteJoinInputsConsumed(behavior, results) })
+    }
+
+    // MARK: Initialization segments (#700 K2-1b)
+
+    /// I1: the registration checks, then the replay header, OnInitialize's resolvers, or
+    /// OnInitialize itself in this segment when it has none.
+    fileprivate mutating func initializeBegin(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> InitializeRequest {
+        let definition = behavior.definition
+        // The backstop for a keeper no registration checked (#535 §4): a state type that fails
+        // the synced-state rows, a definition with two handlers for one client-event or
+        // server-input type, or a node it declares once declared twice (#586, #796), one whose
+        // client event registrations and handlers disagree (#771), or one holding a node its
+        // builder doesn't recognize (#794), fails initialization, as an OnInitialize resolver
+        // timeout does, before any handler runs. One cached lookup per state type.
+        let problems = SyncRegistration.cachedProblems(State.self)
+        // #769 §3.4: a live keeper for a land that declares services needs its services value; a
+        // replay never calls `resolve`.
+        let missingServices = behavior.config.mode == .live && behavior.resolverServices == nil
+            ? definition.servicesType.map { String(reflecting: $0) } : nil
+        // A value of another type would fail every resolving input with `servicesMismatch`. A land
+        // that declares no services takes `NoServices`, which an erased factory can replace too.
+        var wrongServices: String?
+        if behavior.config.mode == .live, let value = behavior.resolverServices {
+            let declared: Any.Type = definition.servicesType ?? NoServices.self
+            let accepts = definition.acceptsServices ?? { $0 is NoServices }
+            if !accepts(value) {
+                wrongServices = "declared \(String(reflecting: declared)), given \(String(reflecting: type(of: value)))"
+            }
+        }
+        if !problems.isEmpty || !definition.duplicateHandlers.isEmpty || !definition.clientEventMismatches.isEmpty
+            || !definition.unrecognizedNodes.isEmpty || !definition.resolverDeclarationProblems.isEmpty
+            || missingServices != nil || wrongServices != nil {
+            let error = LandRegistrationError(
+                landType: definition.id,
+                payload: nil,
+                sync: problems.isEmpty ? nil : SyncRegistrationError(problems: problems),
+                duplicateHandlers: definition.duplicateHandlers,
+                clientEventMismatches: definition.clientEventMismatches,
+                unrecognizedNodes: definition.unrecognizedNodes,
+                missingServices: missingServices,
+                wrongServices: wrongServices,
+                resolverDeclarations: definition.resolverDeclarationProblems
+            )
+            behavior.logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
+                "error": .string(error.description),
+            ])
+            return initializeFail(behavior, &side, &outputs, error)
+        }
+        if behavior.config.mode == .reevaluation {
+            if let source = side.replay?.reevaluationSource { return .checkReplayHeader(source) }
+            return .runReplayBeforeTickZero
+        }
+        // Execute OnInitialize immediately in live mode (preserve existing semantics). Record it
+        // as a lifecycle event under tick 0 so replay can apply it deterministically before the
+        // first tick handler runs.
+        guard behavior.config.mode == .live, let handler = definition.lifetimeHandlers.onInitialize else {
+            return initializeFinish(behavior, &side, &outputs)
+        }
+        let taken = sequence.take()
+        let ctx = makeContext(behavior, side,
+            playerID: behavior.config.systemPlayerID,
+            clientID: behavior.config.systemClientID,
+            sessionID: behavior.config.systemSessionID,
+            tickId: lastCommittedTickId
+        )
+        // The resolvers' values are built from the initial State, here, before the group runs
+        // (#769). A closure that built none has no group to run.
+        if let declaration = definition.lifetimeHandlers.onInitializeResolvers,
+           case let executors = declaration.build(state, ValidateContext(ctx)), !executors.isEmpty {
+            return .runResolvers(InitializeResolving(
+                handler: handler,
+                ctx: ctx,
+                sequence: taken,
+                sequenceAfterTake: sequence.next,
+                executors: executors,
+                resolverContext: makeResolverContext(behavior, ctx)
+            ))
+        }
+        return initializeApply(behavior, &side, &outputs, handler: handler, ctx: ctx, sequence: taken)
+    }
+
+    /// Re-evaluation, after the header's reads: the payload encoding the record declares, or the
+    /// failure that refuses the record.
+    fileprivate mutating func initializeAfterReplayHeader(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        encoding: RecordPayloadEncoding?,
+        failure: (any Error)?
+    ) -> InitializeRequest {
+        if let encoding { side.replay!.replayHeaderPayloadEncoding = encoding }
+        if let failure {
+            behavior.logger.error("❌ The record can't be read, or this replay can't decode its payloads: the land is torn down", metadata: [
+                "error": .string(String(describing: failure)),
+            ])
+            return initializeFail(behavior, &side, &outputs, failure)
+        }
+        return .runReplayBeforeTickZero
+    }
+
+    /// I2: OnInitialize's resolvers ended. A timeout, or a failure under `.failLand`, fails the
+    /// initialization; otherwise OnInitialize runs, without the group's outputs on a failure.
+    fileprivate mutating func initializeResolved(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ resolving: InitializeResolving,
+        _ result: Result<LandContext, any Error>
+    ) -> InitializeRequest {
+        // Nothing but this initialization took a number during the resolvers: every intake
+        // awaits `ensureInitialized` before it takes one, and the loops aren't configured yet.
+        assert(sequence.next == resolving.sequenceAfterTake, "a sequence number was taken during OnInitialize's resolvers")
+        var ctx = resolving.ctx
+        switch result {
+        case let .success(resolved):
+            ctx = resolved
+        case let .failure(error):
+            if case ResolverExecutionError.timedOut = error {
+                // Timed out (#104): the initialization fails. OnInitialize doesn't run, and the
+                // land is torn down; its waiters get the error from `ensureInitialized`.
+                behavior.logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
+                    "error": .string(String(describing: error)),
+                ])
+                return initializeFail(behavior, &side, &outputs, error)
+            }
+            if LandKeeper<State>.initializeResolverFailureFailsLand(
+                error,
+                policy: behavior.definition.lifetimeHandlers.onInitializeResolverFailure,
+                shuttingDown: side.isDraining || Task.isCancelled
+            ) {
+                // A resolver threw, with `.failLand` (#238): the same as a timeout.
+                ResolverDeadline.metrics.noteInitFailed()
+                behavior.logger.error("❌ OnInitialize resolvers failed: the land is torn down", metadata: [
+                    "error": .string(String(describing: error)),
+                ])
+                return initializeFail(behavior, &side, &outputs, error)
+            }
+            // `.continue`, or cancelled by the land's shutdown: OnInitialize runs without the
+            // group's outputs.
+            behavior.logger.error("❌ OnInitialize resolvers failed", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+        }
+        return initializeApply(behavior, &side, &outputs, handler: resolving.handler, ctx: ctx, sequence: resolving.sequence)
+    }
+
+    /// OnInitialize's turn body; then its record, if the land records.
+    private mutating func initializeApply(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        handler: InitializeHandler<State>,
+        ctx: LandContext,
+        sequence taken: Int64
+    ) -> InitializeRequest {
+        let output: InitializeTurnOutput
+        switch initializeTurnBody(behavior, &side, &outputs, handler: handler, ctx: ctx, sequence: taken) {
+        case let .failure(error):
+            // A refusal fails the initialization, as a resolver failure with `.failLand` does:
+            // nothing was written, `validate` emitted nothing, and nothing is recorded.
+            behavior.logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+            return initializeFail(behavior, &side, &outputs, error)
+        case let .success(initialized):
+            output = initialized
+        }
+        guard behavior.reevaluationRecorder != nil else { return initializeFinish(behavior, &side, &outputs) }
+        let recorded = ReevaluationRecordedLifecycleEvent(
+            kind: LandKeeper<State>.LifecycleKind.initialize.rawValue,
+            sequence: taken,
+            tickId: 0,
+            playerID: nil,
+            clientID: nil,
+            sessionID: nil,
+            deviceID: nil,
+            isGuest: nil,
+            metadata: [:],
+            resolverOutputs: ctx.getAllResolverOutputs().recordedEntries,
+            resolvedAtTick: lastCommittedTickId
+        )
+        // Only a live keeper runs OnInitialize here, and its initialization goes through the
+        // turn (`routesThroughTurn` is `mode == .live`): the record is the turn's.
+        assert(behavior.routesThroughTurn)
+        // OnInitialize's server events belong to tick -1, which no frame's `serverEvents`
+        // records; the initialize record keeps them for verification.
+        return .submitRecord(ReevaluationTickRecord(
+            tickId: 0,
+            lifecycleEvents: [recorded],
+            syncMarkers: output.marker.map { [$0] } ?? [],
+            initialize: output.record
+        ))
+    }
+
+    /// I3: after the record's await.
+    fileprivate mutating func initializeRecorded(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> InitializeRequest {
+        initializeFinish(behavior, &side, &outputs)
+    }
+
+    /// Then the tick and sync loops, if configured. Not on a land that is ending: a refusal in
+    /// initialization's turn failed it, or a drain began during the record's await, and the
+    /// drain has stopped (or will not see) the loops.
+    fileprivate mutating func initializeFinish(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> InitializeRequest {
+        guard behavior.config.autoStartLoops, !side.isDraining else {
+            initializeDone(behavior, &side, &outputs, loopsConfigured: false)
+            return .done
+        }
+        return .startLoops
+    }
+
+    /// I4: the initialization is done. Runs after the driver configured the loops, so
+    /// `didInitialize` follows the loops, and it is set before the initialization's task ends,
+    /// so a waiter that resumes before the starter sees it (#934). `loopsConfigured`: whether
+    /// the tick loop is configured (`tickLoopConfiguredAt`, an actor field).
+    fileprivate mutating func initializeDone(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        loopsConfigured: Bool
+    ) {
+        let handlers = behavior.definition.lifetimeHandlers
+        if handlers.tickHandler != nil, handlers.tickInterval != nil {
+            assert(!behavior.config.autoStartLoops || side.isDraining || loopsConfigured, "didInitialize before the tick loop was configured")
+        }
+        didInitialize = true
+    }
+
+    /// The initialization failed: its failure is held as every caller gets it (#700 K1b-2), the
+    /// initialization is over, and the land's teardown is staged, to start once this turn's
+    /// segment ends, in a Task of its own (the drain's `forceShutdown` path would otherwise wait
+    /// for the initialization it is part of).
+    private mutating func initializeFail(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ error: any Error
+    ) -> InitializeRequest {
+        // Minting the ID writes the model. A plain assignment evaluates its right side first, so
+        // this split is a precaution, kept in the shape of the slot fill's (`fillActionSlot`).
+        let failure = recordFailure(&side, LandInitializationError(underlying: error))
+        initializationFailure = failure
+        checkActionTables(behavior, side, #function)
+        didInitialize = true
+        let keeperReference = side.keeperReference
+        outputs.stage { [weak keeperReference] in
+            guard let keeper = keeperReference?.keeper as? LandKeeper<State> else { return }
+            Task { await keeper.tearDownAfterFailedInitialization() }
+        }
+        return .done
     }
 
     /// Initialization's turn, from OnInitialize's step through its output step, on the model the
