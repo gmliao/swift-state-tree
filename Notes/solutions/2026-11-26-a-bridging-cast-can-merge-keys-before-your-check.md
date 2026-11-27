@@ -44,8 +44,16 @@ Before trusting the cast, check whether the base is an `NSDictionary` (`type(of:
 
 Review's second round found the type check itself behind a cast that unwraps: `as? [String: Any]` looks through `Optional` levels, `type(of:)` doesn't. An `NSDictionary?` in an outer map (`["x": opt as Any]`) reached the check as `Optional<NSDictionary>`, failed `is NSDictionary.Type`, and was written merged. The check now peels the `Optional` levels first (`NestingOptionalPayload`, as `SnapshotValue.unwrappingOptionals` does for #716). This is #479's class again: a `type(of:)` guard behind an `as?` cast that unwraps.
 
+**Limits.** The check covers what the cast can hand it.
+- On Darwin, an `AnyHashable`-keyed dictionary wrapping such an `NSDictionary` traps inside the cast itself (#927).
+- In swift-corelibs-foundation, an `NSMutableDictionary` stores its keys in a Swift dictionary whose `NSString` keys hash their UTF-16 literally but compare by `String ==`. Inserting the second spelling merges it, keeps both, or traps (`Duplicate keys of type 'NSObject'`), depending on the hash seed: a Linux mutant run trapped in about 1 process in 8.
+- The corelibs bridge of an outer `NSDictionary` or `NSArray` also converts its children eagerly.
+
+So the tests that build a two-spelling `NSDictionary` are compiled for Darwin only (`#if canImport(Darwin)`). A runtime probe of "does this platform keep both?" would itself do the insert that can trap.
+
 ## Prevention
 
 - A check on "what the value holds" must run before any conversion that can change it: a bridging cast, a `Dictionary(uniqueKeysWithValues:)`, a decode into a type with a weaker equality.
 - A guard on `type(of: x)` next to an `x as? T` sees a different value when the cast unwraps (`Optional`, and on Darwin bridging): unwrap first, then check the type of what the cast saw. Test the `Optional`-boxed shape.
+- A test fixture that relies on platform Foundation behavior must not probe it at runtime when the probe can trap: decide it at compile time, and say why in a comment.
 - When keys can come from Foundation (`JSONSerialization`, `NSDictionary`, `UserDefaults`, plist decoding), test with a Foundation container, not only with a Swift literal.

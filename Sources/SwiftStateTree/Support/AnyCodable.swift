@@ -96,6 +96,14 @@ extension AnyCodable {
     /// an outer map (`["x": opt as Any]`) reaches here as `base` still boxed in its `Optional`.
     /// So the type check reads the unwrapped value, not `base` itself (the class of #479: a
     /// `type(of:)` guard behind an `as?` cast that unwraps).
+    ///
+    /// Known limits, outside this check:
+    /// - On Darwin, a dictionary keyed by `AnyHashable` that wraps such an `NSDictionary` traps
+    ///   inside the cast itself, before this check runs (#927).
+    /// - swift-corelibs-foundation's `NSDictionary` doesn't reliably hold two such spellings: it
+    ///   may merge them on insert, keep both or trap. Its bridge of an outer `NSDictionary` or
+    ///   `NSArray` also converts the children eagerly, so a nested dictionary reaches this check
+    ///   already merged. The check is tested on Darwin only.
     static func keyMergedByBridging(_ base: Any, into bridged: [String: Any]) -> String? {
         var base = base
         while let optional = base as? any NestingOptionalPayload, let payload = optional.nestingPayload { base = payload }

@@ -77,14 +77,23 @@ private func generic<R>(_ body: () throws -> R) rethrows -> R {
     try CanonicalMessagePack.$anyCodableGenericForTesting.withValue(true) { try body() }
 }
 
-/// Whether this platform's `NSMutableDictionary` holds two spellings of one key as two
-/// entries. Darwin's compares its `NSString` keys literally; swift-corelibs-foundation's may
-/// equate them by `String ==`, and then there is no merge for the cast to hide.
+// Whether the platform's Foundation keeps two spellings of one key as two entries, decided at
+// compile time. Only Darwin's `NSDictionary` compares its `NSString` keys literally, so only there
+// does the bridging cast have a merge to hide. Elsewhere the probe itself must not run: in
+// swift-corelibs-foundation an `NSMutableDictionary` stores its keys in a Swift dictionary whose
+// `NSString` keys hash their UTF-16 literally but compare by `String ==`, so inserting the second
+// spelling merges it, keeps both, or traps ("Duplicate keys of type 'NSObject'"), depending on the
+// process's hash seed (a Linux mutant run trapped in about 1 process in 8). That makes the platform
+// check unavoidable here, and a runtime probe can't stand in for it.
+#if canImport(Darwin)
+/// Darwin's `NSMutableDictionary` holds both spellings as two entries.
 private let nsDictionaryKeepsBothSpellings: Bool = twoSpellingDictionary().count == 2
-
-/// Whether `JSONSerialization` gives an `NSDictionary` with both spellings as two entries.
-/// swift-corelibs-foundation's parses into a Swift dictionary, which has already merged them.
+/// Darwin's `JSONSerialization` gives an `NSDictionary` with both spellings as two entries.
 private let jsonSerializationKeepsBothSpellings: Bool = ((try? jsonObjectWithTwoSpellings()) as? NSDictionary)?.count == 2
+#else
+private let nsDictionaryKeepsBothSpellings = false
+private let jsonSerializationKeepsBothSpellings = false
+#endif
 
 private func twoSpellingDictionary() -> NSMutableDictionary {
     let dictionary = NSMutableDictionary()
@@ -402,7 +411,7 @@ struct CanonicalAnyCodablePathTests {
     }
 
     @Test("A bridged NSDictionary holding two spellings of one key is refused on both paths, not merged by the cast (#805)",
-          .enabled(if: nsDictionaryKeepsBothSpellings, "this platform's NSDictionary merges the two spellings on insert"))
+          .enabled(if: nsDictionaryKeepsBothSpellings, "only Darwin's NSDictionary keeps both spellings; elsewhere building one can trap"))
     func bridgedDictionaryWithTwoSpellings() throws {
         // `NSDictionary` compares its keys literally, so it holds both spellings; the bridging
         // cast to `[String: Any]` would keep one value.
@@ -422,7 +431,7 @@ struct CanonicalAnyCodablePathTests {
     }
 
     @Test("A JSONSerialization object holding two spellings of one key is refused on both paths (#805)",
-          .enabled(if: jsonSerializationKeepsBothSpellings, "this platform's JSONSerialization merges the two spellings"))
+          .enabled(if: jsonSerializationKeepsBothSpellings, "only Darwin's JSONSerialization keeps both spellings"))
     func jsonSerializationObjectWithTwoSpellings() throws {
         let object = try jsonObjectWithTwoSpellings()
         try expectRefusedOnBothPaths([("JSONSerialization", AnyCodable(object)), ("in a Swift map", AnyCodable(["outer": object]))])
