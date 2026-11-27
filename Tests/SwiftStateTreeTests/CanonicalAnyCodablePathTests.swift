@@ -77,6 +77,49 @@ private func generic<R>(_ body: () throws -> R) rethrows -> R {
     try CanonicalMessagePack.$anyCodableGenericForTesting.withValue(true) { try body() }
 }
 
+// Whether the platform's Foundation keeps two spellings of one key as two entries, decided at
+// compile time. Only Darwin's `NSDictionary` compares its `NSString` keys literally, so only there
+// does the bridging cast have a merge to hide. Elsewhere the probe itself must not run: in
+// swift-corelibs-foundation an `NSMutableDictionary` stores its keys in a Swift dictionary whose
+// `NSString` keys hash their UTF-16 literally but compare by `String ==`, so inserting the second
+// spelling merges it, keeps both, or traps ("Duplicate keys of type 'NSObject'"), depending on the
+// process's hash seed (a Linux mutant run trapped in about 1 process in 8). That makes the platform
+// check unavoidable here, and a runtime probe can't stand in for it.
+#if canImport(Darwin)
+/// Darwin's `NSMutableDictionary` holds both spellings as two entries.
+private let nsDictionaryKeepsBothSpellings: Bool = twoSpellingDictionary().count == 2
+/// Darwin's `JSONSerialization` gives an `NSDictionary` with both spellings as two entries.
+private let jsonSerializationKeepsBothSpellings: Bool = ((try? jsonObjectWithTwoSpellings()) as? NSDictionary)?.count == 2
+#else
+private let nsDictionaryKeepsBothSpellings = false
+private let jsonSerializationKeepsBothSpellings = false
+#endif
+
+private func twoSpellingDictionary() -> NSMutableDictionary {
+    let dictionary = NSMutableDictionary()
+    dictionary["e\u{301}"] = 1
+    dictionary["\u{E9}"] = 2
+    return dictionary
+}
+
+private func jsonObjectWithTwoSpellings() throws -> Any {
+    try JSONSerialization.jsonObject(with: Data("{\"e\u{301}\": 1, \"\u{E9}\": 2}".utf8))
+}
+
+/// The UTF-8 of the key a `duplicateKey` refusal names, or nil for no refusal or another error.
+/// The error's `==` and its message compare the key as a `String`, which equates the two
+/// spellings, so the reported spelling is pinned by its bytes.
+private func refusedKeyBytes(_ body: () throws -> Void) -> [UInt8]? {
+    do {
+        try body()
+        return nil
+    } catch CanonicalMessagePackError.duplicateKey(let key) {
+        return Array(key.utf8)
+    } catch {
+        return nil
+    }
+}
+
 /// What an encode or decode gave: the bytes or value, or the error's type and text.
 private enum Outcome<Value>: CustomStringConvertible {
     case value(Value)
@@ -119,7 +162,7 @@ private struct Point: Codable, Equatable {
     let label: String
 }
 
-/// Two keys that `String` equates (NFC and NFD "é") but the format keeps apart.
+/// Two keys that `String` equates (NFC and NFD "é"), distinct in bytes: the format refuses the map (#805).
 private struct TwoSpellings: Encodable {
     struct Key: CodingKey {
         let stringValue: String
@@ -245,7 +288,7 @@ struct CanonicalAnyCodablePathTests {
             ("nested", ["list": [1, "two", ["three": 3.0]] as [Any], "empty": [Any](), "none": [String: Any]()] as [String: Any]),
             ("an optional inside an array", [Optional<Int>.none as Any, 1]),
             ("Int-keyed dictionary, through Encodable", [1: "one", 2: "two"]),
-            ("two spellings of one key", TwoSpellings()),
+            ("error: two spellings of one key", TwoSpellings()),
             ("error: NSNull", nsNull),
             ("error: NSNull in an array", [1, nsNull]),
             ("error: Set", set),
@@ -300,9 +343,9 @@ struct CanonicalAnyCodablePathTests {
 
     /// Canonical bytes to decode as `AnyCodable`, including values its `init(from:)` refuses.
     static func decodeFixtures() throws -> [(String, [UInt8])] {
-        // The two spellings of one key decode to whichever value each map's iteration order
-        // gives last, so two decodes needn't agree: `twoSpellingsOfOneKey` covers that map.
-        var fixtures = try encodeFixtures().filter { $0.0 != "two spellings of one key" }.compactMap { name, base -> (String, [UInt8])? in
+        // The two spellings of one key are refused when written, so there are no bytes to decode:
+        // `twoSpellingsOfOneKey` reads such a map from bytes written by hand.
+        var fixtures = try encodeFixtures().filter { $0.0 != "error: two spellings of one key" }.compactMap { name, base -> (String, [UInt8])? in
             guard let bytes = onLargeThread({ try? CanonicalMessagePack.encode(AnyCodable(base)) }) else { return nil }
             return (name, bytes)
         }
@@ -341,19 +384,67 @@ struct CanonicalAnyCodablePathTests {
         #expect(results.contains { $0.refused })
     }
 
-    @Test("A map with two spellings of one key decodes to one entry holding one of the two values, on both paths")
+    @Test("Two spellings of one key are refused on both paths, written and read (#805)")
     func twoSpellingsOfOneKey() throws {
-        // `Dictionary.init(from:)` keeps whichever spelling the map yields last, and a map's
-        // iteration order differs between dictionaries: neither path determines which.
-        let bytes = try CanonicalMessagePack.encode(TwoSpellings())
-        for base in [
-            try CanonicalMessagePack.decode(AnyCodable.self, from: bytes).base,
-            try generic { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes).base },
-        ] {
-            let map = try #require(base as? [String: Any])
-            #expect(map.count == 1)
-            #expect([1, 2].contains(map["\u{E9}"] as? Int ?? 0))
+        let later = Array("\u{E9}".utf8)
+        // Written: both paths end in the writer, which refuses the pair as a duplicate key.
+        #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(AnyCodable(TwoSpellings())) } == later)
+        #expect(refusedKeyBytes { _ = try generic { try CanonicalMessagePack.encode(AnyCodable(TwoSpellings())) } } == later)
+        // Read: a map holding both, by hand ("e"+U+0301 then U+00E9, in byte order).
+        let bytes: [UInt8] = [0x82, 0xa3, 0x65, 0xcc, 0x81, 0x02, 0xa2, 0xc3, 0xa9, 0x01]
+        #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) } == later)
+        #expect(refusedKeyBytes { _ = try generic { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) } } == later)
+    }
+
+    /// Checks that every value is refused on both paths, the spelling later in byte order
+    /// reported, and that `JSONEncoder` still writes the cast's one-entry map: only the canonical
+    /// encoder refuses.
+    private func expectRefusedOnBothPaths(_ values: [(String, AnyCodable)], sourceLocation: SourceLocation = #_sourceLocation) throws {
+        let later = Array("\u{E9}".utf8)
+        for (name, value) in values {
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(value) } == later, "direct: \(name)", sourceLocation: sourceLocation)
+            #expect(refusedKeyBytes { _ = try generic { try CanonicalMessagePack.encode(value) } } == later, "generic: \(name)", sourceLocation: sourceLocation)
         }
+        let json = try JSONEncoder().encode(values[0].1)
+        let decoded = try #require(try JSONSerialization.jsonObject(with: json) as? NSDictionary, sourceLocation: sourceLocation)
+        #expect(decoded.count == 1, "JSONEncoder: \(String(decoding: json, as: UTF8.self))", sourceLocation: sourceLocation)
+    }
+
+    @Test("A bridged NSDictionary holding two spellings of one key is refused on both paths, not merged by the cast (#805)",
+          .enabled(if: nsDictionaryKeepsBothSpellings, "only Darwin's NSDictionary keeps both spellings; elsewhere building one can trap"))
+    func bridgedDictionaryWithTwoSpellings() throws {
+        // `NSDictionary` compares its keys literally, so it holds both spellings; the bridging
+        // cast to `[String: Any]` would keep one value.
+        let bridged = twoSpellingDictionary()
+        // An `Optional` around it: the cast unwraps it, so the check must too.
+        let optional: NSDictionary? = bridged
+        let inDictionary = NSMutableDictionary()
+        inDictionary["outer"] = bridged
+        try expectRefusedOnBothPaths([
+            ("NSDictionary", AnyCodable(bridged)),
+            ("in a Swift map", AnyCodable(["outer": bridged])),
+            ("Optional", AnyCodable(optional as Any)),
+            ("Optional in a Swift map", AnyCodable(["x": optional as Any])),
+            ("in an NSDictionary", AnyCodable(inDictionary)),
+            ("in an NSArray", AnyCodable(NSArray(array: [bridged]))),
+        ])
+    }
+
+    @Test("A JSONSerialization object holding two spellings of one key is refused on both paths (#805)",
+          .enabled(if: jsonSerializationKeepsBothSpellings, "only Darwin's JSONSerialization keeps both spellings"))
+    func jsonSerializationObjectWithTwoSpellings() throws {
+        let object = try jsonObjectWithTwoSpellings()
+        try expectRefusedOnBothPaths([("JSONSerialization", AnyCodable(object)), ("in a Swift map", AnyCodable(["outer": object]))])
+    }
+
+    @Test("A bridged NSDictionary with distinct keys encodes as its Swift copy does (#805)")
+    func bridgedDictionaryWithDistinctKeys() throws {
+        let distinct = NSMutableDictionary()
+        distinct["\u{E9}"] = 1
+        distinct["\u{E8}"] = 2
+        let expected = try CanonicalMessagePack.encode(["\u{E9}": 1, "\u{E8}": 2])
+        #expect(try CanonicalMessagePack.encode(AnyCodable(distinct)) == expected)
+        #expect(try generic { try CanonicalMessagePack.encode(AnyCodable(distinct)) } == expected)
     }
 
     @Test("An AnyCodable field inside a typed value decodes the same, and its error keeps the field's path")
@@ -464,11 +555,26 @@ struct CanonicalAnyCodablePathTests {
     /// (the encoder, the tree's finish and the writer; the reader and the decoder), against fixed
     /// budgets, so a regression fails here instead of overflowing a pool thread.
     ///
-    /// Measured on macOS, Swift 6.4, debug, `maxDepth` (128) nested maps:
-    /// - the generic `AnyCodable` paths: encode 601 KB, decode 551 KB, each more than a whole
+    /// Measured on macOS, Swift 6.4, debug, `maxDepth` (128) nested maps (2026-11-26):
+    /// - the generic `AnyCodable` paths: encode 652 KB, decode 584 KB, each more than a whole
     ///   544 KiB Darwin pool thread;
-    /// - the direct paths: encode 194 KB (about 1.5 KB per level), decode 285 KB, most of it the
-    ///   reader (about 2.2 KB per level), which both paths share.
+    /// - the direct paths: encode 194 KB (about 1.5 KB per level), decode 322 KB, most of it the
+    ///   reader (about 2.5 KB per level), which both paths share. The equivalent-key check
+    ///   (#805) added 6 KB to the decode (316 KB before it); it runs out of line so that the
+    ///   recursive frames don't hold its locals.
+    /// On Linux (x86_64, Swift 6.4.3, debug) the decode takes 295 KB (287 KB before #805): the
+    /// decode budget's margin is 32.5 KB there and 5.8 KB on macOS debug, so macOS debug is the
+    /// binding platform.
+    /// The chain is measured twice: with one ASCII key per map, and with two distinct non-ASCII
+    /// keys in the deepest map, so the equivalent-key check's own frame (its `Set` and sort)
+    /// lands once at the bottom, where the reach peaks.
+    ///
+    /// When a change crosses a budget, a red here is a decision, not a number to bump:
+    /// 1. measure the release build too;
+    /// 2. move the new work out of the recursive frame first (an `@inline(never)` helper the
+    ///    frame only calls);
+    /// 3. raise a budget only when it is re-derived from the smallest stack the codec runs on.
+    ///
     /// Budgets: encode 256 KiB, decode 320 KiB, leaving at least 224 KiB of a 544 KiB thread to the
     /// frames above. Release builds take far less.
     /// The same chain with an `AnyCodable` at every level, as a tree built from `AnyCodable`
@@ -481,7 +587,7 @@ struct CanonicalAnyCodablePathTests {
 
     @Test("At the depth limit, a whole encode and decode stay within fixed stack budgets")
     func stackBudgetAtTheLimit() throws {
-        struct Reach { var encode = 0, decode = 0, genericEncode = 0, genericDecode = 0, wrappedEncode = 0 }
+        struct Reach { var encode = 0, decode = 0, genericEncode = 0, genericDecode = 0, wrappedEncode = 0, nonASCIIEncode = 0, nonASCIIDecode = 0 }
         let reach = try onLargeThread { () -> Result<Reach, Error> in
             Result {
                 let tree = AnyCodable(mapChain(CanonicalMessagePack.maxDepth))
@@ -495,13 +601,20 @@ struct CanonicalAnyCodablePathTests {
                     try generic { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) }
                 }
                 reach.wrappedEncode = try StackReach.measure { _ = try CanonicalMessagePack.encode(wrapped) }
+                // The deepest map holds two distinct non-ASCII keys: the check runs its full path there.
+                let nonASCII = AnyCodable(mapChain(CanonicalMessagePack.maxDepth - 1, leaf: ["\u{E9}": 1, "\u{E8}": 2] as [String: Any]))
+                var nonASCIIBytes: [UInt8] = []
+                reach.nonASCIIEncode = try StackReach.measure { nonASCIIBytes = try CanonicalMessagePack.encode(nonASCII) }
+                reach.nonASCIIDecode = try StackReach.measure { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: nonASCIIBytes) }
                 return reach
             }
         }.get()
-        print("CanonicalAnyCodablePathTests: \(CanonicalMessagePack.maxDepth) levels: encode \(reach.encode) B (generic \(reach.genericEncode) B, AnyCodable at every level \(reach.wrappedEncode) B), decode \(reach.decode) B (generic \(reach.genericDecode) B)")
+        print("CanonicalAnyCodablePathTests: \(CanonicalMessagePack.maxDepth) levels: encode \(reach.encode) B (generic \(reach.genericEncode) B, AnyCodable at every level \(reach.wrappedEncode) B), decode \(reach.decode) B (generic \(reach.genericDecode) B); two non-ASCII keys at the bottom: encode \(reach.nonASCIIEncode) B, decode \(reach.nonASCIIDecode) B")
         #expect(reach.encode > 0 && reach.encode < 256 << 10, "encode reached \(reach.encode) bytes")
         #expect(reach.wrappedEncode > 0 && reach.wrappedEncode < 256 << 10, "AnyCodable-wrapped encode reached \(reach.wrappedEncode) bytes")
         #expect(reach.decode > 0 && reach.decode < 320 << 10, "decode reached \(reach.decode) bytes")
+        #expect(reach.nonASCIIEncode > 0 && reach.nonASCIIEncode < 256 << 10, "non-ASCII encode reached \(reach.nonASCIIEncode) bytes")
+        #expect(reach.nonASCIIDecode > 0 && reach.nonASCIIDecode < 320 << 10, "non-ASCII decode reached \(reach.nonASCIIDecode) bytes")
         // The direct paths take well under the generic ones, on any platform and build. A decode
         // reads the tree first, which both paths share.
         #expect(reach.encode * 2 < reach.genericEncode, "encode \(reach.encode) vs generic \(reach.genericEncode)")

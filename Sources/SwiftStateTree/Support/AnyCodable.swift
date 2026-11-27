@@ -63,6 +63,11 @@ public struct AnyCodable: Codable, @unchecked Sendable {
             let wrapped = value.map { AnyCodable($0) }
             try container.encode(wrapped)
         case let value as [String: Any]:
+            // Under the canonical encoder, a bridged dictionary whose keys the cast merged is
+            // refused, as the direct path refuses it (#805). Other encoders keep the cast's map.
+            if encoder.userInfo[.canonicalMessagePack] != nil, let merged = AnyCodable.keyMergedByBridging(base, into: value) {
+                throw CanonicalMessagePackError.duplicateKey(merged)
+            }
             let wrapped = value.mapValues { AnyCodable($0) }
             try container.encode(wrapped)
         case let value as any Encodable:
@@ -80,3 +85,37 @@ public struct AnyCodable: Codable, @unchecked Sendable {
     }
 }
 
+extension AnyCodable {
+    /// A key that the cast of `base` to `bridged` (`[String: Any]`) merged with another (#805), or
+    /// nil. An `NSDictionary` (from `JSONSerialization`, say) compares its `NSString` keys
+    /// literally, so it can hold an NFC and an NFD spelling as two entries; the bridging cast to a
+    /// Swift dictionary, whose keys compare by `String ==`, keeps one of them. A Swift dictionary
+    /// costs one cast and one type check.
+    ///
+    /// The cast that made `bridged` also looks through `Optional` levels: an `NSDictionary?` in
+    /// an outer map (`["x": opt as Any]`) reaches here as `base` still boxed in its `Optional`.
+    /// So the type check reads the unwrapped value, not `base` itself (the class of #479: a
+    /// `type(of:)` guard behind an `as?` cast that unwraps).
+    ///
+    /// Known limits, outside this check:
+    /// - On Darwin, a dictionary keyed by `AnyHashable` that wraps such an `NSDictionary` traps
+    ///   inside the cast itself, before this check runs (#927).
+    /// - swift-corelibs-foundation's `NSDictionary` doesn't reliably hold two such spellings: it
+    ///   may merge them on insert, keep both or trap. Its bridge of an outer `NSDictionary` or
+    ///   `NSArray` also converts the children eagerly, so a nested dictionary reaches this check
+    ///   already merged. The check is tested on Darwin only.
+    static func keyMergedByBridging(_ base: Any, into bridged: [String: Any]) -> String? {
+        var base = base
+        while let optional = base as? any NestingOptionalPayload, let payload = optional.nestingPayload { base = payload }
+        guard type(of: base) is NSDictionary.Type, let dictionary = base as? NSDictionary,
+              dictionary.count != bridged.count
+        else { return nil }
+        let keys = dictionary.allKeys.compactMap { ($0 as? String).map(CanonicalKey.init) }
+        return CanonicalKey.firstEquivalentDuplicate(in: keys)
+    }
+}
+
+extension CodingUserInfoKey {
+    /// Set by the canonical MessagePack encoders (`CanonicalMessagePack.encoderUserInfo`).
+    static let canonicalMessagePack = CodingUserInfoKey(rawValue: "SwiftStateTree.canonicalMessagePack")!
+}

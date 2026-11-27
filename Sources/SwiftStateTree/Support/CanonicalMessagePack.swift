@@ -6,8 +6,9 @@ import Foundation
 /// Rules (the record format's, see `Notes/plans/2026-11-07-streaming-record-format.md` § 2):
 /// - maps have string keys only, sorted by the keys' UTF-8 bytes, with no Unicode normalization;
 ///   a dictionary keyed by `Int` (or a `CodingKeyRepresentable` key) is written under the keys'
-///   string form; a key encoded twice in one container throws (keys are compared by their UTF-8
-///   bytes, so an NFC and an NFD spelling are two keys, as they are two keys on the wire);
+///   string form; a key encoded twice in one container throws. Keys are compared and written by
+///   their UTF-8 bytes, and a map holding two spellings that `String ==` equates (an NFC and an
+///   NFD spelling) throws as a duplicate key too (#805);
 /// - a dictionary with any other key type, and a `Set`, throw (their order isn't deterministic);
 /// - integers use the shortest form: unsigned forms for non-negative values, signed for negative;
 /// - floats are always float64, `Float` widened; NaN is the one quiet NaN `0x7ff8000000000000`;
@@ -26,7 +27,11 @@ import Foundation
 ///
 /// The decoder is strict: a value decodes only into a matching type (an integer doesn't decode
 /// into `Double`), with one widening rule: a float64 decodes into `Float` only when it converts
-/// back to the same `Double`. Duplicate map keys and trailing bytes are rejected.
+/// back to the same `Double`. Duplicate map keys and trailing bytes are rejected. Two keys of one
+/// map are duplicates when their bytes are equal, and also when Swift's `String ==` equates them
+/// (canonical equivalence: an NFC and an NFD spelling, or "K" and U+212A KELVIN SIGN): a Swift
+/// dictionary or a keyed container would keep only one of their values. The encoder refuses to
+/// write such a map too, at every depth (#805).
 public enum CanonicalMessagePack {
     /// The deepest nesting of arrays and maps the decoder reads, so input from a file can't
     /// overflow the stack; the encoder refuses deeper values too, so it never writes what the
@@ -36,6 +41,10 @@ public enum CanonicalMessagePack {
     /// direct paths for that reason: through its own `Codable`, 128 levels took more than a
     /// 544 KiB thread's stack in a debug build.
     public static let maxDepth = 128
+
+    /// What the canonical encoders' `userInfo` holds: a marker that `AnyCodable.encode(to:)` reads
+    /// to refuse a bridged dictionary's merged keys under this encoder only (#805).
+    static var encoderUserInfo: [CodingUserInfoKey: Any] { [.canonicalMessagePack: true] }
 
     /// Encodes `value` canonically.
     public static func encode<T: Encodable>(_ value: T) throws -> [UInt8] {
@@ -193,7 +202,8 @@ public enum CanonicalMessagePackError: Error, Equatable, CustomStringConvertible
 // MARK: - Value tree
 
 /// A map key, equal and hashed by its UTF-8 bytes (Swift `String` equality treats an NFC and an
-/// NFD spelling as one key; the format doesn't).
+/// NFD spelling as one key; the format doesn't). A map whose keys differ in bytes but not under
+/// `String ==` is refused on both sides (`firstEquivalentDuplicate(in:)`).
 struct CanonicalKey: Hashable {
     /// Compared and hashed by its UTF-8 bytes (not by `String`'s canonical equivalence), without
     /// copying them: a decoder looks up every field by a new key.
@@ -206,6 +216,42 @@ struct CanonicalKey: Hashable {
     }
 
     var utf8: [UInt8] { Array(string.utf8) }
+
+    /// Whether every byte is ASCII.
+    var isASCII: Bool { string.utf8.allSatisfy { $0 < 0x80 } }
+
+    /// The first key, in byte order, that `String ==` equates with a key before it (#805), or nil.
+    /// Such keys are distinct for the format but not for a Swift dictionary or a keyed container,
+    /// which would keep one of the two values, so the writer and the reader refuse the map as a
+    /// duplicate key. Equivalence comes from the standard library's Unicode data. Unicode's
+    /// normalization stability policy keeps the decompositions of assigned characters fixed, so a
+    /// map whose keys use only characters assigned in this toolchain's Unicode version stays
+    /// accepted by a later toolchain; a code point unassigned here can gain a combining class
+    /// later. Keys that are all ASCII skip the check: two ASCII strings are equal only when their
+    /// bytes are. When any key isn't ASCII, every key is checked, ASCII ones included ("K" and
+    /// U+212A). The keys are sorted only after a collision is found, so the key reported
+    /// doesn't depend on the insertion or wire order: for a pair, the spelling later in byte
+    /// order; for three spellings of one key, the second.
+    static func firstEquivalentDuplicate<Keys: Collection>(in keys: Keys) -> String? where Keys.Element == CanonicalKey {
+        guard keys.contains(where: { !$0.isASCII }) else { return nil }
+        var seen = Set<String>(minimumCapacity: keys.count)
+        guard keys.contains(where: { !seen.insert($0.string).inserted }) else { return nil }
+        seen.removeAll(keepingCapacity: true)
+        for key in keys.sorted(by: { $0.string.utf8.lexicographicallyPrecedes($1.string.utf8) }) where !seen.insert(key.string).inserted {
+            return key.string
+        }
+        return nil
+    }
+
+    /// Throws `duplicateKey` for the first equivalent duplicate among `keys`. Out of line, so the
+    /// recursive reader's and writer's frames hold none of the check's locals: the stack a value
+    /// at the depth limit takes stays within its budget (#802).
+    @inline(never)
+    static func refuseEquivalentDuplicates(in keys: Dictionary<CanonicalKey, CanonicalNode>.Keys) throws {
+        if let duplicate = firstEquivalentDuplicate(in: keys) {
+            throw CanonicalMessagePackError.duplicateKey(duplicate)
+        }
+    }
 
     static func == (lhs: CanonicalKey, rhs: CanonicalKey) -> Bool {
         var left = lhs.string
@@ -391,6 +437,8 @@ private enum AnyCodableShape {
     case array([Any])
     case map([String: Any])
     case encodable(any Encodable)
+    /// A bridged `NSDictionary` whose cast to `[String: Any]` merged two keys (#805): the key.
+    case mergedKey(String)
     /// The base that doesn't encode: the innermost one, as the generic path reports it.
     case invalid(Any)
 
@@ -420,7 +468,12 @@ private enum AnyCodableShape {
         case let value as Double: self = .node(.double(value))
         case let value as String: self = .node(.string(value))
         case let value as [Any]: self = .array(value)
-        case let value as [String: Any]: self = .map(value)
+        case let value as [String: Any]:
+            if let merged = AnyCodable.keyMergedByBridging(base, into: value) {
+                self = .mergedKey(merged)
+            } else {
+                self = .map(value)
+            }
         case let value as any Encodable: self = .encodable(value)
         default: self = .invalid(base)
         }
@@ -431,7 +484,7 @@ private struct CanonicalNodeEncoder: Encoder {
     let slot: CanonicalSlot
     let state: CanonicalEncodingState
     let codingPath: [CodingKey]
-    var userInfo: [CodingUserInfoKey: Any] { [:] }
+    var userInfo: [CodingUserInfoKey: Any] { CanonicalMessagePack.encoderUserInfo }
 
     /// Whether a value or a container at `codingPath` is within the depth bound. A non-throwing
     /// call (`nestedContainer`, `superEncoder`) past it records the error for the end of the
@@ -545,6 +598,8 @@ private struct CanonicalNodeEncoder: Encoder {
             }
         case .encodable(let value):
             try encode(value, into: slot, state: state, codingPath: codingPath)
+        case .mergedKey(let key):
+            throw CanonicalMessagePackError.duplicateKey(key)
         case .invalid(let invalid):
             throw EncodingError.invalidValue(invalid, EncodingError.Context(
                 codingPath: codingPath,
@@ -811,6 +866,8 @@ private struct CanonicalWriter {
         case .map(let entries):
             try enter()
             defer { depth -= 1 }
+            // Refused, not normalized: the reader refuses it the same way (#805).
+            try CanonicalKey.refuseEquivalentDuplicates(in: entries.keys)
             try writeHeader(count: entries.count, fix: 0x80, fixMax: 15, u8: nil, u16: 0xde, u32: 0xdf)
             let sorted = entries.map { (key: $0.key.utf8, value: $0.value) }
                 .sorted { $0.key.lexicographicallyPrecedes($1.key) }
@@ -1005,6 +1062,8 @@ private struct CanonicalReader {
                 throw CanonicalMessagePackError.duplicateKey(key)
             }
         }
+        // Distinct bytes, and distinct under `String ==` too (#805).
+        try CanonicalKey.refuseEquivalentDuplicates(in: entries.keys)
         return .map(entries)
     }
 }
@@ -1057,10 +1116,8 @@ private struct CanonicalNodeDecoder: Decoder {
     /// build; the reader has already bounded the node's depth. The recursive part holds
     /// containers only; scalars are matched in `anyCodableScalar`.
     ///
-    /// A map that holds two spellings of one key that `String` equates (NFC and NFD) gives a
-    /// dictionary with one of the two values, as `Dictionary.init(from:)` does: which one depends
-    /// on the map's iteration order, which differs between dictionaries, so neither path
-    /// determines it.
+    /// A map that holds two spellings of one key that `String` equates (NFC and NFD) never gets
+    /// here: the reader refuses it as a duplicate key (#805).
     static func anyCodableBase(_ node: CanonicalNode, integralFloats: Bool) -> Any? {
         #if DEBUG
         CanonicalMessagePack.stackProbeForTesting?()

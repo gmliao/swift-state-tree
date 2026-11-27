@@ -208,7 +208,7 @@ replay land 以有型別的方式顯示每個錄製的 server event（#521、#53
 - 帶小數秒的 `Date`：錄製檔只保留整秒，所以 replay 時往負無限大方向截斷；
 - 大於 `Int.max` 的無號整數：含有這種值的儲存錄製檔無法讀取（#628）；在 JSON 檢視中這個值是 `Double`，解碼會失敗；
 - JSON 檢視中的 `-0.0` 讀回為 `+0.0`（儲存的錄製檔會保留）；
-- 正規等價（同一段文字的 NFC 與 NFD 寫法）的 map key 在讀取錄製檔時會合併成一個 key。
+- 含有兩個正規等價 key（同一段文字的 NFC 與 NFD 寫法）的 map：錄製檔的 encoder 會把它當成重複 key 拒絕，含有這種 map 的錄製檔也無法讀取（#805）。
 
 無法解析的 tick 會讓 replay run 以 `ReevaluationReplayResolutionError` 失敗。錯誤會指出該 tick、event 的來源（錄製或 replay 送出）、序號與名稱，以及原因。以下情況的 tick 無法解析：名稱未註冊、payload 無法解碼，或錄製的 target 不是 live run 會寫出的形式（未知的 kind、player、client、session target 的 ID 不是剛好一個，或帶有 ID 的 `all` target；#641）的 server event、讀取錄製檔失敗、state snapshot 無法編碼、以及無法從 snapshot 重建 state。run 在 admin 狀態中變成 `failed`。之前的 tick 仍留在佇列中並會顯示；replay land 保持運作，之後不會再收到任何內容。
 

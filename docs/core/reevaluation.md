@@ -208,7 +208,7 @@ Inside the record's domain the re-emitted event encodes to the live frame's byte
 - a `Date` with a fractional second: the record keeps whole seconds, so it replays truncated toward negative infinity;
 - an unsigned value above `Int.max`: a saved record holding one can't be read (#628); on the JSON view the value is a `Double` and fails the decode;
 - `-0.0` on the JSON view reads back as `+0.0` (a saved record keeps it);
-- map keys that are canonically equivalent (an NFC and an NFD spelling of one text) collapse to one key when the record is read.
+- a map with two keys that are canonically equivalent (an NFC and an NFD spelling of one text): the record's encoder refuses it as a duplicate key, and a record that holds one can't be read (#805).
 
 A tick that doesn't resolve fails the replay run with `ReevaluationReplayResolutionError`. The error names the tick, the event's origin (recorded or replayed), its sequence and name, and the cause. These ticks don't resolve: a server event whose name isn't registered, whose payload doesn't decode, or whose recorded target isn't one a live run writes (an unknown kind, a player, client or session target without exactly one ID, or an `all` target with IDs; #641), a record read error, a state snapshot that doesn't encode, and a state that can't be rebuilt from it. The run reaches `failed` in the admin status. The ticks before it stay queued and are shown; the replay land stays up and is sent nothing after them.
 

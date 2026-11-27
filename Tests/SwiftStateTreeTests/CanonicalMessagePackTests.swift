@@ -368,38 +368,133 @@ func nestingDepthLimited() throws {
     }
 }
 
-private struct NFCAndNFD: Codable {
+/// A map of short keys and small values, written by hand: the encoder refuses some of these.
+private func mapBytes(_ entries: [(String, UInt8)]) -> [UInt8] {
+    var bytes: [UInt8] = [0x80 | UInt8(entries.count)]
+    for (key, value) in entries {
+        let utf8 = Array(key.utf8)
+        bytes.append(0xa0 | UInt8(utf8.count))
+        bytes += utf8
+        bytes.append(value)
+    }
+    return bytes
+}
+
+/// A key and another spelling `String ==` equates with it: NFC and NFD "é", and "K" with
+/// U+212A KELVIN SIGN, whose canonical decomposition is the ASCII letter.
+private let equivalentSpellings: [(String, String)] = [("e\u{301}", "\u{e9}"), ("K", "\u{212A}")]
+
+/// One container that writes both spellings.
+private struct TwoSpellingsBox: Codable {
     struct Key: CodingKey {
         let stringValue: String
         var intValue: Int? { nil }
         init(stringValue: String) { self.stringValue = stringValue }
         init?(intValue: Int) { nil }
     }
-    var nfc = 1
-    var nfd = 2
+    var first: String
+    var second: String
 
-    init() {}
+    init(_ first: String, _ second: String) {
+        self.first = first
+        self.second = second
+    }
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: Key.self)
-        nfc = try container.decode(Int.self, forKey: Key(stringValue: "\u{e9}"))
-        nfd = try container.decode(Int.self, forKey: Key(stringValue: "e\u{301}"))
+        _ = try decoder.container(keyedBy: Key.self)
+        first = ""
+        second = ""
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: Key.self)
-        try container.encode(nfc, forKey: Key(stringValue: "\u{e9}"))
-        try container.encode(nfd, forKey: Key(stringValue: "e\u{301}"))
+        try container.encode(1, forKey: Key(stringValue: first))
+        try container.encode(2, forKey: Key(stringValue: second))
     }
 }
 
-@Test("An NFC and an NFD spelling in one container are two keys, by their bytes")
-func nfcAndNfdInOneContainer() throws {
-    // "e" + U+0301 (65 cc 81) sorts before U+00E9 (c3 a9)
-    let bytes = try CanonicalMessagePack.encode(NFCAndNFD())
-    #expect(hex(bytes) == "82" + "a365cc81" + "02" + "a2c3a9" + "01")
-    let decoded = try CanonicalMessagePack.decode(NFCAndNFD.self, from: bytes)
-    #expect(decoded.nfc == 1 && decoded.nfd == 2)
+/// The UTF-8 of the key a `duplicateKey` refusal names, or nil for no refusal or another error.
+/// The error's `==` and its message compare the key as a `String`, which equates the two
+/// spellings, so the reported spelling is pinned by its bytes.
+private func refusedKeyBytes(_ body: () throws -> Void) -> [UInt8]? {
+    do {
+        try body()
+        return nil
+    } catch CanonicalMessagePackError.duplicateKey(let key) {
+        return Array(key.utf8)
+    } catch {
+        return nil
+    }
+}
+
+@Test("Two spellings of one key in one container are refused when written, as a duplicate key (#805)")
+func equivalentKeysRefusedOnEncode() {
+    #expect("\u{e9}" == "e\u{301}" && "K" == "\u{212A}", "String equality is canonical equivalence")
+    for (first, second) in equivalentSpellings {
+        // The spelling later in byte order is reported, in either insertion order.
+        let later = Array(second.utf8)
+        for box in [TwoSpellingsBox(first, second), TwoSpellingsBox(second, first)] {
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(box) } == later)
+            // At every depth: a map in a map, two levels down, and maps in arrays, the duplicate
+            // in a later element too. A check of the top-level map only would miss these.
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(["outer": box]) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(["a": ["b": box]]) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode([TwoSpellingsBox("x", "y"), box]) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(["list": [box]]) } == later)
+        }
+    }
+}
+
+@Test("A map holding two spellings of one key is refused when read, as a duplicate key (#805)")
+func equivalentKeysRefusedOnDecode() {
+    for (first, second) in equivalentSpellings {
+        let later = Array(second.utf8)
+        // In byte order, as the encoder would write them ("e"+U+0301 before U+00E9, "K" before
+        // U+212A), and reversed: the later spelling in byte order is reported either way.
+        for bytes in [mapBytes([(first, 1), (second, 2)]), mapBytes([(second, 2), (first, 1)])] {
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode([String: Int].self, from: bytes) } == later)
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(TwoSpellingsBox.self, from: bytes) } == later)
+            // At every depth: one and two maps down ("o", then "p"), in an array behind an empty
+            // map, and in an array inside a map.
+            let nestings: [[UInt8]] = [
+                [0x81, 0xa1, 0x6f] + bytes,
+                [0x81, 0xa1, 0x6f, 0x81, 0xa1, 0x70] + bytes,
+                [0x92, 0x80] + bytes,
+                [0x81, 0xa1, 0x6f, 0x91] + bytes,
+            ]
+            for nested in nestings {
+                #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: nested) } == later, "\(nested)")
+            }
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode([[String: Int]].self, from: [0x92, 0x80] + bytes) } == later)
+        }
+    }
+}
+
+@Test("With three spellings of one key, the second in byte order is reported, in every order (#805)")
+func threeSpellingsReportTheSecond() {
+    // "A"+U+030A, U+00C5 and U+212B ANGSTROM SIGN are one key under String ==; in byte order
+    // (0x41…, 0xC3 0x85, 0xE2 0x84 0xAB) the second is U+00C5.
+    let spellings = ["A\u{30A}", "\u{C5}", "\u{212B}"]
+    #expect(spellings[0] == spellings[1] && spellings[1] == spellings[2])
+    let second = Array("\u{C5}".utf8)
+    let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+    for order in orders {
+        let keys = order.map { CanonicalKey(spellings[$0]) }
+        #expect(CanonicalKey.firstEquivalentDuplicate(in: keys).map { Array($0.utf8) } == second, "\(order)")
+        let bytes = mapBytes(order.map { (spellings[$0], UInt8($0)) })
+        #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) } == second, "\(order)")
+    }
+}
+
+@Test("Keys that differ under String == stay keys, non-ASCII ones and NFD ones included")
+func distinctNonASCIIKeysRoundTrip() throws {
+    // "é" (NFC), "è", an NFD key with no other spelling beside it, and ASCII keys with them.
+    let value: [String: Int] = ["\u{e9}": 1, "\u{e8}": 2, "e\u{301}x": 3, "K": 4, "k": 5]
+    let bytes = try CanonicalMessagePack.encode(value)
+    #expect(try CanonicalMessagePack.decode([String: Int].self, from: bytes) == value)
+    let single = mapBytes([("e\u{301}", 1)])
+    #expect(try CanonicalMessagePack.decode([String: Int].self, from: single) == ["e\u{301}": 1])
 }
 
 // The buffer-move counter exists in debug builds only (`swift test`, CI); a release test build
