@@ -1836,7 +1836,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// frame, with the close behind it; returns true. One already in the keeper's join, or
     /// done, is left alone (false): the keeper's state already changed or is changing, its
     /// resolvers are bounded by their own deadline, and an in-turn join's flip waits for what is
-    /// left of the budget.
+    /// left of the budget. So is one whose keeper join returned (or threw) before the router saw
+    /// it (`attemptEnd.isKeeperJoinStarted`): the router's handler answers with its outcome.
     ///
     /// - Parameter connectionGeneration: The connection the router accepted for the session. The
     ///   session was never admitted, so the adapter has none recorded: the final frame and every
@@ -1847,7 +1848,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         attemptEnd: JoinAttemptEnd,
         connectionGeneration: UInt64? = nil
     ) -> Bool {
-        guard expectedAdmissions[sessionID] == nil,
+        guard !attemptEnd.isKeeperJoinStarted,
+              expectedAdmissions[sessionID] == nil,
               joiningSessions[sessionID] == nil,
               membershipCoordinator.playerID(for: sessionID) == nil
         else { return false }
@@ -2286,6 +2288,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return nil
         }
         if let joinAttempt { memberJoinAttempts[sessionID] = joinAttempt }
+        // In the segment of the checks above: the keeper's outcome answers the attempt from
+        // here, even after the expected admission below is removed (#860).
+        attemptEnd?.markKeeperJoinStarted()
 
         // Attempt to join (updates keeper.players). On the in-turn path the keeper admits the
         // session inside the join, in the segment of its state change (`admitJoiningSession`);
@@ -3473,6 +3478,12 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let registered = await webSocket.playerSessionsForTesting(joining.playerID).contains(sessionID)
         // Re-read after the await: the join may have registered meanwhile.
         return !registered && joiningSessions[sessionID]?.inTurn?.transportRegistered == false
+    }
+
+    /// Tests: whether the adapter still holds a join attempt's bookkeeping for the session: its
+    /// expected admission, and its member join attempt.
+    package func joinBookkeepingForTesting(_ sessionID: SessionID) -> (expectedAdmission: Bool, memberJoinAttempt: Bool) {
+        (expectedAdmissions[sessionID] != nil, memberJoinAttempts[sessionID] != nil)
     }
 
     /// Tests: an opaque token for the session's current membership ticket, nil when it has none.

@@ -136,11 +136,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     private struct RefusedFrame {
         let generation: UInt64?
 
-        /// `nil` when the join failed because the land is shutting down: the client is told to
-        /// retry, and that isn't its frame's doing.
+        /// `nil` when the join failed because the land is shutting down (the client is told to
+        /// retry) or because a newer join of the player superseded it (#860): neither is its
+        /// frame's doing.
         func unlessServerCaused(_ error: any Error) -> RefusedFrame? {
-            if case .landShuttingDown? = error as? JoinError { return nil }
-            return self
+            switch error as? JoinError {
+            case .landShuttingDown?, .superseded?: return nil
+            default: return self
+            }
         }
     }
 
@@ -171,8 +174,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         var expiring = false
         /// The error the join's handler would have answered with, had its admission not
         /// returned (no join, or a throw) while `expiring`: refused because the budget ran
-        /// out, denied, or failed. The budget's timeout answers it, either way.
-        var unanswered: (code: ErrorCode, message: String)?
+        /// out, denied, or failed. The budget's timeout answers it, either way, and as the
+        /// handler would: `superseded` with the 4017 close behind the frame (#860).
+        var unanswered: (code: ErrorCode, message: String, superseded: Bool)?
         /// Marked by the adapter when the budget's timeout ends the admission before it
         /// started, so the admission is refused when it runs (#242).
         var end = JoinAttemptEnd()
@@ -1114,8 +1118,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         switch admission {
         case .success(let joinResult?) where joinResult.completedInTurn:
             // JoinResponse and firstSync are sent in the flip.
-            // Admitted in time: the flip waiter has what is left of the budget (#104), so the
-            // router's timer stops here.
+            // Admitted in the keeper's turn, within the budget or after it ran out once the
+            // keeper's join had started (the timer then left the attempt here): the flip waiter
+            // has what is left of the budget, possibly none (#104), so the router's timer stops
+            // here.
             let admitted = AdmittedJoin(landID: landID, requestID: requestID, adapter: adapter)
             // The same mailbox the admission got: the adapter marks the flip on it (#867).
             var admittedAttempt = JoinAttempt(number: attempt, admitted: admitted, requestID: requestID)
@@ -1182,8 +1188,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             let (errorCode, errorMessage) = (error as? JoinError).map(Self.joinErrorResponse)
                 ?? (ErrorCode.joinDenied, "\(error)")
             // As for no join: the budget's timeout, waiting for the adapter, answers it.
-            if leaveAnswerToExpiry(sessionID, code: errorCode, message: errorMessage) {
+            let superseded: Bool
+            if case .superseded? = error as? JoinError { superseded = true } else { superseded = false }
+            if leaveAnswerToExpiry(sessionID, code: errorCode, message: errorMessage, superseded: superseded) {
                 logger.error("Join failed: session=\(sessionID.rawValue), error=\(error)")
+                return
+            }
+            if superseded {
+                await answerSupersededJoin(sessionID, requestID: requestID, code: errorCode, message: errorMessage, via: adapter)
                 return
             }
             endAttempt(sessionID)
@@ -1329,6 +1341,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             attemptEnd: current.end,
             connectionGeneration: sessionToConnectionGeneration[sessionID]
         )
+        await holds.at(.joinBudgetAdmissionAnswered)
         guard case .joining(var after) = sessionHandshakePhase[sessionID], after.number == attempt else {
             // Ended meanwhile (a disconnect): its own cleanup reached the adapter.
             if ended { noteJoinTimedOut(.admission, sessionID: sessionID, landID: landID) }
@@ -1340,6 +1353,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             guard let unanswered = after.unanswered else {
                 after.expiring = false
                 sessionHandshakePhase[sessionID] = .joining(after)
+                await holds.at(.joinBudgetLeftToHandler)
+                return
+            }
+            if unanswered.superseded {
+                await answerSupersededJoin(sessionID, requestID: after.requestID, code: unanswered.code, message: unanswered.message, via: adapter)
                 return
             }
             endAttempt(sessionID)
@@ -1355,11 +1373,38 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// When the session's attempt is `expiring`, records the error its handler would answer
     /// with and returns true: the budget's timeout answers it (`joinBudgetExpired`), so the
     /// client gets one answer. Called only in a segment that checked `isCurrent`.
-    private func leaveAnswerToExpiry(_ sessionID: SessionID, code: ErrorCode, message: String) -> Bool {
+    private func leaveAnswerToExpiry(_ sessionID: SessionID, code: ErrorCode, message: String, superseded: Bool = false) -> Bool {
         guard case .joining(var current) = sessionHandshakePhase[sessionID], current.expiring else { return false }
-        current.unanswered = (code, message)
+        current.unanswered = (code, message, superseded)
         sessionHandshakePhase[sessionID] = .joining(current)
         return true
+    }
+
+    /// A join superseded by a newer join of its player (#860): during its OnJoin resolvers, or at
+    /// its kick, by the fence (`JoinError.superseded`). It is answered by its handler or by the
+    /// budget's timer that the handler left the answer to: the error is the session's last
+    /// frame, with the supersede's 4017 close behind it, as on the flip-stage supersede (#861),
+    /// so the client doesn't rejoin into a kick loop. Called in a segment that checked the
+    /// attempt is current. The connection is read here, in that segment, so the frame and the
+    /// close can't reach a later connection under the same ID (#911); the session's close
+    /// decision is recorded in it too (#912), so every later frame is dropped until the close
+    /// is reported. Not counted against the refused-frame budget: the server caused it.
+    private func answerSupersededJoin(
+        _ sessionID: SessionID,
+        requestID: String,
+        code: ErrorCode,
+        message: String,
+        via adapter: TransportAdapter<State>
+    ) async {
+        let connectionGeneration = sessionToConnectionGeneration[sessionID]
+        endAttempt(sessionID)
+        refusedSessions.insert(sessionID)
+        if let errorData = joinErrorData(requestID: requestID, code: code, message: message) {
+            await adapter.sendFinalFrameAndClose(errorData, kind: .text, to: sessionID, generation: connectionGeneration, close: .superseded)
+        } else {
+            await transport.closeSession(sessionID, with: .superseded, generation: connectionGeneration)
+        }
+        logger.info("Join superseded by a newer join of the player: session=\(sessionID.rawValue)")
     }
 
     private func noteJoinTimedOut(_ phase: JoinTimeoutPhase, sessionID: SessionID, landID: LandID?) {
@@ -1663,6 +1708,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // The land started its destruction during this join, or its previous instance has
             // not finished destruction yet: a later join gets a fresh instance for the same ID.
             return (.joinDenied, "Land is shutting down, retry the join")
+        case .superseded:
+            // A newer join of the same player replaced this one, or a leave removed it, before
+            // its OnJoin applied; or a later join arrived while this one kicked the old session
+            // (the fence). The newer session is the player's.
+            return (.joinDenied, "Join superseded by a newer join of the player")
         }
     }
 
@@ -1809,6 +1859,14 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     case flipFailureHandled
     /// The join budget's timer fired, before it checks the attempt (#104).
     case joinBudgetExpired
+    /// The join budget's timer after the adapter answered whether the admission started, before
+    /// it re-checks the attempt (#860): the join's handler can leave its answer to the timer
+    /// meanwhile (`leaveAnswerToExpiry`).
+    case joinBudgetAdmissionAnswered
+    /// The join budget's timer after it left the attempt to the join's handler (`expiring` is
+    /// cleared, nothing was left to answer), as its last step (#860): from here only the
+    /// handler answers.
+    case joinBudgetLeftToHandler
     /// A join after its land was looked up or created, before the attempt binds the session
     /// (#97).
     case afterLand
