@@ -98,6 +98,10 @@ package struct KeeperTurnSide {
     var shutdownTurnWaiters: [CheckedContinuation<Void, Never>] = []
     /// The empty-land destroy timer's ticket (D15.1, D16), beside the job handles.
     var destroyTicket: DestroyTicket?
+    /// Tests (#700 K2-1's differential): the last ticket `replaceDestroyTicket` issued, kept
+    /// after a cancel clears the slot, so a test can see whether its staged start installed a
+    /// task and whether that task was cancelled.
+    var lastDestroyTicketForTesting: DestroyTicket?
     /// Each player's services (#700 K1b-4; moved here by the move, D10): `LandServices` holds
     /// references. Written in the same synchronous segment as every insert and removal of the
     /// model's `players`, keyed by the entry's generation, so a late writer never removes a newer
@@ -180,6 +184,7 @@ package struct KeeperTurnSide {
         destroyTicket?.cancel()
         let ticket = DestroyTicket()
         destroyTicket = ticket
+        lastDestroyTicketForTesting = ticket
         return ticket
     }
 

@@ -64,3 +64,33 @@ final class KeeperSideStore: @unchecked Sendable {
         return try body(&side)
     }
 }
+
+/// What #700 K2-1's differential compares from a model and its side: a copy of the model, the
+/// action tables' violations, and the side's per-player service generations.
+struct KeeperDifferentialRead<State: StateNodeProtocol>: Sendable {
+    let model: KeeperModel<State>
+    let violations: [String]
+    let serviceGenerations: [PlayerID: UInt64]
+    let coreWaitsLeft: Int
+    /// Whether the destroy slot holds a ticket, and the last issued ticket (tests only).
+    let holdsDestroyTicket: Bool
+    let lastDestroyTicket: DestroyTicket?
+    /// The drain flag's failure, when the land failed.
+    let failure: LandFailure?
+    /// The events still in the side's collector (a keeper's tick flushes its own), and the
+    /// lease's count of outputs that found nothing lent.
+    let collectedEventSequences: [Int64]
+    let unlentCount: Int
+
+    init(model: KeeperModel<State>, side: KeeperTurnSide) {
+        self.model = model
+        violations = model.actionTableViolations(side)
+        serviceGenerations = side.playerServices.mapValues(\.generation.rawValue)
+        coreWaitsLeft = side.coreInputReplies.waits.count + side.coreInputReplies.dropped.count
+        holdsDestroyTicket = side.destroyTicket != nil
+        lastDestroyTicket = side.lastDestroyTicketForTesting
+        failure = side.failure
+        collectedEventSequences = side.sharedCollector.emittedEvents.map(\.sequence)
+        unlentCount = side.sharedSequenceLease.unlentCount
+    }
+}

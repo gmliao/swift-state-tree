@@ -74,6 +74,9 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// behind `.land`.
     case inputDrainDue
     case drainFinished
+    /// The owner starts `.land` at initialization, which a step's outputs for it need (K2-1: the
+    /// test harness's start; K2-2: the core's initialization).
+    case startLand
 }
 
 /// Which inputs `handle` routes in K2-1, and where each of the rest is routed (Review,
@@ -83,7 +86,7 @@ enum KeeperInputRoutes {
     static let routed: Set<String> = [
         "tickDue", "syncDue", "recordTaken", "inputDrainDue",
         "join", "joinStepped", "leave", "leaveStepped",
-        "action", "clientEvent",
+        "action", "clientEvent", "startLand",
     ]
     static let deferred: [String: String] = [
         "freeze": "K2-2: the freeze barrier",
@@ -123,6 +126,7 @@ extension KeeperInput {
         case .recordTaken: "recordTaken"
         case .inputDrainDue: "inputDrainDue"
         case .drainFinished: "drainFinished"
+        case .startLand: "startLand"
         }
     }
 }
@@ -265,6 +269,8 @@ extension KeeperModel: TurnMachine {
             inputDrainStep(behavior, store, &turn, endsTickWork: endsTickWork)
         case .inputDrainDue:
             inputDrainStep(behavior, store, &turn, endsTickWork: false)
+        case .startLand:
+            _ = turn.start(.land)
         case let .action(envelope, who):
             let caller = turn.input
             actionStep(behavior, store, &turn, envelope, who, caller: caller)

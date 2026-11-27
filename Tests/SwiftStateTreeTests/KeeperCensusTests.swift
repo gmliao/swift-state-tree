@@ -145,6 +145,7 @@ enum KeeperCensus {
             "turnSide.sharedBoundRequester": .outside(.bindingToken),
             "turnSide.keeperReference": .replaced(by: "K2"),
             "turnSide.destroyTicket": .replaced(by: "K7"),
+            "turnSide.lastDestroyTicketForTesting": .testHook,
             "turnSide.replay": .container,
             "turnSide.lateStepOutputAssertsForTesting": .testHook,
             "turnSide.sharedLateStepOutputs": .outside(.stepScope),
@@ -293,6 +294,7 @@ extension KeeperCensus {
         "turnSide.shutdownTurnWaiters": ".shutdown's sendAndWait reply",
         "turnSide.pendingSyncTurnAfterTurn": "staged until K3's follow-up slot",
         "turnSide.destroyTicket": "a keyed core timer (.land)",
+        "turnSide.lastDestroyTicketForTesting": "goes with the slot: the core timer's own test read",
         "turnSide.playerServices": "LiveLandTurns' services table, written by outputs",
         "turnSide.attachedTransport": "the binding token on the inputs that need the port",
         "turnSide.sharedBoundRequester": "the binding token",
@@ -410,8 +412,8 @@ struct KeeperCensusTests {
     func inputRoutesSplitTheCases() {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
         #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).sorted())")
-        // `KeeperInput` has 20 cases (`routeName` is exhaustive): a new one goes in a list, and this count moves.
-        #expect(routed.count == 10 && deferred.count == 10, "routed \(routed.sorted()), deferred \(deferred.sorted())")
+        // `KeeperInput` has 21 cases (`routeName` is exhaustive): a new one goes in a list, and this count moves.
+        #expect(routed.count == 11 && deferred.count == 10, "routed \(routed.sorted()), deferred \(deferred.sorted())")
         #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
     }
 

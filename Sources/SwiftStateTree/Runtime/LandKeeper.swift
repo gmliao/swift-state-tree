@@ -2199,6 +2199,56 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func setActionTableAuditForTesting(_ enabled: Bool) { turnSide.actions.auditOn = enabled }
     package func actionTableViolationsForTesting() -> [String] { model.actionTableViolations(turnSide) }
 
+    /// Tests (#700 K2-1's differential): a test core's machine and behavior, from this keeper's
+    /// model and behavior, with a fresh side of the core's own boxed in a `KeeperSideStore`. A
+    /// live keeper with no transport and no recorder; the keeper isn't used after (its behavior's
+    /// references go with the twin). `transport` is attached to the twin's side only, with the
+    /// model's transport fields set as the keeper's `init` sets them; its port calls that need a
+    /// keeper find none. Waits for the initialization first: a waiter of the eager
+    /// initialization task returns before that task's starter sets `didInitialize` (#934).
+    func coreTwinForTesting(transport twinTransport: (any LandKeeperTransport)? = nil) async -> (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore) {
+        precondition(behavior.config.mode == .live, "coreTwinForTesting: a live keeper")
+        precondition(transport == nil, "coreTwinForTesting: the source keeper has no transport (attach one to the twin instead); land \(behavior.config.actualLandID ?? definition.id) has \(transport.map { String(describing: type(of: $0)) } ?? "-")")
+        precondition(behavior.reevaluationRecorder == nil, "coreTwinForTesting: the source keeper has no recorder (land \(behavior.definition.id))")
+        if let task = initializationTask { await task.value }
+        precondition(model.didInitialize || initializationTask != nil, "coreTwinForTesting: an initialized keeper")
+        precondition(model.initializationFailure == nil, "coreTwinForTesting: the initialization failed")
+        // A drain still scheduled would be copied as scheduled, and the core would never run one.
+        precondition(!model.inputDrainScheduled, "coreTwinForTesting: an input drain is still scheduled; wait for the keeper's work first")
+        var model = model
+        model.didInitialize = true
+        model.hasHeldTransport = twinTransport != nil
+        model.transportRecordsFolds = twinTransport?.recordsInTurnSyncFolds ?? false
+        var side = KeeperTurnSide(
+            submissions: ReevaluationSubmissionTracker(),
+            keeperReference: KeeperReference(),
+            drainHandle: KeeperDrainHandle(),
+            lateStepOutputs: LateStepOutputCounter(),
+            destroyHandlerOutputsDropped: LateStepOutputCounter(),
+            readOnlyHandlerOutputsDropped: LateStepOutputCounter(),
+            boundRequester: KeeperBoundRequester(),
+            abandonmentCounter: LandAbandonmentCounter(),
+            serverInputs: .unavailable,
+            collector: OutputCollector(),
+            sequenceLease: KeeperSequenceLease(),
+            drainFlag: KeeperDrainFlag(),
+            transportFailure: LandFailureMailbox(),
+            transport: twinTransport
+        )
+        // The players' services live on the side, beside the entries the model copy carries.
+        side.playerServices = turnSide.playerServices
+        let store = KeeperSideStore(side: side)
+        var twin = behavior
+        twin.sideStore = store
+        return (model, twin, store)
+    }
+
+    /// Tests (#700 K2-1's differential): this keeper's model, its action tables' violations, and
+    /// its side's per-player service generations.
+    func differentialReadForTesting() -> KeeperDifferentialRead<State> {
+        KeeperDifferentialRead(model: model, side: turnSide)
+    }
+
     /// Tests: puts a core's input-turn wait on this keeper's own side, where the audit reports it
     /// (#700 K2-1); its `checkActionTables` sites count it.
     package func putCoreInputWaitForTesting(sequence: Int64) {
