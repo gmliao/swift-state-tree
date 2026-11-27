@@ -13,6 +13,10 @@ actor BarrierMailActor: TurnActor {
         self.clock = clock
         let core = TurnCore(BarrierMailMachine(), queueLimit: 64, maxReleasesPerBatch: 16, clock: clock)
         core.onDiagnostic = { event in fixture.observe(event) }
+        core.onResumeForTesting = { [unowned core] id in
+            let (payload, last) = core.read { m in (m.callers.first { $0.value == id }?.key ?? -1, m.log.last ?? "") }
+            fixture.record("resume \(payload) after \(last)")
+        }
         self.core = core
         self.mailbox = core.mailbox
     }

@@ -67,7 +67,8 @@ public enum WaitOutcome<M: TurnMachine>: Sendable {
     case waiting
     /// Not registered. A cancelled caller that is also expired is `.refused(_, .cancelled)`.
     case refused(M.BarrierPayload, WaitRefusal)
-    /// Not registered: the budget was `<= .zero`.
+    /// Not registered: the budget was under one nanosecond (zero, negative, or a positive
+    /// fraction of a nanosecond).
     case expired(M.BarrierPayload)
 }
 
@@ -212,8 +213,8 @@ extension Turn {
         if core.isCancelled(caller) { return .refused(payload, .cancelled) }
         var timer: UInt64?
         if let timeout {
-            // Whole nanoseconds: a positive budget under one is expired, never a zero timer.
-            if timeout.turnNanoseconds <= 0 { return .expired(payload) }
+            // A budget under one nanosecond is expired, never a zero timer.
+            if timeout < .nanoseconds(1) { return .expired(payload) }
             let instant = TurnCore<M>.saturatingDeadline(core.segmentNow().nanoseconds, timeout)
             core.rt.nextBarrierTimer &+= 1
             let generation = core.rt.nextBarrierTimer
@@ -293,23 +294,23 @@ extension TurnCore {
     /// Tests: the next dispatch ordinal.
     package var nextOrdinalForTesting: UInt64 { nextOrdinal }
 
-    /// `now + budget` for a positive budget, clamped at `Int64.max` as an instant (not as a
-    /// budget first: a budget past `Int64`'s range still lands below it from a negative `now`).
+    /// `now + budget` for a budget of at least one nanosecond, in whole nanoseconds, clamped at
+    /// `Int64.max` as an instant: the sum is taken in `Int128`, so no budget traps or wraps, and
+    /// one past `Int64`'s range still lands below `Int64.max` from a negative `now`.
     @inlinable package static func saturatingDeadline(_ now: Int64, _ budget: Duration) -> Int64 {
-        let widest = Duration.nanoseconds(Int64.max)
-        if budget <= widest {
-            let (sum, overflow) = now.addingReportingOverflow(budget.turnNanoseconds)
-            return overflow ? .max : sum
-        }
-        if now >= 0 || budget - widest > widest { return .max }
-        let (sum, overflow) = (now &+ Int64.max).addingReportingOverflow((budget - widest).turnNanoseconds)
-        return overflow ? .max : sum
+        let sum = Int128(now) + budget.attoseconds / 1_000_000_000
+        return sum > Int128(Int64.max) ? .max : Int64(sum)
     }
 
     /// Whether `caller`'s `.cancelsCall` task has been cancelled (barrier cores only).
     @inlinable func isCancelled(_ caller: InputID) -> Bool {
         cancelledCallers?.contains(caller) == true
     }
+
+    /// Tests: whether `caller` still has its continuation (it hasn't been resumed).
+    package func hasWaiterForTesting(_ caller: InputID) -> Bool { waiters[caller] != nil }
+    /// Tests: the stale-entry count that decides compaction.
+    package var staleDeadlinesForTesting: Int { rt.staleDeadlines }
 
     /// Tests: the barrier waiters now, and the cancellation flags set now.
     package var barrierWaitersForTesting: Int { rt.barrierWaiters.count }

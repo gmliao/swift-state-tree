@@ -2,7 +2,8 @@ import SwiftStateTurns
 
 /// A barrier machine that takes mail (#953): a mail names a key, and its step releases the
 /// callers waiting on it through `MailTurn.release(where:)`. For the mailbox paths of the barrier:
-/// a release by mail, a cancellation's mailbox take, and the ordinals a barrier's entries take.
+/// a release by mail, a claim by mail, a cancellation's mailbox take, and the ordinals a barrier's
+/// entries take.
 @PlainData
 struct BarrierMailMachine: TurnMachine {
     enum Input: Sendable {
@@ -20,6 +21,7 @@ struct BarrierMailMachine: TurnMachine {
     typealias BarrierPayload = Int
 
     var log: [String] = []
+    var callers: [Int: InputID] = [:]
 
     init() {}
 
@@ -27,6 +29,7 @@ struct BarrierMailMachine: TurnMachine {
         switch input {
         case .wait(let key, let payload, let seconds):
             guard let caller = turn.input else { return }
+            callers[payload] = caller
             switch turn.wait(caller, on: key, holding: payload, timeout: seconds.map { .seconds($0) }) {
             case .waiting: log.append("waiting \(payload) on \(key)")
             case .refused(let held, let why):
@@ -40,6 +43,12 @@ struct BarrierMailMachine: TurnMachine {
     }
 
     mutating func handleMail(_ mail: String, _ turn: inout MailTurn<BarrierMailMachine>) {
+        // "claim N": replies to payload N's waiting caller directly, which claims it.
+        if mail.hasPrefix("claim "), let payload = Int(mail.dropFirst(6)), let caller = callers[payload] {
+            log.append("mail claims \(payload)")
+            turn.reply(to: caller, .success(payload * 10))
+            return
+        }
         log.append("mail \(mail): \(turn.waiterCount(on: mail)) waiting")
         for r in turn.release(where: { $0 == mail }) {
             log.append("released \(r.payload) by mail")

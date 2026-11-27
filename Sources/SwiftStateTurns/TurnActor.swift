@@ -299,7 +299,7 @@ extension TurnActor {
         if TurnCore<M>.usesMailbox {
             beginEntry()
             // The take's mail can answer or refuse the call first: then the cancellation is stale.
-            guard core.waiters[id] != nil else {
+            guard core.waiters[id] != nil, !barrierAnswerFixed(id) else {
                 core.onDiagnostic?(.staleCancellation)
                 if core.rt.dirty { runSegment() }
                 return
@@ -321,6 +321,7 @@ extension TurnActor {
         guard let waiter = core.waiters.removeValue(forKey: id) else { return }
         _ = core.rt.withdraw(caller: id)
         core.counters.cancelledCalls += 1
+        core.onResumeForTesting?(id)
         waiter.resume(throwing: CancellationError())
     }
 
@@ -941,6 +942,7 @@ extension TurnActor {
                 for (caller, result) in replies {
                     if TurnCore<M>.usesBarriers, claimForBarrier(caller, result) { continue }
                     if let waiter = core.waiters.removeValue(forKey: caller) {
+                        core.onResumeForTesting?(caller)
                         waiter.resume(with: result)
                     }
                 }
@@ -952,7 +954,10 @@ extension TurnActor {
                 swap(&released, &core.rt.released)
                 for (caller, result) in released {
                     core.rt.releasing.remove(caller)
-                    core.waiters.removeValue(forKey: caller)?.resume(with: result)
+                    if let waiter = core.waiters.removeValue(forKey: caller) {
+                        core.onResumeForTesting?(caller)
+                        waiter.resume(with: result)
+                    }
                 }
                 progressed = true
             }
@@ -1024,6 +1029,15 @@ extension TurnActor {
             }
             if !progressed { break }
         }
+    }
+
+    /// Whether `caller`'s answer is fixed and not yet published (a settling caller with an answer,
+    /// or one releasing): it is answered already, so a cancellation of it is stale.
+    @inlinable func barrierAnswerFixed(_ caller: InputID) -> Bool {
+        guard TurnCore<M>.usesBarriers else { return false }
+        let core = self.core
+        if !core.rt.settling.isEmpty, core.rt.settling[caller]?.answer != nil { return true }
+        return !core.rt.releasing.isEmpty && core.rt.releasing.contains(caller)
     }
 
     /// A published reply for a caller with barrier state. True: it is held, not resumed.

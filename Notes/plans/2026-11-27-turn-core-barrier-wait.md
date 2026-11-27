@@ -1,5 +1,13 @@
 # A barrier wait in SwiftStateTurns (#953)
 
+Revision 4 (2026-11-27). Answers Review's NOT GO on revision 3, which was on the tests only:
+- **Must-fix: observe on the driver.** The ordering tests now observe the order from the driver. `TurnCore.onResumeForTesting` fires at each resume site and records the payload and the machine's last log line, and the fixture's `flush` records into the same trace. Each case asserts the exact sequence (`flush [0]`, then `resume N after ended N …`) and the exact answer. With revision 2's order the resume comes first, or follows the wrong log line.
+- **Conditional, fixed in advance:** `turnNanoseconds` reads `Duration.attoseconds`, an `Int128`, instead of `components`, whose `Int64` seconds trap past `Int64.max` seconds. `saturatingDeadline` sums in `Int128`, and `wait`'s expiry is `timeout < .nanoseconds(1)`. `Turn.request` deadlines share the fix.
+- **Shoulds:**
+  - `mailClaimBeatsCancel`: a mail that claims at the hop's take. The hop now also treats a caller whose answer is fixed as stale (`barrierAnswerFixed`).
+  - `endAllLeavesNoStaleCount`.
+- **Nits:** the docs of `WaitOutcome.expired` and `TurnError.closed`.
+
 Revision 3 (2026-11-27). Answers Review's NOT GO on revision 2, whose two must-fixes broke the hook's own contract ("cleanup before the caller's answer leaves"):
 1. **The answer leaves after the hook's outputs.** `.withdrawn` and `.answered` resumed their caller before the drain flushed the hook's outputs. Now every caller whose wait ends without a release is *settling* from the end until its hook has stepped (§2.8). Its fixed answer (the withdraw's `CancellationError`, or the reply that claimed it) is then published in the drain's replies phase, after the outputs. Test: `withdrawAnswerAfterHookOutputs`, `answeredAfterHookOutputs`, `timeoutAfterHookOutputs`.
 2. **A settling caller counts as claimed.** After `endAll`, a reply from `handleAbandoned` or from an earlier `.ended` hook reached a caller whose `.ended` hook was still queued. Now the first reply published for a settling caller is held as its answer until its hook has stepped, and a later one is dropped. Test: `abandonReplyHeldUntilEndedHook`, `earlierHookReplyHeld`.

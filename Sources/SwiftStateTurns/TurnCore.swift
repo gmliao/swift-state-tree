@@ -320,6 +320,13 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline package var onEntryBoundaryForTesting: (() -> Void)?
+    /// Tests: called on the actor right before a published reply resumes its caller (the
+    /// drain's replies phase, a barrier caller's released answer, a plain withdraw), so a check
+    /// sees the order of resumes against flushes and steps from inside the segment. Observe-only.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onResumeForTesting: ((InputID) -> Void)?
     /// The next boundary's ordinal, counted over every step the core dispatches (inputs,
     /// releases, follow-ups, answers, completions, timers, abandonments) and every entry's own
     /// work (an admission, a completion, a deadline, a timer, a gate's return; plan §3.9); a mailbox

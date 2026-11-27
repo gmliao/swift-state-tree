@@ -15,8 +15,15 @@ actor BarrierActor: TurnActor {
         let clock = TestClock(fixture: fixture)
         self.fixture = fixture
         self.clock = clock
-        core = TurnCore(BarrierMachine(), queueLimit: 64, maxReleasesPerBatch: 16, clock: clock)
+        let core = TurnCore(BarrierMachine(), queueLimit: 64, maxReleasesPerBatch: 16, clock: clock)
         core.onDiagnostic = { event in fixture.observe(event) }
+        // Each resume, from inside the segment: which payload's caller, and the machine's last
+        // log line then (so a check sees whether its hook had stepped).
+        core.onResumeForTesting = { [unowned core] id in
+            let (payload, last) = core.read { m in (m.callers.first { $0.value == id }?.key ?? -1, m.log.last ?? "") }
+            fixture.record("resume \(payload) after \(last)")
+        }
+        self.core = core
     }
 
     @concurrent nonisolated func perform(_ effect: BarrierMachine.Effect) async -> BarrierMachine.Input? {
@@ -30,6 +37,7 @@ actor BarrierActor: TurnActor {
 
     func flush(_ outputs: consuming [Int]) {
         let outputs = Array(outputs)
+        fixture.record("flush \(outputs)")
         for value in outputs { fixture.openCounted("out \(value)") }
         if let task = cancelOnFlush {
             cancelOnFlush = nil
@@ -45,6 +53,7 @@ actor BarrierActor: TurnActor {
     var table: [Int] { [core.barrierWaitersForTesting, core.cancelledCallersForTesting] }
     /// The deadline heap's live entries.
     var liveDeadlines: Int { core.liveDeadlinesForTesting }
+    var staleDeadlines: Int { core.staleDeadlinesForTesting }
     /// The deadline heap's entries, live or stale, and the core's timer's starts and target.
     var heap: (entries: Int, sleeperStarts: Int, target: TurnInstant?) {
         (core.deadlineEntriesForTesting, core.sleeperStartsForTesting, core.sleeperTargetForTesting)
