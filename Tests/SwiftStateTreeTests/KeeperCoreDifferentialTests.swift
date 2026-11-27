@@ -1026,6 +1026,15 @@ private func jobEnvelope(_ action: CoreDiffJobAction) -> ActionEnvelope {
 }
 
 /// A job's outcome on either path, as text both can match.
+/// An intake's answer, exactly: `.pending` keeps its sequence (Review on #966).
+private func describeSubmission(_ result: Result<ActionSubmission, any Error>) -> String {
+    switch result {
+    case let .success(.pending(sequence)): "pending \(sequence)"
+    case let .success(.completed(outcome)): "completed \(describeJob(.success(outcome)))"
+    case let .failure(error): describeJob(.failure(error))
+    }
+}
+
 private func describeJob(_ result: Result<InputOutcome, any Error>) -> String {
     switch result {
     case let .success(.response(response)): "ack \((response as? CoreDiffAck)?.n ?? -1)"
@@ -2441,33 +2450,41 @@ extension KeeperCoreDifferentialTests {
         await pair.expectSame("after the cancelled held caller")
     }
 
-    /// The unordered case beside the ordered one above: the cancel and the resume race, and the
-    /// scheduler picks. Either order is correct; what the case pins is that each path ends in
-    /// one of the two, consistently: cancelled with no job, or answered pending with its job run
-    /// to its end, and nothing left waiting. The paths may pick differently in one run, so the
-    /// digests are compared only when they agree.
-    @Test("A held caller whose cancel races the resume ends either cancelled with no job or answered with its job run, on each path, with nothing left waiting (Review r4 on #948)", arguments: 0 ..< 8)
-    func parkedCallerCancelRacesResume(run: Int) async throws {
-        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "parked-cancel-race-\(run)")
+    /// The resume-first order, forced (Review on #966, MF1): the resume releases the held
+    /// intake, its job starts and is held at its resolver's gate, the caller is cancelled there,
+    /// then the gate opens. The cancel-first order is `parkedCallerCancelledBeforeResume`.
+    @Test("A held caller resumed first, then cancelled while its job is held at the resolver, is answered .pending with its job run, on both paths, compared once the core's input drain ended (Review on #966, MF1)")
+    func parkedCallerResumedThenCancelled() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "parked-resumed-cancelled")
         _ = await bothJoin(pair, "p1", "c1")
         let action = CoreDiffJobAction(n: 8, fails: false)
+        defer { CoreDiffJobGates.set(pair.landID, nil) }
         #expect(await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
         #expect(await coreFreeze(pair, 1, .seconds(5)) == true)
 
+        // The keeper.
+        let keeperGate = WatermarkGate()
+        defer { keeperGate.release() }
+        CoreDiffJobGates.set(pair.landID, keeperGate)
         let (keeperHeld, keeperProbe) = probeEvents("input-held-frozen")
         await pair.keeper.setInTurnProbeForTesting(keeperProbe)
         let keeperAct = Task {
-            describeJob(await Result { try await pair.keeper.submitAction(jobEnvelope(action), playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1")) }.map { _ in InputOutcome.none })
+            describeSubmission(await Result { try await pair.keeper.submitAction(jobEnvelope(action), playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1")) })
         }
         var keeperHolds = keeperHeld.makeAsyncIterator()
         _ = await keeperHolds.next()
         await pair.keeper.setInTurnProbeForTesting(nil)
-        let keeperCancel = Task { keeperAct.cancel() }
         await pair.keeper.debugResume(generation: 1)
-        await keeperCancel.value
+        guard await keeperGate.waitUntilEntered("the keeper's resolver") else { return }
+        keeperAct.cancel()
+        keeperGate.release()
         let keeperResult = await keeperAct.value
         await pair.keeper.waitForActionJobsForTesting()
 
+        // The core.
+        let coreGate = WatermarkGate()
+        defer { coreGate.release() }
+        CoreDiffJobGates.set(pair.landID, coreGate)
         let flag = ActionJobCallerCancellation()
         let (coreHeld, coreProbe) = probeEvents("input-held-frozen")
         await pair.harness.setProbe(coreProbe)
@@ -2479,7 +2496,7 @@ extension KeeperCoreDifferentialTests {
                     flag.set()
                 }
                 guard case let .action(result) = reply else { return "not an action reply" }
-                return describeJob(result.map { _ in InputOutcome.none })
+                return describeSubmission(result)
             } catch {
                 return "core: \(error)"
             }
@@ -2487,20 +2504,21 @@ extension KeeperCoreDifferentialTests {
         var coreHolds = coreHeld.makeAsyncIterator()
         _ = await coreHolds.next()
         await pair.harness.setProbe(nil)
-        let coreCancel = Task { coreAct.cancel() }
         await pair.harness.drive(.resume(generation: 1))
-        await coreCancel.value
+        guard await coreGate.waitUntilEntered("the core's resolver") else { return }
+        // From here the only input drain is the job's delivery: wait for its end, so the core
+        // is compared after `.recordTaken`, not mid-job.
+        var ends = await pair.harness.drainEnds().stream.makeAsyncIterator()
+        coreAct.cancel()
+        coreGate.release()
         let coreResult = await coreAct.value
-        if coreResult == "none" { await pair.harness.waitForInputs(named: "actionResolved", count: 1) }
+        _ = await ends.next()
+        await pair.harness.setProbe(nil)
 
-        #expect(["cancelled", "none"].contains(keeperResult), "keeper \(keeperResult)")
-        #expect(["cancelled", "none"].contains(coreResult), "core \(coreResult)")
-        let seen = await pair.harness.inputsSeen
-        #expect(seen.contains("actionResolved") == (coreResult == "none"), "a job ran on the core exactly when its caller was answered: \(coreResult), \(seen)")
+        #expect(keeperResult.hasPrefix("pending ") && coreResult == keeperResult, "keeper \(keeperResult), core \(coreResult)")
+        #expect(await pair.harness.inputsSeen.contains("actionResolved"), "the job ran on the core")
         #expect(await pair.harness.differentialRead().coreWaitsLeft == 0, "nothing left waiting on the core")
-        if keeperResult == coreResult {
-            await pair.expectSame("after the race (\(coreResult) on both)")
-        }
+        await pair.expectSame("after the resumed, then cancelled, caller")
     }
 
     /// The settle's cases (#948 round 2, MF1): the body checks the land, the deadline and the
