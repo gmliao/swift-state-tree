@@ -753,7 +753,14 @@ struct JoinReplacedDuringOnJoinTests {
         var shuttingDown = false
         if case .landShuttingDown? = errorB as? JoinError { shuttingDown = true }
         #expect(shuttingDown, "tick=\(tick) reporting=\(reporting): B's join \(describe(errorB))")
-        #expect(await withinHangBound({ await keeper.waitUntilDrained() }), "the drain didn't end")
+        // `waitUntilDrained` awaits the drain's task, which ignores cancellation: bound the wait
+        // on an event its end appends, not with a task group.
+        let drained = EventLog()
+        Task {
+            await keeper.waitUntilDrained()
+            drained.append("drained")
+        }
+        #expect(await drained.waitFor("drained"), "the drain didn't end")
     }
 
     @Test("R9: A's OnJoin resolvers fail: an action submitted for A meanwhile is rejected at once, its resolver still held", arguments: [false, true])
