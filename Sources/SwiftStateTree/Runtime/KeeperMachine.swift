@@ -97,7 +97,19 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// slot holds it, or when the job fills it. The caller's cancel rides the job's box, which
     /// the waiting caller cancels itself (K2-2 plan, commit 0), not this input.
     case awaitActionResult(sequence: Int64)
-    case initializeResolved(Result<[String: HeldResolverOutput], any Error>)
+    /// The initialization's driver (K2-2 commit 1a): the owner sends `.initialize` once `.land`
+    /// is started; each later request comes back as one of these. `initializeResolved` carries
+    /// what `initializeBegin` built for the resolvers (closures, a context: never the model's),
+    /// their result, and the effect's task's cancellation, read where the resolvers ran.
+    case initialize
+    case initializeResolved(LandKeeper<State>.InitializeResolving, Result<LandContext, any Error>, cancelled: Bool)
+    /// The initialize record was taken by the recorder.
+    case initializeRecorded
+    /// `initializeFinish`, in a step of its own after OnInitialize's (no recorder: that step's
+    /// late backstop has run), queued behind `.land`.
+    case initializeFinish
+    /// The owner configured its loops (`.startLoops`): the two flags it read.
+    case initializeDone(tickLoopConfigured: Bool, syncLoopConfigured: Bool)
     case destroyHandlerResolved(index: Int, Result<[String: HeldResolverOutput], any Error>)
     /// A tickless input turn's record was taken by the recorder: its callers resume with the
     /// results the effect carried (K2-2 plan, item 15).
@@ -124,12 +136,12 @@ enum KeeperInputRoutes {
         .actionResolved, .actionJobReleased, .awaitActionResult,
         .freeze, .resume, .awaitInitialized, .freezeTimedOut,
         .syncStreamDraft,
+        .initialize, .initializeResolved, .initializeRecorded, .initializeFinish, .initializeDone,
     ]
     static let deferred: [KeeperInputRoute: String] = [
-        .shutdown: "K2-2 commit 1: it ends in the destroy drain (after K2-1b)",
-        .initializeResolved: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
-        .destroyHandlerResolved: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
-        .drainFinished: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
+        .shutdown: "K2-2 commit 1b: it ends in the destroy drain (plan §11.1)",
+        .destroyHandlerResolved: "K2-2 commit 1b: the destroy drain on the core (plan §11.2)",
+        .drainFinished: "K2-2 commit 1b: the destroy drain on the core (plan §11.2)",
     ]
 }
 
@@ -161,7 +173,7 @@ extension KeeperQuery {
 /// Each `KeeperInput` case by name: `route` is exhaustive, so a new case needs a route here, and
 /// the census checks that every route is routed or deferred.
 enum KeeperInputRoute: String, CaseIterable, Sendable {
-    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initializeResolved, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut
+    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeFinish, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut
 }
 
 extension KeeperInput {
@@ -184,7 +196,11 @@ extension KeeperInput {
         case .actionResolved: .actionResolved
         case .actionJobReleased: .actionJobReleased
         case .awaitActionResult: .awaitActionResult
+        case .initialize: .initialize
         case .initializeResolved: .initializeResolved
+        case .initializeRecorded: .initializeRecorded
+        case .initializeFinish: .initializeFinish
+        case .initializeDone: .initializeDone
         case .destroyHandlerResolved: .destroyHandlerResolved
         case .recordTaken: .recordTaken
         case .inputDrainDue: .inputDrainDue
@@ -388,7 +404,12 @@ enum KeeperEffect<State: StateNodeProtocol>: Sendable {
     /// A completed job whose resolvers were abandoned: `perform` waits for them to end and
     /// returns `.actionJobReleased`.
     case actionJobRelease(sequence: Int64, ResolverAbandonment)
-    case initialize
+    /// OnInitialize's resolvers (`.runResolvers`): `perform` runs them and returns
+    /// `.initializeResolved` with the cancellation of its own task.
+    case initializeResolvers(LandKeeper<State>.InitializeResolving)
+    /// The initialize record's submission, awaited off the core: `perform` returns
+    /// `.initializeRecorded`.
+    case initializeRecord(submission: RecorderSubmission?)
     case destroyHandler(index: Int)
     /// A tickless input turn's record submission, awaited off the core; its applied inputs and
     /// their results come back in `.recordTaken` (K2-2 plan, item 15). The results are plain: a
@@ -400,6 +421,9 @@ enum KeeperEffect<State: StateNodeProtocol>: Sendable {
 /// to the binding token and the services table.
 enum KeeperOutput: Sendable {
     case record(ReevaluationTickRecord, endsTurn: Bool)
+    /// The initialization's `.startLoops`: the owner configures its loops, then sends
+    /// `.initializeDone` with the two flags (K2-2 commit 1a).
+    case startLoops
     case bindTransport
     case services(PlayerID, Epoch, LandServices?)
     /// A sync folded into the tick due next (`.syncDue`): the driver keeps it, as the keeper's
@@ -542,10 +566,59 @@ extension KeeperModel: TurnMachine {
                 step(behavior, store) { _, side, _ in side.coreInputReplies.waits[kick] = .serverInputKick }
             }
             if let caller = turn.input { turn.reply(to: caller, .success(.done)) }
+        // The initialization's flow (K2-2 commit 1a). Each step switches over every phase: the
+        // one its request left behind runs, and every other is named. Only this flow's own
+        // effects and queue send these inputs, so another phase is a broken flow, not a race:
+        // no drain or failure moves the phase from outside the flow until commit 1b.
+        case .initialize:
+            // The keeper's `performInitialization`, its first segment.
+            switch initializationPhase {
+            case .notStarted:
+                let request = step(behavior, store) { m, side, outputs in m.initializeBegin(behavior, &side, &outputs) }
+                initializeDrive(behavior, store, &turn, request)
+            case .replaying, .resolving, .recording, .finishing, .startingLoops, .done, .failed, .abandonedByDrain:
+                preconditionFailure("the initialization runs once: .initialize in phase \(initializationPhase)")
+            }
+        case let .initializeResolved(resolving, result, cancelled):
+            switch initializationPhase {
+            case let .resolving(sequence) where sequence == resolving.sequence:
+                let request = step(behavior, store) { m, side, outputs in
+                    m.initializeResolved(behavior, &side, &outputs, resolving, result, cancelled: cancelled)
+                }
+                initializeDrive(behavior, store, &turn, request)
+            case .resolving, .notStarted, .replaying, .recording, .finishing, .startingLoops, .done, .failed, .abandonedByDrain:
+                preconditionFailure("OnInitialize's resolvers ended in phase \(initializationPhase) (sequence \(resolving.sequence))")
+            }
+        case .initializeRecorded:
+            switch initializationPhase {
+            case .recording:
+                let request = step(behavior, store) { m, side, outputs in m.initializeRecorded(behavior, &side, &outputs) }
+                initializeDrive(behavior, store, &turn, request)
+            case .notStarted, .replaying, .resolving, .finishing, .startingLoops, .done, .failed, .abandonedByDrain:
+                preconditionFailure("the initialize record was taken in phase \(initializationPhase)")
+            }
+        case .initializeFinish:
+            switch initializationPhase {
+            case .finishing:
+                let request = step(behavior, store) { m, side, outputs in m.initializeFinish(behavior, &side, &outputs) }
+                initializeDrive(behavior, store, &turn, request)
+            case .notStarted, .replaying, .resolving, .recording, .startingLoops, .done, .failed, .abandonedByDrain:
+                preconditionFailure("the initialization's finish in phase \(initializationPhase)")
+            }
+        case let .initializeDone(tickLoopConfigured, syncLoopConfigured):
+            switch initializationPhase {
+            case .startingLoops:
+                step(behavior, store) { m, side, outputs in
+                    m.initializeDone(behavior, &side, &outputs, tickLoopConfigured: tickLoopConfigured, syncLoopConfigured: syncLoopConfigured)
+                }
+                answerInitializationWaits(&turn)
+            case .notStarted, .replaying, .resolving, .recording, .finishing, .done, .failed, .abandonedByDrain:
+                preconditionFailure("the owner's loops were configured in phase \(initializationPhase)")
+            }
         case .awaitInitialized:
-            // Open once OnInitialize ran; a failed initialization is not reported here, as
-            // `awaitInitialization` doesn't. The closed case's answer is commit 1's (the step
-            // that ends the initialization).
+            // Open once the initialization ended, failed or not: a failed initialization is not
+            // reported here, as `awaitInitialization` doesn't. A caller that arrives before is
+            // answered by the step that ends it (`answerInitializationWaits`).
             guard let caller = turn.input else { break }
             if didInitialize {
                 turn.reply(to: caller, .success(.done))
@@ -806,6 +879,41 @@ extension KeeperModel: TurnMachine {
 }
 
 extension KeeperModel {
+    /// The keeper's `performInitialization` loop on the core (K2-2 commit 1a), one request at a
+    /// time: an await becomes an effect whose result is the next input, and the turn of its own
+    /// becomes a queued input. The re-evaluation pair stays the keeper's (#612): a core keeper
+    /// is live.
+    mutating func initializeDrive(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, _ request: LandKeeper<State>.InitializeRequest) {
+        switch request {
+        case .checkReplayHeader, .runReplayBeforeTickZero:
+            preconditionFailure("K2-2: a re-evaluation keeper's initialization stays on the keeper (#612)")
+        case let .runResolvers(resolving):
+            turn.run(.initializeResolvers(resolving))
+        case let .submitRecord(record):
+            let (_, submission) = stepSubmitting(behavior, store) { m, _, outputs in
+                m.stageRecorderSubmission(behavior, record, endsTurn: behavior.isTickless, outputs: &outputs)
+            }
+            turn.run(.initializeRecord(submission: submission))
+        case .finish:
+            // A step of its own, as the keeper's `withTurn`: behind `.land`, which the owner
+            // started before `.initialize`.
+            _ = turn.queue(.initializeFinish, behind: .land)
+        case .startLoops:
+            // The loops are the owner's until #762: it configures them, then sends
+            // `.initializeDone`.
+            turn.emit(.startLoops, for: .land)
+        case .done:
+            answerInitializationWaits(&turn)
+        }
+    }
+
+    /// The initialization ended (done or failed): its waiters are answered.
+    mutating func answerInitializationWaits(_ turn: inout Turn<KeeperModel<State>>) {
+        let waiting = coreBarrierWaits.initialized
+        coreBarrierWaits.initialized.removeAll()
+        for caller in waiting { turn.reply(to: caller, .success(.done)) }
+    }
+
     /// `acceptsSyncTurn`'s first guard, read before a sync query's frame: a live land, not
     /// failed or draining.
     func acceptsSyncTurnState(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore) -> Bool {

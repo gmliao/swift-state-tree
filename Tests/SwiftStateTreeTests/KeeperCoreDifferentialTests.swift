@@ -187,6 +187,8 @@ struct CoreDiffShape: Sendable, CustomStringConvertible {
     var destroysWhenEmpty = false
     /// The destroy timer's delay: 50 ms where a case waits for it to fire, 1 h where it must not.
     var destroyDelay: Duration = .milliseconds(50)
+    /// OnInitialize with a resolver (tickless, no destroy timer): it logs "init:<value>".
+    var onInitialize = false
 
     var description: String {
         "\(tick ? "tick" : "tickless"), join resolvers \(joinResolvers), leave resolver \(leaveResolver)\(noOnLeave ? ", no OnLeave" : "")\(destroysWhenEmpty ? ", destroys when empty" : "")"
@@ -246,7 +248,13 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
         }
         // `Lifetime`'s builder takes no `if`: one block per combination. Two events per tick: the
         // eventful path (§16 item 11).
-        if shape.tick && shape.destroysWhenEmpty {
+        if shape.onInitialize {
+            Lifetime {
+                OnInitialize(resolvers: { _, ctx in SegmentInitResolver(landID: ctx.landID) }) { state, output, _ in
+                    state.log.append("init:\(output?.value ?? -1)")
+                }
+            }
+        } else if shape.tick && shape.destroysWhenEmpty {
             Lifetime {
                 Tick(every: .seconds(3600)) { state, ctx in coreDiffTick(&state, ctx) }
                 DestroyWhenEmpty(after: shape.destroyDelay)
@@ -437,8 +445,27 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         case let .actionJobRelease(sequence, abandonment):
             await abandonment.waitUntilEnded()
             result = .actionJobReleased(sequence: sequence)
-        case .initialize, .destroyHandler:
-            Issue.record("K2-2a commit 0 routes no \(effect) effect")
+        case let .initializeResolvers(resolving):
+            // As the keeper's driver: the resolvers, then this task's cancellation, read here
+            // (Notes/solutions/2026-11-27-a-core-step-reads-the-drivers-task-not-the-callers.md).
+            let resolved: Result<LandContext, any Error>
+            do {
+                resolved = .success(try await ResolverExecutor.executeInitializeResolvers(
+                    executors: resolving.executors,
+                    resolverContext: resolving.resolverContext,
+                    landContext: resolving.ctx,
+                    abandonment: ResolverAbandonment(kind: .onInitialize, counter: LandAbandonmentCounter(), metrics: ResolverDeadline.metrics)
+                ))
+            } catch {
+                resolved = .failure(error)
+            }
+            result = .initializeResolved(resolving, resolved, cancelled: Task.isCancelled)
+        case let .initializeRecord(submission):
+            await armedRecordGate.take()?.enterAndWait()
+            await submission?.taken()
+            result = .initializeRecorded
+        case .destroyHandler:
+            Issue.record("K2-2a commit 1a routes no \(effect) effect")
             result = nil
         }
         if let result { await noteResult(result.routeName) }
@@ -758,10 +785,14 @@ private struct CoreDiffPair {
 
     static func make(_ shape: CoreDiffShape, _ name: String, holds: (@Sendable (LandKeeperHoldPoint) async -> Void)? = nil,
                      pathHolds: (@Sendable (String, LandKeeperHoldPoint) async -> Void)? = nil,
-                     keeperRecordGate: CoreDiffArmedGate? = nil, clock: CoreDiffClock? = nil) async -> CoreDiffPair {
+                     keeperRecordGate: CoreDiffArmedGate? = nil, clock: CoreDiffClock? = nil,
+                     initializes: Bool = true, records: Bool = false) async -> CoreDiffPair {
         let landID = "core-diff:\(name):\(UUID().uuidString)"
         func keeper() -> LandKeeper<CoreDiffState> {
-            LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: landID)
+            LandKeeperTesting.$defersInitialization.withValue(!initializes) {
+                LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(),
+                                          enableLiveStateHashRecording: records, autoStartLoops: false, landID: landID)
+            }
         }
         let direct = keeper(), twinSource = keeper()
         if let holds {
@@ -780,12 +811,16 @@ private struct CoreDiffPair {
                 if point == .turnRecord, let gate = keeperRecordGate.take() { await gate.enterAndWait() }
             }
         }
-        await direct.awaitInitialization()
-        await twinSource.awaitInitialization()
+        if initializes {
+            await direct.awaitInitialization()
+            await twinSource.awaitInitialization()
+        }
         // The action tables' mid-step audit, on both paths (the twin copies the source's flag).
         await direct.setActionTableAuditForTesting(true)
         await twinSource.setActionTableAuditForTesting(true)
-        let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting(), clock: clock)
+        // `initializes` false: neither keeper has initialized; the case runs the keeper's
+        // (`awaitInitialization`) and the core's (`.initialize`) itself (K2-2 commit 1a).
+        let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting(initialized: initializes), clock: clock)
         await harness.start()
         // The destroy-timer cases read the last ticket after a cancel, on both paths.
         await direct.keepLastDestroyTicketForTesting()
@@ -2448,6 +2483,34 @@ extension KeeperCoreDifferentialTests {
         #expect(keeperFailure != nil && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
         let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
         #expect(keeperLog == coreLog, "keeper \(keeperLog), core \(coreLog)")
+    }
+
+    @Test("The initialization on the core: OnInitialize's resolvers as an effect, the record's hand-off or the finish's own step, and a waiter that came first answered when it ends, on both paths (K2-2 commit 1a)", arguments: [false, true])
+    func initializationOnTheCore(records: Bool) async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let pair = await CoreDiffPair.make(shape, "init-\(records ? "recorded" : "unrecorded")", initializes: false, records: records)
+        #expect(await pair.harness.differentialRead().model.didInitialize == false)
+        // A waiter before the initialization: it waits at the barrier, an event the case reads.
+        let coreWaiter = Task { try await pair.harness.call(.awaitInitialized) }
+        await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.initialized.count == 1)
+
+        await pair.keeper.awaitInitialization()
+        await pair.harness.drive(.initialize)
+        guard case .done = try await coreWaiter.value else { Issue.record("not a done reply"); return }
+        let seen = await pair.harness.inputsSeen
+        #expect(seen.contains("initializeResolved"), "the resolvers ran as an effect: \(seen)")
+        // The record's hand-off comes back as an input; the finish without one is queued behind
+        // `.land` (the harness notes only what it sends), so the phase's end is checked instead.
+        #expect(seen.contains("initializeRecorded") == records, "\(seen)")
+        #expect(await pair.harness.differentialRead().model.initializationPhase == .done)
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.initialized.isEmpty)
+        let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
+        #expect(keeperLog == ["init:1"] && coreLog == ["init:1"], "keeper \(keeperLog), core \(coreLog)")
+        await pair.expectSame("after the initialization")
+        // The land is open: a join goes through on both paths.
+        _ = await bothJoin(pair, "p1", "c1")
+        await pair.expectSame("after a join")
     }
 
     @Test("The initialization's barrier is open after OnInitialize, on both paths (Review on #948, MF6: the open case until commit 1)")
