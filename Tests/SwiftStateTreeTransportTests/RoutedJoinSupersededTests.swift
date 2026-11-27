@@ -86,12 +86,10 @@ private actor RoutedSupersedeConnection: WebSocketConnection {
     private func cancelWaiter(_ id: UInt64) {
         waiters.removeValue(forKey: id)?.continuation.resume()
     }
-
-    /// The error frames and the closes, in order.
-    var answer: [String] { events.filter { $0.hasPrefix("error:") || $0.hasPrefix("close:") } }
 }
 
-/// What a superseded session gets: the error as its last frame, then the 4017 close.
+/// Everything a superseded session gets: the error as its only and last frame, then the 4017
+/// close.
 private let supersededAnswer = [
     "error:\(ErrorCode.joinDenied.rawValue):Join superseded by a newer join of the player",
     "close:\(SessionClose.Code.superseded)",
@@ -185,14 +183,12 @@ private struct RoutedSupersedeHarness {
         return error == nil
     }
 
-    /// Waits for the session's close, then checks it got exactly the superseded answer and that
-    /// the direct join keeps the player.
+    /// Waits for the session's close, then checks that its whole log is the superseded answer
+    /// (nothing else sent, nothing after the close) and that the direct join keeps the player.
     func expectSupersededAnswer(_ connection: RoutedSupersedeConnection, sourceLocation: SourceLocation = #_sourceLocation) async {
         let closed = await withinHangBound { await connection.waitFor { $0.contains { $0.hasPrefix("close:") } } }
         #expect(closed, "the session wasn't closed", sourceLocation: sourceLocation)
-        let events = await connection.events
-        #expect(await connection.answer == supersededAnswer, "events \(events)", sourceLocation: sourceLocation)
-        #expect(events.last?.hasPrefix("close:") == true, "nothing after the close: \(events)", sourceLocation: sourceLocation)
+        #expect(await connection.events == supersededAnswer, sourceLocation: sourceLocation)
         #expect(await container.keeper.currentState().joins == ["c-direct"], sourceLocation: sourceLocation)
     }
 }
@@ -221,9 +217,10 @@ struct RoutedJoinSupersededTests {
     @Test("The budget runs out during the resolvers, and the handler leaves its supersede to the timer: the timer answers it with the 4017 close")
     func timerAnswersTheLeftSupersede() async throws {
         let h = try await RoutedSupersedeHarness.make(joinBudget: .milliseconds(20))
-        let answered = TestGate()
-        defer { answered.open() }
+        let timer = TestGate(), answered = TestGate()
+        defer { timer.open(); answered.open() }
         await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.joinBudgetExpired, arrival: 1) { await timer.arrive() }
             .on(.joinBudgetAdmissionAnswered, arrival: 1) { await answered.arrive() }
             .hook)
         let (session, connection, gate) = await h.connect()
@@ -236,8 +233,15 @@ struct RoutedJoinSupersededTests {
             Issue.record("the routed join's OnJoin resolver never ran")
             return
         }
-        // The budget ran out while the resolver holds: the adapter said the admission is in
-        // the keeper's join, and the timer is held before it re-checks the attempt (`expiring`).
+        // The timer is held until the admission is in the keeper's join (the resolver holds),
+        // whenever the budget runs out: it asks the adapter only after that.
+        guard await timer.waitForArrivals(1) else {
+            Issue.record("the budget's timer never fired")
+            return
+        }
+        timer.open()
+        // The adapter said the admission is in the keeper's join, and the timer is held before
+        // it re-checks the attempt (`expiring`).
         guard await answered.waitForArrivals(1) else {
             Issue.record("the budget's timer never asked the adapter")
             return
@@ -250,7 +254,7 @@ struct RoutedJoinSupersededTests {
             Issue.record("the routed join's handler didn't return")
             return
         }
-        #expect(await connection.answer.isEmpty, "the handler left its answer to the timer")
+        #expect(await connection.events.isEmpty, "the handler left its answer to the timer")
 
         answered.open()
         await h.expectSupersededAnswer(connection)
@@ -259,14 +263,14 @@ struct RoutedJoinSupersededTests {
     @Test("The budget's timer runs after the keeper threw, before the router resumed: the timer leaves it to the handler, which answers with the 4017 close")
     func timerAfterTheKeeperThrewLeavesItToTheHandler() async throws {
         let h = try await RoutedSupersedeHarness.make(joinBudget: .milliseconds(20))
-        let timer = TestGate(), afterAdmit = TestGate(), answered = TestGate()
-        // `answered` only signals: the timer passes it at once.
-        answered.open()
+        let timer = TestGate(), afterAdmit = TestGate(), leftToHandler = TestGate()
+        // `leftToHandler` only signals: the timer passes it at once, as its last step.
+        leftToHandler.open()
         defer { timer.open(); afterAdmit.open() }
         await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>()
             .on(.joinBudgetExpired, arrival: 1) { await timer.arrive() }
             .on(.afterAdmit, arrival: 1) { await afterAdmit.arrive() }
-            .on(.joinBudgetAdmissionAnswered, arrival: 1) { await answered.arrive() }
+            .on(.joinBudgetLeftToHandler, arrival: 1) { await leftToHandler.arrive() }
             .hook)
         let (session, connection, gate) = await h.connect()
         defer { gate.open() }
@@ -292,11 +296,13 @@ struct RoutedJoinSupersededTests {
             return
         }
         timer.open()
-        guard await answered.waitForArrivals(1) else {
-            Issue.record("the budget's timer never asked the adapter")
+        // The timer asks the adapter, which says the keeper's join started, finds nothing left
+        // to answer, clears `expiring` and returns. Only the handler can answer after this.
+        guard await leftToHandler.waitForArrivals(1) else {
+            Issue.record("the budget's timer didn't leave the attempt to the handler")
             return
         }
-        #expect(await connection.answer.isEmpty, "the timer didn't take a finished join for one never started")
+        #expect(await connection.events.isEmpty, "the timer didn't take a finished join for one never started")
 
         afterAdmit.open()
         await h.expectSupersededAnswer(connection)

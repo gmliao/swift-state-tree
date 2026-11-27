@@ -1118,8 +1118,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         switch admission {
         case .success(let joinResult?) where joinResult.completedInTurn:
             // JoinResponse and firstSync are sent in the flip.
-            // Admitted in time: the flip waiter has what is left of the budget (#104), so the
-            // router's timer stops here.
+            // Admitted in the keeper's turn, within the budget or after it ran out once the
+            // keeper's join had started (the timer then left the attempt here): the flip waiter
+            // has what is left of the budget, possibly none (#104), so the router's timer stops
+            // here.
             let admitted = AdmittedJoin(landID: landID, requestID: requestID, adapter: adapter)
             // The same mailbox the admission got: the adapter marks the flip on it (#867).
             var admittedAttempt = JoinAttempt(number: attempt, admitted: admitted, requestID: requestID)
@@ -1351,6 +1353,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             guard let unanswered = after.unanswered else {
                 after.expiring = false
                 sessionHandshakePhase[sessionID] = .joining(after)
+                await holds.at(.joinBudgetLeftToHandler)
                 return
             }
             if unanswered.superseded {
@@ -1858,6 +1861,10 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     /// it re-checks the attempt (#860): the join's handler can leave its answer to the timer
     /// meanwhile (`leaveAnswerToExpiry`).
     case joinBudgetAdmissionAnswered
+    /// The join budget's timer after it left the attempt to the join's handler (`expiring` is
+    /// cleared, nothing was left to answer), as its last step (#860): from here only the
+    /// handler answers.
+    case joinBudgetLeftToHandler
     /// A join after its land was looked up or created, before the attempt binds the session
     /// (#97).
     case afterLand
