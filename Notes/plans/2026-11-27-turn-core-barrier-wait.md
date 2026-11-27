@@ -1,5 +1,12 @@
 # A barrier wait in SwiftStateTurns (#953)
 
+Revision 2 (2026-11-27). Answers Review's early read on revision 1, three points:
+1. §2.7 contradicted the code: `endAll()` calls `stopDeadlines()` and then `close()`. Now `endAll` ends every wait through the hook before its deadlines stop, and `close` leaves waits alone.
+2. Payloads were dropped on the withdraw, on a caller that couldn't wait, and on an expired budget. Now every non-release exit hands the payload back through `handleWaitEnded(_:_:_:)` with a `WaitEnd` reason, as `handleAbandoned` does for a request. #958's join holds a #852 reservation that the machine must undo on every exit.
+3. The flag set leaked when a cancel raced the resume, and §2.3 answered a cancelled `.ignoresCancel` caller `CancellationError` at `wait`, against §2.2. Now the flag lives in an in-flight map that the caller's own task inserts and removes, and a cancelled caller that has a waiter waits.
+
+B-Q5 is settled: `wait`.
+
 Revision 1 (2026-11-27). Answers Review's NOT GO on revision 0, which had 7 must-fixes and 5 shoulds:
 1. The withdraw removes the entry and its timer, and a pre-cancelled or waiterless caller never waits (§2.3).
 2. Every answer is a `Result` that the core never overrides (§2.2).
@@ -45,28 +52,34 @@ The core owns six things: the table, its removal, the timeouts, the cancellation
 
 ### 2.1 The API
 
-Names are distinct from the hold queue's (`Runtime`'s `Parked`, `parked`, `park(_:behind:)`, `parkedCount`), as Review asked. Review's shape is `park(caller, on:, holding:, timeout:)`, `release(where:) -> [Released]`, `parkedCount(on:)`; revision 1 spells it `wait`, `release(where:)` and `waiterCount(on:)`. Inside the core, the table is `barrierWaiters`.
+The names are `wait`, `release(where:)` and `waiterCount(on:)` (B-Q5, settled); inside the core, the table is `barrierWaiters`. They stay distinct from the hold queue's names (`Runtime`'s `Parked`, `parked`, `park(_:behind:)`, `parkedCount`).
 
 ```swift
 public protocol TurnMachine {
     /// The keys a caller waits on. `Never` (the default): the machine has no barriers.
     associatedtype BarrierKey: Hashable & Sendable = Never
-    /// What a waiting caller holds, handed back by the release.
+    /// What a waiting caller holds, handed back to the machine however its wait ends.
     associatedtype BarrierPayload: Sendable = Never
+
+    /// A wait that ended without a release: the caller withdrew, couldn't wait, timed out, or
+    /// the core ended. The entry is already out of the table, with its timer cancelled. The
+    /// machine cleans up what the payload holds and answers the caller (`turn.reply`); a reply
+    /// to a withdrawn or waiterless caller finds no waiter and is dropped. Default: answers
+    /// `.failure(why.error)`.
+    mutating func handleWaitEnded(_ ended: Released<Self>, _ why: WaitEnd, _ turn: inout Turn<Self>)
 }
 
 extension Turn {
     /// `caller`'s reply is deferred: it waits on `key`, holding `payload`, until a step
-    /// releases the key or `timeout` passes. A caller already cancelled, or with no waiter,
-    /// doesn't wait (§2.3).
+    /// releases the key, `timeout` passes, its caller withdraws, or the core ends.
     public mutating func wait(
         _ caller: InputID, on key: M.BarrierKey, holding payload: M.BarrierPayload,
-        timeout: BarrierTimeout<M.Reply>? = nil
+        timeout: Duration? = nil
     )
 
     /// Every caller waiting on a key that `matches`, oldest first by `InputID.raw` across the
     /// matching keys, taken out of the table with its timer cancelled. The machine replies to
-    /// each one (`turn.reply`) or continues it, in this step.
+    /// each one or continues it, with `&turn`, in this step.
     public mutating func release(where matches: (M.BarrierKey) -> Bool) -> [Released<M>]
 
     /// The callers waiting on `key` now.
@@ -77,85 +90,94 @@ public struct Released<M: TurnMachine>: Sendable {
     public let caller: InputID
     public let key: M.BarrierKey
     public let payload: M.BarrierPayload
-    /// Set by the caller's `onCancel`, synchronously, inside `cancel()`, and read here.
+    /// Whether the caller's task was cancelled by the time this step read it (§2.3).
     public let cancelled: Bool
 }
 
-public struct BarrierTimeout<Reply: Sendable>: Sendable {
-    /// From the step that waits. `<= .zero`: already expired (§2.4).
-    public var budget: Duration
-    public var answer: Result<Reply, any Error>
+public enum WaitEnd: Sendable, Equatable {
+    /// The caller's `.cancelsCall` cancellation withdrew it; it has resumed with `CancellationError`.
+    case withdrawn
+    /// The caller has no waiter (a pre-cancelled `.control` input), so it never waited.
+    case noWaiter
+    /// Its budget passed, or was `<= .zero` when it waited.
+    case timedOut
+    /// `endAll()` ended the core.
+    case ended
+    public var error: any Error { … }   // CancellationError, CancellationError, TurnError.timedOut, TurnError.closed
 }
 ```
 
-How the adopters release:
-- **The freeze's work end:** `release { if case .freeze = $0 { true } else { false } }`, which answers each caller by its key's generation. The cross-generation rule stays in the machine, which is why the policy is dropped.
-- **The drain:** `release { if case .leaveEnd = $0 { true } else { false } }`, which leaves `.tick` (the drain's own wait) and `.shutdown` (answered by the destroy's end) in the table.
-- **The leave's end:** `release { $0 == .leaveEnd(player) }`, then J2c for each join it hands back, with `&turn`.
+**The payload always comes back.** It returns through `release` or through `handleWaitEnded`, whichever ends the wait, never dropped. #958's join holds a #852 reservation that the machine must undo on every exit, as `handleAbandoned` gives an abandoned request back. So the five ways a wait ends (release, withdraw, no waiter, timeout, `endAll`) are one release path and one hook with four named reasons. A machine switches over `WaitEnd`, so a new reason is a compile error in each adopter, in the spirit of the maintainer's "every exit handled" rule.
 
-The kernel's keyed wake is the prior art: `__wake_up` with a key that the wake function matches.
+The timeout's answer is no longer a parameter: the hook answers `.timedOut` like the other reasons. `TurnError` gains `.timedOut`, a new public case. The adopter that answers a value instead (the freeze answers `false`) does so in its hook.
+
+How the adopters release:
+- **The freeze's work end:** `release { if case .freeze = $0 { true } else { false } }`, which answers each caller by its key's generation.
+- **The drain:** `release { if case .leaveEnd = $0 { true } else { false } }`, which leaves `.tick` (the drain's own wait) and `.shutdown` in the table.
+- **The leave's end:** `release { $0 == .leaveEnd(player) }`, then J2c for each join it hands back.
+
+The prior art is the kernel's keyed wake (`__wake_up` with a key that the wake function matches), and Akka's stash and unstash for payloads that run again on release.
 
 ### 2.2 Answers are `Result`s; the core never overrides one
 
-The core answers a caller in only two places: at a timeout, with `BarrierTimeout.answer`, and where §2.3 says. Every other answer is the machine's, through `turn.reply`, which already takes a `Result<M.Reply, any Error>`. So the initialization barrier can answer `LandInitializationError`, and the drain can answer a closed land.
+Every answer is the machine's, through `turn.reply` (a `Result<M.Reply, any Error>`): in its release loop, or in `handleWaitEnded`. The core answers nothing itself. The one exception is the hook's default, which a machine replaces. So the initialization barrier can answer `LandInitializationError`, and the drain can answer a closed land.
 
-The core doesn't turn a released caller's answer into `CancellationError`. It passes `cancelled` in `Released`, and the machine decides:
-- An adopter that keeps the keeper's "throw if cancelled after the wait" answers `.failure(CancellationError())` when `cancelled` is set.
+`Released.cancelled` is information, not an answer:
+- An adopter that keeps the keeper's "throw if cancelled after the wait" answers `.failure(CancellationError())` when it's set.
 - One that skips work for a cancelled caller (the held intakes) reads it before the work.
 
-`.ignoresCancel` keeps its contract (Values.swift: "the caller keeps waiting and gets the real result"): the flag is information, not an answer.
+`.ignoresCancel` keeps its contract (Values.swift: "the caller keeps waiting and gets the real result"). A cancelled `.ignoresCancel` caller waits like any other, and its release passes `cancelled: true`. Revision 1 answered it `CancellationError` at `wait`, which contradicted that contract; revision 2 removes that case.
 
-### 2.3 Cancellation and the withdraw
+### 2.3 Cancellation: the flag, its lifetime, and the withdraw
 
-**The flag.** On a core whose `BarrierKey` isn't `Never` (`TurnCore<M>.usesBarriers`), `sendAndWait`'s `onCancel` inserts the call's `InputID` into one core-owned, locked `Set<InputID>`, synchronously, inside `cancel()`. Nothing is allocated per call: a call that never waits costs one insert, and only if it is cancelled. A core without barriers installs nothing. `release` and a timeout read the set and remove the caller's ID. The step that answers a caller that never waited, and the withdraw, remove it too.
+**The flag lives as long as the call.** On a core whose `BarrierKey` isn't `Never` (`TurnCore<M>.usesBarriers`), the core keeps one locked `[InputID: Bool]` of the calls in flight. `sendAndWait`'s caller task inserts its ID (`false`) before it submits. Its `onCancel` sets the value to `true`, synchronously, inside `cancel()`, if the ID is still there. The caller task removes the ID itself when it resumes, by reply, withdraw or throw, in `sendAndWait`'s own frame. So:
+- every inserted ID is removed by the one task that inserted it, whatever answered it;
+- a cancel racing the resume only sets a value its own caller removes next;
+- nothing leaks.
 
-**The withdraw removes the entry.** For a `.cancelsCall` caller with a live waiter, `callerCancelled` withdraws it and resumes it with `CancellationError`, as today. In the same step, it removes the caller's barrier entry and cancels the entry's timer, through a reverse index `[InputID: BarrierKey]`. So no entry outlives its caller:
-- no count includes a caller that has thrown;
-- no timer fires later for a stale reply, so a stale timeout takes no mail ordinal;
-- no entry piles up on a key that is released rarely.
+Revision 1's set was written only by `onCancel` and cleared by the release, so a cancel after the reply left an ID behind. The cost: one locked insert and one remove per call, on barrier cores only. A core without barriers installs nothing.
 
-The prior art is the kernel wait queue's `finish_wait`: a waiter removes itself on wake-up or interrupt, so a waker never meets an entry whose task has gone.
+`release`, `handleWaitEnded` and the timeout read the value as `Released.cancelled`, in their step.
 
-**A caller that can't wait.** `wait` registers nothing when the caller's flag is already set, or when the caller has no waiter (a pre-cancelled `.control` input submits without one, TurnActor.swift:63–71). Instead it answers at once:
-- with `.failure(CancellationError())` if the flag is set;
-- with no reply at all if there's no waiter: a reply would find no waiter.
+**The withdraw removes the entry.** For a `.cancelsCall` caller with a live waiter, `callerCancelled` withdraws it and resumes it with `CancellationError`, as today. In the same step, the withdraw removes the barrier entry and cancels its timer, through a reverse index `[InputID: BarrierKey]`, and steps `handleWaitEnded(entry, .withdrawn)`. The machine cleans up the payload; its reply finds no waiter.
 
-#958's `awaitLeaveEnd` does the same: it checks `Task.isCancelled` before it registers.
+This step is the cancellation's existing entry, with an ordinal under a mailbox, so it adds no entry. Revision 0's `handleCallerCancelled` hook (#948's reverted b31feae4) is not reborn: this one runs only for a waiting entry, and it doesn't decide the caller's answer, which the withdraw has already given.
 
-The payload of a caller that didn't wait is dropped, so a held join that can't wait doesn't run. That is its keeper's behavior: a cancelled `join` throws before J2c. The adopter that must run a payload whatever happens (none in §1) would call its continuation itself instead of waiting.
+The prior art is the kernel wait queue's `finish_wait`: a waiter removes itself on wake-up or interrupt.
 
-**A timeout racing a cancel.** Each timeout runs in its own entry. If `onCancel` set the flag before the timeout's step:
-- with `.ignoresCancel`, the timeout answers `answer`;
-- with `.cancelsCall`, the timeout finds the flag. If the withdraw's hop is still queued, the timeout answers `.failure(CancellationError())`, the entry leaves, and the hop then finds no waiter: a stale cancellation.
+**A caller with no waiter.** A pre-cancelled `.control` input submits without a waiter (TurnActor.swift:63–71) and gets no cancellation hop. `wait` registers nothing for it and steps `handleWaitEnded(entry, .noWaiter)` in the waiting step. A cancelled caller that has a waiter waits like any other. A `.cancelsCall` caller's withdraw hop then removes it, and an `.ignoresCancel` caller is answered at its release with `cancelled: true`.
 
-Either way the caller resumes once.
+**A timeout racing a cancel.** The timeout is an entry of its own.
+- If the withdraw stepped first, it removed the entry and the timer, and the timeout finds nothing: stale, with no ordinal.
+- If the timeout steps first, it removes the entry and steps `handleWaitEnded(entry, .timedOut)` with `cancelled` as read; the withdraw's hop then finds the waiter answered and is stale.
+
+The caller resumes once either way.
 
 ### 2.4 The timeout
 
-`timeout` is a `Duration` budget. The core adds it to `turn.now` with saturation (`TurnInstant.+` wraps, Values.swift:172, which was #948 round 1's overflow). `budget <= .zero` is already expired, as `debugFreeze`'s `remaining > .zero` reads. An expired caller is answered `timeout.answer` in the waiting step, with no timer armed, so no zero-length timer exists.
+`timeout` is a `Duration` budget. The core adds it to `turn.now` with saturation (`TurnInstant.+` wraps, Values.swift:172, which was #948 round 1's overflow). `budget <= .zero` is already expired, as `debugFreeze`'s `remaining > .zero` reads. An expired caller steps `handleWaitEnded(entry, .timedOut)` in the waiting step, with no timer armed. Its payload comes back like any other.
 
-A live timer is a `DeadlineEntry` with `isTimer: true` and a timer generation as its ticket. The caller's `InputID` is not the ticket: an `InputID`'s raw value can equal a `RequestID`'s. The entry maps its generation back to the waiting caller. A release cancels the timers of the callers it takes.
-
-The timeout and its answer are one optional parameter, since four of the six waits have no timeout.
+A live timer is a `DeadlineEntry` with `isTimer: true` and a timer generation as its ticket, never the caller's `InputID`, whose raw value can equal a `RequestID`'s. The entry maps its generation back to the waiting caller. A release, a withdraw or `endAll` cancels the timers of the entries it removes.
 
 ### 2.5 Replay and the recording model
 
-`TurnCore` records mail hand-outs by dispatch ordinal, not steps or replies. `wait` and `release` run inside their enclosing step and take no ordinal of their own. A live barrier timeout is an entry, and takes one ordinal through `entryBoundary`. A stale one takes none, and with §2.3's removal there are no stale ones.
+`TurnCore` records mail hand-outs by dispatch ordinal, not steps or replies. `wait`, `release` and the `.noWaiter` and expired-budget hooks run inside their enclosing step and take no ordinal of their own. A live timeout is an entry, and takes one ordinal through `entryBoundary`. A stale one takes none. The withdraw's hook runs in the cancellation's entry, which already takes its ordinal.
 
-The cancellation flag is ambient, so a replay can't re-read it. Revision 1 takes (b): **a replaying core refuses `wait`** with a `fatalError`, as `sendAndWait(.cancelsCall)` does on a mail replay (MailReplayTests 13w). Every adopter in §1 is a live keeper path (#612 keeps re-evaluation off the core). Recording the flags as entry data, (a), can come with the first replayed adopter.
+The cancellation flag is ambient, so a replay can't re-read it. Revision 2 keeps (b): **a replaying core refuses `wait`** with a `fatalError`, as `sendAndWait(.cancelsCall)` does on a mail replay (MailReplayTests 13w). Every adopter in §1 is a live keeper path (#612). (a), recording the flags as entry data, can come with the first replayed adopter.
 
 ### 2.6 Counts for tests
 
-`waiterCount(on:)` is the production read. It can only be read inside a step, and a key leaves the map when it empties, so keys like `.leaveEnd(PlayerID)` and `.freeze(generation)` don't pile up for the land's life.
+`waiterCount(on:)` is the production read, inside a step. A key leaves the map when it empties. Tests count events: each `wait` that registers emits `TurnDiagnostic.barrierWait`, and `TurnStats.barrierWaits` is a scalar counter of registrations. There is no per-key total that only grows.
 
-Tests count events, not state: each `wait` that registers emits `TurnDiagnostic.barrierWait`, and `TurnStats.barrierWaits` is a scalar counter of registrations, observed the way `.queued(total:)` is. There is no per-key `ever`: it would never shrink.
+### 2.7 `close`, `endAll` and the edge cases
 
-### 2.7 Edge cases
+The code fixes the order (Turn.swift): `endAll()` stops the core's deadlines (`stopDeadlines()`), marks it ended, withdraws scoped and pinned inputs, then calls `close()`. `close()` only closes intake: queued normal calls are answered `.closed`, and later ones are refused.
 
+- **`close()` leaves waiting entries alone.** A waiting caller has stepped already, as a call whose reply is deferred has, and `close` answers only the queued ones. Its timer stays armed, and a later release or timeout answers it.
+- **`endAll()` ends every wait.** It stops every deadline, so a waiter left in the table would never be answered. Before `stopDeadlines()`, it removes every entry, oldest first, and steps `handleWaitEnded(entry, .ended)` for each, in its own step. Each payload comes back, and the default hook answers `.failure(TurnError.closed)`.
 - **A caller that waits twice** traps (`precondition`). One caller has one deferred reply.
-- **A `turn.reply` to a waiting caller** (not through a release) traps in debug builds. In release builds it answers the caller and removes the entry and its timer, so the caller still resumes once.
-- **`endAll()`** releases nothing. The entries stay for the machine's own `release`, because a key's end isn't a barrier's end. `close()` answers every waiting caller `.failure(TurnError.closed)`, oldest first, and empties the table, as it answers queued calls.
-- **On `MailTurn`**, a failure that comes by mail can release. `release(where:)` and `waiterCount(on:)` are on `MailTurn` too; `wait` isn't, since a mail has no caller.
+- **A `turn.reply` to a waiting caller,** not through a release or the hook, traps in debug builds. In release builds it answers the caller, then removes the entry and its timer without stepping the hook, so the caller resumes once. Debug builds catch the lost payload.
+- **On `MailTurn`**, a failure that comes by mail can release: `release(where:)` and `waiterCount(on:)` are on `MailTurn` too. `wait` isn't, because a mail has no caller.
 
 ## 3. Questions
 
@@ -163,7 +185,7 @@ Tests count events, not state: each `wait` that registers emits `TurnDiagnostic.
 - B-Q2: settled. Held inputs are payloads (§2.1).
 - B-Q3: agreed. One associated type, which Review's `swiftc -typecheck` showed is source compatible.
 - B-Q4: settled. (b), §2.5.
-- **B-Q5, open: the names.** `wait` / `release(where:)` / `waiterCount(on:)`, or Review's `park` / `parkedCount` beside the hold queue's same names? Revision 1 proposes the distinct ones.
+- B-Q5: settled: `wait` / `release(where:)` / `waiterCount(on:)`.
 
 ## 4. The first adopter: #958's leave wait, on the core
 
@@ -172,12 +194,13 @@ On the keeper's path, #958 parks a continuation in `KeyedBarrierWaits<PlayerID>`
 | `KeyedBarrierWaits` (keeper) | The barrier (core) |
 |---|---|
 | `makeID()` before the cancel handler | the call's `InputID`; its flag is in the core's set |
-| `Task.isCancelled` checked before `park` | `wait` registers nothing for a cancelled caller (§2.3) |
+| `Task.isCancelled` checked before `park` | a `.cancelsCall` join's withdraw removes its entry and steps `handleWaitEnded(.withdrawn)`; a waiterless one steps `.noWaiter` at the wait (§2.3) |
 | `park(player, id:, continuation)` | `turn.wait(caller, on: .leaveEnd(player), holding: .joinAfterLeave(…))` |
 | `count(player)` | `turn.waiterCount(on: .leaveEnd(player))`; tests count `TurnStats.barrierWaits` |
 | `release(player)`, which resumes each continuation | `for r in turn.release(where: { $0 == .leaveEnd(player) })`: J2c for each `r`, or `.failure(CancellationError())` if `r.cancelled` |
 | `releaseAll()` at the drain | `release { if case .leaveEnd = $0 { true } else { false } }`, which leaves `.tick` and `.shutdown` |
-| `cancel(player, id:)` returning false after a release | the withdraw removes the entry (§2.3); a release that came first took it |
+| `cancel(player, id:)` returning false after a release | the withdraw removes the entry and steps the hook (§2.3); a release that came first took it |
+| — (the keeper's join undoes its #852 reservation on its own throw) | `handleWaitEnded` for every non-release exit: `.withdrawn`, `.noWaiter`, `.timedOut`, `.ended` undo the reservation with `&turn`, as `handleAbandoned` does for an abandoned request |
 
 This adopter moves after #958 merges and the barrier lands, in one commit that reruns #958's tests unchanged. The keeper's own path keeps `KeyedBarrierWaits` until K2-3 deletes that path.
 
@@ -187,7 +210,10 @@ This adopter moves after #958 merges and the barrier lands, in one commit that r
 2. Land the barrier in SwiftStateTurns, with core tests:
    - wait, release and timeout, each answering once, including an expired budget answered at the wait and a saturating large budget;
    - the withdraw removing the entry and its timer (`waiterCount` 0, no late timeout, no ordinal);
-   - a pre-cancelled and a waiterless caller that don't wait;
+   - a waiterless caller that never waits, and a cancelled `.ignoresCancel` caller that waits and is released with `cancelled: true`;
+   - every payload coming back once: through the release or `handleWaitEnded`, for each `WaitEnd` reason;
+   - the flag's lifetime: a cancel racing the resume leaves no ID behind (the in-flight map is empty after every call);
+   - `endAll()` ending every wait before its deadlines stop, and `close()` leaving waits alone;
    - a cancel concurrent with a release, and one concurrent with a timeout, each forced in both orders with a hold;
    - `release(where:)` order across keys;
    - a payload continued with `&turn`, which waits again;
@@ -273,4 +299,4 @@ What it shows:
 - `cancelled` reaches the machine, which answers `CancellationError` itself (§2.2).
 - The drain's `release(where:)` leaves `.tick` in the table.
 
-B-Q5 is a naming choice and needs no probe. The rest of §2 (one reply per caller, the withdraw, timers on the heap) is existing core behavior that §5's tests pin.
+Revision 2's `handleWaitEnded` needs no separate probe. It has the shape of `handleAbandoned`, a machine hook with `&turn` stepped by the core, which P953-2's release loop already shows can continue or clean up with `&turn`. The rest of §2 (one reply per caller, the withdraw, timers on the heap) is existing core behavior that §5's tests pin.
