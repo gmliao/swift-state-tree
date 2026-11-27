@@ -472,9 +472,8 @@ struct LandKeeperInputTurnTests {
         try await bump.value
         #expect(try await add.value == 2)
         #expect(await f.keeper.currentState().total == before + 7)
-        let frozen = await f.keeper.debugFreeze(generation: 1, timeout: .seconds(1))
-        #expect(frozen, "no in-flight work left behind by the events' callers")
-        await f.keeper.debugResume(generation: 1)
+        #expect(await withinHangBound { await f.keeper.waitForInFlightWorkForTesting() }, "in-flight work left behind by the events' callers")
+        #expect(await f.keeper.debugInFlightWorkForTesting() == 0)
     }
 
     @Test("a client event the closing land rejects is logged below error level and sends no error frame")
