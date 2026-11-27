@@ -157,11 +157,13 @@ enum KeeperCensus {
             "turnSide.sharedDrainHandle": .replaced(by: "K7"),
             "turnSide.debugHeldInputs": .replaced(by: "K7"),
             "turnSide.inputTurnWaiters": .replaced(by: "K2"),
+            "turnSide.coreInputReplies": .replaced(by: "K2"),
             "turnSide.shutdownTurnWaiters": .replaced(by: "K2"),
             "turnSide.sharedAbandonmentCounter": .outside(.resolverAbandonment),
             "turnSide.serverInputs": .replaced(by: "K2"),
             "turnSide.playerServices": .outside(.playerServices),
-            "turnSide.actions.jobTasks": .replaced(by: "K5"),
+            // K2-2 routes the job lane on the core before it wires the keeper (plan §16 item 17).
+            "turnSide.actions.jobTasks": .replaced(by: "K2"),
             "turnSide.actions.removalWaiters": .replaced(by: "K2"),
             "turnSide.actions.slotWaiters": .replaced(by: "K2"),
             "turnSide.actions.slotWatchers": .replaced(by: "K2"),
@@ -282,10 +284,11 @@ extension KeeperCensus {
     /// (#700 K2-1). K2-2 deletes the box once every field has moved; this table is its checklist.
     static let sideStoreDestinations: [String: String] = [
         "turnSide.submissions": "the recorder hand-off: outputs that the core's flush submits",
-        "turnSide.actions": "action jobs: K5's keyed requests; their waiters become replies",
+        "turnSide.actions": "action jobs, keeper-only in K2-1: K2-2 routes them (jobTasks: one run per job, the box and the release as inputs; slotWaiters: coreSlotReplies, then replies); K5 keys them",
         "turnSide.failures": "the effect and the reply carry the failure (§4.3); the table only when nobody waits",
         "turnSide.debugDrainWaiters": ".freeze's sendAndWait reply",
         "turnSide.inputTurnWaiters": "sendAndWait replies, answered in .recordTaken's step",
+        "turnSide.coreInputReplies": "the waits ride in .awaitRecordTaken's effect and .recordTaken (§16 item 15); the table goes",
         "turnSide.debugHeldInputs": ".awaitResume's barrier (inputPolicy)",
         "turnSide.shutdownTurnWaiters": ".shutdown's sendAndWait reply",
         "turnSide.pendingSyncTurnAfterTurn": "staged until K3's follow-up slot",
@@ -401,6 +404,15 @@ struct KeeperCensusTests {
         let named = Set(KeeperCensus.sideStoreDestinations.keys)
         #expect(sideFields.subtracting(named).isEmpty, "no destination: \(sideFields.subtracting(named).sorted())")
         #expect(named.subtracting(sideFields).isEmpty, "not a side field: \(named.subtracting(sideFields).sorted())")
+    }
+
+    @Test("The machine's inputs split into K2-1's routed set and the deferred ones, each named (#700 K2-1)")
+    func inputRoutesSplitTheCases() {
+        let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
+        #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).sorted())")
+        // `KeeperInput` has 20 cases (`routeName` is exhaustive): a new one goes in a list, and this count moves.
+        #expect(routed.count == 10 && deferred.count == 10, "routed \(routed.sorted()), deferred \(deferred.sorted())")
+        #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
     }
 
     @Test("The model is plain at compile time")

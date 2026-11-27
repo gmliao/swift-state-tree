@@ -489,7 +489,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// not run inside the hold (#700 K1b-5a, MF1). An action whose payload didn't decode gets no
     /// entry: its apply throws on the decode first.
     private func prepareFallbackRecordBytes(_ batch: [PendingItem]) -> [Int64: Result<Data, any Error>] {
-        guard recordsInputs else { return [:] }
+        Self.prepareFallbackRecordBytes(behavior, batch)
+    }
+
+    /// The record's bytes for the inputs of `batch` that hold none, encoded before the body holds
+    /// the model: the encode runs the payload's own `encode(to:)` (#700 K1b-5a, MF1). Static, so a
+    /// core step (#700 K2-1) encodes them the same way, before its body.
+    static func prepareFallbackRecordBytes(_ behavior: KeeperBehavior<State>, _ batch: [PendingItem]) -> [Int64: Result<Data, any Error>] {
+        guard behavior.recordsInputs else { return [:] }
         var prepared: [Int64: Result<Data, any Error>] = [:]
         for item in batch {
             switch item {
@@ -505,7 +512,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return prepared
     }
 
-    fileprivate static func fallbackRecordBytes(_ action: any ActionPayload) throws -> Data {
+    static func fallbackRecordBytes(_ action: any ActionPayload) throws -> Data {
         try RecordPayloadEncoding.canonicalJSON(AnyCodable(action))
     }
 
@@ -1975,18 +1982,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         ).decision
     }
 
-    /// What `joinReportingAdmission` did.
-    package struct JoinOutcome: Sendable {
-        package let decision: JoinDecision
-        /// The transport admitted the session inside the join
-        /// (`LandKeeperTransport.admitJoiningSession` returned `true`). When `false`, the caller
-        /// admits it after the join returns, so a session is admitted exactly once.
-        package let admitted: Bool
-        /// The transport refused the join for the player CanJoin resolved, before anything
-        /// acted on it (`LandKeeperTransport.refusesResolvedJoin`, #234): nothing changed.
-        /// Never set by `decision`, the land's own answer.
-        package var refusedStale = false
-    }
+    /// What `joinReportingAdmission` did (`KeeperJoinOutcome`).
+    package typealias JoinOutcome = KeeperJoinOutcome
 
     /// `join(session:clientID:sessionID:services:)`, and, when `admitThroughTransport` and this
     /// keeper's turns run the sync phase in the turn (`syncsInTurn`), the transport's
@@ -2072,22 +2069,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case done(JoinOutcome)
     }
 
-    /// The reporting join's call.
-    struct JoinCall: Sendable {
-        let session: PlayerSession
-        let clientID: ClientID
-        let sessionID: SessionID
-        let services: LandServices
-        let admitThroughTransport: Bool
-    }
+    /// The reporting join's call (`KeeperJoinCall`).
+    typealias JoinCall = KeeperJoinCall
 
-    /// What the reporting join carries from J2's decision on.
-    struct JoinDecided: Sendable {
-        let call: JoinCall
-        let decision: JoinDecision
-        let playerID: PlayerID
-        let reservation: Epoch?
-    }
+    /// What the reporting join carries from J2's decision on (`KeeperJoinDecided`).
+    typealias JoinDecided = KeeperJoinDecided
 
 
 
@@ -2212,6 +2198,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Turns the alignment check at the call sites on or off (off by default).
     package func setActionTableAuditForTesting(_ enabled: Bool) { turnSide.actions.auditOn = enabled }
     package func actionTableViolationsForTesting() -> [String] { model.actionTableViolations(turnSide) }
+
+    /// Tests: puts a core's input-turn wait on this keeper's own side, where the audit reports it
+    /// (#700 K2-1); its `checkActionTables` sites count it.
+    package func putCoreInputWaitForTesting(sequence: Int64) {
+        turnSide.coreInputReplies.waits[sequence] = .leave(.reply(nil))
+    }
 
     // MARK: - The player-services table (#700 K1b-4)
 
@@ -3887,7 +3879,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// result. A throw flushes in the `defer` instead.
     private func withTurnSubmitting<R>(
         _ body: (inout KeeperModel<State>, inout KeeperTurnSide, inout TurnOutputs) throws -> R
-    ) rethrows -> (result: R, submission: Task<Void, Never>?) {
+    ) rethrows -> (result: R, submission: RecorderSubmission?) {
         assert(sentinel.bodyDepth == 0, "turn bodies don't nest")
         var outputs = TurnOutputs()
         let violationsBefore = sentinel.reentryViolations
@@ -4094,7 +4086,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             m.stageRecorderSubmission(behavior, record, endsTurn: isTickless, outputs: &outputs)
         }
         await holds.at(.turnRecord)
-        await submission?.value
+        await submission?.taken()
     }
 
 
@@ -4471,7 +4463,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
 
     /// What an input turn did: its record and the inputs it applied (a failed one included).
-    fileprivate struct InputTurnOutcome {
+    struct InputTurnOutcome {
         var record: ReevaluationTickRecord
         var appliedItems: [PendingItem]
         /// Whether a leave asks for a broadcast-only sync (the legacy path's flag).
@@ -4910,27 +4902,27 @@ extension KeeperModel {
     typealias PendingShutdownItem = LandKeeper<State>.PendingShutdownItem
     typealias SettleFence = LandKeeper<State>.SettleFence
     typealias SettleTurnOutcome = LandKeeper<State>.SettleTurnOutcome
-    fileprivate typealias InputTurnOutcome = LandKeeper<State>.InputTurnOutcome
+    typealias InputTurnOutcome = LandKeeper<State>.InputTurnOutcome
     fileprivate typealias InitializeTurnOutput = LandKeeper<State>.InitializeTurnOutput
     typealias TickTurnOutput = LandKeeper<State>.TickTurnOutput
     fileprivate typealias AppliedItem = LandKeeper<State>.AppliedItem
     fileprivate typealias InputApplication = LandKeeper<State>.InputApplication
     typealias HandlerRandom = LandKeeper<State>.HandlerRandom
     typealias CallOutcome<Answer> = LandKeeper<State>.CallOutcome<Answer>
-    fileprivate typealias JoinCall = LandKeeper<State>.JoinCall
+    typealias JoinCall = LandKeeper<State>.JoinCall
     fileprivate typealias AppliedInputs = LandKeeper<State>.AppliedInputs
     typealias FailurePath = LandKeeper<State>.FailurePath
-    fileprivate typealias JoinDecided = LandKeeper<State>.JoinDecided
-    fileprivate typealias JoinRequest = LandKeeper<State>.JoinRequest
-    fileprivate typealias LeaveCapture = LandKeeper<State>.LeaveCapture
-    fileprivate typealias LeaveRequest = LandKeeper<State>.LeaveRequest
+    typealias JoinDecided = LandKeeper<State>.JoinDecided
+    typealias JoinRequest = LandKeeper<State>.JoinRequest
+    typealias LeaveCapture = LandKeeper<State>.LeaveCapture
+    typealias LeaveRequest = LandKeeper<State>.LeaveRequest
     fileprivate typealias LegacyJoinCall = LandKeeper<State>.LegacyJoinCall
     fileprivate typealias LegacyJoinRequest = LandKeeper<State>.LegacyJoinRequest
-    fileprivate typealias OnJoinCapture = LandKeeper<State>.OnJoinCapture
+    typealias OnJoinCapture = LandKeeper<State>.OnJoinCapture
     typealias JoinOutcome = LandKeeper<State>.JoinOutcome
     typealias PendingLifecycleItem = LandKeeper<State>.PendingLifecycleItem
     typealias EmittedEvent = KeeperEmittedEvent
-    fileprivate typealias ActionIntakeRequest = LandKeeper<State>.ActionIntakeRequest
+    typealias ActionIntakeRequest = LandKeeper<State>.ActionIntakeRequest
     typealias PendingClientEventItem = LandKeeper<State>.PendingClientEventItem
     typealias PendingClientEventPayload = LandKeeper<State>.PendingClientEventPayload
 
@@ -5282,6 +5274,16 @@ extension KeeperModel {
         for (id, count) in owners where count > 1 { violations.append("\(id) has \(count) owners") }
         for id in owners.keys where side.failures[id] == nil { violations.append("\(id) has no table entry") }
         for id in side.failures.keys where owners[id] == nil { violations.append("\(id) has no owner") }
+        // The core's input-turn waits live on a core's side only (#700 K2-1).
+        let coreReplies = side.coreInputReplies
+        if !coreReplies.onCore, !coreReplies.waits.isEmpty || !coreReplies.dropped.isEmpty {
+            violations.append("core input waits \(coreReplies.waits.keys.sorted()) (\(coreReplies.dropped.count) dropped) on the keeper's side")
+        }
+        // K2-1 routes the action intake without jobs; K2-2 routes them on the core (plan §16
+        // item 17). A job a core's intake registered has nothing that runs or completes it.
+        if coreReplies.onCore, !actionJobs.isEmpty || !actionSlots.isEmpty {
+            violations.append("core side: a job intake \(actionJobs.keys.sorted()), routed in K2-2")
+        }
         return violations
     }
 
@@ -5385,7 +5387,7 @@ extension KeeperModel {
         }
     }
 
-    fileprivate mutating func actionIntakeBody(
+    mutating func actionIntakeBody(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -5955,7 +5957,7 @@ extension KeeperModel {
 
     /// L1: the identity checks, the entry's removal, its services by value and its jobs'
     /// cancel, and the OnLeave sequence. Without resolvers it goes on to L2 in this segment.
-    fileprivate mutating func leaveBegin(
+    mutating func leaveBegin(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -6041,7 +6043,7 @@ extension KeeperModel {
 
     /// The OnLeave resolvers failed. The player is already removed: its OnLeave is dropped (its
     /// sequence is a gap replay steps over), and the player's game state stays behind.
-    fileprivate mutating func leaveResolversFailed(
+    mutating func leaveResolversFailed(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -6058,7 +6060,7 @@ extension KeeperModel {
 
     /// L2: the OnLeave input's append. A tickless land waits for its input turn (L3 follows it);
     /// a tick land is done.
-    fileprivate mutating func leaveAppend(
+    mutating func leaveAppend(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -6102,7 +6104,7 @@ extension KeeperModel {
     }
 
     /// J2b: the kick target, after the hold. Without one it goes on to J3 in this segment.
-    fileprivate mutating func joinKickCheck(
+    mutating func joinKickCheck(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -6118,7 +6120,7 @@ extension KeeperModel {
 
     /// J3: the insert, after the kick if there was one, the reservation's end, and the OnJoin
     /// request. Without an OnJoin input the admission follows (J3a).
-    fileprivate mutating func joinInsert(
+    mutating func joinInsert(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -6189,7 +6191,7 @@ extension KeeperModel {
 
     /// J4: the OnJoin append, then the admission (or, when the transport doesn't admit, J4b in
     /// this segment).
-    fileprivate mutating func joinAppend(
+    mutating func joinAppend(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -6288,7 +6290,7 @@ extension KeeperModel {
     }
 
     /// J4b: after the admission of a join with an OnJoin input.
-    fileprivate mutating func joinAfterAdmission(
+    mutating func joinAfterAdmission(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -6347,7 +6349,7 @@ extension KeeperModel {
     }
 
     /// The OnJoin resolvers failed: the rollback of the entry, if it is still this join's.
-    fileprivate mutating func onJoinResolversFailed(
+    mutating func onJoinResolversFailed(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -6614,6 +6616,9 @@ extension KeeperModel {
         for item in dropped {
             if let waiter = side.inputTurnWaiters.removeValue(forKey: item.sequence) {
                 failed.append(waiter)
+            } else if let wait = side.coreInputReplies.waits.removeValue(forKey: item.sequence) {
+                // Failed with `landClosed` at the end of this step (`answerDroppedCoreInputWaits`).
+                side.coreInputReplies.dropped.append(wait)
             }
             if ticklessJobTurns.remove(item.sequence) != nil {
                 fillActionSlot(behavior, &side, item.sequence, with: .failure(LandInputRejection.landClosed))
@@ -7759,7 +7764,7 @@ extension KeeperModel {
 
     /// `runInputTurn`'s body, on the model the turn holds. The handlers run inside the hold, as
     /// they have since #877 (`withHandlerStep`); the transport's phase goes through `callOut`.
-    fileprivate mutating func inputTurnBody(
+    mutating func inputTurnBody(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -7951,7 +7956,7 @@ extension KeeperModel {
     /// J2: CanJoin, the stale-join refusal (#234), the drain refusal, the player limit counting
     /// rejoin reservations, and the reservation (#852). `canJoinContext` is nil when the land
     /// has no CanJoin.
-    fileprivate mutating func joinDecide(
+    mutating func joinDecide(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -8021,8 +8026,26 @@ extension KeeperModel {
         return .holdThenKickCheck(JoinDecided(call: call, decision: decision, playerID: playerID, reservation: reservation))
     }
 
+    /// CanJoin's context, under a temporary player ID. A core's J2 builds it again with the
+    /// resolvers' outputs (#700 K2-1), since only the outputs come back from the effect; the one
+    /// difference, the tick its emits are keyed on, is the read-only scope's to drop.
+    func canJoinContext(
+        _ behavior: KeeperBehavior<State>,
+        _ side: KeeperTurnSide,
+        _ call: JoinCall,
+        resolverOutputs: [String: HeldResolverOutput] = [:]
+    ) -> LandContext {
+        makeContext(behavior, side,
+            playerID: PlayerID("_pending"), // Temporary ID for validation
+            clientID: call.clientID,
+            sessionID: call.sessionID,
+            servicesOverride: call.services,
+            resolverOutputs: resolverOutputs
+        )
+    }
+
     /// J1: the CanJoin request. Without resolvers it goes on to J2 in this segment.
-    fileprivate mutating func joinBegin(
+    mutating func joinBegin(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -8032,12 +8055,7 @@ extension KeeperModel {
         guard behavior.definition.lifetimeHandlers.canJoin != nil else {
             return try joinDecide(behavior, &side, &outputs, call, canJoinContext: nil)
         }
-        let ctx = makeContext(behavior, side,
-            playerID: PlayerID("_pending"), // Temporary ID for validation
-            clientID: call.clientID,
-            sessionID: call.sessionID,
-            servicesOverride: call.services
-        )
+        let ctx = canJoinContext(behavior, side, call)
 
         // Execute resolvers in parallel if any are declared
         guard !behavior.definition.lifetimeHandlers.canJoinResolverExecutors.isEmpty else {

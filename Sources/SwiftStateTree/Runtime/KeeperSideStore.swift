@@ -28,8 +28,14 @@ final class KeeperSideStore: @unchecked Sendable {
     /// Whether a step holds the borrow; a nested borrow is a bug.
     private var borrowed = false
 
+    /// Whether an output for `.land` before the owner started that key stops a debug build;
+    /// the test that pins the counted drop turns it off.
+    var assertsOnUnstartedLandKey = true
+
     /// A box for one core. `side` is the core's own fresh side, never the keeper's `turnSide`.
     init(side: KeeperTurnSide) {
+        var side = side
+        side.coreInputReplies.onCore = true
         self.side = side
     }
 

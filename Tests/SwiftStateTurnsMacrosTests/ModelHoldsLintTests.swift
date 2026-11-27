@@ -114,6 +114,21 @@ enum ModelHoldsLint {
         "answer": "the machine's query entry: the same, for queries",
         "step": "the turn frame: borrows the side for the body, the flush and the late re-entry",
         "tickDueStep": "the tick's driver segments (tickAdmit, tickStart, tickEnd, debugEndWork) around its steps",
+        "syncDueStep": "the sync loop's driver segments (the handler, the fold decision, the failure guard) around its step",
+        "ticklessTickStep": "the tickless tick's driver segments (tickAdmit, scheduleInputDrain, debugEndWork)",
+        "inputDrainStep": "the input drain's loop: the batch, the record's submission and the waiters' resume around its steps",
+        "stepSubmitting": "the turn frame, returning the submission: borrows the side for the body, the flush and the late re-entry",
+        "joinDrive": "the join's driver loop: its segments as steps, the transport's admission between two of them, its awaits as runs or waits",
+        "joinStepped": "the join's resumes after its resolvers: the next segment as a step, or the rollback and the end",
+        "finishJoin": "the join's end: the reservation's end as a step, then the reply",
+        "leaveDrive": "the leave's driver: its next await as a run or a wait, or its end",
+        "continueAfterLeave": "a leave's end: the reply, or the kicking join's J3 and the rest of the join",
+        "awaitCoreInputTurn": "a flow's input-turn wait: kept on the side, with the drain's schedule",
+        "answerCoreInputWaits": "the recorded turn's waits, answered in batch order",
+        "answerCoreInputWait": "one wait's answer: the join's end, or the leave's L3 as a step and its continuation",
+        "answerDroppedCoreInputWaits": "the waits a drop failed, taken off the side and answered landClosed",
+        "actionStep": "a tickless action's driver: the closed-land check, the intake as a step, the dropped-input check, its wait",
+        "clientEventStep": "a tickless client event's driver: the closed-land check, the intake as a step, the dropped-input check, its wait",
     ]
     static let sideStoreFramePath = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
 
@@ -1668,7 +1683,7 @@ struct ModelHoldsLintTests {
         // renamed one can't leave a stale exception.
         let frame = Set(report.holders.filter { $0.path == ModelHoldsLint.sideStoreFramePath && !$0.name.contains(" body in ") }.map(\.name))
         #expect(Set(ModelHoldsLint.sideStoreFrame.keys).isSubset(of: frame), "frame members missing: \(Set(ModelHoldsLint.sideStoreFrame.keys).subtracting(frame).sorted())")
-        #expect(ModelHoldsLint.sideStoreFrame.count == 4, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
+        #expect(ModelHoldsLint.sideStoreFrame.count == 19, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
         #expect(report.holders.contains { $0.path == drivers && $0.name == "tickStart" },
                 "holders in \(drivers): \(report.holders.filter { $0.path == drivers }.map(\.name))")
         // Each family of closure holders is found: every member that gives a closure the model

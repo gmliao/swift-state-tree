@@ -21,9 +21,9 @@ package enum TurnEffect {
 /// call, passed to the body `inout`, and flushed exactly once.
 package struct TurnOutputs {
     private var effects: [TurnEffect] = []
-    /// The task of the last submission any flush of this turn made, across every flush (one
-    /// before each call out, and the final one): what `withTurnSubmitting` returns.
-    package fileprivate(set) var lastSubmission: Task<Void, Never>?
+    /// The last submission any flush of this turn made, across every flush (one before each
+    /// call out, and the final one): what `withTurnSubmitting` returns.
+    package fileprivate(set) var lastSubmission: RecorderSubmission?
 
     package init() {}
 
@@ -72,6 +72,9 @@ package struct KeeperTurnSide {
     /// Tickless lands: callers waiting for their input's turn, by input sequence. Actions get
     /// their own response; other inputs get an empty one (or the handler's error).
     var inputTurnWaiters: [Int64: CheckedContinuation<InputOutcome, any Error>] = [:]
+    /// A core's steps waiting for an input turn (#700 K2-1): `inputTurnWaiters` for a flow that
+    /// can't await. Empty on the keeper's own side (`actionTableViolations`).
+    var coreInputReplies = KeeperCoreInputReplies()
     /// Tickless inputs waiting for `debugResume()`.
     var debugHeldInputs: [CheckedContinuation<Void, Never>] = []
     /// The replay fields (D17): set on a re-evaluation keeper, nil on a live one, so a body's
@@ -303,18 +306,31 @@ package struct KeeperTurnSide {
         submissions.submit(label: label, apply)
     }
 
-    /// Applies the staged effects in staging order and empties `outputs`, keeping the task of
-    /// the last submission it made in `outputs.lastSubmission`. Not `mutating`: the keeper calls
+    /// Applies the staged effects in staging order and empties `outputs`, keeping the last
+    /// submission it made in `outputs.lastSubmission`. Not `mutating`: the keeper calls
     /// it on a copy of the side, so no access to its stored side is held while the actions run.
     package func flush(_ outputs: inout TurnOutputs) {
         for effect in outputs.takeAll() {
             switch effect {
             case let .submission(label, apply):
-                outputs.lastSubmission = submissions.submit(label: label, apply)
+                outputs.lastSubmission = RecorderSubmission(task: submissions.submit(label: label, apply))
             case let .action(action):
                 action()
             }
         }
+    }
+}
+
+/// A record submission the side's flush made to the recorder's serial sink: a handle a caller
+/// awaits until the sink took the record. The side starts the work; a turn machine only carries
+/// the handle to the effect that awaits it, so a machine's file names no task (lint-turns
+/// `machine-file`: a machine's steps start no work).
+package struct RecorderSubmission: Sendable {
+    fileprivate let task: Task<Void, Never>
+
+    /// Returns once the recorder's sink applied the submission.
+    package func taken() async {
+        await task.value
     }
 }
 
