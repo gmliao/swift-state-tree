@@ -1,6 +1,6 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
-Revision 0 (2026-11-27), a prep draft. It is based on K2-1's shape in #938 (head 25ec1efb), which is still in review. Each point that depends on Review's verdict on #938 is marked **[#938]**. The parent plan is `Notes/plans/2026-11-25-k2-cut-over-onto-the-turn-core.md` (here "K2 §n"), whose §6 defines K2-2 and K2-3 as one PR, and whose §16 items 14–18 are left open for K2-2.
+Revision 1 (2026-11-27): P-K22-1 run, P-K22-2 settled by reading the code, P-K22-3 sent to a cloud worker; two PRs (K22-Q4); commits 0, 2 and 3 independent of commit 1. Revision 0 was the prep draft. It is based on K2-1's shape in #938 (head 25ec1efb), which is still in review. Each point that depends on Review's verdict on #938 is marked **[#938]**. The parent plan is `Notes/plans/2026-11-25-k2-cut-over-onto-the-turn-core.md` (here "K2 §n"), whose §6 defines K2-2 and K2-3 as one PR, and whose §16 items 14–18 are left open for K2-2.
 
 ## 1. Goal
 
@@ -20,7 +20,7 @@ K2-3, in the same PR, deletes the paths K2-2 made unreachable on live keepers an
   | `.initializeResolved`, `.destroyHandlerResolved`, `.drainFinished` | K2-1b, then K2-2 (item 18) | 1 |
   | `.freeze`, `.resume`, `.awaitResume` | the freeze barrier | 2 |
   | `.awaitInitialized` | the initialization barrier | 2 |
-  | `.shutdown` | K2-2 | 2 |
+  | `.shutdown` | K2-2 | 1 (it ends in the drain) |
   | `.syncStreamDraft` | K2-2 | 3 |
   | queries `.admitClientEvent`, `.syncTurnNow`, `.syncTurnTicket`, `.settle` | `preconditionFailure("… is not routed yet")` | 2 (the first), 3 (the sync three) |
 
@@ -28,22 +28,23 @@ K2-3, in the same PR, deletes the paths K2-2 made unreachable on live keepers an
 
 ## 3. Commits
 
-One PR, one commit per step, each building green. Steps 0–3 are still unwired, so the differential grows with them. Step 4 is the cut-over, and steps 5–6 follow it.
+Two PRs (K22-Q4, Main's lean, 2026-11-27): **K2-2a**, commits 0–3, still unwired, so the differential grows with them and the PR builds green on its own, as K2-1 did; **K2-2b**, commits 4–6, the cut-over, reviewable on its own. One commit per step, each building green.
+
+**Commit 1 is blocked on K2-1b**, which waits on the maintainer (#117). Commits 0, 2 and 3 don't depend on it: none of them routes the initialization, the destroy drain or anything that ends in them. Where a commit-2 flow ends in one of those (the stop's drain, an initialization barrier still closed), that part is commit 1's, named below. K2-2a can merge without commit 1; K2-2b needs it, since the wiring needs the routed subset total.
 
 **0. The action jobs on the core** (K2 §16 item 17). The job lane's four keeper-only parts move together:
 - the job's task, staged through `side.keeperReference` and installed in `jobTasks`, becomes one `turn.run(.actionJob(…))` per job, and `.actionResolved(seq, token, result)` comes back. Its step checks the job, the entry generation and the sealed token (K2 §4.3);
-- the abandonment's `onEnded` release becomes a result input that `perform` returns when the job's task is cancelled. `handleAbandoned` covers a run the core abandons (to verify: which of the two the core calls on a cancelled `run`; probe P-K22-2);
-- the caller's cancel through the job box (`callerCancelled`) becomes `sendAndWait(_, cancellation: .cancelsCall)`. Per `CallerCancellation`'s doc, a stepped input goes on and only the caller stops waiting with `CancellationError`. That matches today's "the job keeps running, the caller leaves" only if today's caller also gets `CancellationError`; P-K22-2 checks both sides;
+- the abandonment's `onEnded` release becomes a result input that `perform` returns when the job's task is cancelled; `handleAbandoned` covers a run the core abandons (which one the core calls on a cancelled `run` is read from TurnActor.swift's `run` handling in rev 1, with a test citation, not a probe: the core's own tests pin it);
+- **the caller's cancel. `.cancelsCall` alone doesn't match today** (found reading the code for P-K22-2). Today `awaitActionResult`'s cancel handler (LK:2370 at #938's head) sets `callerCancelled` and cancels the job's task synchronously, and `.actionResolved`'s segment then turns a success into `CancellationError` (LK:5963): **the action is not applied**. The core's `.cancelsCall` on a stepped input lets the work go on and only the caller stops waiting (CancellationTests.swift:78, test 24: "the work goes on and its reply finds no waiter"), so the action would be applied. **Proposal:** keep the box. The job's box (the `callerCancelled` flag and the task, Sendable, not plain) rides the `.actionJob` effect and comes back on `.actionResolved`; the model never stores it. The caller's wait is `sendAndWait(.awaitActionResult(seq), cancellation: .cancelsCall)` inside a `withTaskCancellationHandler` whose `onCancel` sets the box's flag and cancels its task, synchronously as today, so a completion that hasn't run yet fails with `CancellationError`. The wait finds its box through a table on `LiveLandTurns` keyed by the sequence (beside the services table), written by `flush` from the intake's output and removed by `.actionResolved`'s output. The differential pins it: a job whose caller cancels before the resolver returns is not applied on either path, and its caller gets `CancellationError`;
 - `awaitActionResult`'s `slotWaiters` become `coreSlotReplies`, checked like `coreInputReplies`: empty on the keeper's path (a violation entry, not an assert).
 
 Tests: the differential gets a job case per lane shape (a resolver job that succeeds, throws, and is cancelled by its caller), plus §16 item 10's job example: a step that starts a job and cancels it, so the task observes the cancel and the drain doesn't wait for a full run. K2-1's "core side: a job intake" violation entry goes; the job intake is now routed.
 
-**1. The initialization and the destroy drain** (after K2-1b). `.initialize` and `.destroyHandler` become effects; `.initializeResolved`, `.destroyHandlerResolved` and `.drainFinished` are routed onto K2-1b's segments. The differential reruns K2-1b's hold cases (one per await) on the core path. K2 §16 item 13's remaining part goes here: `teardownWaitsForTheFailingTurn`'s scenario, from the failure through the teardown and the drain, on the core path, with every staged start beginning with a call into the owner (SE-0420).
+**1. The initialization and the destroy drain** (after K2-1b). `.initialize` and `.destroyHandler` become effects; `.initializeResolved`, `.destroyHandlerResolved` and `.drainFinished` are routed onto K2-1b's segments. The differential reruns K2-1b's hold cases (one per await) on the core path. K2 §16 item 13's remaining part goes here: `teardownWaitsForTheFailingTurn`'s scenario, from the failure through the teardown and the drain, on the core path, with every staged start beginning with a call into the owner (SE-0420). Also here, because they end in these flows: the stop's `.shutdown` (queued leaves first, then the destroy, on tick lands too, #511's follow-up, then the drain), and the initialization barrier's closed case (the waiters recorded by commit 2 are answered by the step that ends the initialization).
 
-**2. The barriers, the freeze and the shutdown.**
-- `.awaitInitialized` and `.awaitResume` are `sendAndWait` inputs whose step replies at once when the barrier is open, and otherwise records the caller in a model table answered by the step that opens it (K2 §4.2, "barriers, not holds"). No intake is parked by a hold, so a query can't overtake a parked call.
+**2. The barriers and the freeze.**
+- `.awaitInitialized` and `.awaitResume` are `sendAndWait` inputs whose step replies at once when the barrier is open, and otherwise records the caller in a model table answered by the step that opens it (K2 §4.2, "barriers, not holds"). No intake is parked by a hold, so a query can't overtake a parked call. Commit 2 routes `.awaitResume` whole, and `.awaitInitialized`'s open case and its waiter table; the closed case's answer is commit 1's.
 - `.freeze` / `.resume` route `debugFreeze` / `debugResume`. This ends #129's hand re-check: the freeze's generation is the step's own read, so the post-await re-check goes.
-- `.shutdown` routes the stop: queued leaves first, then the destroy, on tick lands too (#511's follow-up), then the drain of commit 1.
 - `.admitClientEvent`'s answer is decided here (§16 item 17's last sentence): **the proposal** is no value, as today (`Void` in `KeeperAnswer`), since no caller reads a sequence. The plan's `Result<Int64>` is dropped unless Review names a caller.
 
 **3. The sync entries, the admission path and the services table.**
@@ -69,7 +70,7 @@ Tests: the differential gets a job case per lane shape (a resolver job that succ
 
 | Item | K2-2's answer | Depends on |
 |---|---|---|
-| 14, the frame's isolation on the core | the step passes `LiveLandTurns` as `isolation:` to `KeeperTurnFrame.run`; `preconditionOnOwner` at step entry stays as the check. Probe P-K22-1 shows whether the core's synchronous `step` can pass an actor it is isolated to without a hop | [#938] if Review asks for a different frame shape |
+| 14, the frame's isolation on the core | **keep K2-1's shape**: `preconditionOnOwner` at step entry, `withSide` per borrow, and every staged start begins with a call into the owner (§16 item 13's shape). Passing the owner as `isolation:` through `assumeIsolated` makes the frame's own `#isolation` the owner, but a Task staged in the flush closure still doesn't run on it (P-K22-1), so it buys nothing the check doesn't | [#938] if Review asks for a different frame shape |
 | 15, the tickless results onto the effect | in commit 0 or 2 (whichever first touches the action replies): `.awaitRecordTaken` and `.recordTaken` carry `[seq: Result<InputOutcome, any Error>]`, the waiters are answered from `.recordTaken`'s step, `inputTurnResults` and `coreInputReplies` go in commit 6 | [#938]: the reply plumbing (a) as merged |
 | 16, the input drain's hold and idle waiters | **proposal: drop the hold from the core path.** `.inputDrain` is a test hold; on the core, a test holds the drain by holding its effect (`.awaitRecordTaken`) in the harness's `perform`, which the differential already does (`recordGate`). The idle waiters become a test read of the core (`inputDrainScheduled` false and no drain step pending). The tests that hold `.inputDrain` today are listed in rev 1 with their replacement | Review |
 | 17, the action jobs | commit 0, before the wiring | [#938]: `actionTableViolations`' entries as merged |
@@ -90,11 +91,26 @@ Tests: the differential gets a job case per lane shape (a resolver job that succ
 | K22-Q1 | Item 16: drop the `.inputDrain` hold on the core path (§4)? | Review |
 | K22-Q2 | `.admitClientEvent`'s answer: no value, as today (commit 2)? | Review |
 | K22-Q3 | The loop drivers: core timers only if #762 is in, else the loop Task sends with the existing loop generation as its epoch (commit 4)? | Review |
-| K22-Q4 | One PR for K2-2 + K2-3 (K2 §6), or a smaller first read: commits 0–3 (unwired) as one PR, 4–6 as the next? With commits 0–3 unwired, the split builds green on its own, as K2-1 did | Review, then Main |
+| K22-Q4 | One PR for K2-2 + K2-3 (K2 §6), or two: K2-2a (commits 0–3, unwired) and K2-2b (4–6, the cut-over)? Main's lean: two, so the cut-over is reviewable on its own; §3 is written that way | Review |
 
 ## 7. Probes
 
-Not run yet: they need a build, and this revision was written while the build slot was held for other work. Rev 1 quotes their output.
-- **P-K22-1** (item 14): a one-file `swiftc` program with a `TurnActor`-shaped actor whose `nonisolated` synchronous step, called under `assumeIsolated`, passes the actor as `isolation:` to an `async` frame function. Question: does it compile without an extra hop, and does `#isolation` inside the frame report the actor.
-- **P-K22-2** (commit 0): against `SwiftStateTurns` at main, a `sendAndWait(_, cancellation: .cancelsCall)` whose input steps and starts a `run`; cancel the caller. Question: does the caller get `CancellationError`, does the effect keep running, and does its result input step (not `handleAbandoned`). Then today's keeper: an action with a slow resolver job and a cancelled caller, to compare what the caller gets.
-- **P-K22-3** (commit 4): the facade forwarding with `live.assumeIsolated` when the adapter's `unownedExecutor` is the facade's and the facade's is `LiveLandTurns`'. Question: one serial executor for all three, checked by `preconditionIsolated` from each.
+Run on macOS, Apple Swift 6.4.2, `swiftc -swift-version 6`, one-file programs outside the repository. None traps: the checks print instead of asserting.
+
+**P-K22-1 (item 14).** An actor `Owner` whose isolated `submit` calls a synchronous, nonisolated `step`, as the core calls `handle`. The step runs a frame with the K2-1 signature, `run(isolation: isolated (any Actor)? = #isolation, flush:, body)`, (a) with the default and (b) inside `owner.assumeIsolated { iso in run(isolation: iso, …) }`; the flush stages a Task with no capture (b1) and one that captures `iso` (b2); (c), a control, stages a Task capturing `iso` directly in the `assumeIsolated` closure. Each Task prints whether its `#isolation` is the owner. Output:
+
+```
+frame #isolation is owner: false
+(a) flush: isolation nil statically
+frame #isolation is owner: true
+(b1) staged Task, no capture: on owner = false
+(b2) staged Task capturing iso: on owner = false
+(c) Task in the iso-isolated closure, capturing iso: on owner = false
+log: ["b2 ran"]
+```
+
+So passing `isolation:` changes the frame's own isolation and nothing staged from it: no Task here inherits the owner, the control included. A staged start's work reaches the owner only by calling it (b2's `await iso.note`). §4's item 14 row follows from this. (c) is narrower than SE-0420's capture rule suggests, so no K2-2 design point relies on inheritance either way.
+
+**P-K22-2 (commit 0): settled by reading the code, no probe.** The core's side is pinned by its own test: CancellationTests.swift:78, test 24, `.cancelsCall` after the step, where "the work goes on and its reply finds no waiter". The keeper's side is `awaitActionResult`'s cancel handler and `.actionResolved`'s segment at #938's head (LK:2370, LK:5963). The two differ, and commit 0's caller-cancel bullet keeps the box for that reason. The differential case in commit 0 is the evidence once written.
+
+**P-K22-3 (commit 4): sent to a cloud worker.** Three actors share one executor (the adapter's `unownedExecutor` is the facade's, the facade's is `LiveLandTurns`'), and the facade forwards with `live.assumeIsolated`. The probe's question is whether `assumeIsolated` traps, so it is faultable and doesn't run on the Mac. Two-level sharing is already production evidence: the adapter runs on the keeper's executor (TA:113) and calls `keeper.assumeIsolated` (TA:3831). The probe adds the third level. Rev 2 quotes its output.
