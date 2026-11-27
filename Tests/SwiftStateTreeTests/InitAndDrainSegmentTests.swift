@@ -471,6 +471,46 @@ struct InitAndDrainSegmentTests {
         #expect(transport.destroyedCount == 1)
     }
 
+    @Test("T8, replay: a re-evaluation keeper's drain runs no destroy handler, and a transport attached during onLandDestroyed is replaced the same way")
+    func replayAttachDuringOnLandDestroyed() async throws {
+        let (landID, gate) = segmentLandID("destroyed")
+        let transport = SegmentTransport(gate: gate)
+        let metadata = ReevaluationRecordMetadata(
+            landID: landID,
+            landType: "seg",
+            createdAt: Date(timeIntervalSince1970: 0),
+            metadata: [:],
+            landDefinitionID: "seg",
+            version: ReevaluationRecordVersion.current
+        )
+        let keeper = LandKeeper<SegmentState>(
+            definition: makeSegmentDefinition(tick: false),
+            initialState: SegmentState(),
+            mode: .reevaluation,
+            reevaluationSource: JSONReevaluationSource(metadata: metadata, frames: []),
+            autoStartLoops: false,
+            landID: landID,
+            transport: transport
+        )
+        await keeper.awaitInitialization()
+        let drain = Task { await keeper.forceShutdown() }
+        guard await gate.waitUntilEntered("onLandDestroyed") else { return }
+
+        let held = await keeper.lifecycleFlagsForTesting()
+        #expect(held.destroyHandlersStarted)
+        #expect(held.destructionFinished == false)
+        let late = SegmentTransport()
+        await keeper.setTransport(late)
+        #expect((await keeper.transportForTesting as AnyObject?) === late)
+
+        gate.release()
+        await drain.value
+        #expect(await keeper.lifecycleFlagsForTesting().destructionFinished)
+        #expect(await keeper.transportForTesting is ReleasedLandTransport)
+        #expect(late.destroyedCount == 0)
+        #expect(await keeper.currentState().log.isEmpty, "no land code ran (#826)")
+    }
+
     @Test("T8b: a keeper with no transport tells its bound requester, which stays bound until onLandDestroyed returns")
     func boundRequesterClearedAfterOnLandDestroyed() async throws {
         let (landID, gate) = segmentLandID("destroyed")
