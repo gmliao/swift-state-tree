@@ -4909,20 +4909,20 @@ extension KeeperModel {
     fileprivate typealias InputApplication = LandKeeper<State>.InputApplication
     typealias HandlerRandom = LandKeeper<State>.HandlerRandom
     typealias CallOutcome<Answer> = LandKeeper<State>.CallOutcome<Answer>
-    fileprivate typealias JoinCall = LandKeeper<State>.JoinCall
+    typealias JoinCall = LandKeeper<State>.JoinCall
     fileprivate typealias AppliedInputs = LandKeeper<State>.AppliedInputs
     typealias FailurePath = LandKeeper<State>.FailurePath
-    fileprivate typealias JoinDecided = LandKeeper<State>.JoinDecided
-    fileprivate typealias JoinRequest = LandKeeper<State>.JoinRequest
-    fileprivate typealias LeaveCapture = LandKeeper<State>.LeaveCapture
-    fileprivate typealias LeaveRequest = LandKeeper<State>.LeaveRequest
+    typealias JoinDecided = LandKeeper<State>.JoinDecided
+    typealias JoinRequest = LandKeeper<State>.JoinRequest
+    typealias LeaveCapture = LandKeeper<State>.LeaveCapture
+    typealias LeaveRequest = LandKeeper<State>.LeaveRequest
     fileprivate typealias LegacyJoinCall = LandKeeper<State>.LegacyJoinCall
     fileprivate typealias LegacyJoinRequest = LandKeeper<State>.LegacyJoinRequest
-    fileprivate typealias OnJoinCapture = LandKeeper<State>.OnJoinCapture
+    typealias OnJoinCapture = LandKeeper<State>.OnJoinCapture
     typealias JoinOutcome = LandKeeper<State>.JoinOutcome
     typealias PendingLifecycleItem = LandKeeper<State>.PendingLifecycleItem
     typealias EmittedEvent = KeeperEmittedEvent
-    fileprivate typealias ActionIntakeRequest = LandKeeper<State>.ActionIntakeRequest
+    typealias ActionIntakeRequest = LandKeeper<State>.ActionIntakeRequest
     typealias PendingClientEventItem = LandKeeper<State>.PendingClientEventItem
     typealias PendingClientEventPayload = LandKeeper<State>.PendingClientEventPayload
 

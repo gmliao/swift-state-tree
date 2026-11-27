@@ -157,7 +157,7 @@ enum KeeperContinuation: Sendable {
 enum KeeperCoreInputWait: Sendable {
     /// J4's wait: the join's caller gets `outcome`. `decided` ends the attempt's reservation,
     /// as the keeper's driver does on every exit.
-    case join(KeeperJoinOutcome, KeeperJoinDecided, caller: InputID?)
+    case join(KeeperJoinOutcome, KeeperJoinDecided?, caller: InputID?)
     /// L2's wait: L3 runs, then the leave's continuation.
     case leave(KeeperContinuation)
     /// A tickless delivered action's wait: the intake's work count ends, then the caller gets
