@@ -103,6 +103,8 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     /// - Queued inputs with a scope are withdrawn, what a step queued (`queue`) is dropped, and
     ///   every other queued call is answered `closed`, as by `close`. A caller the machine itself
     ///   keeps waiting is the machine's to answer, in this same step.
+    /// - Every barrier wait ends: each steps `handleWaitEnded(.ended)` with its payload, oldest
+    ///   first, after this step; a later `wait` is refused `.ended`.
     /// - From here on no key can be started, so no request is made, no timer armed and no keyed
     ///   output emitted, `queue` drops its input and `followUp` refuses. `run`, `query`, control
     ///   inputs and the completions of work in flight still step, and what this step produced
@@ -115,6 +117,14 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         core.rt.timers.removeAll()
         core.rt.timerKeys.removeAll()
         core.rt.timersToArm.removeAll()
+        // Every barrier wait ends, each payload handed back through `handleWaitEnded` in a step of
+        // its own after this one: no timeout can answer it once the deadlines stop. The driver
+        // moves the entries after it has published this step's replies, so a caller whose reply
+        // is staged (`reply(after:)` of a request this end closes, or one staged in this step) is
+        // claimed by that reply (`.answered`), and the rest end `.ended`, oldest first. A caller
+        // the machine means to answer otherwise is released (`release(where:)`) in this step.
+        if TurnCore<M>.usesBarriers, !core.rt.barrierWaiters.isEmpty { core.rt.endingWaits = true }
+        core.rt.barrierTimersToArm.removeAll()
         // No entry can be live again: the core's timer stops here, in this step (plan §3.7).
         core.stopDeadlines()
         core.rt.ended = true
@@ -299,6 +309,8 @@ public struct Turn<M: TurnMachine>: ~Copyable {
 
     /// Closes intake from outside: queued normal calls are answered `closed`, later ones refused.
     /// Inputs a step queued (`queue`), completions, control inputs, `query` and `run` still step.
+    /// Barrier waits are left alone: those callers have stepped, and a release, their timeout or
+    /// `endAll` ends them.
     @inlinable public mutating func close() {
         core.rt.closed = true
         core.rt.closing = true

@@ -140,6 +140,8 @@ public enum TurnError: Error, Sendable, Equatable {
     case queueFull
     /// Its scope ended or was superseded, or its token was withdrawn, before it stepped.
     case withdrawn
+    /// Its barrier wait's timeout passed (`Turn.wait`), answered by the default hook.
+    case timedOut
 }
 
 /// What a `sendAndWait` does when its task is cancelled. There is no default: each call states it.

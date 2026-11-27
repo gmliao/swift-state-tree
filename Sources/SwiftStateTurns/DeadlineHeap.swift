@@ -4,6 +4,17 @@
 // or its timer is replaced; the core counts it stale, and a wake drops it at the head or a
 // rebuild drops it in bulk. Actor-isolated driver state: no lock.
 
+/// What a deadline entry's ticket names.
+@usableFromInline
+package enum DeadlineKind: UInt8, Equatable, Sendable {
+    /// A request's or a follow-up gate's deadline (`RequestID`).
+    case request
+    /// A key's timer (`Runtime.timerKeys`).
+    case timer
+    /// A barrier wait's timeout (`Runtime.barrierTimers`).
+    case barrier
+}
+
 /// One armed instant. Trivial (no references), so a sift copies no reference counts.
 @usableFromInline
 package struct DeadlineEntry: Equatable, Sendable {
@@ -11,17 +22,26 @@ package struct DeadlineEntry: Equatable, Sendable {
     @usableFromInline package var instant: Int64
     /// The core's arm counter when the entry was pushed: entries at one instant fire in arm order.
     @usableFromInline package var order: UInt64
-    /// A `RequestID`'s raw value, or a timer generation. Never reused within a core.
+    /// A `RequestID`'s raw value, a timer generation or a barrier timeout's generation, by
+    /// `kind`. Never reused within a core and kind.
     @usableFromInline package var ticket: UInt64
-    /// Whether `ticket` is a timer generation (else a request or gate id).
-    @usableFromInline package var isTimer: Bool
+    /// What `ticket` names: liveness, the fire and compaction all read it.
+    @usableFromInline package var kind: DeadlineKind
+
+    /// Whether `ticket` is a timer generation.
+    @inlinable package var isTimer: Bool { kind == .timer }
 
     @inlinable
-    package init(instant: Int64, order: UInt64, ticket: UInt64, isTimer: Bool) {
+    package init(instant: Int64, order: UInt64, ticket: UInt64, kind: DeadlineKind) {
         self.instant = instant
         self.order = order
         self.ticket = ticket
-        self.isTimer = isTimer
+        self.kind = kind
+    }
+
+    @inlinable
+    package init(instant: Int64, order: UInt64, ticket: UInt64, isTimer: Bool) {
+        self.init(instant: instant, order: order, ticket: ticket, kind: isTimer ? .timer : .request)
     }
 
     /// The heap order: earlier instant first, then earlier arm.
