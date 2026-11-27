@@ -223,10 +223,18 @@ struct TransportAdapterSyncBackPressureTests {
         await f.keeper.setTransport(f.adapter)
         try await f.blockWithCycleInWriter(stamp: 1)
         try await f.set(2)
+        // The settle waits behind the held writer: no deadline may fire inside the hold (#928).
+        await f.adapter.setDebugFreezeSettleDeadline(freezeWithoutDeadline)
+        await f.adapter.setDebugFreezeAutoResumeTimeout(freezeWithoutDeadline)
+        let registered = TestGate()
+        registered.open()
+        let writer = await f.adapter.outboundWriter
+        writer.setOnSyncCycleDrainWaitRegisteredForTesting { Task { await registered.arrive() } }
+        defer { writer.setOnSyncCycleDrainWaitRegisteredForTesting(nil) }
 
         let adapter = f.adapter
         let freeze = Task { try await adapter.debugFreeze() }
-        try await Task.sleep(for: .milliseconds(50))
+        try #require(await registered.waitForArrivals(1), "the settle never waited for the writer")
         #expect(has(f.transport.frames(for: f.session), bpMarker(2)) == 0, "the settle waits behind the queued cycle")
         let skippedBefore = await f.adapter.syncSkipCounts().outboundBacklog
 

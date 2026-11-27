@@ -308,6 +308,9 @@ private struct KeptEventsFixture {
             encodingConfig: .messagepack
         )
         await transport.setDelegate(adapter)
+        // The freeze tests hold a settle: no deadline may fire inside the hold (#928).
+        await adapter.setDebugFreezeSettleDeadline(freezeWithoutDeadline)
+        await adapter.setDebugFreezeAutoResumeTimeout(freezeWithoutDeadline)
         let members = names.map(KeptEventsMember.init)
         for member in members {
             await adapter.onConnect(sessionID: member.session, clientID: member.client)
