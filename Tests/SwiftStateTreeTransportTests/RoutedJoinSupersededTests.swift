@@ -373,6 +373,8 @@ struct RoutedJoinSupersededTests {
 
         // The kick returns: a later join arrived, so the routed join is fenced out, and the
         // direct join joins after A's OnLeave.
+        // A is held in its OnLeave resolver: the parked joins haven't joined yet.
+        #expect(await keeper.currentState().joins == ["c-a"], "a join got in during A's OnLeave")
         leaveA.open()
         let directEnded = EventLog()
         Task {
@@ -437,6 +439,8 @@ struct RoutedJoinSupersededTests {
         }
 
         // A's leave ends: both resume; the routed join is fenced out, and the direct one joins.
+        // A is held in its OnLeave resolver: the parked joins haven't joined yet.
+        #expect(await keeper.currentState().joins == ["c-a"], "a join got in during A's OnLeave")
         leaveA.open()
         // A task's value can't be bounded with a task group: bound it on an event its end
         // appends.
@@ -610,6 +614,8 @@ struct StandaloneJoinSupersededTests {
 
         // The kick returns: a later join arrived, so the adapter's join is fenced out, and the
         // direct join joins after A's OnLeave.
+        // A is held in its OnLeave resolver: the parked join hasn't joined yet.
+        #expect(await keeper.currentState().joins == ["c-a"], "a join got in during A's OnLeave")
         leaveA.open()
         let directEnded = EventLog()
         Task {
