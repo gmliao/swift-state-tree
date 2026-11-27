@@ -20,7 +20,11 @@ export function clientCpuCores(): number {
     return os.availableParallelism();
 }
 
-/** The process's cumulative CPU time (user + system), ms. */
+/**
+ * The process's cumulative CPU time (user + system), ms. On Windows this advances in scheduler
+ * ticks of about 15.6 ms, so a window that burns less CPU than one tick reads 0 %; only
+ * windows of several seconds under real load give a meaningful share there.
+ */
 export function processCpuMs(): number {
     const usage = process.cpuUsage();
     return (usage.user + usage.system) / 1000;

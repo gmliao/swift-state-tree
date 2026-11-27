@@ -110,7 +110,14 @@ describe("join failures against a stub server", () => {
             expect(phase.measurement.joined.atMeasuredStart).toBe(4);
             // The one worker's CPU samples cover the measured window.
             expect(phase.measurement.clientCpu.workers).toBe(1);
-            expect(phase.measurement.clientCpu.totalPct).toBeGreaterThan(0);
+            // On Windows `process.cpuUsage()` advances in scheduler ticks of about 15.6 ms, and this
+            // light phase (4 players, 2 actions/s) burns less CPU than one tick in its 1.5 s window,
+            // so the sampler legitimately reads 0 there (#277). Elsewhere it must see some CPU.
+            if (process.platform === "win32") {
+                expect(phase.measurement.clientCpu.totalPct).toBeGreaterThanOrEqual(0);
+            } else {
+                expect(phase.measurement.clientCpu.totalPct).toBeGreaterThan(0);
+            }
         }
         expect(report.phases.map((p) => p.failures)).toEqual([[], [], []]);
         expect(report.phases.every((p) => p.passed)).toBe(true);
