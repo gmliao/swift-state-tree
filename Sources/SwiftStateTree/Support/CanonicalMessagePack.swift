@@ -141,6 +141,10 @@ extension CanonicalMessagePack {
     /// reader and the decoder visit, so a test can note how deep the stack gets (#802).
     @TaskLocal package static var stackProbeForTesting: (@Sendable () -> Void)?
 
+    /// Tests (debug builds): called where the reader refuses a tree nested past `maxDepth`, before
+    /// the throw, so a test can tell that the deep part of a read was sampled (#874).
+    @TaskLocal package static var depthRefusalProbeForTesting: (@Sendable () -> Void)?
+
     /// Tests (debug builds): `AnyCodable` takes its own `encode(to:)` / `init(from:)` instead of
     /// the direct paths, to compare the two.
     @TaskLocal package static var anyCodableGenericForTesting = false
@@ -1033,7 +1037,14 @@ private struct CanonicalReader {
 
     private mutating func enter() throws {
         depth += 1
-        guard depth <= CanonicalMessagePack.maxDepth else { throw CanonicalMessagePackError.nestingTooDeep }
+        guard depth <= CanonicalMessagePack.maxDepth else {
+            #if DEBUG
+            // The refusal's leaf, below the last `readValue` probe: the deepest sampled point of a
+            // read of a too-deep tree (#874). The error's boxing and the unwinding run after it.
+            CanonicalMessagePack.depthRefusalProbeForTesting?()
+            #endif
+            throw CanonicalMessagePackError.nestingTooDeep
+        }
     }
 
     private mutating func readArray(count: Int) throws -> CanonicalNode {

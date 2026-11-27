@@ -10,15 +10,24 @@
 // The frame is built in memory. From 3.7 (#700 K1a) each payload is its canonical MessagePack
 // bytes; the deep one is written by hand, since the encoder refuses a tree that deep.
 //
-// Decoding the deep tree boxes it recursively, about 4 KB of stack per level in a debug build,
-// before the codec's depth check refuses it. Darwin's 544 KiB cooperative-pool thread has no room
-// for 129 levels, so the replay runs on a task executor with an 8 MiB thread, which the keeper (a
-// default actor) runs on as well (#802).
+// The record codec's reader refuses the deep tree on the way down, at level `maxDepth + 1`, so
+// its stack doesn't grow with the input past the limit (#804). In a debug build the deepest point
+// of this replay is about 250 KiB below the thread's top on Darwin (#874): its deepest sampled
+// point, the reader's refusal. That fits a 524 KiB cooperative-pool thread. `onLargeStack` measures it on every run and fails above
+// `stackBound`, so a regression in the codec or in the replay frames above it fails a test
+// instead of overflowing a pool thread.
+//
+// The replay still prefers a task executor with an 8 MiB thread, as headroom, not as a
+// precondition: a re-evaluation keeper's legacy tick can resume off a preferred executor (#872,
+// #874; it goes with #612), and the tests are correct on either thread.
 
 import Foundation
 import Logging
 import Testing
 @testable import SwiftStateTree
+#if canImport(WinSDK)
+import WinSDK
+#endif
 
 @StateNodeBuilder
 struct ReplaySIDecodeState: StateNodeProtocol {
@@ -83,28 +92,100 @@ final class LargeStackTaskExecutor: TaskExecutor, @unchecked Sendable {
     }
 }
 
-/// The large-stack executor's marker on each thread the input handler ran on (nil off it).
-final class ReplaySIStackProbe: @unchecked Sendable {
-    private let lock = NSLock()
-    private var markers: [String?] = []
+#if DEBUG
+/// The address of a local in the caller's frame: the stack's current depth.
+@inline(never)
+private func replaySIStackAddress() -> Int {
+    var local = 0
+    return withUnsafeMutablePointer(to: &local) { Int(bitPattern: $0) }
+}
 
-    func note() {
-        let marker = Thread.current.threadDictionary["LargeStackTaskExecutor"] as? String
-        lock.withLock { markers.append(marker) }
+#if canImport(Glibc)
+/// glibc's `pthread_getattr_np`, a GNU extension Swift's Glibc module doesn't expose, looked up
+/// at run time and called with the C convention. Nil when the lookup fails: the stack can't be
+/// measured there.
+private typealias ReplaySIPthreadGetattrNP = @convention(c) (pthread_t, UnsafeMutablePointer<pthread_attr_t>) -> Int32
+private let replaySIPthreadGetattrNP: ReplaySIPthreadGetattrNP? = {
+    guard let symbol = dlsym(nil, "pthread_getattr_np") else { return nil }
+    return unsafeBitCast(symbol, to: ReplaySIPthreadGetattrNP.self)
+}()
+#endif
+
+/// Whether `replaySIThreadStackTop` can find the current thread's stack top here. Where it
+/// can't, the replay runs and its assertions hold, but the stack isn't measured.
+private let replaySICanMeasureStack: Bool = {
+    #if canImport(Darwin) || canImport(WinSDK)
+    return true
+    #elseif canImport(Glibc)
+    return replaySIPthreadGetattrNP != nil
+    #else
+    return false
+    #endif
+}()
+
+/// The top (highest address) of the current thread's stack. A per-platform call: Darwin has
+/// `pthread_get_stackaddr_np`, glibc has `pthread_getattr_np` (looked up above), Windows has
+/// `GetCurrentThreadStackLimits`, and Foundation has none of them.
+private func replaySIThreadStackTop() -> Int? {
+    #if canImport(Darwin)
+    return Int(bitPattern: pthread_get_stackaddr_np(pthread_self()))
+    #elseif canImport(Glibc)
+    var attributes = pthread_attr_t()
+    guard let getattr = replaySIPthreadGetattrNP, getattr(pthread_self(), &attributes) == 0 else { return nil }
+    defer { pthread_attr_destroy(&attributes) }
+    var base: UnsafeMutableRawPointer?
+    var size = 0
+    guard pthread_attr_getstack(&attributes, &base, &size) == 0, let base else { return nil }
+    return Int(bitPattern: base) + size
+    #elseif canImport(WinSDK)
+    var low: ULONG_PTR = 0
+    var high: ULONG_PTR = 0
+    GetCurrentThreadStackLimits(&low, &high)
+    return Int(bitPattern: UInt(high))
+    #else
+    return nil
+    #endif
+}
+
+/// The most stack the codec's probe points saw in use, measured from the top of the thread each
+/// ran on, whichever thread that was; and how often the reader's depth refusal was sampled.
+final class ReplaySIStackReach: @unchecked Sendable {
+    private let lock = NSLock()
+    private var deepest = 0
+    private var notes = 0
+    private var refusals = 0
+
+    func note() { record(refusal: false) }
+
+    /// The reader's refusal of the deep tree: the deepest sampled point.
+    func noteRefusal() { record(refusal: true) }
+
+    /// One sample, in one locked update: a refusal counts only when its depth was measured, so
+    /// `refusalCount > 0` can't hold with nothing measured.
+    private func record(refusal: Bool) {
+        guard let top = replaySIThreadStackTop() else { return }
+        let used = top - replaySIStackAddress()
+        lock.withLock {
+            deepest = max(deepest, used)
+            notes += 1
+            if refusal { refusals += 1 }
+        }
     }
 
-    var all: [String?] { lock.withLock { markers } }
+    var bytes: Int { lock.withLock { deepest } }
+    var count: Int { lock.withLock { notes } }
+    var refusalCount: Int { lock.withLock { refusals } }
 }
+#endif
 
 @Suite("Replay reports a recorded server input that doesn't decode")
 struct ReplayServerInputDecodeFailureTests {
     static let landType = "replay-si-decode"
 
-    static func definition(probe: ReplaySIStackProbe? = nil) -> LandDefinition<ReplaySIDecodeState> {
+    static func definition() -> LandDefinition<ReplaySIDecodeState> {
         Land(landType, using: ReplaySIDecodeState.self) {
             Rules {
                 HandleServerInput(ReplaySIDecodeInput.self) { state, input, _ in
-                    probe?.note()
                     state.hits.append("server:\(input.tag):\(input.n)")
                 }
             }
@@ -152,7 +233,7 @@ struct ReplayServerInputDecodeFailureTests {
 
     /// Replays tick 0 of a frame holding `payloads` as server inputs (sequence = index), comparing
     /// the inputs replay refuses with the frame's `rejected` list.
-    static func replay(_ payloads: [Data], rejected: [Int64], probe: ReplaySIStackProbe? = nil) async throws -> Replayed {
+    static func replay(_ payloads: [Data], rejected: [Int64]) async throws -> Replayed {
         let inputs = payloads.enumerated().map { index, payload in
             ReevaluationRecordedServerInput(
                 sequence: Int64(index),
@@ -167,7 +248,7 @@ struct ReplayServerInputDecodeFailureTests {
         )
         let logs = ResolverReplayLogRecords()
         let keeper = LandKeeper<ReplaySIDecodeState>(
-            definition: definition(probe: probe),
+            definition: definition(),
             initialState: ReplaySIDecodeState(),
             mode: .reevaluation,
             reevaluationSource: JSONReevaluationSource(metadata: metadata(), frames: [frame]),
@@ -175,9 +256,8 @@ struct ReplayServerInputDecodeFailureTests {
             logger: Logger(label: "replay-si-decode") { _ in ResolverReplayLogHandler(records: logs) }
         )
         // Hygiene (#872): removes the keeper's start-up tasks, which don't inherit the caller's
-        // task executor, as a source of pool-thread drains. It is not a guarantee: a replay
-        // handler can still run off the executor's thread (see #872), and the `#require` on the
-        // shallow probe in `onLargeStack` stops the deep decode before it runs there.
+        // task executor, as a source of pool-thread drains. It is not a guarantee: the tick can
+        // still resume off the executor's thread (#874), which `stackBound` allows for.
         await keeper.awaitInitialization()
         _ = await keeper.currentState()
         // As for a record from 3.5 on, which lists every refused input.
@@ -190,18 +270,39 @@ struct ReplayServerInputDecodeFailureTests {
         )
     }
 
-    /// Runs `body` on the large-stack executor, after a shallow replay proves the handler runs
-    /// on that executor's thread: the deep tree is never decoded on a pool thread.
+    /// The most stack the replay may use, from the thread's top, in a debug build (#874): three
+    /// quarters of a Darwin cooperative-pool thread's 524 KiB (`pthread_get_stacksize_np`). The
+    /// quarter held back covers what the samples miss (the refusal's boxing and unwinding, the
+    /// logging after it) and frame growth between toolchains. A pool worker's job starts no
+    /// deeper than the large-stack executor's run loop does (624 bytes against 1632), so nothing
+    /// more is taken off.
+    static let stackBound = 393 << 10
+
+    /// Runs `body` preferring the large-stack executor (headroom, not a precondition; see the
+    /// header). In a debug build, every codec probe point notes how much of its thread's stack
+    /// is in use, and the deepest sampled point must stay under `stackBound`. The reader's
+    /// refusal must be among the samples, so the bound can't pass on the shallow decodes alone.
     @available(macOS 15.0, *)
     static func onLargeStack(_ body: () async throws -> Void) async throws {
         let executor = LargeStackTaskExecutor()
         defer { executor.stop() }
         try await withTaskExecutorPreference(executor) {
-            let probe = ReplaySIStackProbe()
-            let shallow = try await replay([good], rejected: [], probe: probe)
-            #expect(shallow.hits == ["server:ok:2"])
-            try #require(probe.all == [executor.marker])
+            #if DEBUG
+            let reach = ReplaySIStackReach()
+            try await CanonicalMessagePack.$stackProbeForTesting.withValue({ reach.note() }) {
+                try await CanonicalMessagePack.$depthRefusalProbeForTesting.withValue({ reach.noteRefusal() }) {
+                    try await body()
+                }
+            }
+            // A platform `replaySIThreadStackTop` doesn't know: the replay's own assertions ran,
+            // and there is nothing measured to check.
+            guard replaySICanMeasureStack else { return }
+            print("replay-si-decode: deepest sampled stack \(reach.bytes) bytes (\(reach.bytes / 1024) KiB) of \(stackBound / 1024) KiB, \(reach.count) probe points, \(reach.refusalCount) depth refusals")
+            #expect(reach.refusalCount > 0, "the reader's depth refusal wasn't sampled: the bound would check only the shallow decodes")
+            #expect(reach.bytes < stackBound, "the replay used \(reach.bytes / 1024) KiB of its thread's stack, over \(stackBound / 1024) KiB")
+            #else
             try await body()
+            #endif
         }
     }
 

@@ -441,7 +441,6 @@ Each point below rests on Swift semantics, so it is checked by a probe, not argu
 | P-K2-2b (2026-11-26) | the record place of a superseding join's sync-stream clear, before K2-2 moves the admission into a step (§4.5) | `2026-11-26-k2-probe-k22b.swift`, appended to `SyncStreamLeaveReplayTests`, run at #896's head c0ae1b62 | on all four lands the clear follows the superseded session's last output and precedes the new seed; 0 refusals, no failure |
 | P-K2-0 (2026-11-26) | K2-0 is separable: the facade lint is inert on today's tree, `isStepping` is already in, and the in-flight PRs don't touch the lint's rules (§6) | on main at 369dce8d: `git grep -n "enum KeeperOwner\|LiveLandTurns" -- Sources Tests Examples`; `git log -S"isStepping: Bool" -- Sources/SwiftStateTurns/TurnCore.swift`; the `@@` hunks of `scripts/lint-turns.sh` in #902's, #906's and #896's diffs against main | no match. `isStepping` is fdd0ccb9 (#883), with `Tests/SwiftStateTurnsTests/IsSteppingTests.swift`. #902 and #906 change one hunk, at line 60, the `ALLOW_MARKERS` list; #896 doesn't change the lint |
 
-
 What the probes don't cover:
 - the per-step scoped emitter (§4.4): a lock and a flag, ordinary code that K2-E's own tests pin;
 - G3's specialization (§7): a measurement, not a probe.
@@ -547,3 +546,12 @@ This section records the scope changes K2-1's implementation and its review made
 **For K2-2** (Review round 1's notes): a core tick ends `ticksInFlight` and the work count right after staging its record's submission, while the keeper holds both until `submitTurnRecord` returns; the freeze and shutdown drains depend on that, so K2-2 keeps the hold until `.recordTaken` (inert in K2-1, which has no recorder on a tick land's core path outside the trace cases). CanJoin's context is rebuilt after the resolvers from the current entries (§4.3: no context in a stage); in K2-1 the only entry that can differ from J1's is the join's own reservation, `players["_pending"]`. This holds while no real player is named `_pending`: a player with that ID could change the rebuilt context across the resolver await, which K2-1 doesn't guard (Review round 2 on #938); K2-2's J1 values remove the dependence. K2-2 carries the J1 values CanJoin reads in the stage, as plain data, when it routes the joins whose admission awaits.
 
 **Probes:** none new. Each change above is pinned by a K2-1 test (the trace, the refusals, the destroy timer's fire count), not a Swift-semantics question.
+
+## 19. Draft 9 → draft 10 (K2-2's plan, 2026-11-27)
+
+§6 defines K2-2 and K2-3 as one PR. They are now two PRs (K2-2 plan, K22-Q4, Review's answer on rev 2):
+- **K2-2a**, commits 0–3: the action jobs, the initialization and the destroy drain (after K2-1b), the barriers and the freeze, and the sync entries. It stays unwired, so the differential grows with it, as K2-1 did.
+- **K2-2b**, commits 4–6: the cut-over, the K2-Q1 docs, and K2-3's deletions.
+
+§6's conditions are unchanged. Each one applies to the PR that holds its commit. K2-2b's wiring needs the routed subset total and no refusal reachable (K2-2 plan §3.2).
+

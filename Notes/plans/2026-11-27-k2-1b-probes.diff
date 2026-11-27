@@ -1,0 +1,65 @@
+diff --git a/Sources/SwiftStateTree/Runtime/LandKeeper.swift b/Sources/SwiftStateTree/Runtime/LandKeeper.swift
+index 35aee210..c63b851b 100644
+--- a/Sources/SwiftStateTree/Runtime/LandKeeper.swift
++++ b/Sources/SwiftStateTree/Runtime/LandKeeper.swift
+@@ -1264,7 +1264,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
+         initializationTask = task
+         await task.value
+         initializationTask = nil
+-        model.didInitialize = true
++        if !model.didInitialize { FileHandle.standardError.write(Data("PROBE-K21B-P3: didInitialize not set by the last segment\n".utf8)) }
+         resumeInitializationWaitWatchers { _ in true }
+         try throwIfInitializationFailed()
+     }
+@@ -1413,6 +1413,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
+     }
+ 
+     private func performInitialization() async {
++        defer { model.didInitialize = true }
+         // The backstop for a keeper no registration checked (#535 §4): a state type that fails
+         // the synced-state rows, a definition with two handlers for one client-event or
+         // server-input type, or a node it declares once declared twice (#586, #796), one whose
+@@ -1580,6 +1581,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
+                         initialize: initializeRecord
+                     ))
+                 } else {
++                    FileHandle.standardError.write(Data("PROBE-K21B-P2: legacy initialize record branch taken\n".utf8))
+                     await recorder.record(
+                         tickId: 0,
+                         actions: [],
+@@ -1603,7 +1605,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
+         if let interval = tickInterval,
+            definition.lifetimeHandlers.tickHandler != nil
+         {
+-            await configureTickLoop(interval: interval)
++            configureTickLoop(interval: interval)
+         }
+ 
+         // Start sync loop: use configured interval, or fallback to tick interval if not configured
+@@ -1626,7 +1628,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
+         }
+ 
+         if let interval = effectiveSyncInterval {
+-            await configureSyncLoop(interval: interval)
++            configureSyncLoop(interval: interval)
+         }
+     }
+ 
+@@ -2950,7 +2952,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
+     /// keeper was created (the continuous clock, unless a test bound a manual one).
+     private let tickLoopClock = TickLoopClock.forNewKeepers
+ 
+-    private func configureTickLoop(interval: Duration) async {
++    private func configureTickLoop(interval: Duration) {
+         tickTask?.cancel()
+         let phaseOffset = loopPhaseOffset(interval: interval)
+         let clock = tickLoopClock
+@@ -4572,7 +4574,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
+         model.checkActionTables(behavior, turnSide, #function)
+     }
+ 
+-    private func configureSyncLoop(interval: Duration) async {
++    private func configureSyncLoop(interval: Duration) {
+         syncTask?.cancel()
+         let phaseOffset = loopPhaseOffset(interval: interval)
+         appliedSyncPhaseOffset = phaseOffset

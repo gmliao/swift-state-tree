@@ -49,7 +49,7 @@ Review's second round found the type check itself behind a cast that unwraps: `a
 - In swift-corelibs-foundation, an `NSMutableDictionary` stores its keys in a Swift dictionary whose `NSString` keys hash their UTF-16 literally but compare by `String ==`. Inserting the second spelling merges it, keeps both, or traps (`Duplicate keys of type 'NSObject'`), depending on the hash seed: a Linux mutant run trapped in about 1 process in 8.
 - The corelibs bridge of an outer `NSDictionary` or `NSArray` also converts its children eagerly.
 
-So the tests that build a two-spelling `NSDictionary` are compiled for Darwin only (`#if canImport(Darwin)`). A runtime probe of "does this platform keep both?" would itself do the insert that can trap.
+So the tests that build a two-spelling `NSDictionary` are enabled only on Darwin (`#if canImport(Darwin)` decides their `.enabled(if:)` predicates). A runtime probe of "does this platform keep both?" would itself do the insert that can trap.
 
 ## Prevention
 
