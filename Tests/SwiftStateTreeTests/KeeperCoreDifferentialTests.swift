@@ -57,6 +57,61 @@ struct CoreDiffServerEvent: ServerEventPayload {
     let n: Int
 }
 
+@Payload
+struct CoreDiffServerInput: ServerInputPayload {
+    let n: Int
+}
+
+/// The core's clock in the freeze cases: `now` moves only by `advance`, and a sleep returns once
+/// `now` reaches its instant, so a freeze's timeout fires when the case says (the keeper's path
+/// keeps its own clock: its timeouts are a short one against a held work, or one that can't fire).
+final class CoreDiffClock: TurnClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = TurnInstant(nanoseconds: 0)
+    private var sleepers: [(instant: TurnInstant, resume: CheckedContinuation<Void, Never>)] = []
+
+    var now: TurnInstant { lock.withLock { current } }
+
+    func sleep(until instant: TurnInstant) async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let ready: Bool = lock.withLock {
+                    if current >= instant || Task.isCancelled { return true }
+                    sleepers.append((instant, continuation))
+                    return false
+                }
+                if ready { continuation.resume() }
+            }
+        } onCancel: {
+            let woken: [CheckedContinuation<Void, Never>] = lock.withLock {
+                defer { sleepers.removeAll() }
+                return sleepers.map(\.resume)
+            }
+            // A superseded sleep's return does nothing (`TurnClock`), so waking every sleeper is safe.
+            woken.forEach { $0.resume() }
+        }
+    }
+
+    func advance(by duration: Duration) {
+        let woken: [CheckedContinuation<Void, Never>] = lock.withLock {
+            current = current + duration
+            let due = sleepers.filter { $0.instant <= current }
+            sleepers.removeAll { $0.instant <= current }
+            return due.map(\.resume)
+        }
+        woken.forEach { $0.resume() }
+    }
+}
+
+/// A gate armed after the setup, so the setup's own records pass: the next record (or the next
+/// `.turnRecord` hold of the keeper's path) enters it.
+final class CoreDiffArmedGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var armed: WatermarkGate?
+    func arm(_ gate: WatermarkGate) { lock.withLock { armed = gate } }
+    func take() -> WatermarkGate? { lock.withLock { defer { armed = nil }; return armed } }
+}
+
 @PlainData
 struct CoreDiffOutput: ResolverOutput {
     let value: Int
@@ -72,6 +127,37 @@ private enum CoreDiffLeaveFailures {
         lock.withLock { if fails { failing.insert(landID) } else { failing.remove(landID) } }
     }
     static func fails(_ landID: String) -> Bool { lock.withLock { failing.contains(landID) } }
+}
+
+/// An action whose resolver runs in a job (K2-2 plan, commit 0): it throws
+/// `CoreDiffError(token: n)` when `fails`, and waits on its land's gate when one is set.
+@Payload
+struct CoreDiffJobAction: ActionPayload {
+    typealias Response = CoreDiffAck
+    let n: Int
+    let fails: Bool
+}
+
+@PlainData
+struct CoreDiffJobResolver: Resolver {
+    typealias Dependencies = NoServices
+    typealias Output = CoreDiffOutput
+    let n: Int
+    let fails: Bool
+    let landID: String
+    func resolve(_ deps: NoServices) async throws -> CoreDiffOutput {
+        await CoreDiffJobGates.gate(landID)?.enterAndWait()
+        if fails { throw CoreDiffError(token: n) }
+        return CoreDiffOutput(value: n)
+    }
+}
+
+/// A job's resolver gate, by land ID: a case that holds the job sets it on both lands.
+enum CoreDiffJobGates {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var gates: [String: WatermarkGate] = [:]
+    static func set(_ landID: String, _ gate: WatermarkGate?) { lock.withLock { gates[landID] = gate } }
+    static func gate(_ landID: String) -> WatermarkGate? { lock.withLock { gates[landID] } }
 }
 
 struct CoreDiffJoinResolver: ContextResolver {
@@ -121,12 +207,17 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
         ClientEvents { Register(CoreDiffEvent.self) }
         ServerEvents { Register(CoreDiffServerEvent.self) }
         Rules {
+            HandleServerInput(CoreDiffServerInput.self) { state, input, _ in state.log.append("input:\(input.n)") }
             if shape.joinResolvers {
                 CanJoin(resolvers: CoreDiffJoinResolver.self) { _, session, _, _ in .allow(playerID: PlayerID(session.playerID)) }
                 OnJoin(resolvers: CoreDiffJoinResolver.self) { state, _, ctx in state.log.append("join:\(ctx.playerID.rawValue)") }
             } else {
                 CanJoin { _, session, _ in .allow(playerID: PlayerID(session.playerID)) }
-                OnJoin { state, ctx in state.log.append("join:\(ctx.playerID.rawValue)") }
+                OnJoin { state, ctx in
+                    state.log.append("join:\(ctx.playerID.rawValue)")
+                    // The freeze cases' land failure: a join isn't held by the freeze.
+                    CoreDiffHandlerReentry.fire(ctx.landID)
+                }
             }
             if !shape.noOnLeave {
                 if shape.leaveResolver {
@@ -139,6 +230,12 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
                 if action.fails { throw CoreDiffError(token: action.n) }
             }, apply: { state, action, _ in
                 state.log.append("action:\(action.n)")
+                return CoreDiffAck(n: action.n)
+            })
+            HandleAction(CoreDiffJobAction.self, resolvers: { _, action, ctx in
+                CoreDiffJobResolver(n: action.n, fails: action.fails, landID: ctx.landID)
+            }, validate: { _, _, _, _ in }, apply: { state, action, output, _ in
+                state.log.append("job:\(action.n):\(output?.value ?? -1)")
                 return CoreDiffAck(n: action.n)
             })
             HandleEvent(CoreDiffEvent.self, validate: { _, event, _ in
@@ -181,6 +278,8 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     private(set) var inputsSeen: [String] = []
     /// When set, every `.awaitRecordTaken` effect waits here before it runs (released: passes).
     nonisolated let recordGate: WatermarkGate?
+    /// The next `.awaitRecordTaken` effect after `arm` waits here (the freeze cases' held work).
+    nonisolated let armedRecordGate = CoreDiffArmedGate()
     /// The twin's source keeper, whose executor this actor shares (as the facade will share the
     /// core's, plan §3): a callback that re-enters the keeper with `assumeIsolated` then runs.
     nonisolated let owner: LandKeeper<State>
@@ -189,10 +288,15 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     private var armedFlush: (input: KeeperInput<State>, query: KeeperQuery)?
     private(set) var flushQueryAnswers: [(answer: KeeperAnswer<State>, pendingAtQuery: [Int64], tickAtQuery: Int64)] = []
 
-    init(_ twin: (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>), recordGate: WatermarkGate? = nil) {
+    init(_ twin: (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>), recordGate: WatermarkGate? = nil,
+         clock: CoreDiffClock? = nil) {
         self.recordGate = recordGate
         owner = twin.owner
-        core = TurnCore(machine: twin.model, behavior: twin.behavior, queueLimit: 1024, maxReleasesPerBatch: 64, clock: SystemTurnClock())
+        if let clock {
+            core = TurnCore(machine: twin.model, behavior: twin.behavior, queueLimit: 1024, maxReleasesPerBatch: 64, clock: clock)
+        } else {
+            core = TurnCore(machine: twin.model, behavior: twin.behavior, queueLimit: 1024, maxReleasesPerBatch: 64, clock: SystemTurnClock())
+        }
         store = twin.store
         definition = twin.behavior.definition
     }
@@ -244,6 +348,29 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         return try await sendAndWait(input, cancellation: .ignoresCancel)
     }
 
+    /// The box of the job `sequence` (the side's job table): a waiting caller cancels the job
+    /// through it, as the keeper's `awaitActionResult` handler does.
+    func jobBox(_ sequence: Int64) -> KeeperActionJobTask? {
+        store.withSide { $0.actions.jobTask(sequence) }
+    }
+
+    /// The sync entries, as the keeper's: each query names the owner, and its arm asks the
+    /// port's witness at the keeper entry's point (K2-2 plan §9, #948 round 2). `query` answers
+    /// in place (`TurnActor.query` steps synchronously).
+    func syncTurnNow(via port: any LandKeeperTransport, reason: SyncTurnReason, ticket: SyncTurnTicket? = nil) -> InTurnSyncResult {
+        guard case let .syncTurn(result) = ask(.syncTurnNow(port: port, owner: owner, reason: reason, ticket: ticket)) else {
+            preconditionFailure("syncTurnNow's answer")
+        }
+        return result
+    }
+
+    func syncTurnTicket(via port: any LandKeeperTransport) -> SyncTurnTicket? {
+        guard case let .syncTurnTicket(ticket) = ask(.syncTurnTicket(port: port, owner: owner)) else {
+            preconditionFailure("syncTurnTicket's answer")
+        }
+        return ticket
+    }
+
     func ask(_ question: KeeperQuery) -> KeeperAnswer<State> {
         query(question)
     }
@@ -284,12 +411,34 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
                 return nil
             }
             result = .leaveStepped(capture, continuation, await Self.resolve(handlers.onLeaveResolverExecutors, resolverContext, landContext, .onLeave))
-        case let .awaitRecordTaken(submission, applied, endsTickWork):
+        case let .awaitRecordTaken(submission, applied, results, endsTickWork):
             await recordGate?.enterAndWait()
+            await armedRecordGate.take()?.enterAndWait()
             await submission?.taken()
-            result = .recordTaken(applied: applied, endsTickWork: endsTickWork)
-        case .action, .initialize, .destroyHandler:
-            Issue.record("K2-1 routes no \(effect) effect")
+            result = .recordTaken(applied: applied, results: results, endsTickWork: endsTickWork)
+        case let .actionJob(start):
+            // As the keeper's staged start: the task goes into the box (a cancel that came first
+            // cancels it), runs the resolvers under the job's own abandonment, and its result
+            // comes back as `.actionResolved`.
+            let resolved = CoreDiffResolved()
+            let task = Task<Void, Never> {
+                do {
+                    let ctx = try await ResolverExecutor.executeResolvers(
+                        executors: start.executors, resolverContext: start.resolverContext,
+                        landContext: start.landContext, abandonment: start.box.abandonment)
+                    resolved.set(.success(ctx.getAllResolverOutputs()))
+                } catch {
+                    resolved.set(.failure(error))
+                }
+            }
+            start.box.install(task)
+            await task.value
+            result = .actionResolved(sequence: start.sequence, resolved.value)
+        case let .actionJobRelease(sequence, abandonment):
+            await abandonment.waitUntilEnded()
+            result = .actionJobReleased(sequence: sequence)
+        case .initialize, .destroyHandler:
+            Issue.record("K2-2a commit 0 routes no \(effect) effect")
             result = nil
         }
         if let result { await noteResult(result.routeName) }
@@ -373,7 +522,9 @@ enum CoreDiffHandlerReentry {
 /// One path's ordered trace (§6, MF3's fix): every port call with its contents, and every effect
 /// a flush runs (the staged actions and the recorder hand-offs, by label), in the order they
 /// happen. `runsSyncPhaseInTurn` is left out: the keeper's path asks the port, the core's step
-/// carries its input's read (K2-1, until K2-2's binding token), a stated asymmetry.
+/// carries its input's read (K2-1, until K2-2's binding token), a stated asymmetry. The same holds
+/// for a requested sync-only turn (`.syncTurnNow`): its arm asks the witness once, and the body's
+/// second ask inside `callOut` is short-circuited on the core (K2-2 plan §10).
 final class CoreDiffTrace: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String] = []
@@ -384,7 +535,7 @@ final class CoreDiffTrace: @unchecked Sendable {
 
 /// The port that writes the trace. When armed, its `runSyncPhaseInTurn` re-enters `keeper` once
 /// with a guarded entry (`submitSyncStream`), which the sentinel refuses mid-step.
-final class CoreDiffTraceTransport: LandKeeperTransport, @unchecked Sendable {
+final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
     /// Which sync follow-up a committed or deferred phase asks for (Review round 2 on #938).
     enum FollowUp: Sendable, CaseIterable { case none, joinsAwaiting, keptEvents, deferred }
     let trace: CoreDiffTrace
@@ -395,13 +546,37 @@ final class CoreDiffTraceTransport: LandKeeperTransport, @unchecked Sendable {
 
     func armReentry(_ keeper: LandKeeper<CoreDiffState>) { lock.withLock { reentryKeeper = keeper } }
 
+    private weak var witnessReentryKeeper: LandKeeper<CoreDiffState>?
+    private var witnessCalls = 0
+    /// The next in-turn witness re-enters `keeper` (the settle's `.settleCheck`, #948 round 2).
+    func armWitnessReentry(_ keeper: LandKeeper<CoreDiffState>) { lock.withLock { witnessReentryKeeper = keeper } }
+    /// How many times the in-turn witness was asked. Not traced: the ordered traces leave the
+    /// witness out (#938 round 1).
+    var witnessCount: Int { lock.withLock { witnessCalls } }
+
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async { trace.append("sendEvent \(event) to \(target)") }
     func syncNowFromTransport() async { trace.append("syncNow") }
     func syncBroadcastOnlyFromTransport() async { trace.append("syncBroadcastOnly") }
     func onLandDestroyed() async { trace.append("onLandDestroyed") }
     func landDidFail(_ failure: LandFailure) async { trace.append("landDidFail \(failure.kind) \(failure.detail)") }
     func closeOutputs(for failure: LandFailure) { trace.append("closeOutputs \(failure.kind) \(failure.detail)") }
-    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    /// What the in-turn witness answers (a refusing port answers false for every owner).
+    var witnessAnswer = true
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool {
+        if let reentry = lock.withLock({ () -> LandKeeper<CoreDiffState>? in
+            witnessCalls += 1
+            defer { witnessReentryKeeper = nil }
+            return witnessReentryKeeper
+        }) {
+            trace.append("re-enter submitSyncStream from the witness")
+            reentry.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the witness's re-entry the sentinel refuses
+        }
+        return lock.withLock { witnessAnswer }
+    }
+    func runSettlePhaseInTurn<S: StateNodeProtocol>(state: S, settle: InTurnSettle, recording: InTurnSyncRecording?) -> InTurnSyncOutput {
+        trace.append("runSettlePhaseInTurn \(settle.generation)")
+        return InTurnSyncOutput(.notRequested, syncStream: [], settle: .empty(membershipEpoch: 0))
+    }
     func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
         trace.append("admitJoiningSession \(playerID) \(clientID) \(sessionID) \(joinSequence.map(String.init) ?? "-")")
         return .notAdmitted
@@ -427,6 +602,14 @@ final class CoreDiffTraceTransport: LandKeeperTransport, @unchecked Sendable {
         case .none, .joinsAwaiting: return InTurnSyncOutput(.committed(clearDirtyFlags: true))
         }
     }
+}
+
+/// A job task's result, set once by the task and read after it ends.
+final class CoreDiffResolved: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<[String: HeldResolverOutput], any Error> = .failure(CancellationError())
+    func set(_ value: Result<[String: HeldResolverOutput], any Error>) { lock.withLock { stored = value } }
+    var value: Result<[String: HeldResolverOutput], any Error> { lock.withLock { stored } }
 }
 
 final class CoreDiffCounter: @unchecked Sendable {
@@ -502,6 +685,9 @@ struct CoreDiffDigest: Equatable, Sendable, CustomStringConvertible {
     static let statedAsymmetries: [String: String] = [
         "hasHeldTransport": "the twin's copy sets it from the twin's own transport (`coreTwinForTesting`)",
         "transportRecordsFolds": "the same",
+        // K22-Q6: the keeper's path holds a batch's results here until its record is in; the
+        // core's results ride the record effect. Checked per path in `expectSame`.
+        "inputTurnResults": "the core carries a batch's results on its record effect (K2-2 item 15)",
     ]
     /// Fields the projections above compare. `players`, `rejoinReservations` and `pendingItems`
     /// are compared whole too, in `otherModelFields` (metadata, guest and device identity,
@@ -571,7 +757,8 @@ private struct CoreDiffPair {
     var transports = false
 
     static func make(_ shape: CoreDiffShape, _ name: String, holds: (@Sendable (LandKeeperHoldPoint) async -> Void)? = nil,
-                     pathHolds: (@Sendable (String, LandKeeperHoldPoint) async -> Void)? = nil) async -> CoreDiffPair {
+                     pathHolds: (@Sendable (String, LandKeeperHoldPoint) async -> Void)? = nil,
+                     keeperRecordGate: CoreDiffArmedGate? = nil, clock: CoreDiffClock? = nil) async -> CoreDiffPair {
         let landID = "core-diff:\(name):\(UUID().uuidString)"
         func keeper() -> LandKeeper<CoreDiffState> {
             LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: landID)
@@ -587,9 +774,18 @@ private struct CoreDiffPair {
             await direct.installHolds { await pathHolds("keeper", $0) }
             await twinSource.installHolds { await pathHolds("core", $0) }
         }
+        if let keeperRecordGate {
+            // The keeper's held work: its next record after `arm` waits at `.turnRecord`.
+            await direct.installHolds { point in
+                if point == .turnRecord, let gate = keeperRecordGate.take() { await gate.enterAndWait() }
+            }
+        }
         await direct.awaitInitialization()
         await twinSource.awaitInitialization()
-        let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting())
+        // The action tables' mid-step audit, on both paths (the twin copies the source's flag).
+        await direct.setActionTableAuditForTesting(true)
+        await twinSource.setActionTableAuditForTesting(true)
+        let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting(), clock: clock)
         await harness.start()
         // The destroy-timer cases read the last ticket after a cancel, on both paths.
         await direct.keepLastDestroyTicketForTesting()
@@ -605,12 +801,18 @@ private struct CoreDiffPair {
 
     /// The two paths' digests match, nothing is left on the core's side, and no deferred input
     /// reached the machine.
-    func expectSame(_ step: String, sourceLocation: SourceLocation = #_sourceLocation) async {
+    /// `logOrderFree`: the state's log is compared as a multiset, for a case whose keeper order
+    /// is the scheduler's (the case asserts the core's order itself).
+    func expectSame(_ step: String, logOrderFree: Bool = false, sourceLocation: SourceLocation = #_sourceLocation) async {
         // The keeper's drain yields before it ends (`runInputDrain`), after the call that
         // started it returned: read it once its work and its drain are done.
         await keeper.waitForInFlightWorkForTesting()
         await keeper.waitForInputDrainIdleForTesting()
-        let (keeperDigest, coreDigest) = await digests()
+        var (keeperDigest, coreDigest) = await digests()
+        if logOrderFree {
+            keeperDigest.log.sort()
+            coreDigest.log.sort()
+        }
         // The whole-model comparison compares something: the model has dozens of other fields.
         #expect(coreDigest.otherModelFields.count > 20, "\(step): \(coreDigest.otherModelFields.keys.sorted())", sourceLocation: sourceLocation)
         #expect(keeperDigest == coreDigest, "\(step): differ in \(keeperDigest.differingFields(from: coreDigest))\n keeper \(keeperDigest)\n core   \(coreDigest)", sourceLocation: sourceLocation)
@@ -619,6 +821,9 @@ private struct CoreDiffPair {
         let keeperModel = await keeper.differentialReadForTesting().model, coreModel = await harness.differentialRead().model
         #expect(keeperModel.hasHeldTransport == transports && coreModel.hasHeldTransport == transports, "\(step): held transport", sourceLocation: sourceLocation)
         #expect(!keeperModel.transportRecordsFolds && !coreModel.transportRecordsFolds, "\(step): no fold recording", sourceLocation: sourceLocation)
+        // K22-Q6, per path: with the work waited for, neither holds a result, and the core never
+        // keeps one in the table between steps.
+        #expect(keeperModel.inputTurnResults.isEmpty && coreModel.inputTurnResults.isEmpty, "\(step): results left: keeper \(keeperModel.inputTurnResults.keys.sorted()), core \(coreModel.inputTurnResults.keys.sorted())", sourceLocation: sourceLocation)
         #expect(coreDigest.violations.isEmpty, "\(step): \(coreDigest.violations)", sourceLocation: sourceLocation)
         let leftover = await harness.differentialRead().coreWaitsLeft
         #expect(leftover == 0, "\(step): core waits left", sourceLocation: sourceLocation)
@@ -641,6 +846,18 @@ private func session(_ player: String) -> PlayerSession { PlayerSession(playerID
 
 /// Whether `task` ends within `seconds`, so a task that never ends fails an expectation instead
 /// of hanging the suite.
+/// Whether `signal` yields within `seconds`. Both children end on cancellation (a stream's
+/// iteration and the sleep do), so the group never waits on uncancellable work.
+private func firstSignal(_ signal: AsyncStream<Void>, withinSeconds seconds: Int) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask { for await _ in signal { return true }; return false }
+        group.addTask { try? await safeTaskSleep(for: .seconds(seconds)); return false }
+        let first = await group.next() ?? false
+        group.cancelAll()
+        return first
+    }
+}
+
 private func boundedEnd(_ task: Task<Void, Never>, seconds: Int) async -> Bool {
     await withTaskGroup(of: Bool.self) { group in
         group.addTask { await task.value; return true }
@@ -762,6 +979,52 @@ private func coreTickAction(_ pair: CoreDiffPair, _ action: CoreDiffAction, _ pl
         return .failed(nil, "not an action answer")
     }
     return CoreDiffActionResult(result)
+}
+
+// MARK: - Action jobs (K2-2 plan, commit 0)
+
+private func jobEnvelope(_ action: CoreDiffJobAction) -> ActionEnvelope {
+    ActionEnvelope(typeIdentifier: String(describing: CoreDiffJobAction.self), payload: AnyCodable(action))
+}
+
+/// A job's outcome on either path, as text both can match.
+private func describeJob(_ result: Result<InputOutcome, any Error>) -> String {
+    switch result {
+    case let .success(.response(response)): "ack \((response as? CoreDiffAck)?.n ?? -1)"
+    case .success(.none): "none"
+    case let .failure(error as CoreDiffError): "error \(error.token)"
+    case .failure(is CancellationError): "cancelled"
+    case let .failure(error): "\(type(of: error)): \(String(describing: error))"
+    }
+}
+
+/// The intake on either path, answered `.pending(sequence:)`.
+private func keeperJobIntake(_ pair: CoreDiffPair, _ action: CoreDiffJobAction) async -> Int64? {
+    let submission = try? await pair.keeper.submitAction(jobEnvelope(action), playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1"))
+    guard case let .pending(sequence)? = submission else { Issue.record("keeper: not pending: \(String(describing: submission))"); return nil }
+    return sequence
+}
+
+private func coreJobIntake(_ pair: CoreDiffPair, _ action: CoreDiffJobAction, tick: Bool) async -> Int64? {
+    let submission: Result<ActionSubmission, any Error>
+    if tick {
+        guard case let .actionSubmission(result) = await pair.harness.ask(.admitAction(jobEnvelope(action), caller("p1", "c1"), enforcingLimits: true)) else { return nil }
+        submission = result
+    } else {
+        guard case let .action(result)? = try? await pair.harness.call(.action(jobEnvelope(action), caller("p1", "c1"))) else { return nil }
+        submission = result
+    }
+    guard case let .pending(sequence)? = try? submission.get() else { Issue.record("core: not pending: \(submission)"); return nil }
+    return sequence
+}
+
+private func coreJobResult(_ pair: CoreDiffPair, _ sequence: Int64) async -> String {
+    do {
+        guard case let .input(result) = try await pair.harness.call(.awaitActionResult(sequence: sequence)) else { return "not an input reply" }
+        return describeJob(result)
+    } catch {
+        return "core: \(error)"
+    }
 }
 
 /// An event's result on either path: done, or the error's value.
@@ -1091,6 +1354,36 @@ struct KeeperCoreDifferentialTests {
         #expect(await harness.differentialRead().model.state.log.suffix(2) == ["action:1", "action:2"])
     }
 
+    @Test("A tickless action's failure rides the record effect: while its record is in flight the model's in-flight table owns it, with no violation, and the caller gets the error after the record (K2-2 plan, item 15, K22-Q5)")
+    func failedResultOwnedInFlight() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false)
+        let landID = "core-diff:in-flight:\(UUID().uuidString)"
+        let source = LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: landID)
+        await source.awaitInitialization()
+        _ = try await source.joinReportingAdmission(session: session("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1"), services: LandServices(), admitThroughTransport: false)
+        await source.waitForInFlightWorkForTesting()
+        await source.waitForInputDrainIdleForTesting()
+        let gate = WatermarkGate()
+        defer { gate.release() }
+        let harness = KeeperCoreHarness(await source.coreTwinForTesting(), recordGate: gate)
+        await harness.start()
+        let pair = CoreDiffPair(keeper: source, harness: harness, landID: landID)
+        let call = Task { await coreTicklessAction(pair, CoreDiffAction(n: 7, fails: true), "p1", "c1") }
+        guard await gate.waitUntilEntered("the failing action's record") else { return }
+        let held = await harness.differentialRead()
+        #expect(held.model.inFlightRecordResults.count == 1, "the in-flight table owns the failure: \(held.model.inFlightRecordResults)")
+        #expect(held.model.inputTurnResults.isEmpty, "the result left the table with the effect")
+        #expect(held.violations.isEmpty, "no owner violation while in flight: \(held.violations)")
+        gate.release()
+        let answer = await call.value
+        // The exact error: a lost failure (`FailureTableMiss`) must not pass.
+        #expect(answer == .failed(CoreDiffError(token: 7), "CoreDiffError"), "the caller got the handler's error: \(answer)")
+        #expect(await keeperAction(pair, CoreDiffAction(n: 7, fails: true), "p1", "c1") == answer, "the keeper's caller gets the same")
+        let after = await harness.differentialRead()
+        #expect(after.model.inFlightRecordResults.isEmpty && after.model.inputTurnResults.isEmpty)
+        #expect(after.violations.isEmpty, "\(after.violations)")
+    }
+
     @Test("A tickless action answers with its response or its handler's error", arguments: [false, true])
     func ticklessAction(fails: Bool) async {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "action")
@@ -1140,6 +1433,122 @@ struct KeeperCoreDifferentialTests {
 
     // MARK: Review round 1 on #938
 
+    @Test("An action job: the intake answers pending, the resolvers run as the core's effect, and the result comes back through the slot, on both paths (K2-2 plan, commit 0)",
+          arguments: [(false, false), (false, true), (true, false), (true, true)])
+    func actionJob(tick: Bool, fails: Bool) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "job")
+        _ = await bothJoin(pair, "p1", "c1")
+        let action = CoreDiffJobAction(n: 9, fails: fails)
+        let keeperSequence = try #require(await keeperJobIntake(pair, action))
+        let keeperResult = describeJob(await Result { try await pair.keeper.awaitActionResult(sequence: keeperSequence) })
+        await pair.keeper.waitForActionJobsForTesting()
+        let coreSequence = try #require(await coreJobIntake(pair, action, tick: tick))
+        #expect(coreSequence == keeperSequence, "the same sequence on both paths")
+        let coreResult = await coreJobResult(pair, coreSequence)
+        #expect(keeperResult == coreResult, "keeper \(keeperResult), core \(coreResult)")
+        // A tick land acknowledges at delivery; a tickless one answers with the handler's response;
+        // a failing resolver's error comes back wrapped by the executor, the same on both.
+        if fails {
+            #expect(keeperResult != "none" && keeperResult != "ack 9", "\(keeperResult)")
+        } else {
+            #expect(keeperResult == (tick ? "none" : "ack 9"), "\(keeperResult)")
+        }
+        await pair.expectSame("after the job")
+        let seen = await pair.harness.inputsSeen
+        #expect(seen.contains("actionResolved"), "\(seen)")
+    }
+
+    @Test("An action job whose caller cancels while its resolver runs is not applied, and its caller gets CancellationError, on both paths (K2-2 plan, commit 0: the box rides the effect)",
+          arguments: [false, true])
+    func actionJobCallerCancel(tick: Bool) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "job-cancel")
+        _ = await bothJoin(pair, "p1", "c1")
+        let action = CoreDiffJobAction(n: 4, fails: false)
+        defer { CoreDiffJobGates.set(pair.landID, nil) }
+
+        // The keeper's path: the caller waits on the slot, is cancelled, then the resolver returns.
+        let keeperGate = WatermarkGate()
+        defer { keeperGate.release() }
+        CoreDiffJobGates.set(pair.landID, keeperGate)
+        let keeperSequence = try #require(await keeperJobIntake(pair, action))
+        var waiting = await pair.keeper.watchActionSlotForTesting(keeperSequence, waiter: true).makeAsyncIterator()
+        let keeperWait = Task { describeJob(await Result { try await pair.keeper.awaitActionResult(sequence: keeperSequence) }) }
+        _ = await waiting.next()
+        keeperWait.cancel()
+        keeperGate.release()
+        let keeperResult = await keeperWait.value
+        await pair.keeper.waitForActionJobsForTesting()
+
+        // The core's path: the caller's own cancel handler cancels the box (K2-2b's wait does the same).
+        let coreGate = WatermarkGate()
+        defer { coreGate.release() }
+        CoreDiffJobGates.set(pair.landID, coreGate)
+        let coreSequence = try #require(await coreJobIntake(pair, action, tick: tick))
+        let box = await pair.harness.jobBox(coreSequence)
+        #expect(box != nil, "the core's side holds the job's box")
+        let coreWait = Task {
+            await withTaskCancellationHandler {
+                await coreJobResult(pair, coreSequence)
+            } onCancel: {
+                box?.callerCancelled.set()
+                box?.cancel()
+            }
+        }
+        await pair.harness.waitForInputs(named: "awaitActionResult", count: 1)
+        coreWait.cancel()
+        coreGate.release()
+        let coreResult = await coreWait.value
+
+        #expect(keeperResult == "cancelled" && coreResult == "cancelled", "keeper \(keeperResult), core \(coreResult)")
+        await pair.expectSame("after the cancelled job")
+        #expect(!(await pair.digests().core.log.contains { $0.hasPrefix("job:") }), "not applied")
+    }
+
+    @Test("A freeze with no work in flight answers true at once, and its resume thaws the land, on both paths (K2-2 plan, commit 2)", arguments: [false])
+    func freezeAndResume(tick: Bool) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "freeze")
+        _ = await bothJoin(pair, "p1", "c1")
+        let keeperFroze = await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5))
+        guard case let .frozen(coreFroze) = try await pair.harness.call(.freeze(generation: 1, timeout: .seconds(5))) else {
+            Issue.record("not a freeze reply"); return
+        }
+        #expect(keeperFroze && coreFroze, "keeper \(keeperFroze), core \(coreFroze)")
+        await pair.expectSame("frozen")
+        #expect(await pair.digests().core.otherModelFields["debugFrozen"] == "true")
+        await pair.keeper.debugResume(generation: 1)
+        await pair.harness.drive(.resume(generation: 1))
+        await pair.expectSame("resumed")
+        #expect(await pair.digests().core.otherModelFields["debugFrozen"] == "false")
+        #expect(await pair.harness.flushed.contains { if case .dropFold = $0 { true } else { false } }, "the freeze dropped the driver's fold")
+    }
+
+    @Test("A released generation doesn't freeze again: a late freeze answers false and changes nothing, on both paths (K2-2 plan, commit 2)")
+    func releasedGenerationDoesNotFreeze() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "freeze-late")
+        await pair.keeper.debugResume(generation: 2)
+        await pair.harness.drive(.resume(generation: 2))
+        let keeperFroze = await pair.keeper.debugFreeze(generation: 2, timeout: .seconds(5))
+        guard case let .frozen(coreFroze) = try await pair.harness.call(.freeze(generation: 2, timeout: .seconds(5))) else {
+            Issue.record("not a freeze reply"); return
+        }
+        #expect(!keeperFroze && !coreFroze, "keeper \(keeperFroze), core \(coreFroze)")
+        await pair.expectSame("after the late freeze")
+    }
+
+    @Test("A tick land's client event is queued for its next tick, with no value, on both paths (K2-2 plan, commit 2: .admitClientEvent)")
+    func tickLandClientEvent() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "tick-event")
+        _ = await bothJoin(pair, "p1", "c1")
+        let event = CoreDiffEvent(n: 3, fails: false)
+        let keeperResult = await keeperEvent(pair, event, "p1", "c1")
+        guard case let .clientEventQueued(coreResult) = await pair.harness.ask(.admitClientEvent(AnyClientEvent(event), caller("p1", "c1"))) else {
+            Issue.record("not an event answer"); return
+        }
+        #expect(keeperResult == "done")
+        #expect((try? coreResult.get()) != nil, "\(coreResult)")
+        await pair.expectSame("after the queued event")
+    }
+
     @Test("Each core has its own side box: two twins of one source share no store, and a step on one leaves the other's side unchanged")
     func eachCoreHasItsOwnBox() async {
         let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false)
@@ -1185,7 +1594,7 @@ struct KeeperCoreDifferentialTests {
     @Test("The core's refusals are named: one reason per refused shape, each with its own message and the K2-2 commit that lifts it (commit 4 requires none left)")
     func refusalReasonsAreNamed() {
         let reasons = KeeperCoreRefusalReason.allCases
-        #expect(Set(reasons.map(\.rawValue)) == ["joinSyncingInTurn", "ticklessLandWithTransport", "joinAwaitingLeaveInFlight"], "a refusal was added or lifted: update this list and the K2-2 plan's §3.2 table")
+        #expect(Set(reasons.map(\.rawValue)) == ["joinSyncingInTurn", "ticklessLandWithTransport", "joinAwaitingLeaveInFlight", "tickLandFreeze"], "a refusal was added or lifted: update this list and the K2-2 plan's §3.2 table")
         #expect(Set(reasons.map(\.message)).count == reasons.count, "two refusals share a message")
         for reason in reasons {
             #expect(reason.liftedIn.hasPrefix("K2-2 commit "), "\(reason) names no lifting commit")
@@ -1301,6 +1710,69 @@ struct KeeperCoreDifferentialTests {
             let (kf, cf) = try await frames()
             #expect(kf == cf, "\(step): the records differ\n keeper \(kf)\n core   \(cf)", sourceLocation: sourceLocation)
         }
+    }
+
+    @Test("The sync entries on the core: a ticket, a requested sync-only turn with and without it, and a stale ticket, the same answers, port calls and records on both paths (K2-2 plan, commit 3, §9)")
+    func syncEntries() async throws {
+        let pair = try await TracePair.make("sync-entries")
+        let keeperTicket = await pair.keeper.syncTurnTicket(via: pair.keeperTransport)
+        let coreTicket = await pair.harness.syncTurnTicket(via: pair.coreTransport)
+        #expect(keeperTicket != nil && coreTicket != nil, "the attached port gets a ticket on both paths")
+        let keeperNow = await pair.keeper.syncTurnNow(via: pair.keeperTransport, reason: .syncNow)
+        let coreNow = await pair.harness.syncTurnNow(via: pair.coreTransport, reason: .syncNow)
+        #expect("\(keeperNow)" == "\(coreNow)", "keeper \(keeperNow), core \(coreNow)")
+        let keeperTicketed = await pair.keeper.syncTurnNow(via: pair.keeperTransport, reason: .syncNow, ticket: keeperTicket)
+        let coreTicketed = await pair.harness.syncTurnNow(via: pair.coreTransport, reason: .syncNow, ticket: coreTicket)
+        #expect("\(keeperTicketed)" == "\(coreTicketed)", "keeper \(keeperTicketed), core \(coreTicketed)")
+        // A port that isn't the attached transport: refused, nothing bound, no phase.
+        let stranger = CoreDiffTraceTransport(CoreDiffTrace())
+        let keeperStranger = await pair.keeper.syncTurnNow(via: stranger, reason: .syncNow)
+        let coreStranger = await pair.harness.syncTurnNow(via: stranger, reason: .syncNow)
+        #expect("\(keeperStranger)" == "\(coreStranger)" && "\(coreStranger)" == "\(InTurnSyncResult.skipped)", "keeper \(keeperStranger), core \(coreStranger)")
+        await pair.harness.waitForSubmissions()
+        await pair.keeper.waitForRecorderSubmissionsForTesting()
+        try await pair.expectSameTrace("after the sync entries")
+        let keeperRequested = await pair.keeper.requestedSyncTurnsForTesting
+        let coreRequested = await pair.harness.differentialRead().model.requestedSyncTurnsForTesting
+        #expect(keeperRequested == coreRequested, "keeper \(keeperRequested), core \(coreRequested)")
+        #expect(await pair.harness.differentialRead().violations.isEmpty)
+    }
+
+    @Test("A ticket made stale by a rebind, and a port whose witness refuses the owner, are skipped and bind nothing, on both paths (Review r2 on #948)")
+    func syncStaleTicketAndRefusingWitness() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "sync-stale")
+        _ = await bothJoin(pair, "p1", "c1")
+        // A refusing witness first: skipped, and nothing bound, so a later port still binds.
+        let keeperRefusing = CoreDiffTraceTransport(CoreDiffTrace()), coreRefusing = CoreDiffTraceTransport(CoreDiffTrace())
+        keeperRefusing.witnessAnswer = false
+        coreRefusing.witnessAnswer = false
+        let keeperRefused = await pair.keeper.syncTurnNow(via: keeperRefusing, reason: .syncNow)
+        let coreRefused = await pair.harness.syncTurnNow(via: coreRefusing, reason: .syncNow)
+        #expect("\(keeperRefused)" == "\(InTurnSyncResult.skipped)" && "\(coreRefused)" == "\(InTurnSyncResult.skipped)", "keeper \(keeperRefused), core \(coreRefused)")
+        let keeperRefusedTicket = await pair.keeper.syncTurnTicket(via: keeperRefusing)
+        let coreRefusedTicket = await pair.harness.syncTurnTicket(via: coreRefusing)
+        #expect(keeperRefusedTicket == nil && coreRefusedTicket == nil)
+
+        // Port A binds and gets a ticket; it goes away (the binding is weak), port B binds, and
+        // the binding's generation moves: A's ticket is stale.
+        var keeperA: CoreDiffTraceTransport? = CoreDiffTraceTransport(CoreDiffTrace())
+        var coreA: CoreDiffTraceTransport? = CoreDiffTraceTransport(CoreDiffTrace())
+        let keeperTicket = try #require(await pair.keeper.syncTurnTicket(via: keeperA!))
+        let coreTicket = try #require(await pair.harness.syncTurnTicket(via: coreA!))
+        keeperA = nil
+        coreA = nil
+        let keeperB = CoreDiffTraceTransport(CoreDiffTrace()), coreB = CoreDiffTraceTransport(CoreDiffTrace())
+        let keeperStale = await pair.keeper.syncTurnNow(via: keeperB, reason: .syncNow, ticket: keeperTicket)
+        let coreStale = await pair.harness.syncTurnNow(via: coreB, reason: .syncNow, ticket: coreTicket)
+        #expect("\(keeperStale)" == "\(InTurnSyncResult.skipped)" && "\(coreStale)" == "\(InTurnSyncResult.skipped)", "keeper \(keeperStale), core \(coreStale)")
+        // B is now bound: its current ticket runs a turn on both paths.
+        let keeperCurrent = await pair.keeper.syncTurnTicket(via: keeperB)
+        let coreCurrent = await pair.harness.syncTurnTicket(via: coreB)
+        #expect(keeperCurrent != nil && coreCurrent != nil && keeperCurrent != keeperTicket && coreCurrent != coreTicket)
+        let keeperRequested = await pair.keeper.requestedSyncTurnsForTesting
+        let coreRequested = await pair.harness.differentialRead().model.requestedSyncTurnsForTesting
+        #expect(keeperRequested == coreRequested, "keeper \(keeperRequested), core \(coreRequested)")
+        await pair.expectSame("after the stale ticket")
     }
 
     @Test("The ordered trace on an eventful tick: the same port calls with the same events, the same flush effects and the same record, entry by entry (§6)")
@@ -1456,4 +1928,534 @@ struct KeeperCoreDifferentialTests {
         #expect(await harness.inputsSeen.suffix(2) == ["syncDue", "tickDue"])
     }
 
+}
+
+// MARK: - K2-2a round 2: the freeze, the barrier, the sync draft, the caller's cancellation
+
+private func coreFreeze(_ pair: CoreDiffPair, _ generation: UInt64, _ timeout: Duration) async -> Bool? {
+    guard case let .frozen(frozen)? = try? await pair.harness.call(.freeze(generation: generation, timeout: timeout)) else { return nil }
+    return frozen
+}
+
+/// A probe's name as an event: yields once each time the probe opens it.
+private func probeEvents(_ name: String) -> (stream: AsyncStream<Void>, probe: @Sendable (String) -> Void) {
+    let (stream, continuation) = AsyncStream<Void>.makeStream()
+    return (stream, { if $0 == name { continuation.yield() } })
+}
+
+private func outputDraft(_ tag: UInt64, reentering keeper: LandKeeper<CoreDiffState>? = nil) -> SyncStreamDraft {
+    SyncStreamDraft(.output(observedTickId: 0, make: { streamIndex, index in
+        keeper?.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: a draft factory that calls back into its keeper
+        return ReevaluationRecordedSyncOutput(index: index, turnKind: .syncOnly, observedTickId: 0,
+                                              streamIndex: streamIndex, sequence: Int64(streamIndex), broadcastHash: 0xbeef_0000 + tag)
+    }))
+}
+
+private func markerDraft() -> SyncStreamDraft {
+    SyncStreamDraft(.marker(make: { streamIndex, position in
+        ReevaluationRecordedSyncMarker(kind: .clear, playerID: "p1", streamIndex: streamIndex, sequence: position.sequence)
+    }))
+}
+
+extension KeeperCoreDifferentialTests {
+    @Test("Each freeze caller has its own deadline: with work in flight, the first caller's short budget ends false while the second's long one answers true at the work's end, on both paths (Review on #948, MF1)")
+    func freezeDeadlinePerCaller() async throws {
+        let keeperGate = CoreDiffArmedGate(), clock = CoreDiffClock()
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "freeze-per-caller",
+                                           keeperRecordGate: keeperGate, clock: clock)
+        _ = await bothJoin(pair, "p1", "c1")
+
+        let kg = WatermarkGate()
+        defer { kg.release() }
+        keeperGate.arm(kg)
+        let keeperAct = Task { await keeperAction(pair, CoreDiffAction(n: 1, fails: false), "p1", "c1") }
+        guard await kg.waitUntilEntered("the keeper's record") else { return }
+        // The keeper's clock is real: a short budget against a held work, and one that can't fire.
+        // The long caller registers first, and the short one's registration is the event the
+        // case waits for: its timer can't fire before the segment that registers it ends, so
+        // both wait when the short one times out (Review r2 on #948, MF3).
+        let keeperLong = Task { await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(3600)) }
+        await pair.keeper.waitUntilFreezeRegistrationsForTesting(1)
+        let keeperShort = Task { await pair.keeper.debugFreeze(generation: 1, timeout: .milliseconds(50)) }
+        await pair.keeper.waitUntilFreezeRegistrationsForTesting(2)
+        let keeperShortFroze = await keeperShort.value
+        kg.release()
+        let keeperLongFroze = await keeperLong.value
+        await pair.keeper.debugResume(generation: 1)
+        _ = await keeperAct.value
+
+        let cg = WatermarkGate()
+        defer { cg.release() }
+        pair.harness.armedRecordGate.arm(cg)
+        let coreAct = Task { await coreTicklessAction(pair, CoreDiffAction(n: 1, fails: false), "p1", "c1") }
+        guard await cg.waitUntilEntered("the core's record") else { return }
+        let coreShort = Task { await coreFreeze(pair, 1, .seconds(1)) }
+        await pair.harness.waitForInputs(named: "freeze", count: 1)
+        let coreLong = Task { await coreFreeze(pair, 1, .seconds(3600)) }
+        await pair.harness.waitForInputs(named: "freeze", count: 2)
+        clock.advance(by: .seconds(2))
+        let coreShortFroze = await coreShort.value
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.freeze[1]?.count == 1, "the long caller still waits")
+        cg.release()
+        let coreLongFroze = await coreLong.value
+        await pair.harness.drive(.resume(generation: 1))
+        _ = await coreAct.value
+
+        #expect(keeperShortFroze == false && keeperLongFroze == true, "keeper \(keeperShortFroze), \(keeperLongFroze)")
+        #expect(coreShortFroze == false && coreLongFroze == true, "core \(String(describing: coreShortFroze)), \(String(describing: coreLongFroze))")
+        await pair.expectSame("after both freezes")
+    }
+
+    @Test("A superseded generation's caller is answered false when the work ends, not at its timeout, on both paths (Review on #948, MF1)")
+    func supersededGenerationAnsweredAtWorkEnd() async throws {
+        let keeperGate = CoreDiffArmedGate(), clock = CoreDiffClock()
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "freeze-superseded",
+                                           keeperRecordGate: keeperGate, clock: clock)
+        _ = await bothJoin(pair, "p1", "c1")
+
+        let kg = WatermarkGate()
+        defer { kg.release() }
+        keeperGate.arm(kg)
+        let keeperAct = Task { await keeperAction(pair, CoreDiffAction(n: 1, fails: false), "p1", "c1") }
+        guard await kg.waitUntilEntered("the keeper's record") else { return }
+        let keeperFirst = Task { await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(3600)) }
+        await pair.keeper.waitUntilFreezeWaitsForTesting()
+        let keeperSecond = Task { await pair.keeper.debugFreeze(generation: 2, timeout: .seconds(3600)) }
+        // Both callers wait before the work ends (Review r2 on #948, MF3).
+        await pair.keeper.waitUntilFreezeRegistrationsForTesting(2)
+        kg.release()
+        let keeperAnswers = (await keeperFirst.value, await keeperSecond.value)
+        await pair.keeper.debugResume(generation: 2)
+        _ = await keeperAct.value
+
+        let cg = WatermarkGate()
+        defer { cg.release() }
+        pair.harness.armedRecordGate.arm(cg)
+        let coreAct = Task { await coreTicklessAction(pair, CoreDiffAction(n: 1, fails: false), "p1", "c1") }
+        guard await cg.waitUntilEntered("the core's record") else { return }
+        let coreFirst = Task { await coreFreeze(pair, 1, .seconds(3600)) }
+        await pair.harness.waitForInputs(named: "freeze", count: 1)
+        let coreSecond = Task { await coreFreeze(pair, 2, .seconds(3600)) }
+        await pair.harness.waitForInputs(named: "freeze", count: 2)
+        cg.release()
+        // The answers are the events (Review r2 on #948, MF3): the clock is manual and isn't
+        // advanced, so a caller answered only at its timeout never returns, and the hang bound
+        // fails the case. A count of results noted in `perform` would run before their steps.
+        // The bound waits on a signal, never on the calls themselves (`.ignoresCancel`, so a
+        // cancelled wait wouldn't end them; #940's R13): on a timeout the clock is advanced
+        // first, which answers both, and only then are they joined (Review r3 on #948).
+        let (answered, signal) = AsyncStream<Void>.makeStream()
+        let watcher = Task { _ = await coreFirst.value; _ = await coreSecond.value; signal.yield() }
+        let answeredAtWorkEnd = await firstSignal(answered, withinSeconds: 30)
+        #expect(answeredAtWorkEnd, "every generation's callers answered at the work's end")
+        if !answeredAtWorkEnd { clock.advance(by: .seconds(3601)) }
+        await watcher.value
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.freeze.isEmpty)
+        let coreAnswers = (await coreFirst.value, await coreSecond.value)
+        await pair.harness.drive(.resume(generation: 2))
+        _ = await coreAct.value
+
+        #expect(keeperAnswers == (false, true), "keeper \(keeperAnswers)")
+        #expect(coreAnswers == (false, true), "core \(coreAnswers)")
+        await pair.expectSame("after the superseded freeze")
+    }
+
+    @Test("An expired budget with work in flight answers false at once, with no wait armed, on both paths (Review on #948, MF1)")
+    func expiredFreezeBudget() async throws {
+        let keeperGate = CoreDiffArmedGate()
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "freeze-expired",
+                                           keeperRecordGate: keeperGate, clock: CoreDiffClock())
+        _ = await bothJoin(pair, "p1", "c1")
+        let kg = WatermarkGate()
+        defer { kg.release() }
+        keeperGate.arm(kg)
+        let keeperAct = Task { await keeperAction(pair, CoreDiffAction(n: 1, fails: false), "p1", "c1") }
+        guard await kg.waitUntilEntered("the keeper's record") else { return }
+        let keeperFroze = await pair.keeper.debugFreeze(generation: 1, timeout: .zero)
+        kg.release()
+        await pair.keeper.debugResume(generation: 1)
+        _ = await keeperAct.value
+
+        let cg = WatermarkGate()
+        defer { cg.release() }
+        pair.harness.armedRecordGate.arm(cg)
+        let coreAct = Task { await coreTicklessAction(pair, CoreDiffAction(n: 1, fails: false), "p1", "c1") }
+        guard await cg.waitUntilEntered("the core's record") else { return }
+        let coreFroze = await coreFreeze(pair, 1, .zero)
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.isEmpty, "no wait armed")
+        cg.release()
+        await pair.harness.drive(.resume(generation: 1))
+        _ = await coreAct.value
+
+        #expect(keeperFroze == false && coreFroze == false, "keeper \(keeperFroze), core \(String(describing: coreFroze))")
+        await pair.expectSame("after the expired freeze")
+    }
+
+    @Test("A freeze's deadline saturates: a timeout past Int64 nanoseconds, or past the range from now, is the range's end (Review on #948, MF1)")
+    func freezeDeadlineSaturates() {
+        typealias Model = KeeperModel<CoreDiffState>
+        #expect(Model.freezeDeadline(TurnInstant(nanoseconds: 5), .seconds(1)) == TurnInstant(nanoseconds: 1_000_000_005))
+        #expect(Model.freezeDeadline(TurnInstant(nanoseconds: 0), .seconds(Int64.max)) == TurnInstant(nanoseconds: .max))
+        #expect(Model.freezeDeadline(TurnInstant(nanoseconds: .max - 10), .seconds(1)) == TurnInstant(nanoseconds: .max))
+    }
+
+    @Test("A tick land's freeze is refused on the core until commit 1 holds the tick's count across its record (Review on #948, MF2)")
+    func tickLandFreezeRefused() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "freeze-tick")
+        do {
+            _ = try await pair.harness.call(.freeze(generation: 1, timeout: .seconds(5)))
+            Issue.record("the tick land's freeze stepped")
+        } catch let refusal as KeeperCoreRefusal {
+            #expect(refusal.reason.contains("commit 1"), "\(refusal.reason)")
+        }
+        #expect(await pair.harness.differentialRead().model.debugFrozen == false)
+    }
+
+    @Test("The resume's kick counts as work: a freeze right after a resume that released a held server input waits for that input's turn, on both paths (Review on #948, MF2)")
+    func freezeAfterResumeWaitsForTheKick() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false)
+        let landID = "core-diff:resume-kick:\(UUID().uuidString)"
+        func keeper() -> LandKeeper<CoreDiffState> {
+            LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: landID)
+        }
+        let direct = keeper(), source = keeper()
+        let keeperGate = CoreDiffArmedGate()
+        await direct.installHolds { point in
+            if point == .turnRecord, let gate = keeperGate.take() { await gate.enterAndWait() }
+        }
+        for k in [direct, source] {
+            await k.awaitInitialization()
+            #expect(await k.debugFreeze(generation: 1, timeout: .seconds(5)))
+            guard case .accepted = await k.submitServerInput(CoreDiffServerInput(n: 9)) else { Issue.record("not accepted"); return }
+        }
+        let harness = KeeperCoreHarness(await source.coreTwinForTesting(), clock: CoreDiffClock())
+        await harness.start()
+        let pair = CoreDiffPair(keeper: direct, harness: harness, landID: landID, source: source)
+
+        let kg = WatermarkGate()
+        defer { kg.release() }
+        keeperGate.arm(kg)
+        await direct.debugResume(generation: 1)
+        guard await kg.waitUntilEntered("the kicked input's record") else { return }
+        let keeperFreeze = Task { await direct.debugFreeze(generation: 2, timeout: .seconds(3600)) }
+        await direct.waitUntilFreezeWaitsForTesting()
+        kg.release()
+        let keeperFroze = await keeperFreeze.value
+
+        let cg = WatermarkGate()
+        defer { cg.release() }
+        harness.armedRecordGate.arm(cg)
+        await harness.drive(.resume(generation: 1))
+        guard await cg.waitUntilEntered("the core's kicked record") else { return }
+        let coreFreezeTask = Task { await coreFreeze(pair, 2, .seconds(3600)) }
+        await harness.waitForInputs(named: "freeze", count: 1)
+        #expect(await harness.differentialRead().model.coreBarrierWaits.freeze[2]?.count == 1, "the freeze waits for the kick's work")
+        cg.release()
+        let coreFroze = await coreFreezeTask.value
+
+        #expect(keeperFroze && coreFroze == true, "keeper \(keeperFroze), core \(String(describing: coreFroze))")
+        await direct.debugResume(generation: 2)
+        await harness.drive(.resume(generation: 2))
+        await pair.expectSame("after the kick")
+        #expect(await harness.differentialRead().model.state.log.contains("input:9"))
+    }
+
+    @Test("The intake is its own barrier: while frozen a tickless action is held in its step, a second freeze answers true with nothing applied, and the resume runs it, on both paths (Review on #948, MF3)")
+    func intakeHeldAtTheBarrier() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "barrier")
+        _ = await bothJoin(pair, "p1", "c1")
+        #expect(await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
+        #expect(await coreFreeze(pair, 1, .seconds(5)) == true)
+
+        let (keeperHeld, keeperProbe) = probeEvents("input-held-frozen")
+        await pair.keeper.setInTurnProbeForTesting(keeperProbe)
+        let keeperAct = Task { await keeperAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        var keeperHolds = keeperHeld.makeAsyncIterator()
+        _ = await keeperHolds.next()
+        let coreAct = Task { await coreTicklessAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        await pair.harness.waitForInputs(named: "action", count: 1)
+
+        // A freeze between the barrier and the intake finds no work and nothing applied.
+        let keeperAgain = await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5))
+        let coreAgain = await coreFreeze(pair, 1, .seconds(5))
+        #expect(keeperAgain && coreAgain == true, "keeper \(keeperAgain), core \(String(describing: coreAgain))")
+        let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
+        #expect(!keeperLog.contains("action:2") && !coreLog.contains("action:2"), "keeper \(keeperLog), core \(coreLog)")
+
+        await pair.keeper.debugResume(generation: 1)
+        await pair.harness.drive(.resume(generation: 1))
+        let (keeperResult, coreResult) = (await keeperAct.value, await coreAct.value)
+        #expect(keeperResult == .completed(2) && coreResult == .completed(2), "keeper \(keeperResult), core \(coreResult)")
+        await pair.expectSame("after the held action")
+    }
+
+    @Test("Two held intakes, an action and a client event, are released by the resume on both paths; the core runs both in arrival order in the resume's step, while the keeper's order is the scheduler's (each resumed caller re-enters on its own), so only the core's order is asserted (Review r2 on #948, a stated choice; r3)")
+    func twoHeldIntakesReleasedInOrder() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "barrier-two")
+        _ = await bothJoin(pair, "p1", "c1")
+        #expect(await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
+        #expect(await coreFreeze(pair, 1, .seconds(5)) == true)
+
+        let (keeperHeld, keeperProbe) = probeEvents("input-held-frozen")
+        await pair.keeper.setInTurnProbeForTesting(keeperProbe)
+        var keeperHolds = keeperHeld.makeAsyncIterator()
+        let keeperAct = Task { await keeperAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        _ = await keeperHolds.next()
+        let keeperEv = Task { await keeperEvent(pair, CoreDiffEvent(n: 9, fails: false), "p1", "c1") }
+        _ = await keeperHolds.next()
+        await pair.keeper.setInTurnProbeForTesting(nil)
+        await pair.keeper.debugResume(generation: 1)
+        let keeperResults = (await keeperAct.value, await keeperEv.value)
+
+        let (coreHeld, coreProbe) = probeEvents("input-held-frozen")
+        await pair.harness.setProbe(coreProbe)
+        var coreHolds = coreHeld.makeAsyncIterator()
+        let coreAct = Task { await coreTicklessAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        _ = await coreHolds.next()
+        let coreEv = Task { await coreEvent(pair, CoreDiffEvent(n: 9, fails: false), "p1", "c1") }
+        _ = await coreHolds.next()
+        await pair.harness.setProbe(nil)
+        await pair.harness.drive(.resume(generation: 1))
+        let coreResults = (await coreAct.value, await coreEv.value)
+
+        #expect(keeperResults.0 == .completed(2) && coreResults.0 == .completed(2), "keeper \(keeperResults.0), core \(coreResults.0)")
+        #expect(keeperResults.1 == "done" && coreResults.1 == "done", "keeper \(keeperResults.1), core \(coreResults.1)")
+        let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
+        let applied = coreLog.filter { $0 == "action:2" || $0 == "event:9" }
+        #expect(applied == ["action:2", "event:9"], "the core's arrival order: \(applied)")
+        // The keeper's two re-entries are enqueued in either order: compare as multisets.
+        #expect(keeperLog.sorted() == coreLog.sorted(), "keeper \(keeperLog), core \(coreLog)")
+        await pair.expectSame("after two held intakes", logOrderFree: true)
+    }
+
+    @Test("A held intake goes on when the land fails while frozen, and gets the same answer on both paths: no caller waits for a resume that never comes (Review on #948, MF3)")
+    func heldIntakeReleasedOnFailure() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "barrier-fail")
+        let source = try #require(pair.source)
+        _ = await bothJoin(pair, "p1", "c1")
+        #expect(await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
+        #expect(await coreFreeze(pair, 1, .seconds(5)) == true)
+        defer { CoreDiffHandlerReentry.clear(pair.landID) }
+
+        let (keeperHeld, keeperProbe) = probeEvents("input-held-frozen")
+        await pair.keeper.setInTurnProbeForTesting(keeperProbe)
+        let keeperAct = Task { await keeperAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        var keeperHolds = keeperHeld.makeAsyncIterator()
+        _ = await keeperHolds.next()
+        // A join isn't held: its OnJoin re-enters, and the land fails in that step.
+        CoreDiffHandlerReentry.register(pair.landID) { [keeper = pair.keeper] in
+            keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the handler's re-entry the sentinel refuses
+        }
+        _ = await keeperJoin(pair, "p2", "c2")
+        let keeperResult = await keeperAct.value
+
+        let coreAct = Task { await coreTicklessAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        await pair.harness.waitForInputs(named: "action", count: 1)
+        CoreDiffHandlerReentry.register(pair.landID) { [source] in
+            source.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the handler's re-entry the sentinel refuses
+        }
+        _ = await coreJoin(pair, "p2", "c2")
+        let coreResult = await coreAct.value
+
+        #expect(keeperResult == coreResult, "keeper \(keeperResult), core \(coreResult)")
+        #expect(await pair.harness.differentialRead().failure != nil, "the core's land failed")
+        let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
+        #expect(keeperLog == coreLog, "keeper \(keeperLog), core \(coreLog)")
+    }
+
+    @Test("A sync stream's drafts: an output and a marker, in turn and outside, record the same frames on both paths (Review on #948, MF6)", arguments: [false, true])
+    func syncStreamDraft(outsideTurn: Bool) async throws {
+        let pair = try await TracePair.make("sync-draft")
+        await pair.keeper.submitSyncStream([outputDraft(1), markerDraft()], outsideTurn: outsideTurn)
+        await pair.harness.drive(.syncStreamDraft([outputDraft(1), markerDraft()], outsideTurn: outsideTurn))
+        await pair.keeper.waitForRecorderSubmissionsForTesting()
+        await pair.harness.waitForSubmissions()
+        try await pair.expectSameTrace("after the drafts")
+        let (keeperFrames, coreFrames) = try await pair.frames()
+        #expect(keeperFrames == coreFrames)
+    }
+
+    @Test("A re-entering draft factory ends the land in the body on both paths: one violation, no late backstop (Review on #948, MF4)")
+    func syncStreamDraftFactoryReentry() async throws {
+        let pair = try await TracePair.make("sync-draft-reentry")
+        let keeperBefore = (await pair.keeper.reentryViolationsForTesting, await pair.keeper.lateReentriesAppliedForTesting)
+        let coreBefore = (await pair.source.reentryViolationsForTesting, await pair.source.lateReentriesAppliedForTesting)
+        await pair.keeper.submitSyncStream([outputDraft(7, reentering: pair.keeper)])
+        await pair.harness.drive(.syncStreamDraft([outputDraft(7, reentering: pair.source)], outsideTurn: false))
+        let keeperDelta = (await pair.keeper.reentryViolationsForTesting - keeperBefore.0, await pair.keeper.lateReentriesAppliedForTesting - keeperBefore.1)
+        let coreDelta = (await pair.source.reentryViolationsForTesting - coreBefore.0, await pair.source.lateReentriesAppliedForTesting - coreBefore.1)
+        #expect(keeperDelta == (1, 0) && coreDelta == (1, 0), "keeper \(keeperDelta), core \(coreDelta)")
+        let keeperFailure = await pair.keeper.differentialReadForTesting().failure
+        let coreFailure = await pair.harness.differentialRead().failure
+        #expect(coreFailure != nil && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
+        await pair.harness.waitForSubmissions()
+        try await pair.expectSameTrace("after the re-entry", failed: true)
+    }
+
+    @Test("A cancelled caller's job is never started: the cancellation rides the input, read in the caller's task, not the core's (Review on #948, MF5)", arguments: [false, true])
+    func cancelledCallerJobNotStarted(tick: Bool) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "job-cancelled-caller")
+        _ = await bothJoin(pair, "p1", "c1")
+        let action = CoreDiffJobAction(n: 6, fails: false)
+        let keeperResult = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return describeJob(await Result { try await pair.keeper.submitAction(jobEnvelope(action), playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1")) }.map { _ in InputOutcome.none })
+        }.value
+        let coreSubmission: Result<ActionSubmission, any Error>
+        if tick {
+            guard case let .actionSubmission(result) = await pair.harness.ask(.admitAction(jobEnvelope(action), caller("p1", "c1"), enforcingLimits: true, cancelled: true)) else {
+                Issue.record("not an action answer"); return
+            }
+            coreSubmission = result
+        } else {
+            guard case let .action(result) = try await pair.harness.call(.action(jobEnvelope(action), caller("p1", "c1"), cancelled: true)) else {
+                Issue.record("not an action reply"); return
+            }
+            coreSubmission = result
+        }
+        let coreResult = describeJob(coreSubmission.map { _ in InputOutcome.none })
+        #expect(keeperResult == "cancelled" && coreResult == "cancelled", "keeper \(keeperResult), core \(coreResult)")
+        let seen = await pair.harness.inputsSeen
+        #expect(!seen.contains("actionResolved"), "no job ran: \(seen)")
+        await pair.expectSame("after the cancelled caller")
+    }
+
+    /// The other order, a caller cancelled after the resume released its intake and its job
+    /// started, is `actionJobCallerCancel`'s: that cancel rides the job's box.
+    @Test("A caller held at the freeze's barrier and cancelled before the resume gets CancellationError and starts no job, on both paths, with the resume sent right after cancel() returns (Review r3 on #948, MF1)")
+    func parkedCallerCancelledBeforeResume() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "parked-cancelled")
+        _ = await bothJoin(pair, "p1", "c1")
+        let action = CoreDiffJobAction(n: 8, fails: false)
+        #expect(await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
+        #expect(await coreFreeze(pair, 1, .seconds(5)) == true)
+
+        // The keeper: held in `debugWaitWhileFrozen`. `cancel()` sets the task's flag
+        // synchronously, and the resume's re-check reads it.
+        let (keeperHeld, keeperProbe) = probeEvents("input-held-frozen")
+        await pair.keeper.setInTurnProbeForTesting(keeperProbe)
+        let keeperAct = Task {
+            describeJob(await Result { try await pair.keeper.submitAction(jobEnvelope(action), playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1")) }.map { _ in InputOutcome.none })
+        }
+        var keeperHolds = keeperHeld.makeAsyncIterator()
+        _ = await keeperHolds.next()
+        await pair.keeper.setInTurnProbeForTesting(nil)
+        keeperAct.cancel()
+        await pair.keeper.debugResume(generation: 1)
+        let keeperResult = await keeperAct.value
+
+        // The core: held at the barrier in its step. The caller's `onCancel` sets the flag the
+        // input carries, synchronously, inside `cancel()`, so a `.resume` sent right after it,
+        // with no await between, finds it set: no hop can lose to the thaw.
+        let flag = ActionJobCallerCancellation()
+        let (coreHeld, coreProbe) = probeEvents("input-held-frozen")
+        await pair.harness.setProbe(coreProbe)
+        let coreAct = Task { () -> String in
+            do {
+                let reply = try await withTaskCancellationHandler {
+                    try await pair.harness.call(.action(jobEnvelope(action), caller("p1", "c1"), cancellation: flag))
+                } onCancel: {
+                    flag.set()
+                }
+                guard case let .action(result) = reply else { return "not an action reply" }
+                return describeJob(result.map { _ in InputOutcome.none })
+            } catch {
+                return "core: \(error)"
+            }
+        }
+        var coreHolds = coreHeld.makeAsyncIterator()
+        _ = await coreHolds.next()
+        await pair.harness.setProbe(nil)
+        coreAct.cancel()
+        await pair.harness.drive(.resume(generation: 1))
+        let coreResult = await coreAct.value
+
+        #expect(keeperResult == "cancelled" && coreResult == "cancelled", "keeper \(keeperResult), core \(coreResult)")
+        let seen = await pair.harness.inputsSeen
+        #expect(!seen.contains("actionResolved"), "no job ran on the core: \(seen)")
+        #expect(await pair.harness.differentialRead().model.actionJobs.isEmpty, "no job on the core")
+        await pair.expectSame("after the cancelled held caller")
+    }
+
+    /// The settle's cases (#948 round 2, MF1): the body checks the land, the deadline and the
+    /// generation before it asks the port's witness, through `callOut`, on both paths.
+    enum SettleCase: String, CaseIterable, Sendable, CustomTestStringConvertible {
+        /// The fence's generation isn't the frozen one: `.released`, and the witness isn't asked.
+        case released
+        /// The fence's deadline has passed: `.timedOut`, and the witness isn't asked.
+        case timedOut
+        /// The fence holds: the witness, then the settle phase.
+        case settled
+        /// The witness re-enters the keeper: the land ends in the settle's step.
+        case settleCheck
+        var testDescription: String { rawValue }
+    }
+
+    @Test("The settle asks the port's witness after its fence, through callOut, on both paths; a re-entry from it ends the land in the settle (Review r2 on #948, MF1)", arguments: SettleCase.allCases)
+    func settleWitnessAfterTheFence(_ settleCase: SettleCase) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "settle-\(settleCase.rawValue)")
+        let source = try #require(pair.source)
+        _ = await bothJoin(pair, "p1", "c1")
+        #expect(await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
+        #expect(await coreFreeze(pair, 1, .seconds(5)) == true)
+        let generation: UInt64 = settleCase == .released ? 2 : 1
+        let deadline = settleCase == .timedOut ? ContinuousClock.now - .seconds(1) : ContinuousClock.now + .seconds(3600)
+        let keeperTrace = CoreDiffTrace(), coreTrace = CoreDiffTrace()
+        let keeperPort = CoreDiffTraceTransport(keeperTrace), corePort = CoreDiffTraceTransport(coreTrace)
+        if settleCase == .settleCheck {
+            keeperPort.armWitnessReentry(pair.keeper)
+            corePort.armWitnessReentry(source)
+        }
+        func describe(_ outcome: LandKeeper<CoreDiffState>.SettleTurnOutcome) -> String {
+            switch outcome {
+            case .settled(_, _, _, let planned): "settled planned=\(planned)"
+            case .timedOut: "timedOut"
+            case .released: "released"
+            case .closed(let failure): "closed \(failure.map { "\($0.kind)" } ?? "-")"
+            case .refused(let refusal): "refused \(refusal)"
+            case .failed(let failure): "failed \(failure.kind)"
+            }
+        }
+        let keeperOutcome = describe(await pair.keeper.settleTurn(via: keeperPort, fence: .init(generation: generation, deadline: deadline)))
+        guard case let .settle(coreAnswer) = await pair.harness.ask(.settle(port: corePort, owner: pair.harness.owner, generation: generation, deadline: deadline)) else {
+            Issue.record("not a settle answer"); return
+        }
+        let coreOutcome = describe(coreAnswer)
+        #expect(keeperOutcome == coreOutcome, "keeper \(keeperOutcome), core \(coreOutcome)")
+        let expectedOutcome: String = switch settleCase {
+        case .released: "released"
+        case .timedOut: "timedOut"
+        // The test port's settle plans nothing (`.empty`).
+        case .settled: "settled planned=false"
+        case .settleCheck: "failed keeperReentry"
+        }
+        #expect(keeperOutcome == expectedOutcome, "keeper \(keeperOutcome)")
+        // The fence's refusals ask no witness; a held fence asks it once.
+        let expectedWitness = settleCase == .released || settleCase == .timedOut ? 0 : 1
+        #expect(keeperPort.witnessCount == expectedWitness && corePort.witnessCount == expectedWitness,
+                "witness: keeper \(keeperPort.witnessCount), core \(corePort.witnessCount)")
+        // The failed land's teardown (`landDidFail`, `onLandDestroyed`, the destroy handlers) is
+        // the keeper's task until commit 1 moves the drain onto the core, so it is compared apart
+        // from the settle's own calls, as #938's refusal cases do.
+        let teardown: (String) -> Bool = { $0.hasPrefix("landDidFail") || $0 == "onLandDestroyed" }
+        #expect(keeperTrace.all.filter { !teardown($0) } == coreTrace.all.filter { !teardown($0) }, "keeper \(keeperTrace.all), core \(coreTrace.all)")
+        guard settleCase == .settleCheck else {
+            await pair.expectSame("after the settle (\(settleCase.rawValue))")
+            return
+        }
+        let keeperFailure = await pair.keeper.differentialReadForTesting().failure
+        let coreFailure = await pair.harness.differentialRead().failure
+        #expect(keeperFailure != nil && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
+        let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
+        #expect(keeperLog == coreLog, "keeper \(keeperLog), core \(coreLog)")
+    }
+
+    @Test("The initialization's barrier is open after OnInitialize, on both paths (Review on #948, MF6: the open case until commit 1)")
+    func awaitInitializedOpen() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "await-initialized")
+        await pair.keeper.awaitInitialization()
+        guard case .done = try await pair.harness.call(.awaitInitialized) else { Issue.record("not a done reply"); return }
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.isEmpty)
+        await pair.expectSame("after the initialization's barrier")
+    }
 }
