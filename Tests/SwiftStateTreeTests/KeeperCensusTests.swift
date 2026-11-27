@@ -185,6 +185,7 @@ enum KeeperCensus {
             "model.destroyHandlersStarted": .model,
             "model.destructionFinished": .model,
             "model.didInitialize": .model,
+            "model.initializationApplied": .model,
             "model.entryGenerations": .model,
             "model.failureIDs": .model,
             "model.sequence": .model,

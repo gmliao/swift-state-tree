@@ -146,6 +146,10 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// `transport?.recordsInTurnSyncFolds`, read when the transport is attached.
     var transportRecordsFolds: Bool = false
     var didInitialize: Bool = false
+    /// OnInitialize's body has applied (#946), set in its segment: the drain runs the destroy
+    /// handlers only then (or on a land without OnInitialize). `didInitialize` is set later,
+    /// after the record wait and the loops' start.
+    var initializationApplied: Bool = false
     /// The next tick turn includes the sync phase: set when the sync loop fires within
     /// `coincidentSyncWindow` of the next tick (the coincident-sync rule).
     var inTurnSyncDue: Bool = false
