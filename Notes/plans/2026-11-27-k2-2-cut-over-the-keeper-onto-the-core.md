@@ -246,4 +246,12 @@ This section records two changes to commit 3. The text above stays as it was pla
 | The services table | "the 10 write sites become outputs `flush` applies" | **The writes stay in the step, on the side.** At main 354e1f35, four writes are reachable on the core: the join's insert (LK:6281), the generation-checked remove (`KeeperTurnSide.swift:215`), and two `removeAll` calls (`failLand`, LK:6592; the shutdown item, LK:7455). Two more run on the keeper's own path only (LK:1355, :2606). An output that `flush` applies would change reads in the step: `makeContext` reads the table in the step that wrote it (LK:5210), so a handler after the insert would see the table as it was before. Also, `KeeperOutput.services(PlayerID, Epoch, LandServices?)` can't express a `removeAll`. The side store is already storage that the adopter holds, bound to its owner, so commit 4 moves only the table's slot to `LiveLandTurns`, with a `live.` census row. `KeeperOutput.services` is removed if nothing emits it by commit 4 |
 | The owner identity for the sync queries | needed commit 4's facade (rev 3 prep) | **Not blocked.** `coreTwinForTesting` returns the owner, the source keeper whose executor the core shares. `.syncTurnNow`, `.syncTurnTicket` and `.settle` carry the port. Before each query, the adopter runs the keeper entry's checks, `port.runsSyncPhaseInTurn(of: owner)` and `bindSyncRequester`. Commit 4 replaces the owner with the facade, and no stand-in is needed |
 
+**Review's conditions** (both points nodded, 2026-11-27):
+- **The services table.**
+  - The census lists the four sites as in-step side writes; commit 4 moves them with the slot. Review's reason: an output applied at the flush would split one decision across the flush, which the staged-action rule forbids.
+  - The two keeper-only sites go with their flows:
+    - LK:1355 is `tearDownAfterFailedInitialization`. Commit 1 routes it, as the teardown effect (§3.1).
+    - LK:2606 is `runForceShutdown`'s branch without a turn (the drain already started, a failed initialization, or re-evaluation). Commit 1 routes it with `.shutdown`; the re-evaluation arm stays on the replay owner until #612.
+- **The sync queries.** `runsSyncPhaseInTurn(of: owner)` runs in the same segment as the query's send, with no await between, as the keeper's entry does. `bindSyncRequester` runs in the query's step.
+
 The admission path still waits for #940 (§3, commit 3).
