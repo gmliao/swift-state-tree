@@ -1219,6 +1219,34 @@ struct KeeperCoreDifferentialTests {
         #expect(await harness.differentialRead().model.state.log.suffix(2) == ["action:1", "action:2"])
     }
 
+    @Test("A tickless action's failure rides the record effect: while its record is in flight the model's in-flight table owns it, with no violation, and the caller gets the error after the record (K2-2 plan, item 15, K22-Q5)")
+    func failedResultOwnedInFlight() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false)
+        let landID = "core-diff:in-flight:\(UUID().uuidString)"
+        let source = LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: landID)
+        await source.awaitInitialization()
+        _ = try await source.joinReportingAdmission(session: session("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1"), services: LandServices(), admitThroughTransport: false)
+        await source.waitForInFlightWorkForTesting()
+        await source.waitForInputDrainIdleForTesting()
+        let gate = WatermarkGate()
+        defer { gate.release() }
+        let harness = KeeperCoreHarness(await source.coreTwinForTesting(), recordGate: gate)
+        await harness.start()
+        let pair = CoreDiffPair(keeper: source, harness: harness, landID: landID)
+        let call = Task { await coreTicklessAction(pair, CoreDiffAction(n: 7, fails: true), "p1", "c1") }
+        guard await gate.waitUntilEntered("the failing action's record") else { return }
+        let held = await harness.differentialRead()
+        #expect(held.model.inFlightRecordResults.count == 1, "the in-flight table owns the failure: \(held.model.inFlightRecordResults)")
+        #expect(held.model.inputTurnResults.isEmpty, "the result left the table with the effect")
+        #expect(held.violations.isEmpty, "no owner violation while in flight: \(held.violations)")
+        gate.release()
+        let answer = await call.value
+        #expect(answer != .completed(7), "the caller got the handler's error: \(answer)")
+        let after = await harness.differentialRead()
+        #expect(after.model.inFlightRecordResults.isEmpty && after.model.inputTurnResults.isEmpty)
+        #expect(after.violations.isEmpty, "\(after.violations)")
+    }
+
     @Test("A tickless action answers with its response or its handler's error", arguments: [false, true])
     func ticklessAction(fails: Bool) async {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "action")
