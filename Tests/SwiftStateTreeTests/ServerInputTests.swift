@@ -66,6 +66,31 @@ struct SIUnencodable: ServerInputPayload {
     let ids: Set<Int>
 }
 
+/// Writes one key in two spellings that `String ==` equates (NFC and NFD "é"): the record
+/// refuses them as a duplicate key (#805). Its own coding: no stored properties to check.
+@Payload
+struct SITwoSpellings: ServerInputPayload {
+    struct Key: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(_ string: String) { stringValue = string }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        _ = try decoder.container(keyedBy: Key.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: Key.self)
+        try container.encode(1, forKey: Key("\u{E9}"))
+        try container.encode(2, forKey: Key("e\u{301}"))
+    }
+}
+
 /// A different type with the declared type's name: never the declared one.
 enum SIElsewhere {
     @Payload
@@ -195,6 +220,7 @@ private func makeDefinition(ticking: Bool, box: SISubmitterBox? = nil) -> LandDe
                     appendEntry("dated:\(input.label.text):\(input.ratio):\(input.count)", to: &state, ctx: ctx)
                 }
                 HandleServerInput(SIUnencodable.self) { _, _, _ in }
+                HandleServerInput(SITwoSpellings.self) { _, _, _ in }
                 HandleServerInput(SIDeep.self) { state, input, ctx in
                     appendEntry("deep:\(input.depth)", to: &state, ctx: ctx)
                 }
@@ -550,11 +576,13 @@ struct ServerInputTests {
         }
     }
 
-    @Test("Refusals queue nothing: undeclared type, no record form, not live, draining")
+    @Test("Refusals queue nothing: undeclared type, no record form (a Set, two spellings of one key), not live, draining")
     func refusalsQueueNothing() async throws {
         let keeper = try await makeKeeper(ticking: true)
         #expect(await keeper.submitServerInput(SIUndeclared(tag: "u")) == .refused(.unknownType))
         #expect(await keeper.submitServerInput(SIUnencodable(ids: [1, 2])) == .refused(.unencodable))
+        // Two spellings of one key would replay with either value (#805): no record form.
+        #expect(await keeper.submitServerInput(SITwoSpellings()) == .refused(.unencodable))
         #expect(await keeper.serverInputsInFlightForTesting() == 0)
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().log.isEmpty)
