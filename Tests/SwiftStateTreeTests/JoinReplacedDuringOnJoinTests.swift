@@ -867,11 +867,29 @@ struct JoinReplacedDuringOnJoinTests {
         defer { gate.release() }
         guard let (leaveA, joinC) = try await rejoinWaitingForTheLeave(f, clientA: ClientID("lgate-\(key)"), sessionA: SessionID("s-a"), leaveGate: gate) else { return }
         // Each cause releases the waiters in its own segment: the shutdown turn's, or the
-        // failure's (`failLand`).
+        // failure's (`failLand`). The shutdown is held after its turn applied, before
+        // `shutdownIfIdle`, which releases them too: C must end while it is held, so the turn's
+        // own release is what this case tests.
+        let afterShutdownTurn = TestGate()
+        defer { afterShutdownTurn.open() }
+        if cause == "shutdown" {
+            await f.keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>().on(.shutdownTurnApplied) { await afterShutdownTurn.arrive() }.hook)
+        }
         let shutdown = Task {
             if cause == "shutdown" { await f.keeper.forceShutdown() }
         }
         defer { shutdown.cancel() }
+        if cause == "shutdown" {
+            #expect(await afterShutdownTurn.waitForArrivals(1), "the shutdown turn never applied")
+            guard let errorC = await valueWithinHangBound(joinC) else {
+                Issue.record("tick=\(tick): C's join didn't end in the shutdown turn")
+                return
+            }
+            var shuttingDown = false
+            if case .landShuttingDown? = errorC as? JoinError { shuttingDown = true }
+            #expect(shuttingDown, "tick=\(tick) cause=shutdown: C's join \(describe(errorC))")
+            afterShutdownTurn.open()
+        }
         if cause == "failure" {
             await f.keeper.submitLandFailure(LandFailure(kind: .syncPlan, detail: "#943", position: LandFailurePosition(stage: .syncPhase)))
             // A tick land applies the failure in its next tick.
@@ -1012,6 +1030,46 @@ struct JoinReplacedDuringOnJoinTests {
         #expect(errorC is CancellationError, "C's join \(describe(errorC))")
         await f.settle()
         #expect(await f.log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)"])
+        #expect(await f.keeper.playerCount() == 0)
+    }
+
+    @Test("W6d: W6c on a draining land: a rejoin's cancel that lands after the drain released its waiter gets landShuttingDown, since J2c checks the drain before the cancel (#943)", arguments: [false, true])
+    func cancelAfterTheDrainReleased(tick: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: true)
+        let key = ReplacedJoinGates.freshKey()
+        let gate = ReplacedJoinGates.gate(key)
+        defer { gate.release() }
+        let clientA = ClientID("lgate-\(key)")
+        guard let (leaveA, joinC) = try await rejoinWaitingForTheLeave(f, clientA: clientA, sessionA: SessionID("s-a"), leaveGate: gate) else { return }
+        // C's cancel is held before it looks for its waiter; the drain releases the waiter
+        // meanwhile, while A's leave is still in its OnLeave resolver.
+        let atCancel = TestGate()
+        defer { atCancel.open() }
+        let cancelled = EventLog()
+        await f.keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>()
+            .on(.leaveEndWaiterCancel) { await atCancel.arrive() }
+            .on(.leaveEndWaiterCancelled) { cancelled.append("cancelled") }
+            .hook)
+        joinC.cancel()
+        #expect(await atCancel.waitForArrivals(1))
+        let shutdown = Task { await f.keeper.forceShutdown() }
+        defer { shutdown.cancel() }
+        // C resumed from the drain's release, cancelled: J2c answers the drain first.
+        guard let errorC = await valueWithinHangBound(joinC) else {
+            Issue.record("tick=\(tick): C's join didn't end after the drain's release")
+            return
+        }
+        var shuttingDown = false
+        if case .landShuttingDown? = errorC as? JoinError { shuttingDown = true }
+        #expect(shuttingDown, "tick=\(tick): C's join \(describe(errorC))")
+        #expect(await f.keeper.leaveEndWaiterCountForTesting(f.player) == 0)
+        atCancel.open()
+        #expect(await cancelled.waitFor("cancelled"), "the cancel never ran")
+        let cancels = await f.keeper.leaveEndWaiterCancelsForTesting()
+        #expect(cancels.removed == 0 && cancels.foundGone == 1, "cancels \(cancels)")
+        gate.release()
+        _ = await valueWithinHangBound(leaveA)
+        _ = await valueWithinHangBound(shutdown)
         #expect(await f.keeper.playerCount() == 0)
     }
 

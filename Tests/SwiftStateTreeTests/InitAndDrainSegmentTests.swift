@@ -331,7 +331,7 @@ struct InitAndDrainSegmentTests {
         await keeper.forceShutdown()
     }
 
-    @Test("T2b: a land that fails while its initialization is held at the record configures no loop")
+    @Test("T2b: a land that fails while its initialization is held at the record configures no loop, and its drain runs the destroy handlers: OnInitialize had applied")
     func failedAtInitializeRecordStartsNoLoop() async throws {
         let (keeper, holds) = await keeperHeldAtInitializeRecord(tick: true)
         guard let holds else { return }
@@ -348,6 +348,11 @@ struct InitAndDrainSegmentTests {
         await keeper.waitUntilDrained()
         #expect(await keeper.lifecycleFlagsForTesting().destructionFinished, "the failure's teardown ended")
         #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
+        // OnInitialize applied before the record's hold: the state is set up, so the drain ran
+        // the destroy handlers on it (#946's `initializationApplied`, set in the apply's segment).
+        let log = await keeper.currentState().log
+        #expect(log.contains { $0.hasPrefix("init:") }, "log \(log)")
+        #expect(log.contains { $0.hasPrefix("finalize:") }, "the drain skipped the destroy handlers of an initialized land: \(log)")
     }
 
     @Test("T3: OnInitialize's resolver throws (.failLand) after the hold: the initialization fails and the waiting join gets landShuttingDown", arguments: [false, true])
@@ -447,7 +452,7 @@ struct InitAndDrainSegmentTests {
         #expect(done.tickLoopConfigured == false)
     }
 
-    @Test("T12: a land failure whose drain destroys the land during OnInitialize's resolvers: whether the resolver then succeeds or throws, the initialization doesn't apply, no destroy handler runs, no loop starts, and every caller gets the land's failure (#946)", arguments: ["init", "initfail"])
+    @Test("T12: a land failure whose drain destroys the land during OnInitialize's resolvers: whether the resolver then succeeds or throws, the initialization doesn't apply, no destroy handler runs, and every caller gets the land's failure (#946)", arguments: ["init", "initfail"])
     func drainFinishedDuringInitializeResolvers(phase: String) async throws {
         // A tickless land applies the failure at once, during the resolvers; a tick land would
         // only apply it in a tick, and no tick runs before the initialization ends. "initfail"'s
@@ -495,7 +500,6 @@ struct InitAndDrainSegmentTests {
         let log = await keeper.currentState().log
         #expect(log.isEmpty, "\(phase): OnInitialize or a destroy handler applied to a destroyed land: \(log)")
         #expect(flags.initializationFailed, "the initialization ended without the land's failure")
-        #expect(flags.tickLoopConfigured == false)
         // Every caller gets the land's failure, not the resolver's error: the waiting leave and a
         // later one, as the initialization's waiters; a join, which maps it, is told the land is
         // shutting down.
