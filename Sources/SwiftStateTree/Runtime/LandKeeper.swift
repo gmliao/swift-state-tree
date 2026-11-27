@@ -2028,7 +2028,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// A live OnInitialize whose resolvers run: what `initializeBegin` built for it.
-    struct InitializeResolving: @unchecked Sendable {
+    struct InitializeResolving: Sendable {
         let handler: InitializeHandler<State>
         let ctx: LandContext
         let sequence: Int64
@@ -8362,7 +8362,7 @@ extension KeeperModel {
             initializationPhase = .finishing
             return .finish
         }
-        initializationPhase = .recording(sequence: taken)
+        initializationPhase = .recording
         let recorded = ReevaluationRecordedLifecycleEvent(
             kind: LandKeeper<State>.LifecycleKind.initialize.rawValue,
             sequence: taken,

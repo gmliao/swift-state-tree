@@ -513,8 +513,9 @@ enum InitializationPhase: Equatable, Sendable {
     /// OnInitialize's resolvers run as an await (an effect on the core); its sequence number
     /// is taken.
     case resolving(sequence: Int64)
-    /// OnInitialize applied; its record is with the recorder.
-    case recording(sequence: Int64)
+    /// OnInitialize applied; its record is with the recorder. No sequence: only the flow's own
+    /// record effect answers it, and no step would read one (Review on #966).
+    case recording
     /// OnInitialize applied (or the land has none); the finish runs in a step of its own.
     case finishing
     /// The owner configures the loops, then the initialization is done.

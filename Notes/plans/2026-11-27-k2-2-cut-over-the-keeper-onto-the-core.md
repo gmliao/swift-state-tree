@@ -357,7 +357,7 @@ What it shows:
 
 K2-2a merged as #948 without commit 1 (§3). Commit 1a routes the initialization; 1b takes the rest of §11.
 
-**One phase per flow.** The initialization's state is one enum, `InitializationPhase`, in the model: `.notStarted`, `.replaying` (the keeper's legacy re-evaluation path, #612), `.resolving(sequence:)`, `.recording(sequence:)`, `.finishing`, `.startingLoops`, `.done`, `.failed`, `.abandonedByDrain` (#952: a drain began during OnInitialize's resolvers, so OnInitialize is dropped). It replaces the `didInitialize` flag, which is now computed (`isOver`: done or failed).
+**One phase per flow.** The initialization's state is one enum, `InitializationPhase`, in the model: `.notStarted`, `.replaying` (the keeper's legacy re-evaluation path, #612), `.resolving(sequence:)`, `.recording(sequence:)`, `.finishing`, `.startingLoops`, `.done`, `.failed`, `.abandonedByDrain` (#952: a drain began during OnInitialize's resolvers, so OnInitialize is dropped). It replaces the `didInitialize` flag, which is now computed (`isOver`: `.done`, `.failed` or `.abandonedByDrain`).
 - Each segment sets the phase it enters, in the shared bodies, so the keeper's path and the core's write the same field and the differential compares it.
 - Each result step on the core (`.initialize`, `.initializeResolved`, `.initializeRecorded`, `.initializeFinish`, `.initializeDone`) switches over all nine phases. The phase its request left runs; every other phase is named in a `preconditionFailure`. Only the flow's own effects and queue send those inputs, and until 1b no drain or failure moves the phase from outside the flow, so another phase is a broken flow, not a race.
 - The rule is the maintainer's, for every multi-step flow moved onto the core, after #952 r1's two must-fixes: one exit of three checked, and a teardown keyed on a still-racing outcome.
@@ -369,6 +369,15 @@ K2-2a merged as #948 without commit 1 (§3). Commit 1a routes the initialization
 - M5's `loopEpoch` goes with the tick-record hold, since the epoch guards the stale `.tickDue` that the tick routing reads.
 - M7–M10 and M12: the drain, the stop and the tick-land `.freeze` refusal.
 - `initializeFail` stages its teardown through `keeperReference`, which is empty on the core twin, so no teardown runs on the core in 1a. That's 1b's drain.
+
+**Round 1 on #966 (Review's NOT GO at 5fce0d13), answered.**
+- **The owner's two sends are `.control`:** `.initialize` and `.initializeDone`, as #948 made `.resume`. A full or closed queue never refuses the only input that answers the initialization's waiters.
+- **The finish steps directly**, in the handler that ran OnInitialize's step, with the same phase check. `.initializeFinish` is gone as an input: queued behind `.land`, it let queued inputs step between OnInitialize and the finish, which the keeper never does, and its `_ =` dropped a refusal. M1's reason for a separate step holds: the step that returned `.finish` has ended, so its late backstop has run (T11).
+- **A failure is thrown to the waiters** (K2 §3.3.1). `answerInitializationWaits` and a late `.awaitInitialized` reply `.failure(error)`, where the error is the side's error for `initializationFailure` (the keeper's `failure(for:path:sequence:)`). The facade's `awaitInitialization` drops it with `try?`, as the keeper's does.
+- **`markDrainingForTesting`** sets the flag without the clears, unlike every production drain start. Its doc and the OnJoin assert name it as the one exception. `drainStartClearsWhileOnJoinIsHeld` pins the clears for `failLand` and the forced stop, before OnJoin's release.
+- **`.recording`** carries no sequence: no step read it. `InitializeResolving` is plain `Sendable`. `coreWaitsLeft` counts the model's barrier waits.
+- **Core twins:** `initializationHeldRecordTwoWaiters` (a), `initializationFailureAnswersTheWaiters` (b, the resolver's throw), `initializationStartsLoops` (c: the twin answers `.startLoops` with `.initializeDone`). Still to come: (b)'s `validate` refusal, (d) T11's late re-entry, and (e) a drain during the resolvers and during the record.
+- **`parkedCallerCancelRacesResume`** is replaced by `parkedCallerResumedThenCancelled`, the resume-first order, forced. The job is held at its resolver while the caller is cancelled, and the comparison waits for the core's `input-drain-end`. The cancel-first order stays `parkedCallerCancelledBeforeResume`.
 
 **Round 4's leftovers on #948, carried here.**
 - A cancel concurrent with the resume: `parkedCallerCancelRacesResume`, 8 runs. Either outcome, consistent on each path, and nothing left waiting.
