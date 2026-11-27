@@ -109,6 +109,8 @@ struct DemoMachine: TurnMachine {
     var txnRequest: [RequestID: Int] = [:]
     var jobRequests: [RequestID: Int] = [:]
     var heldCallers: [InputID] = []
+    /// The callers `handleCallerCancelled` was stepped for, in order.
+    var cancelledCallers: [InputID] = []
     var relaySecond: [Int: String] = [:]
 
     init() {}
@@ -139,6 +141,17 @@ struct DemoMachine: TurnMachine {
             turn.reply(to: waiter.caller, .success(count))
         }
         logWaiters.removeAll { $0.count <= count }
+    }
+
+    /// Records the caller and drops it from the held callers. A held caller's cancellation also
+    /// emits `-1` under `.io` when that key is live, so a test sees the hook's output flushed,
+    /// and replies to it, a reply that must find no waiter.
+    mutating func handleCallerCancelled(_ caller: InputID, _ turn: inout MailTurn<DemoMachine>) {
+        cancelledCallers.append(caller)
+        guard let index = heldCallers.firstIndex(of: caller) else { return }
+        heldCallers.remove(at: index)
+        if turn.isLive(.io) { turn.emit(-1, for: .io) }
+        turn.reply(to: caller, .success(-1))
     }
 
     mutating func handle(_ input: Input, _ turn: inout Turn<DemoMachine>) {

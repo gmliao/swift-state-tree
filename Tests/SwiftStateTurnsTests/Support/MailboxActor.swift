@@ -136,6 +136,8 @@ actor MailboxActor: TurnActor {
 
     var log: [String] { core.read { $0.log } }
     var stats: TurnStats { core.stats }
+    /// The callers the machine's `handleCallerCancelled` was stepped for.
+    var cancelledCallers: [InputID] { core.read { $0.cancelledCallers } }
     /// Entries in the core's timer, live or stale.
     var deadlineEntries: Int { core.deadlineEntriesForTesting }
 

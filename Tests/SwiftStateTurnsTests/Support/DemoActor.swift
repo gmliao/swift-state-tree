@@ -10,6 +10,7 @@ struct DemoSnapshot: Sendable {
     /// Each `flush` call's outputs.
     var batches: [[Int]] = []
     var stats = TurnStats()
+    var cancelledCallers: [InputID] = []
 }
 
 /// The actor that runs `DemoMachine`. Its effects wait at the fixture's gates: an effect with
@@ -68,6 +69,7 @@ actor DemoActor: TurnActor {
         var snapshot = core.read { machine in
             DemoSnapshot(steps: machine.steps, asks: machine.asks, log: machine.log)
         }
+        snapshot.cancelledCallers = core.read { $0.cancelledCallers }
         snapshot.flushed = flushed
         snapshot.batches = batches
         snapshot.stats = core.stats

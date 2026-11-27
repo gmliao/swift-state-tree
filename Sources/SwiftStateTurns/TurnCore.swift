@@ -643,6 +643,15 @@ public final class TurnCore<M: TurnMachine> {
         machine.handleMail(mail, &turn)
     }
 
+    /// A cancelled caller's step (`handleCallerCancelled`). No ordinal of its own: the
+    /// cancellation's `entryBoundary` took it.
+    @inlinable func stepCallerCancelled(_ caller: InputID) {
+        enterStep(nil)
+        defer { leaveStep() }
+        var turn = MailTurn<M>(core: self)
+        machine.handleCallerCancelled(caller, &turn)
+    }
+
     /// A query is a step: its answer gets the turn, so it can change state and take mail. It takes
     /// a dispatch ordinal, so a recorded core's outside queries replay in order; a read that must
     /// not count goes through `read`.
