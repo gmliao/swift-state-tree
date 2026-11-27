@@ -101,8 +101,9 @@ Every new test parks the keeper at one await. While it is parked, a re-entrant c
 | T2 | the record (`submitTurnRecord`) | existing `.turnRecord` | OnInitialize applied; `didInitialize` false; no tick loop yet (`tickLoopConfiguredAt == nil`). After release, the loop is configured |
 | T2b | the record, with a drain begun at the hold (a `failLandForTesting` at `.turnRecord`) | existing `.turnRecord` | after release, no loop is configured (`tickLoopConfiguredAt == nil`). No suite covers this today (grep: no drain-during-initialization test) |
 | T3 | OnInitialize resolvers, `.failLand`, a throwing gate | gated resolver | before release, nothing failed. After it, `initializationFailure` is set and the waiting join gets `landShuttingDown`, as in `InitializeResolverFailureTests`. The teardown is the failure's own: the test waits for its drain to start (`waitUntilDrainStartedForTesting`, bounded) and starts none itself |
-| T10 | OnInitialize resolvers, with a land failure submitted meanwhile | gated resolver | `submitLandFailure` takes a number during the resolvers; the release doesn't trap, the land fails, its teardown ends. Tick and tickless |
-| T4 | `waitForTickInFlight` | a tick held at its record; the drain signals from inside its first segment (`side.probe`, "drain-waits-for-tick"), so the test reads the flags only once the drain is parked (#944 review: a hold hook runs off the keeper and races `drainBegin`) | `isDraining`; loops cancelled; a submitted action is refused `landClosed`; pending inputs not yet dropped. After release they are dropped, then the handlers run |
+| T10 | OnInitialize resolvers, with a land failure submitted meanwhile | gated resolver | `submitLandFailure` takes a number during the resolvers; the release doesn't trap, the land fails, its teardown ends. Tickless: the failure applies before the release (the drain branch). Tick: two failures stay pending (the count branch) |
+| T11 | OnInitialize's late re-entry, no recorder, loops on | gated resolver; OnInitialize re-enters through `assumeIsolated { $0.submitSyncStream([]) }` | one late re-entry applied, failure `.keeperReentry`, no tick loop configured |
+| T4 | `waitForTickInFlight` | a tick held at its record; the drain signals from inside its first segment (`side.probe`, "drain-waits-for-tick"), so the test reads the flags only once the drain is parked (#944 review: a hold hook runs off the keeper and races `drainBegin`) | `isDraining`; a server input submitted then is refused `.draining`; the input queued before the drain is still pending, and no destroy handler has started. After release it is dropped, then the handlers run. The fixture starts no loop (`autoStartLoops: false`), so loop cancellation isn't checked here |
 | T5 | OnDestroyWhenEmpty resolvers | gated resolver | `destroyHandlersStarted`; `pendingItems` empty; the state before the handler |
 | T6 | OnFinalize resolvers | gated resolver | OnDestroyWhenEmpty's write applied, OnFinalize's not |
 | T7 | AfterFinalize | gated handler | OnFinalize's write applied; `destructionFinished` false; the transport still attached |
@@ -134,9 +135,9 @@ T1–T3 run on tick and tickless lands. T4 and T9 need a tick land. T5–T8b run
 | 6 | the `!isDraining` check in `initializeFinish` removed | T2b |
 | 7 | the driver runs `initializeDone` before the loop configuration (the two swapped), so `didInitialize` is true with no loop | `initializeDone`'s assert, deterministically, on every run. T9 sees the order only through timing. Rev 2's form of this mutant (the write in `initializeFinish`, a `Task.yield()` before the loops) still reaches `initializeDone` after the configuration, so the assert can't catch it; the swap is the shape the assert pins. Once step 1 drops `async` from the configurators (P1), an await between them and `initializeDone` can't come back without a visible signature change, so the yield form needs no pin of its own |
 | 8 | `boundRequester.object = nil` moved before the `onLandDestroyed` await | T8b |
-| 9 | `didInitialize = true` removed from `initializeDone` and written after `await task.value` (#934's old code) | T2, T9 |
+| 9 | `didInitialize = true` removed from `initializeDone` and written after `await task.value` (#934's old code) | T9 (T2 too when its read comes before the starter's write, which isn't fixed) |
 | 10 | rev 2's assert restored (`sequence.next == r.sequenceAfterTake`) | T10 traps (Linux) |
-| 11 | `initializeApply` returns `initializeFinish(...)` again instead of `.finish` | none: the late backstop's failure needs a re-entry no test makes; the split is argued, not pinned |
+| 11 | `initializeApply` returns `initializeFinish(...)` again instead of `.finish` | T11 (OnInitialize's late re-entry: the loop is configured) |
 
 ## Probes
 
