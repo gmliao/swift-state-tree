@@ -728,8 +728,8 @@ public func OnInitialize<State: StateNodeProtocol>(
 
 /// What a land does when one of its OnInitialize resolvers throws (#238). A timeout
 /// (`RESOLVER_INIT_TIMEOUT_MS`) always fails the initialization, whatever the choice. So does
-/// a land failure during the resolvers (#946): the land is ending, and OnInitialize doesn't
-/// run, whatever the resolvers return.
+/// a land whose drain has started when the resolvers return (#946: a failure the transport
+/// reported during them): OnInitialize doesn't run, whatever the resolvers return.
 public enum InitializeResolverFailure: Sendable, Equatable {
     /// The initialization fails, as for a timeout: OnInitialize doesn't run, every call that
     /// waits for the initialization gets `LandInitializationError` (a join: `JOIN_DENIED`,

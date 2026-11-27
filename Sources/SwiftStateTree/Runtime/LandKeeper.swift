@@ -1500,9 +1500,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     result = .failure(error)
                 }
                 // Read here, on the initialization's task: a core step (K2-2) has no such task.
-                let cancelled = Task.isCancelled
+                let initializationTaskCancelled = Task.isCancelled
                 request = withTurn { m, side, outputs in
-                    m.initializeResolved(behavior, &side, &outputs, resolving, result, cancelled: cancelled)
+                    m.initializeResolved(behavior, &side, &outputs, resolving, result, initializationTaskCancelled: initializationTaskCancelled)
                 }
             case let .submitRecord(record):
                 await submitTurnRecord(record)
@@ -8117,13 +8117,16 @@ extension KeeperModel {
 
     /// I2: OnInitialize's resolvers ended. A timeout, or a failure under `.failLand`, fails the
     /// initialization; otherwise OnInitialize runs, without the group's outputs on a failure.
+    /// `initializationTaskCancelled`: the initialization's task was cancelled, which the
+    /// shutdown exemption of `.failLand` reads. No current path cancels that task, so the case
+    /// is defensive; a draining land ends here first, by the guard below (#946).
     fileprivate mutating func initializeResolved(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         _ resolving: InitializeResolving,
         _ result: Result<LandContext, any Error>,
-        cancelled: Bool
+        initializationTaskCancelled: Bool
     ) -> InitializeRequest {
         // No intake that waits for the initialization took a number during the resolvers:
         // every join, leave, action, client event, server input and `forceShutdown` awaits
@@ -8154,7 +8157,7 @@ extension KeeperModel {
             if LandKeeper<State>.initializeResolverFailureFailsLand(
                 error,
                 policy: behavior.definition.lifetimeHandlers.onInitializeResolverFailure,
-                shuttingDown: cancelled
+                shuttingDown: initializationTaskCancelled
             ) {
                 // A resolver threw, with `.failLand` (#238): the same as a timeout.
                 ResolverDeadline.metrics.noteInitFailed()
