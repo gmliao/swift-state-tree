@@ -5988,6 +5988,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) async {
         var joinSucceeded = false
         var playerID: PlayerID?
+        // The connection this join is for, read before the join's await: a supersede's final
+        // frame and close must not reach a later connection under the ID (#947). `nil` while the
+        // session isn't registered yet: the close then goes to the ID's connection at the time.
+        let connectionGeneration = connectionGenerations[sessionID]
 
         defer {
             if !joinSucceeded, let pid = playerID {
@@ -6023,6 +6027,17 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } catch {
             logger.error("Join failed for session \(sessionID.rawValue): \(error)")
             let (errorCode, errorMessage) = AdapterErrorMapping.mapJoinFailure(error)
+            if case .superseded? = error as? JoinError {
+                // A newer join of the player replaced this one: the error is the session's last
+                // frame, with the 4017 close behind it, as the router answers it (#861, #947), so
+                // the client doesn't rejoin into a kick loop.
+                if let errorData = joinErrorData(requestID: requestID, code: errorCode, message: errorMessage) {
+                    sendFinalFrameAndClose(errorData, kind: messageEncoder.encoding.frameKind, to: sessionID, generation: connectionGeneration, close: .superseded)
+                } else {
+                    closeSessionDetached(sessionID, generation: connectionGeneration, with: .superseded)
+                }
+                return
+            }
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
@@ -6083,13 +6098,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         details: [String: AnyCodable]? = nil
     ) async {
         do {
-            var errorDetails = details ?? [:]
-            errorDetails["requestID"] = AnyCodable(requestID)
-            errorDetails["landID"] = AnyCodable(landID)
-
-            let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
-            let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try messageEncoder.encode(errorResponse)
+            let errorData = try encodeJoinError(requestID: requestID, code: code, message: message, details: details)
             enqueueOutbound(errorData, to: sessionID, kind: messageEncoder.encoding.frameKind)
 
             if logger.logLevel <= .debug {
@@ -6105,6 +6114,33 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "sessionID": .string(sessionID.rawValue),
                 "error": .string("\(error)")
             ])
+        }
+    }
+
+    /// A join error frame in the adapter's encoding: `requestID` and `landID` in its details.
+    private func encodeJoinError(
+        requestID: String,
+        code: ErrorCode,
+        message: String,
+        details: [String: AnyCodable]? = nil
+    ) throws -> Data {
+        var errorDetails = details ?? [:]
+        errorDetails["requestID"] = AnyCodable(requestID)
+        errorDetails["landID"] = AnyCodable(landID)
+        let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
+        return try messageEncoder.encode(TransportMessage.error(errorPayload))
+    }
+
+    /// `encodeJoinError`, or `nil` (logged) when it doesn't encode.
+    private func joinErrorData(requestID: String, code: ErrorCode, message: String) -> Data? {
+        do {
+            return try encodeJoinError(requestID: requestID, code: code, message: message)
+        } catch {
+            logger.error("❌ Failed to encode join error", metadata: [
+                "requestID": .string(requestID),
+                "error": .string("\(error)")
+            ])
+            return nil
         }
     }
 
