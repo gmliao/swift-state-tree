@@ -29,6 +29,13 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// teardown clears them all.
     var rejoinReservations: [PlayerID: Set<Epoch>] = [:]
     var rejoinReservationEpochs: EpochCounter = EpochCounter()
+    /// The latest join attempt of each player to reach its decision (J2), by arrival
+    /// (`joinArrivals`): the fencing token of #940. A kicking join that resumes after its kick's
+    /// leave and finds a later arrival here is fenced out (J2c), so the last attempt to arrive
+    /// keeps the player whichever kick returns first. Each attempt removes its own token on
+    /// every exit, so the map holds only players with an attempt in flight.
+    var latestJoinArrivals: [PlayerID: Epoch] = [:]
+    var joinArrivals: EpochCounter = EpochCounter()
 
     // Queues, jobs and results.
     var pendingItems: [LandKeeper<State>.PendingItem] = []

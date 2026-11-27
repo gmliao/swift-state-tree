@@ -1968,11 +1968,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try await ensureInitializedForJoin()
         let call = JoinCall(session: session, clientID: clientID, sessionID: sessionID, services: services, admitThroughTransport: admitThroughTransport)
         var request = try withTurn { m, side, outputs in try m.joinBegin(behavior, &side, &outputs, call) }
-        // The attempt's rejoin reservation, ended on every exit (the insert ends it too).
+        // The attempt's rejoin reservation, ended on every exit (the insert ends it too), and its
+        // arrival token, removed on every exit if no later attempt replaced it.
         var reserved: (epoch: Epoch, playerID: PlayerID)?
+        var arrived: (arrival: Epoch, playerID: PlayerID)?
         defer {
-            if let reserved {
-                withTurn { m, _, _ in m.endRejoinReservation(reserved.epoch, of: reserved.playerID) }
+            if reserved != nil || arrived != nil {
+                withTurn { m, _, _ in
+                    if let reserved { m.endRejoinReservation(reserved.epoch, of: reserved.playerID) }
+                    if let arrived { m.endJoinArrival(arrived.arrival, of: arrived.playerID) }
+                }
             }
         }
         while true {
@@ -1986,8 +1991,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 )
                 request = try withTurn { m, side, outputs in try m.joinDecide(behavior, &side, &outputs, call, canJoinContext: ctx) }
             case let .holdThenKickCheck(decided):
-                // J2 took the reservation in the segment that just ended: no suspension since.
+                // J2 took the reservation and the arrival in the segment that just ended: no
+                // suspension since.
                 reserved = decided.reservation.map { ($0, decided.playerID) }
+                arrived = (decided.arrival, decided.playerID)
                 await holds.at(.join)
                 request = try withTurn { m, side, outputs in try m.joinKickCheck(behavior, &side, &outputs, decided) }
             case let .kick(decided, oldClientID, oldSessionID, kickedGeneration):
@@ -2055,6 +2062,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let decision: JoinDecision
         let playerID: PlayerID
         let reservation: Epoch?
+        /// The attempt's fencing token, taken at J2 (`latestJoinArrivals`).
+        let arrival: Epoch
     }
 
 
@@ -2309,6 +2318,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Test hook: whether the slot of `sequence` holds its outcome, unread.
+    /// Test hook: the players with a join attempt in flight, by their latest arrival token.
+    package func latestJoinArrivalsForTesting() -> [PlayerID: Epoch] {
+        model.latestJoinArrivals
+    }
+
     package func actionSlotIsFilledForTesting(_ sequence: Int64) -> Bool {
         model.actionSlots[sequence]?.result != nil
     }
@@ -5772,6 +5786,12 @@ extension KeeperModel {
         return (hash, snapshot)
     }
 
+    /// Removes one attempt's arrival token if it is still the player's latest; a later attempt's
+    /// token stays.
+    mutating func endJoinArrival(_ arrival: Epoch, of playerID: PlayerID) {
+        if latestJoinArrivals[playerID] == arrival { latestJoinArrivals[playerID] = nil }
+    }
+
     /// Ends one attempt's reservation; idempotent, and it leaves the player's other attempts' ones.
     mutating func endRejoinReservation(_ reservation: Epoch, of playerID: PlayerID) {
         guard var epochs = rejoinReservations[playerID] else { return }
@@ -6233,13 +6253,19 @@ extension KeeperModel {
         return try joinInsert(behavior, &side, &outputs, decided)
     }
 
-    /// J2c: after the kick's leave, which awaited. Another join of the player may have inserted
-    /// its own entry meanwhile: the slot is checked by identity (the kicked entry's generation),
-    /// not by key. A different entry is a newer one, and it fences this join out: this join
-    /// throws `.superseded`, the way a stale fencing token is refused (Kleppmann 2016, "How to
-    /// do distributed locking"; ZooKeeper's zxid epochs). The last join to arrive wins. Kicking
-    /// that entry too would let two joins that keep arriving kick each other without bound,
-    /// and taking it over would keep its join's pending OnJoin (#860).
+    /// J2c: after the kick's leave, which awaited. Other joins of the player may have run
+    /// meanwhile, so two checks follow, in this order:
+    /// - **The fence.** A later attempt reached J2 (`latestJoinArrivals` holds another token):
+    ///   this join throws `.superseded`, the way a stale fencing token is refused (Kleppmann
+    ///   2016, "How to do distributed locking"; ZooKeeper's zxid epochs). The token is the
+    ///   attempt's arrival, not the slot's entry: the slot can be empty, or hold an older
+    ///   attempt's entry, while a later attempt waits in its own kick (#940). So the last
+    ///   attempt to arrive keeps the player, whichever kick returns first.
+    /// - **The slot, by identity** (the kicked entry's generation), not by key. With this join
+    ///   still the latest, another entry there was inserted by an attempt that arrived earlier,
+    ///   at its J2b, after this join's J2: it is kicked too, never taken over, since taking it
+    ///   over would keep its join's pending OnJoin (#860). Bounded: only attempts that reached
+    ///   J2 before this one can insert while it is the latest.
     fileprivate mutating func joinAfterKick(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
@@ -6247,9 +6273,12 @@ extension KeeperModel {
         _ decided: JoinDecided,
         kickedGeneration: Epoch
     ) throws -> JoinRequest {
-        if let entry = players[decided.playerID], entry.generation != kickedGeneration {
-            behavior.logger.info("Join of player \(decided.playerID.rawValue) superseded during its kick by a newer entry: the newer join keeps the player")
+        guard latestJoinArrivals[decided.playerID] == decided.arrival else {
+            behavior.logger.info("Join of player \(decided.playerID.rawValue) superseded during its kick by a later join: the later join keeps the player")
             throw JoinError.superseded
+        }
+        if let entry = players[decided.playerID], entry.generation != kickedGeneration {
+            return try joinKickCheck(behavior, &side, &outputs, decided)
         }
         return try joinInsert(behavior, &side, &outputs, decided)
     }
@@ -6271,8 +6300,8 @@ extension KeeperModel {
             metadata: session.metadata
         )
         // An entry whose OnJoin is still pending never joined: this join runs its own OnJoin,
-        // and the flag isn't carried over (#860). J2c refuses the join instead when such an
-        // entry replaced the one it kicked.
+        // and the flag isn't carried over (#860). J2c kicks such an entry before this point, or
+        // refuses this join when a later attempt arrived.
         let isFirst = playerSession.clientID == nil || playerSession.onJoinPending
         playerSession.onJoinPending = false
 
@@ -8098,7 +8127,11 @@ extension KeeperModel {
         // attempt ends only its own reservation, at the insert and on every other exit.
         let reservation = isReconnection ? rejoinReservationEpochs.next() : nil
         if let reservation { rejoinReservations[playerID, default: []].insert(reservation) }
-        return .holdThenKickCheck(JoinDecided(call: call, decision: decision, playerID: playerID, reservation: reservation))
+        // The attempt's fencing token: every attempt that reaches this point is a later arrival
+        // than every one before it (#940).
+        let arrival = joinArrivals.next()
+        latestJoinArrivals[playerID] = arrival
+        return .holdThenKickCheck(JoinDecided(call: call, decision: decision, playerID: playerID, reservation: reservation, arrival: arrival))
     }
 
     /// J1: the CanJoin request. Without resolvers it goes on to J2 in this segment.

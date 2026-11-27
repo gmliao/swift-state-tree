@@ -237,7 +237,15 @@ struct RejoinHoldsPlaceTests {
         // A is still pending and holds p1's place: p2 plus that place fill the land.
         let newcomer = try await join(keeper, "p3", client: "p3-a")
         box.gate.open()
-        #expect(try await older.value == .admitted)
+        // B arrived after A, so A is fenced out when its kick returns, although B has left
+        // since: the last login to arrive wins (#940), and a stale attempt doesn't take the
+        // player back. A's place was held until then.
+        do {
+            let outcome = try await older.value
+            Issue.record("the older login was \(outcome), not superseded")
+        } catch JoinError.superseded {
+            // expected
+        }
         try await newerLeaves.value
         let finalCount = await keeper.playerCount()
         #expect(newcomer == .roomIsFull, "the older login's place was given away when the newer login ended")

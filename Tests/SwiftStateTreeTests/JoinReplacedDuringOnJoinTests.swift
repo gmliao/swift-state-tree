@@ -9,10 +9,11 @@
 // - the leave that removed the entry (a newer login's kick, or the session's own leave) appends
 //   no OnLeave.
 // A kick's leave awaits too: a third login meanwhile finds the slot empty and inserts its own
-// entry. The kicking join re-checks the slot by the kicked entry's generation, and a newer entry
-// fences it out: it throws `JoinError.superseded`, and the last login to arrive keeps the player
-// (R8). The kick's leave itself is scoped by that generation, so it never removes a newer entry
-// that carries the kicked one's IDs (R10).
+// entry. Each attempt takes an arrival token at its decision; a kicking join that resumes and
+// finds a later arrival is fenced out: it throws `JoinError.superseded`, and the last login to
+// arrive keeps the player (R8), whichever kick returns first (R11). The kick's leave is scoped
+// by the kicked entry's generation, so it never removes a newer entry that carries the kicked
+// one's IDs (R10).
 // K6 (#588) turns a duplicate login into a rebind; the invariant carries over, and so does
 // this suite as its regression test.
 
@@ -236,6 +237,20 @@ private struct ReplacedJoinFixture {
         )
         _ = try await keeper.handleActionEnvelope(envelope, playerID: player, clientID: client, sessionID: session)
     }
+}
+
+/// The task's value once it ends, or nil when it doesn't end within the hang bound. The wait is
+/// on an event the task's end appends, not on `task.value`: a task group's bound
+/// (`withinHangBound`) can't end an await of a task that never returns, since the group waits
+/// for every child.
+private func valueWithinHangBound<T: Sendable>(_ task: Task<T, Never>) async -> T? {
+    let ended = EventLog()
+    Task {
+        _ = await task.value
+        ended.append("ended")
+    }
+    guard await ended.waitFor("ended") else { return nil }
+    return await task.value
 }
 
 /// Whether the action's outcome is a rejection, read without waiting on a held resolver: call
@@ -577,11 +592,10 @@ struct JoinReplacedDuringOnJoinTests {
         // new entry carrying those IDs.
         let joinC = f.joinInTask(clientA, sessionA)
         // Bounded: B's held kick must not park C.
-        guard await withinHangBound({ _ = await joinC.value }) else {
+        guard let errorC = await valueWithinHangBound(joinC) else {
             Issue.record("C's join didn't end while B's kick was held")
             return
         }
-        let errorC = await joinC.value
         #expect(errorC == nil, "C's join \(describe(errorC))")
         await f.settle()
         #expect(await f.log == ["join:c-a", "leave:c-a", "join:c-a"])
@@ -595,6 +609,63 @@ struct JoinReplacedDuringOnJoinTests {
         let log = await f.log
         #expect(log == ["join:c-a", "leave:c-a", "join:c-a"], "tick=\(tick) reporting=\(reporting): log \(log)")
         #expect(await f.keeper.playerCount() == 1)
+    }
+
+    @Test("R11: the last of four logins wins whichever kick returns first: B kicks A, C takes the empty slot, D kicks C; A's leave returns before C's", arguments: [false, true], [false, true])
+    func lastArrivalWinsAcrossTwoKicks(tick: Bool, reporting: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
+        let leaveAKey = ReplacedJoinGates.freshKey(), leaveCKey = ReplacedJoinGates.freshKey()
+        let leaveAGate = ReplacedJoinGates.gate(leaveAKey), leaveCGate = ReplacedJoinGates.gate(leaveCKey)
+        defer { leaveAGate.release(); leaveCGate.release() }
+        let clientA = ClientID("lgate-\(leaveAKey)"), clientB = ClientID("c-b")
+        let clientC = ClientID("lgate-\(leaveCKey)"), clientD = ClientID("c-d")
+        let sessionC = SessionID("s-c"), sessionD = SessionID("s-d")
+
+        try await f.join(clientA, SessionID("s-a"))
+        await f.settle()
+
+        // B kicks A, and waits in A's OnLeave resolvers.
+        let joinB = f.joinInTask(clientB, SessionID("s-b"))
+        guard await leaveAGate.waitUntilEntered("A's OnLeave") else { return }
+        // C arrives after B, finds the slot empty and joins.
+        guard let errorC = await valueWithinHangBound(f.joinInTask(clientC, sessionC)) else {
+            Issue.record("C's join didn't end while B's kick was held")
+            return
+        }
+        #expect(errorC == nil, "C's join \(describe(errorC))")
+        await f.settle()
+        // D arrives last, kicks C, and waits in C's OnLeave resolvers.
+        let joinD = f.joinInTask(clientD, sessionD)
+        guard await leaveCGate.waitUntilEntered("C's OnLeave") else { return }
+
+        // A's leave returns first. The slot is empty, but D arrived after B: B is fenced out.
+        leaveAGate.release()
+        guard let errorB = await valueWithinHangBound(joinB) else {
+            Issue.record("B's join didn't end")
+            return
+        }
+        #expect(isSuperseded(errorB), "B's join \(describe(errorB))")
+
+        // C's leave returns: D is the latest arrival and inserts.
+        leaveCGate.release()
+        guard let errorD = await valueWithinHangBound(joinD) else {
+            Issue.record("D's join didn't end")
+            return
+        }
+        #expect(errorD == nil, "D's join \(describe(errorD))")
+        await f.settle()
+        // B never joined; D's join is the last input. The order of A's OnLeave and C's OnJoin is
+        // #943's (an OnLeave held in its resolvers is appended after a later entry's OnJoin), so
+        // the rest of the log is checked as a set.
+        let log = await f.log
+        #expect(log.last == "join:\(clientD.rawValue)", "tick=\(tick) reporting=\(reporting): log \(log)")
+        #expect(log.sorted() == [
+            "join:\(clientA.rawValue)", "leave:\(clientA.rawValue)",
+            "join:\(clientC.rawValue)", "leave:\(clientC.rawValue)",
+            "join:\(clientD.rawValue)",
+        ].sorted(), "tick=\(tick) reporting=\(reporting): log \(log)")
+        #expect(await f.keeper.playerCount() == 1)
+        #expect(await f.keeper.latestJoinArrivalsForTesting().isEmpty, "every attempt removed its token")
     }
 
     @Test("R9: A's OnJoin resolvers fail: an action submitted for A meanwhile is rejected at once, its resolver still held", arguments: [false, true])
