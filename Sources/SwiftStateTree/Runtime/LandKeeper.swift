@@ -7880,8 +7880,9 @@ extension KeeperModel {
                 ])
                 return initializeFail(behavior, &side, &outputs, error)
             }
-            // `.continue`, or cancelled by the land's shutdown: OnInitialize runs without the
-            // group's outputs.
+            // `.continue`: OnInitialize runs without the group's outputs. Cancelled by the land's
+            // shutdown: the land is draining, and `initializeApply` ends the initialization
+            // instead (#946).
             behavior.logger.error("❌ OnInitialize resolvers failed", metadata: [
                 "error": .string(String(describing: error)),
             ])
@@ -7906,7 +7907,10 @@ extension KeeperModel {
         }
     }
 
-    /// OnInitialize's turn body; then its record, if the land records.
+    /// OnInitialize's turn body; then its record, if the land records. Not on a land that is
+    /// ending: a land failure the transport reported during the resolvers (`submitLandFailure`,
+    /// the one taker that doesn't wait for the initialization) starts the drain, which doesn't
+    /// wait for the initialization and may have destroyed the land by now (#946).
     private mutating func initializeApply(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
@@ -7915,6 +7919,8 @@ extension KeeperModel {
         ctx: LandContext,
         sequence taken: Int64
     ) -> InitializeRequest {
+        // In the segment that would apply, after the resolvers' await.
+        guard !side.isDraining else { return initializeEndedByDrain(behavior, &side, &outputs) }
         let output: InitializeTurnOutput
         switch initializeTurnBody(behavior, &side, &outputs, handler: handler, ctx: ctx, sequence: taken) {
         case let .failure(error):
@@ -8002,6 +8008,26 @@ extension KeeperModel {
             assert(startsNoLoop || syncLoopConfigured, "didInitialize before the sync loop was configured")
         }
         didInitialize = true
+    }
+
+    /// The land began draining during OnInitialize's resolvers (#946): OnInitialize doesn't run,
+    /// nothing is recorded and no loop starts. The initialization ends with the land's failure,
+    /// which every waiter of `ensureInitialized` gets, as `LandInitializationError`. The drain
+    /// owns the teardown, so none is staged here.
+    private mutating func initializeEndedByDrain(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> InitializeRequest {
+        behavior.logger.warning("OnInitialize dropped: the land started closing during its resolvers", metadata: [
+            "failure": .string(side.failure.map { "\($0)" } ?? "none"),
+        ])
+        let underlying: any Error = side.failure ?? LandInputRejection.landClosed
+        let failure = recordFailure(&side, LandInitializationError(underlying: underlying))
+        initializationFailure = failure
+        checkActionTables(behavior, side, #function)
+        didInitialize = true
+        return .done
     }
 
     /// The initialization failed: its failure is held as every caller gets it (#700 K1b-2), the
