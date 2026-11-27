@@ -81,11 +81,11 @@ extension TransportAdapter {
         }
     }
 
-    /// Sends `data` to the session as its last frame, then closes the session: one writer element
-    /// holding the frame, and the close behind it (`Transport.closeSessionAfterQueuedFrames`), so
-    /// the close can't overtake the frame. Later frames for the session are dropped. On NIO the
-    /// frame is handed to the channel before the close; a client that stopped reading may still
-    /// not receive it.
+    /// Sends `data` to the session as its last frame, then closes the session with `close`: one
+    /// writer element holding the frame, and the close behind it
+    /// (`Transport.closeSessionAfterQueuedFrames`), so the close can't overtake the frame. Later
+    /// frames for the session are dropped. On NIO the frame is handed to the channel before the
+    /// close; a client that stopped reading may still not receive it.
     ///
     /// The frame and every close carry the session's connection generation, `generation` or else
     /// the one recorded for it, so none of them reaches a later connection that reuses the ID
@@ -99,20 +99,20 @@ extension TransportAdapter {
     /// A `generation` other than the one recorded for the session is an older connection's: a
     /// later connection the adapter registered under the ID took over, so nothing here is for
     /// it, and no adapter state changes (#911).
-    func sendFinalFrameAndClose(_ data: Data, kind: WebSocketFrameKind, to sessionID: SessionID, generation: UInt64? = nil) {
+    func sendFinalFrameAndClose(_ data: Data, kind: WebSocketFrameKind, to sessionID: SessionID, generation: UInt64? = nil, close: SessionClose = .normal) {
         if let generation, let current = connectionGenerations[sessionID], current != generation { return }
         let generation = generation ?? connectionGenerations[sessionID]
         guard !endedSessions.contains(sessionID) else {
-            closeSessionBehindQueuedFrames(sessionID, generation: generation, with: .normal)
+            closeSessionBehindQueuedFrames(sessionID, generation: generation, with: close)
             return
         }
         let frame = SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation, kind: kind)
         let result = outboundWriter.enqueue(
-            [frame], closingSessions: [ClosingSession(sessionID: sessionID, generation: generation)]
+            [frame], closingSessions: [ClosingSession(sessionID: sessionID, generation: generation, close: close)]
         )
         endedSessions.insert(sessionID)
         if result != .accepted {
-            closeSessionDetached(sessionID, generation: generation)
+            closeSessionDetached(sessionID, generation: generation, with: close)
         }
     }
 

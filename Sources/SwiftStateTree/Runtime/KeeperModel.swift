@@ -29,6 +29,13 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// teardown clears them all.
     var rejoinReservations: [PlayerID: Set<Epoch>] = [:]
     var rejoinReservationEpochs: EpochCounter = EpochCounter()
+    /// The latest join attempt of each player to reach its decision (J2), by arrival
+    /// (`joinArrivals`): the fencing token of #940. A kicking join that resumes after its kick's
+    /// leave and finds a later arrival here is fenced out (J2c), so the last attempt to arrive
+    /// keeps the player whichever kick returns first. Each attempt removes its own token on
+    /// every exit, so the map holds only players with an attempt in flight.
+    var latestJoinArrivals: [PlayerID: Epoch] = [:]
+    var joinArrivals: EpochCounter = EpochCounter()
 
     // Queues, jobs and results.
     var pendingItems: [LandKeeper<State>.PendingItem] = []
@@ -371,6 +378,12 @@ struct KeeperPlayerEntry: Sendable {
     /// draining removes only its own entry, and an action is delivered only to the entry it was
     /// sent to (`LandKeeper.deliverResolvedAction`).
     var generation: Epoch = Epoch(rawValue: 0)
+    /// This entry's join appends an OnJoin input once its OnJoin resolvers end: set in the
+    /// insert's segment, cleared in the append's (#860). A leave that removes the entry meanwhile
+    /// (the session's own, or a newer login's kick) appends no OnLeave, and the join's append,
+    /// finding its entry gone, drops the OnJoin and throws `JoinError.superseded`: the pair is
+    /// dropped together, so a player's applied OnJoin and OnLeave inputs stay in order.
+    var onJoinPending: Bool = false
     // PlayerSession info (from join request)
     var deviceID: String?
     var isGuest: Bool
