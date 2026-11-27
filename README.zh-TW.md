@@ -83,6 +83,7 @@ SwiftStateTree 目前支援 **三種**傳輸編碼組合。正式環境建議使
 - Swift 6.4+
 - **macOS**（原生開發，支援 Apple Silicon）
 - **Windows**：支援使用 VSCode/Cursor 的 [Dev Containers](https://code.visualstudio.com/docs/devcontainers/containers) 進行開發（配置檔案：`.devcontainer/devcontainer.json`）
+- **Windows（原生）**：測試中。非阻擋式的 CI 工作會在 Windows 上建置並測試套件；目前尚非正式支援的平台。
 
 ## 🏃 快速開始
 
