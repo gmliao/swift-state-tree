@@ -6,9 +6,10 @@
 // below is the core's only adopter, and it starts `.land` itself (`.startLand`).
 //
 // Out of scope here (plan §16 items 16–18): the input drain's hold and its idle waiters, the
-// action jobs, the initialization and the destroy drain. No case below holds `.inputDrain`,
-// waits on the drain's idle waiters, starts a job, or sends a deferred input; the harness
-// checks the last two.
+// action jobs, the initialization and the destroy drain. No core-driven case holds
+// `.inputDrain` or waits on the drain's idle waiters (two cases hold it on the keeper's or the
+// twin source's side), and none starts a job or sends a deferred input; the harness checks the
+// last two.
 
 import Foundation
 import Testing
@@ -824,7 +825,13 @@ struct KeeperCoreDifferentialTests {
 
         // The twin's source queues the failure item with its kick held, and no drain of its own
         // runs, so the copy carries the pending item and the core's drain applies it.
-        let kickHold = WatermarkGate(), sourceDrainHold = WatermarkGate()
+        let kickHold = WatermarkGate(), sourceDrainHold = WatermarkGate(), teardownHold = WatermarkGate()
+        // Released on every exit, a failed expectation's early return included.
+        defer {
+            teardownHold.release()
+            sourceDrainHold.release()
+            kickHold.release()
+        }
         await twinSource.installHolds(HoldRegistry<LandKeeperHoldPoint>()
             .on(.serverInputKick, arrival: 1) { await kickHold.enterAndWait() }
             .on(.inputDrain) { await sourceDrainHold.enterAndWait() }.hook)
@@ -835,7 +842,6 @@ struct KeeperCoreDifferentialTests {
         await harness.drive(.inputDrainDue)
 
         // The keeper's path, held at its teardown's first step: what the step did, before the drain.
-        let teardownHold = WatermarkGate()
         await direct.installHolds(HoldRegistry<LandKeeperHoldPoint>().on(.landFailedTeardown, arrival: 1) { await teardownHold.enterAndWait() }.hook)
         await direct.submitLandFailure(failure)
         #expect(await direct.waitForFailureForTesting())
@@ -854,10 +860,6 @@ struct KeeperCoreDifferentialTests {
         // The core's flush ran the drain's staged start: with no keeper behind the twin's
         // reference, it starts no teardown (K2-1b's), and only the waiters are resumed.
         #expect(await harness.inputsSeen == ["startLand", "inputDrainDue"])
-
-        teardownHold.release()
-        sourceDrainHold.release()
-        kickHold.release()
     }
 
     @Test("A tick that emits two events: the same model on both paths, the events reach the port with their emit-time numbers, and nothing is unlent (§16 item 11)")
@@ -959,6 +961,7 @@ struct KeeperCoreDifferentialTests {
             await k.waitForInputDrainIdleForTesting()
         }
         let gate = WatermarkGate()
+        defer { gate.release() }
         let harness = KeeperCoreHarness(await source.coreTwinForTesting(), recordGate: gate)
         // After `start`, which binds the store (the probe is installed through it).
         await harness.start()

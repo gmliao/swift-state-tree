@@ -285,7 +285,9 @@ enum KeeperCensus {
 
 extension KeeperCensus {
     /// Where K2-2 moves each field of the turn side a core keeps in its `KeeperSideStore`
-    /// (#700 K2-1). K2-2 deletes the box once every field has moved; this table is its checklist.
+    /// (#700 K2-1). Each row names its destination: K2-2 moves most, and a row whose destination is
+    /// a later step (K3's follow-up slot, K4's mail, K7's drain keys) stays on the side until that
+    /// step. The box goes once its last row has moved; this table is the checklist.
     static let sideStoreDestinations: [String: String] = [
         "turnSide.submissions": "the recorder hand-off: outputs that the core's flush submits",
         "turnSide.actions": "action jobs, keeper-only in K2-1: K2-2 routes them (jobTasks: one run per job, the box and the release as inputs; slotWaiters: coreSlotReplies, then replies); K5 keys them",

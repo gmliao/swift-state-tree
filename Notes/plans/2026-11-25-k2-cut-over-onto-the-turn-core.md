@@ -524,3 +524,26 @@ Each line is checked in K2-1's PR body, with its anchor at the PR's base. The an
 | 6 shoulds, 3 nits | Tracked as the K2-1 PR checklist; the three nits are fixed here | §16, §4.2, §7.2 |
 
 **Probes:** none new. The MF is about routing: which step kinds receive `turn.behavior` is in the core's signatures (Machine.swift:47–56), not a Swift-semantics question. K2-1's tokenless-step test is the evidence.
+
+## 18. Draft 8 → draft 9 (Review round 1 on #938, 2026-11-27)
+
+This section records the scope changes K2-1's implementation and its review made, instead of rewriting the text above. That text stays as it was planned; where it and this section disagree, this section is the later decision. (Codex's round 1 asked for the revised scope to be distinguishable from the original commitments; this section is that record.)
+
+| Change | Before (where) | Now |
+|---|---|---|
+| The action jobs | routed in K2-1 (§4.3's action row, §6) | K2-1 routes the intake without jobs; the jobs go to K2-2's first commit (§16 item 17; the K2-2 plan `2026-11-27-k2-2-cut-over-the-keeper-onto-the-core.md`) |
+| The initialization and the destroy drain | routed in K2-1 (§4.3) | segmented first in their own PR, K2-1b (§16 item 18), then routed in K2-2 |
+| The destroy-timer example (§16 item 10) | "J3 cancels the ticket while its start is still staged" (D14) | wrong premise (each step flushes at its end): K2-1 pins install-then-cancel and the fire path; D14 stays with #860's D2 shape or K1b-5's test (§16 item 10's correction note) |
+| The tokenless step (§4.2 point 3) | "the step's backstop … ends the land in that same step" | the trip ends the land in that step on both paths, but through the failure mailbox the body reads (the refusal notes it, `noteReentry`), not the backstop; the backstop's count moves alike on both. K2-1's case pins the route as the keeper's, and that no sync phase runs after the trip |
+| The refusing entry's gate and mailbox (§4.2 (a) point 2) | stated for the facade's sentinel | K2-1's differential models it: the core twin shares its source's mailbox, and a refusal on the source closes the twin's gate. Without it the core ran a sync phase after the trip that the keeper didn't (the ordered trace found it) |
+| Branches that need the binding token | not named | refused on the core in K2-1 with a named `KeeperCoreRefusal`, reported as a violation: a join syncing in the turn, and any input of a tickless land with a transport; a tickless land's `.admitServerInput` stops on a precondition (its kick needs the keeper). A tick or sync step carries its input's `syncsInTurn` on the side for that step. All go to K2-2 with the binding token (new §16 item 19) |
+| The ordered trace (§6) | staged actions, recorder hand-offs, port calls and frames | K2-1's trace records every port call with its events' contents, every flush effect (staged actions; recorder hand-offs by label), and compares the two recorders' frames; "frames enqueued" are the port's (a test port enqueues none), so their inputs, the sync phase's events, stand for them. Two stated exclusions: `runsSyncPhaseInTurn` reads (the core carries its input's read) and the teardown's port calls (K2-1b) |
+| P5's claim (§16 item 1) | rerun P5 with a fresh model per case, or narrow the claim | narrowed to the counts: K2-1's refusal cases read the violation count and the gate closes, each on a fresh pair |
+
+**New open item, 19: the binding token's refusals** (for K2-2). The three refused shapes above are routed when K2-2's binding token rides the inputs that need a port: the join's admission re-reads the binding at the admission (after up to three awaits, as the keeper's `admitJoiningInTurn` does); the tickless input turn's output phase reads it inside the drain; the tickless server input's kick becomes the core's drain.
+
+**Nits on §4.1 and §4.3** (Review round 1): §4.3's table still shows ticketed `.joinStepped`, `.leaveStepped` and `.recordTaken`; K2-1 carries no tickets on them (Review withdrew that condition), and `.joinAfterKick` carries `syncsInTurn`. §4.1's list lacks `.inputDrainDue`, `.startLand`, the `.fold` output and the `ActionSubmission` answer, all in K2-1. `KeeperContinuation` is plain data except the opaque `LandServices` payload a join's call carries.
+
+**For K2-2** (Review round 1's notes): a core tick ends `ticksInFlight` and the work count right after staging its record's submission, while the keeper holds both until `submitTurnRecord` returns; the freeze and shutdown drains depend on that, so K2-2 keeps the hold until `.recordTaken` (inert in K2-1, which has no recorder on a tick land's core path outside the trace cases).
+
+**Probes:** none new. Each change above is pinned by a K2-1 test (the trace, the refusals, the destroy timer's fire count), not a Swift-semantics question.

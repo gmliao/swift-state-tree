@@ -181,8 +181,9 @@ enum KeeperJoinStage<State: StateNodeProtocol>: Sendable {
 /// Where a flow's answer goes when its last step ends (#700 K2-1, the reply plumbing): the
 /// keeper's driver keeps this in its frame across the await; a core step carries it as a
 /// value, out in the effect and back in the result input (a defunctionalized continuation,
-/// as gen_server's `From`). Plain data: a join's call carries its services only as an opaque
-/// payload no step calls through; a request's `ResolverContext` or `LandContext` never goes in.
+/// as gen_server's `From`). Plain data, except the opaque `LandServices` payload a join's call
+/// carries, which no step calls through; a request's `ResolverContext` or `LandContext` never
+/// goes in.
 enum KeeperContinuation: Sendable {
     /// The flow's own caller gets the answer (nil: nobody waits).
     case reply(InputID?)
