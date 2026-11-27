@@ -8,20 +8,21 @@ import SwiftStateTurns
 
 /// The keys the machine's work belongs to (plan §4.1). The ids are today's: an entry is named by
 /// its player and its generation (the `Epoch` in `entryGenerations`), a sync binding by its
-/// `GenerationTable` ticket, a freeze by the generation `debugFreeze` takes.
+/// `GenerationTable` ticket, and a freeze caller's wait by its input ID.
 enum KeeperKey: Hashable, Sendable {
     case land
     case initialization
     case entry(PlayerID, Epoch)
     case syncBinding(SyncTurnTicket)
-    case freeze(UInt64)
     /// One freeze caller's wait: each caller gets its own deadline, as `debugFreeze` gives each
     /// call its own timer (Review on #948).
     case freezeWait(InputID)
 }
 
 /// The core's barrier waits (K2-2 plan, commit 2), as plain values: each caller's input ID.
-/// "Barriers, not holds" (K2 §4.2): no intake is parked, so a query can't overtake a parked call.
+/// "Barriers, not holds" (K2 §4.2): the core parks no intake behind a key, so a query can't
+/// overtake a parked call. The freeze's barrier holds an intake on the side instead
+/// (`heldWhileFrozen`), released by the step that opens it.
 @PlainData
 struct KeeperCoreBarrierWaits: Sendable, Equatable {
     /// A freeze's callers, by generation: answered true once the in-flight work is 0 with that
@@ -304,14 +305,15 @@ enum KeeperQuery: Sendable {
     case admitAction(ActionEnvelope, KeeperCaller, enforcingLimits: Bool, cancelled: Bool = false)
     case admitClientEvent(AnyClientEvent, KeeperCaller)
     case admitServerInput(any ServerInputPayload)
-    /// The sync entries (K2-2 commit 3). Each carries its port and the sender's
-    /// `port.runsSyncPhaseInTurn(of: owner)`, read in the segment that sends the query, with no
-    /// await between, as the keeper's entry reads it (K2-2 plan §9). `bindSyncRequester` runs in
-    /// the query's step.
-    case syncTurnNow(port: any LandKeeperTransport, inTurnForOwner: Bool, reason: SyncTurnReason, ticket: SyncTurnTicket?)
-    case syncTurnTicket(port: any LandKeeperTransport, inTurnForOwner: Bool)
+    /// The sync entries (K2-2 commit 3). Each carries its port and the owner's identity, the
+    /// object the port's in-turn witness (`runsSyncPhaseInTurn(of:)`) is asked about: the keeper,
+    /// or the facade (commit 4). Never a value read by the sender: each arm asks the witness at
+    /// the keeper entry's point (K2-2 plan §9, #948 round 2). `bindSyncRequester` runs in the
+    /// query's step.
+    case syncTurnNow(port: any LandKeeperTransport, owner: any AnyObject & Sendable, reason: SyncTurnReason, ticket: SyncTurnTicket?)
+    case syncTurnTicket(port: any LandKeeperTransport, owner: any AnyObject & Sendable)
     /// The settle's fence as its two values (`SettleFence` is nested in the generic keeper).
-    case settle(port: any LandKeeperTransport, inTurnForOwner: Bool, generation: UInt64, deadline: ContinuousClock.Instant)
+    case settle(port: any LandKeeperTransport, owner: any AnyObject & Sendable, generation: UInt64, deadline: ContinuousClock.Instant)
 }
 
 /// Each query's answer.
@@ -659,6 +661,29 @@ extension KeeperModel: TurnMachine {
         }
     }
 
+    /// A caller cancelled after its input stepped (`TurnMachine.handleCallerCancelled`): an
+    /// action the freeze's barrier holds for it is marked cancelled, so its release throws
+    /// `CancellationError` and starts no job, as the keeper's `submit` does when it reads
+    /// `Task.isCancelled` after `debugWaitWhileFrozen` (#948 round 2). The sender's read covers
+    /// a caller cancelled before the send; this covers one cancelled after it. A held client
+    /// event goes on: the keeper's event intake reads no cancellation after its wait.
+    ///
+    /// A cancellation isn't a recorded input, so this changes only the side's bookkeeping about
+    /// held callers, never the model (checked in debug builds).
+    mutating func handleCallerCancelled(_ caller: InputID, _ turn: inout MailTurn<KeeperModel<State>>) {
+        guard let store = turn.behavior.sideStore else { preconditionFailure("K2-2: a core-driven keeper needs its side store") }
+        #if DEBUG
+        let before = String(reflecting: self)
+        defer { assert(String(reflecting: self) == before, "handleCallerCancelled changed the model") }
+        #endif
+        store.withSide { side in
+            side.coreInputReplies.heldWhileFrozen = side.coreInputReplies.heldWhileFrozen.map { intake in
+                guard case let .action(envelope, who, _, held) = intake, held == caller else { return intake }
+                return .action(envelope, who, cancelled: true, caller: held)
+            }
+        }
+    }
+
     mutating func answer(_ query: KeeperQuery, _ turn: inout Turn<KeeperModel<State>>) -> KeeperAnswer<State> {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
@@ -715,36 +740,54 @@ extension KeeperModel: TurnMachine {
                 }
             }
             return .clientEventQueued(result)
-        case let .syncTurnTicket(port, inTurnForOwner):
-            // The keeper's `syncTurnTicket(via:)`: a live land, not failed or draining, the port
-            // in-turn for the owner (read by the sender), then the binding in this step.
+        case let .syncTurnTicket(port, owner):
+            // The keeper's `syncTurnTicket(via:)`, in its order: a live land, not failed or
+            // draining, then the port's witness for the owner, outside a body (the keeper's entry
+            // reads it outside `withTurn`, and so does this arm, before its frame), then the
+            // binding in the step. A refusal before the witness runs no body, as on the keeper.
+            guard acceptsSyncTurnState(behavior, store), port.runsSyncPhaseInTurn(of: owner) else { return .syncTurnTicket(nil) }
             return .syncTurnTicket(step(behavior, store) { m, side, _ in
-                guard behavior.config.mode == .live, side.failure == nil, !side.isDraining,
-                      inTurnForOwner, m.bindSyncRequester(side, port) else { return nil }
+                guard m.bindSyncRequester(side, port) else { return nil }
                 return m.syncBinding.current
             })
-        case let .syncTurnNow(port, inTurnForOwner, reason, ticket):
-            // The keeper's `syncTurnNow(via:reason:ticket:)`: the checks of `acceptsSyncTurn`,
-            // then one sync-only turn. On a core no follow-up is pending to consume: the guard
-            // drops each one after its phase (#938 r3), so `pendingSyncTurnAfterTurn` stays nil.
-            store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = inTurnForOwner }
+        case let .syncTurnNow(port, owner, reason, ticket):
+            // The keeper's `syncTurnNow(via:reason:ticket:)`, in `acceptsSyncTurn`'s order: the
+            // state's checks, then the witness outside a body, then the binding, the ticket and
+            // one sync-only turn in the step. The witness's answer is carried into the step for
+            // the body's own reads (`syncsInTurn`): the body's second witness call, which the
+            // keeper makes inside `callOut`, is short-circuited on a core, a stated asymmetry
+            // (the census's `carriedSyncsInTurn` row) that K2-2's binding token removes. On a
+            // core no follow-up is pending to consume: the guard drops each one after its phase
+            // (#938 r3), so `pendingSyncTurnAfterTurn` stays nil.
+            let accepted = acceptsSyncTurnState(behavior, store) && port.runsSyncPhaseInTurn(of: owner)
+            store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = accepted }
             defer { store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = nil } }
             return .syncTurn(step(behavior, store) { m, side, outputs in
                 m.requestedSyncTurnsForTesting[reason, default: 0] += 1
-                guard behavior.config.mode == .live, side.failure == nil, !side.isDraining,
-                      inTurnForOwner, m.bindSyncRequester(side, port) else { return .skipped }
+                guard accepted, m.bindSyncRequester(side, port) else { return .skipped }
                 if let ticket, !m.syncBinding.isCurrent(ticket) { return .skipped }
                 assert(side.pendingSyncTurnAfterTurn == nil, "a core holds no pending follow-up")
                 return KeeperModel<State>.syncOnlyTurnBody(&m, behavior, &side, &outputs, transport: port, joinSyncOnly: false)
             })
-        case let .settle(port, inTurnForOwner, generation, deadline):
+        case let .settle(port, owner, generation, deadline):
             let fence = LandKeeper<State>.SettleFence(generation: generation, deadline: deadline)
-            // The keeper's `settleTurn(via:fence:)`, with the port's in-turn answer the sender
-            // read instead of the body's call through the keeper reference.
+            // The keeper's `settleTurn(via:fence:)`: the body checks the land, the deadline and
+            // the generation, and only then asks the witness, through `callOut`, so a re-entry
+            // from it ends the land in this step (#948 round 2). `owner` stands in for the
+            // keeper reference, which a core's side leaves empty: its staged closures must not
+            // reach the source keeper.
             return .settle(step(behavior, store) { m, side, outputs in
-                m.settleBody(behavior, &side, &outputs, port: port, fence: fence, inTurnForOwner: inTurnForOwner)
+                m.settleBody(behavior, &side, &outputs, port: port, fence: fence, owner: owner)
             })
         }
+    }
+}
+
+extension KeeperModel {
+    /// `acceptsSyncTurn`'s first guard, read before a sync query's frame: a live land, not
+    /// failed or draining.
+    func acceptsSyncTurnState(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore) -> Bool {
+        behavior.config.mode == .live && store.withSide { side in side.failure == nil && !side.isDraining }
     }
 }
 

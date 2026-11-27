@@ -1739,9 +1739,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             await withCheckedContinuation { continuation in
                 turnSide.debugDrainWaiters[waiterID] = continuation
-                let watchers = freezeWaitWatchersForTesting
-                freezeWaitWatchersForTesting.removeAll()
-                watchers.forEach { $0.resume() }
+                let waiting = turnSide.debugDrainWaiters.count
+                let ready = freezeWaitWatchersForTesting.filter { $0.count <= waiting }
+                freezeWaitWatchersForTesting.removeAll { $0.count <= waiting }
+                ready.forEach { $0.continuation.resume() }
             }
             timer.cancel()
         }
@@ -2388,15 +2389,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Test hook: whether the land is frozen.
     /// Test hook, observation only: returns once a freeze is waiting for in-flight work (it
     /// registered its waiter, in the same segment that checked the work).
-    package func waitUntilFreezeWaitsForTesting() async {
-        guard turnSide.debugDrainWaiters.isEmpty else { return }
+    /// `count`: returns once that many freeze callers are registered as waiting, so a test
+    /// knows a second caller waits before it ends the work (#948 round 2).
+    package func waitUntilFreezeWaitsForTesting(count: Int = 1) async {
+        guard turnSide.debugDrainWaiters.count < count else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            freezeWaitWatchersForTesting.append(continuation)
+            freezeWaitWatchersForTesting.append((count, continuation))
         }
     }
 
-    /// Callers of `waitUntilFreezeWaitsForTesting` waiting for a freeze to wait.
-    private var freezeWaitWatchersForTesting: [CheckedContinuation<Void, Never>] = []
+    /// Callers of `waitUntilFreezeWaitsForTesting` waiting for `count` freeze callers to wait.
+    private var freezeWaitWatchersForTesting: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     package func debugIsFrozenForTesting() -> Bool {
         model.debugFrozen
@@ -7953,7 +7956,7 @@ extension KeeperModel {
         _ outputs: inout TurnOutputs,
         port: any LandKeeperTransport,
         fence: SettleFence,
-        inTurnForOwner: Bool? = nil
+        owner: (any AnyObject & Sendable)? = nil
     ) -> SettleTurnOutcome {
         requestedSyncTurnsForTesting[.settle, default: 0] += 1
         guard behavior.config.mode == .live, side.failure == nil, !side.isDraining else { return .closed(side.failure) }
@@ -7970,18 +7973,17 @@ extension KeeperModel {
         // never attached, its sync requester (#546 L2d). Checked without binding; a settle binds
         // the requester only once every check has passed, so a refused one changes nothing.
         let markBeforePort = recorderSubmissionCount
+        // `owner`: a core's query names the owner, whose side has no keeper reference.
         let runsInTurn: Bool
-        if let inTurnForOwner {
-            // A core's query: the sender read the port's answer for the owner (K2-2 plan §9).
-            runsInTurn = inTurnForOwner
-        } else {
-            switch callOut(behavior, &side, &outputs, { _, side in side.keeperReference.keeper.map { port.runsSyncPhaseInTurn(of: $0) } ?? false }) {
-            case .refused(let refused):
-                enqueueTicklessTurnEnd(behavior, side, since: markBeforePort)
-                return .failed(side.failure ?? refused)
-            case .answered(let answer):
-                runsInTurn = answer
-            }
+        switch callOut(behavior, &side, &outputs, { _, side in
+            let witnessOwner: AnyObject? = owner ?? side.keeperReference.keeper
+            return witnessOwner.map { port.runsSyncPhaseInTurn(of: $0) } ?? false
+        }) {
+        case .refused(let refused):
+            enqueueTicklessTurnEnd(behavior, side, since: markBeforePort)
+            return .failed(side.failure ?? refused)
+        case .answered(let answer):
+            runsInTurn = answer
         }
         guard runsInTurn, let settlePort = port as? any LandKeeperSettlePort, isSyncPort(side, port) else {
             return .refused(.notCurrent)
