@@ -68,8 +68,11 @@ extension KeeperModel {
     }
 
     /// Resumes the callers of `batch` with their outcomes, after the turn was recorded: a
-    /// response never leaves before its input is recorded.
-    mutating func resumeInputTurnWaiters(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, for batch: [PendingItem]) {
+    /// response never leaves before its input is recorded. Returns the core's waits among them
+    /// with their outcomes, for the step to answer next (#700 K2-1); none on the keeper's side.
+    @discardableResult
+    mutating func resumeInputTurnWaiters(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, for batch: [PendingItem]) -> [(KeeperCoreInputWait, Result<InputOutcome, any Error>)] {
+        var coreWaits: [(KeeperCoreInputWait, Result<InputOutcome, any Error>)] = []
         for item in batch {
             // The result, and its error, are taken before the branch.
             let result: Result<InputOutcome, any Error> = inputTurnResults.removeValue(forKey: item.sequence)
@@ -77,11 +80,14 @@ extension KeeperModel {
             if ticklessJobTurns.remove(item.sequence) != nil {
                 // No waiter on the slot yet: held under a fresh ID.
                 fillActionSlot(behavior, &side, item.sequence, with: result)
-            } else {
-                side.inputTurnWaiters.removeValue(forKey: item.sequence)?.resume(with: result)
+            } else if let waiter = side.inputTurnWaiters.removeValue(forKey: item.sequence) {
+                waiter.resume(with: result)
+            } else if let wait = side.coreInputReplies.waits.removeValue(forKey: item.sequence) {
+                coreWaits.append((wait, result))
             }
         }
         checkActionTables(behavior, side, #function)
+        return coreWaits
     }
 
     // MARK: - The sync loop (`runSync`)

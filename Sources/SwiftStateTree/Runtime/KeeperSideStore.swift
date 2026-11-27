@@ -34,6 +34,8 @@ final class KeeperSideStore: @unchecked Sendable {
 
     /// A box for one core. `side` is the core's own fresh side, never the keeper's `turnSide`.
     init(side: KeeperTurnSide) {
+        var side = side
+        side.coreInputReplies.onCore = true
         self.side = side
     }
 

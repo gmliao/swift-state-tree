@@ -31,7 +31,10 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     // Entries.
     case action(ActionEnvelope, KeeperCaller)
     case clientEvent(AnyClientEvent, KeeperCaller)
-    case join(LandKeeper<State>.JoinCall)
+    /// A join. `syncsInTurn`: the driver's read of whether the attached transport runs the
+    /// sync phase in turn, which the transport's admission needs (see `.tickDue`); the join's
+    /// stages and continuations carry it on. K2-2's binding token replaces it.
+    case join(LandKeeper<State>.JoinCall, syncsInTurn: Bool)
     case leave(KeeperCaller)
     /// The tick driver's input. The fold and its start instant are the two arguments
     /// `runTickTurn` takes from the actor today; the start is read only for a fold.
@@ -51,23 +54,71 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     case syncStreamDraft([SyncStreamDraft])
 
     // Results of `run`.
-    case joinStepped(KeeperJoinStage, ticket: Epoch?, Result<[String: HeldResolverOutput], any Error>)
-    case leaveStepped(ticket: Epoch, Result<[String: HeldResolverOutput], any Error>)
+    /// A join's resolvers returned: the stage names the segment that resumes, with what it
+    /// carries; `caller` is the join's. No ticket: the only check is the segments' own (the
+    /// drain, and `appendOnJoin`'s on `capture.entryGeneration`), as on the keeper.
+    case joinStepped(KeeperJoinStage<State>, caller: InputID?, Result<[String: HeldResolverOutput], any Error>)
+    /// A leave's OnLeave resolvers returned: L2 resumes with the capture L1 took, and the
+    /// continuation says where the leave's answer goes. No ticket: L1 removed the entry, and L2
+    /// re-reads only `isDraining`, as on the keeper.
+    case leaveStepped(LandKeeper<State>.LeaveCapture, KeeperContinuation, Result<[String: HeldResolverOutput], any Error>)
     case actionResolved(sequence: Int64, Result<[String: HeldResolverOutput], any Error>)
     case initializeResolved(Result<[String: HeldResolverOutput], any Error>)
     case destroyHandlerResolved(index: Int, Result<[String: HeldResolverOutput], any Error>)
     /// A tickless input turn's record was taken by the recorder: its callers resume (K2-1 keeps
     /// their results in the model's `inputTurnResults`, as the keeper does; K2-2 moves them onto
     /// the effect and this input, plan §4.3).
-    case recordTaken(applied: [LandKeeper<State>.PendingItem])
+    /// `endsTickWork`: the drain was a tick's, whose in-flight work ends with it.
+    case recordTaken(applied: [LandKeeper<State>.PendingItem], endsTickWork: Bool)
+    /// An input drain a flow's wait scheduled (the keeper's `scheduleInputDrain` task), queued
+    /// behind `.land`.
+    case inputDrainDue
     case drainFinished
 }
 
-/// Which of the join's awaits a `.joinStepped` result answers (plan §4.3).
-enum KeeperJoinStage: Sendable {
-    case canJoinResolvers
-    case kick
-    case onJoinResolvers
+/// Which of the join's awaits a `.joinStepped` result answers, with what its segment resumes
+/// from (plan §4.3). The kick has no stage: its answer is the leave flow's own (`.leaveStepped`,
+/// or its input-turn wait) under `.joinAfterKick`.
+enum KeeperJoinStage<State: StateNodeProtocol>: Sendable {
+    /// J2 resumes: CanJoin with the resolvers' outputs.
+    case canJoinResolvers(KeeperJoinCall, syncsInTurn: Bool)
+    /// J4 resumes: the OnJoin append.
+    case onJoinResolvers(KeeperJoinDecided, LandKeeper<State>.OnJoinCapture, syncsInTurn: Bool)
+}
+
+/// Where a flow's answer goes when its last step ends (#700 K2-1, the reply plumbing): the
+/// keeper's driver keeps this in its frame across the await; a core step carries it as a
+/// value, out in the effect and back in the result input (a defunctionalized continuation,
+/// as gen_server's `From`). Plain data: a join's call carries its services only as an opaque
+/// payload no step calls through; a request's `ResolverContext` or `LandContext` never goes in.
+enum KeeperContinuation: Sendable {
+    /// The flow's own caller gets the answer (nil: nobody waits).
+    case reply(InputID?)
+    /// A join's kick of the player's old session: when the leave ends, J3 runs for `decided`
+    /// (a leave that fails fails the join, with the leave's own error), then the join goes on.
+    case joinAfterKick(KeeperJoinDecided, caller: InputID?, syncsInTurn: Bool)
+}
+
+/// What a core step does when an input turn its flow waits for is recorded (#700 K2-1, the
+/// reply plumbing): the step that records the turn answers it right after
+/// `resumeInputTurnWaiters` resumes the keeper's waiters, with the same result. Plain values:
+/// a join's call carries its services only as an opaque payload (`KeeperJoinCall`).
+enum KeeperCoreInputWait: Sendable {
+    /// J4's wait: the join's caller gets `outcome`. `decided` ends the attempt's reservation,
+    /// as the keeper's driver does on every exit.
+    case join(KeeperJoinOutcome, KeeperJoinDecided, caller: InputID?)
+    /// L2's wait: L3 runs, then the leave's continuation.
+    case leave(KeeperContinuation)
+}
+
+/// The core's input-turn waits, by input sequence, and the ones a drop of the pending inputs
+/// failed, which the next step's end answers (`KeeperModel.answerDroppedCoreInputWaits`).
+struct KeeperCoreInputReplies: Sendable {
+    /// Whether this side is a core's (`KeeperSideStore`). On the keeper's own side the table
+    /// stays empty: its driver awaits `inputTurnWaiters` instead.
+    var onCore = false
+    var waits: [Int64: KeeperCoreInputWait] = [:]
+    var dropped: [KeeperCoreInputWait] = []
 }
 
 /// The intakes answered at once, and the adapter's synchronous calls (plan §4.1).
@@ -93,15 +144,19 @@ enum KeeperAnswer<State: StateNodeProtocol>: Sendable {
 /// The I/O a step asks for (plan §4.3): a case per flow, wrapping K1b-5's request. The
 /// adopter's `perform` does the await off the actor and returns the result input.
 enum KeeperEffect<State: StateNodeProtocol>: Sendable {
-    case join(LandKeeper<State>.JoinRequest)
-    case leave(LandKeeper<State>.LeaveRequest)
+    /// A join's resolvers (`.runCanJoinResolvers` or `.runOnJoinResolvers`); `perform` returns
+    /// `.joinStepped` with the stage and the caller.
+    case join(LandKeeper<State>.JoinRequest, KeeperJoinStage<State>, caller: InputID?)
+    /// A leave's OnLeave resolvers (`.runOnLeaveResolvers`); `perform` returns `.leaveStepped`
+    /// with the request's capture and the continuation.
+    case leave(LandKeeper<State>.LeaveRequest, KeeperContinuation)
     case action(sequence: Int64)
     case initialize
     case destroyHandler(index: Int)
     /// A tickless input turn's record submission, awaited off the core; its applied inputs come
     /// back in `.recordTaken`. K2-1 keeps their results in the model (`inputTurnResults`); K2-2
     /// carries them here instead (plan §4.3).
-    case awaitRecordTaken(submission: RecorderSubmission?, applied: [LandKeeper<State>.PendingItem])
+    case awaitRecordTaken(submission: RecorderSubmission?, applied: [LandKeeper<State>.PendingItem], endsTickWork: Bool)
 }
 
 /// What a step leaves for the adopter's flush (plan §4.4, §4.5): record drafts, and the writes
@@ -115,7 +170,8 @@ enum KeeperOutput: Sendable {
     case fold(PendingFold)
 }
 
-/// Each `sendAndWait` entry's answer, and its failure as any error a caller gets today.
+/// Each `sendAndWait` entry's answer, and its failure as any error a caller gets today: a join
+/// answers `.join` with its own result, a leave `.done` or its error.
 enum KeeperReply<State: StateNodeProtocol>: Sendable {
     case join(Result<LandKeeper<State>.JoinOutcome, any Error>)
     case input(Result<InputOutcome, any Error>)
@@ -142,11 +198,39 @@ extension KeeperModel: TurnMachine {
             } else {
                 tickDueStep(behavior, store, fold: fold, foldStart: foldStart, syncsInTurn: syncsInTurn)
             }
-        case let .recordTaken(applied):
-            // The keeper's drain after `submitTurnRecord`'s await: the callers resume, then the
-            // next batch.
-            store.withSide { side in resumeInputTurnWaiters(behavior, &side, for: applied) }
-            inputDrainStep(behavior, store, &turn)
+        case let .recordTaken(applied, endsTickWork):
+            // The keeper's drain after `submitTurnRecord`'s await: the callers resume (the
+            // keeper's, then the core's waits), then the next batch.
+            let waits = store.withSide { side in resumeInputTurnWaiters(behavior, &side, for: applied) }
+            answerCoreInputWaits(behavior, store, &turn, waits)
+            inputDrainStep(behavior, store, &turn, endsTickWork: endsTickWork)
+        case .inputDrainDue:
+            inputDrainStep(behavior, store, &turn, endsTickWork: false)
+        case let .join(call, syncsInTurn):
+            let caller = turn.input
+            joinDrive(behavior, store, &turn, call: call, caller: caller, syncsInTurn: syncsInTurn, decided: nil) { m, side, outputs in
+                try m.joinBegin(behavior, &side, &outputs, call)
+            }
+        case let .joinStepped(stage, caller, result):
+            joinStepped(behavior, store, &turn, stage, caller: caller, result)
+        case let .leave(who):
+            let caller = turn.input
+            let request = step(behavior, store) { m, side, outputs in
+                m.leaveBegin(behavior, &side, &outputs, playerID: who.playerID, clientID: who.clientID, sessionID: who.sessionID)
+            }
+            leaveDrive(behavior, store, &turn, request, .reply(caller))
+        case let .leaveStepped(capture, continuation, result):
+            switch result {
+            case let .failure(error):
+                step(behavior, store) { m, side, outputs in m.leaveResolversFailed(behavior, &side, &outputs, capture, error: error) }
+                continueAfterLeave(behavior, store, &turn, .failure(error), continuation)
+            case let .success(resolverOutputs):
+                let request = step(behavior, store) { m, side, outputs in
+                    // The resolvers' outputs, and the tick they finished at.
+                    m.leaveAppend(behavior, &side, &outputs, capture, resolverOutputs: resolverOutputs, resolvedAtTick: m.lastCommittedTickId)
+                }
+                leaveDrive(behavior, store, &turn, request, continuation)
+            }
         case let .syncDue(now, tickDeadline, foldPending, syncsInTurn):
             if let fold = syncDueStep(behavior, store, now: now, tickDeadline: tickDeadline, foldPending: foldPending, syncsInTurn: syncsInTurn) {
                 // `.land` is started by the owner at initialization (K2-1: the test harness's
@@ -159,6 +243,8 @@ extension KeeperModel: TurnMachine {
             // The routes with a `run` come in the next commit (plan §4.3).
             preconditionFailure("K2-1: \(input) is not routed yet")
         }
+        // A drop of the pending inputs in this step failed the core's waits on them.
+        answerDroppedCoreInputWaits(behavior, store, &turn)
     }
 
     mutating func answer(_ query: KeeperQuery, _ turn: inout Turn<KeeperModel<State>>) -> KeeperAnswer<State> {
@@ -281,19 +367,20 @@ extension KeeperModel {
             store.withSide { side in debugEndWork(&side) }
             return
         }
-        inputDrainStep(behavior, store, &turn)
+        inputDrainStep(behavior, store, &turn, endsTickWork: true)
     }
 
     /// One pass of the keeper's `runInputDrain` loop. A batch whose record holds entries is
     /// submitted, and its callers resume once the recorder took it (`.awaitRecordTaken`, then
     /// `.recordTaken`); a batch with an empty record resumes them in this step. With no batch
-    /// left, the drain ends and so does the tick's in-flight work.
-    mutating func inputDrainStep(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+    /// left, the drain ends, and so does the tick's in-flight work when the drain was a tick's
+    /// (`endsTickWork`; a drain a flow's wait scheduled has none, as the keeper's task).
+    mutating func inputDrainStep(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, endsTickWork: Bool) {
         while true {
             let batch = nextInputTurnBatch(limit: LandKeeper<State>.inputTurnBatchLimit)
             guard !batch.isEmpty else {
                 endInputDrain()
-                store.withSide { side in debugEndWork(&side) }
+                if endsTickWork { store.withSide { side in debugEndWork(&side) } }
                 return
             }
             let mark = recorderSubmissionCount
@@ -305,13 +392,249 @@ extension KeeperModel {
                 let (_, submission) = stepSubmitting(behavior, store) { m, _, outputs in
                     m.stageRecorderSubmission(behavior, outcome.record, endsTurn: behavior.isTickless, outputs: &outputs)
                 }
-                turn.run(.awaitRecordTaken(submission: submission, applied: outcome.appliedItems))
+                turn.run(.awaitRecordTaken(submission: submission, applied: outcome.appliedItems, endsTickWork: endsTickWork))
                 return
             }
-            store.withSide { side in
+            let waits = store.withSide { side in
                 enqueueTicklessTurnEnd(behavior, side, since: mark)
-                resumeInputTurnWaiters(behavior, &side, for: outcome.appliedItems)
+                return resumeInputTurnWaiters(behavior, &side, for: outcome.appliedItems)
             }
+            answerCoreInputWaits(behavior, store, &turn, waits)
+        }
+    }
+}
+
+// MARK: - The join and leave flows (plan §4.3, the reply plumbing)
+
+extension KeeperModel {
+    typealias KeeperSegment<R> = (inout KeeperModel<State>, inout KeeperTurnSide, inout TurnOutputs) throws -> R
+
+    /// The keeper's `joinReportingAdmission` loop from `segment` on, in this step, until the
+    /// join's next await (a `run`, or an input-turn wait) or its end. `decided`: the attempt's
+    /// decision once J2 made it; its reservation is ended on every exit (`finishJoin`), as the
+    /// keeper's `defer` does. The `.join` hold is the keeper's test hold, not a step's.
+    mutating func joinDrive(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        call: KeeperJoinCall,
+        caller: InputID?,
+        syncsInTurn: Bool,
+        decided: KeeperJoinDecided?,
+        _ segment: KeeperSegment<LandKeeper<State>.JoinRequest>
+    ) {
+        var decided = decided
+        var next = step(behavior, store) { m, side, outputs in Result { try segment(&m, &side, &outputs) } }
+        while true {
+            let request: LandKeeper<State>.JoinRequest
+            switch next {
+            case let .failure(error):
+                finishJoin(behavior, store, &turn, .failure(error), decided: decided, caller: caller)
+                return
+            case let .success(value):
+                request = value
+            }
+            switch request {
+            case .runCanJoinResolvers:
+                turn.run(.join(request, .canJoinResolvers(call, syncsInTurn: syncsInTurn), caller: caller))
+                return
+            case let .holdThenKickCheck(made):
+                // J2 took the reservation in the segment that just ended.
+                decided = made
+                next = step(behavior, store) { m, side, outputs in Result { try m.joinKickCheck(behavior, &side, &outputs, made) } }
+            case let .kick(made, oldClientID, oldSessionID):
+                // The kick is the leave flow, nested: L1 in this step; J3 runs when it ends.
+                let leave = step(behavior, store) { m, side, outputs in
+                    m.leaveBegin(behavior, &side, &outputs, playerID: made.playerID, clientID: oldClientID, sessionID: oldSessionID)
+                }
+                leaveDrive(behavior, store, &turn, leave, .joinAfterKick(made, caller: caller, syncsInTurn: syncsInTurn))
+                return
+            case let .admit(made, joinSequence):
+                // Between two segments, as on the keeper: the transport's admission is no body's.
+                let transport = syncsInTurn ? store.withSide({ side in side.attachedTransport }) : nil
+                let admission = transport?.admitJoiningSession(playerID: made.playerID, clientID: made.call.clientID, sessionID: made.call.sessionID, joinSequence: joinSequence) ?? .notAdmitted
+                guard let joinSequence else {
+                    // J3b: no OnJoin input.
+                    finishJoin(behavior, store, &turn, .success(KeeperJoinOutcome(decision: made.decision, admitted: admission.isAdmitted)), decided: decided, caller: caller)
+                    return
+                }
+                next = .success(step(behavior, store) { m, side, outputs in
+                    m.joinAfterAdmission(behavior, &side, &outputs, made, sequence: joinSequence, admission: admission)
+                })
+            case let .runOnJoinResolvers(made, capture, _, _):
+                turn.run(.join(request, .onJoinResolvers(made, capture, syncsInTurn: syncsInTurn), caller: caller))
+                return
+            case let .awaitInputTurn(outcome, sequence):
+                awaitCoreInputTurn(behavior, store, &turn, sequence, .join(outcome, decided, caller: caller))
+                return
+            case let .done(outcome):
+                finishJoin(behavior, store, &turn, .success(outcome), decided: decided, caller: caller)
+                return
+            }
+        }
+    }
+
+    /// `.joinStepped`: the segment after the join's resolvers, as the keeper's loop runs it.
+    mutating func joinStepped(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        _ stage: KeeperJoinStage<State>,
+        caller: InputID?,
+        _ result: Result<[String: HeldResolverOutput], any Error>
+    ) {
+        switch stage {
+        case let .canJoinResolvers(call, syncsInTurn):
+            switch result {
+            case let .failure(error):
+                // Before J2: no reservation yet.
+                finishJoin(behavior, store, &turn, .failure(error), decided: nil, caller: caller)
+            case let .success(resolverOutputs):
+                joinDrive(behavior, store, &turn, call: call, caller: caller, syncsInTurn: syncsInTurn, decided: nil) { m, side, outputs in
+                    let ctx = m.canJoinContext(behavior, side, call, resolverOutputs: resolverOutputs)
+                    return try m.joinDecide(behavior, &side, &outputs, call, canJoinContext: ctx)
+                }
+            }
+        case let .onJoinResolvers(decided, capture, syncsInTurn):
+            switch result {
+            case let .failure(error):
+                // `runOnJoinResolvers`' catch: the entry's rollback, in its own segment.
+                step(behavior, store) { m, side, outputs in m.onJoinResolversFailed(behavior, &side, &outputs, capture) }
+                finishJoin(behavior, store, &turn, .failure(error), decided: decided, caller: caller)
+            case let .success(resolverOutputs):
+                joinDrive(behavior, store, &turn, call: decided.call, caller: caller, syncsInTurn: syncsInTurn, decided: decided) { m, side, outputs in
+                    try m.joinAppend(behavior, &side, &outputs, decided, capture, resolverOutputs: resolverOutputs, resolvedAtTick: m.lastCommittedTickId)
+                }
+            }
+        }
+    }
+
+    /// The join's end, success or failure: its reservation ends (the keeper's `defer`, in a
+    /// segment of its own), then the caller gets the join's own result.
+    mutating func finishJoin(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        _ result: Result<KeeperJoinOutcome, any Error>,
+        decided: KeeperJoinDecided?,
+        caller: InputID?
+    ) {
+        if let decided, let reservation = decided.reservation {
+            step(behavior, store) { m, _, _ in m.endRejoinReservation(reservation, of: decided.playerID) }
+        }
+        if let caller { turn.reply(to: caller, .success(.join(result))) }
+    }
+
+    /// The keeper's `driveLeave` from `request` on, in this step, until the leave's next await
+    /// or its end, which goes to `continuation`.
+    mutating func leaveDrive(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        _ request: LandKeeper<State>.LeaveRequest,
+        _ continuation: KeeperContinuation
+    ) {
+        switch request {
+        case .done:
+            continueAfterLeave(behavior, store, &turn, .success(()), continuation)
+        case .runOnLeaveResolvers:
+            turn.run(.leave(request, continuation))
+        case let .awaitInputTurn(sequence):
+            awaitCoreInputTurn(behavior, store, &turn, sequence, .leave(continuation))
+        }
+    }
+
+    /// A leave ended (`result`): its caller gets the answer, or, for a join's kick, J3 runs and
+    /// the join goes on; a failed kick fails the join with the leave's own error.
+    mutating func continueAfterLeave(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        _ result: Result<Void, any Error>,
+        _ continuation: KeeperContinuation
+    ) {
+        switch continuation {
+        case let .reply(caller):
+            if let caller { turn.reply(to: caller, result.map { _ in KeeperReply<State>.done }) }
+        case let .joinAfterKick(decided, caller, syncsInTurn):
+            switch result {
+            case let .failure(error):
+                finishJoin(behavior, store, &turn, .failure(error), decided: decided, caller: caller)
+            case .success:
+                joinDrive(behavior, store, &turn, call: decided.call, caller: caller, syncsInTurn: syncsInTurn, decided: decided) { m, side, outputs in
+                    try m.joinInsert(behavior, &side, &outputs, decided)
+                }
+            }
+        }
+    }
+
+    /// The keeper's `awaitInputTurn` for a core's flow: an input neither pending nor applied
+    /// answers `.none` now; otherwise the wait is kept on the side, answered when the input's
+    /// turn is recorded, and the drain is scheduled (queued behind `.land`, as the keeper starts
+    /// its task).
+    mutating func awaitCoreInputTurn(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        _ sequence: Int64,
+        _ wait: KeeperCoreInputWait
+    ) {
+        guard inputTurnResults[sequence] != nil || pendingItems.contains(where: { $0.sequence == sequence }) else {
+            answerCoreInputWait(behavior, store, &turn, wait, .success(.none))
+            return
+        }
+        store.withSide { side in side.coreInputReplies.waits[sequence] = wait }
+        if scheduleInputDrain() { turn.queue(.inputDrainDue, behind: .land) }
+    }
+
+    /// Answers the core's waits `resumeInputTurnWaiters` returned, in batch order.
+    mutating func answerCoreInputWaits(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        _ waits: [(KeeperCoreInputWait, Result<InputOutcome, any Error>)]
+    ) {
+        for (wait, result) in waits { answerCoreInputWait(behavior, store, &turn, wait, result) }
+    }
+
+    /// One wait's answer: J4's join ends with its outcome or the turn's error; a leave runs L3
+    /// (skipped when the turn threw, as on the keeper) and goes to its continuation.
+    mutating func answerCoreInputWait(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        _ wait: KeeperCoreInputWait,
+        _ result: Result<InputOutcome, any Error>
+    ) {
+        switch wait {
+        case let .join(outcome, decided, caller):
+            finishJoin(behavior, store, &turn, result.map { _ in outcome }, decided: decided, caller: caller)
+        case let .leave(continuation):
+            switch result {
+            case let .failure(error):
+                continueAfterLeave(behavior, store, &turn, .failure(error), continuation)
+            case .success:
+                step(behavior, store) { m, side, outputs in m.scheduleDestroyIfNeeded(behavior, &side, &outputs) }
+                continueAfterLeave(behavior, store, &turn, .success(()), continuation)
+            }
+        }
+    }
+
+    /// The waits a drop of the pending inputs failed (`dropPendingInputs`), answered
+    /// `landClosed` at the end of the step that dropped them, as the keeper resumes its waiters
+    /// there; an answer that drops more is answered in the same loop.
+    mutating func answerDroppedCoreInputWaits(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>
+    ) {
+        while true {
+            let dropped = store.withSide { side in
+                defer { side.coreInputReplies.dropped.removeAll() }
+                return side.coreInputReplies.dropped
+            }
+            guard !dropped.isEmpty else { return }
+            for wait in dropped { answerCoreInputWait(behavior, store, &turn, wait, .failure(LandInputRejection.landClosed)) }
         }
     }
 }

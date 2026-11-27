@@ -72,6 +72,9 @@ package struct KeeperTurnSide {
     /// Tickless lands: callers waiting for their input's turn, by input sequence. Actions get
     /// their own response; other inputs get an empty one (or the handler's error).
     var inputTurnWaiters: [Int64: CheckedContinuation<InputOutcome, any Error>] = [:]
+    /// A core's steps waiting for an input turn (#700 K2-1): `inputTurnWaiters` for a flow that
+    /// can't await. Empty on the keeper's own side (`actionTableViolations`).
+    var coreInputReplies = KeeperCoreInputReplies()
     /// Tickless inputs waiting for `debugResume()`.
     var debugHeldInputs: [CheckedContinuation<Void, Never>] = []
     /// The replay fields (D17): set on a re-evaluation keeper, nil on a live one, so a body's
