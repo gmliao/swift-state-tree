@@ -9,14 +9,17 @@
 // - the leave that removed the entry (a newer login's kick, or the session's own leave) appends
 //   no OnLeave.
 // A kick's leave awaits too: a third login meanwhile finds the slot empty and inserts its own
-// entry. The kicking join re-checks the slot by the kicked entry's generation, and kicks that
-// entry too instead of taking it over (R8).
+// entry. The kicking join re-checks the slot by the kicked entry's generation, and a newer entry
+// fences it out: it throws `JoinError.superseded`, and the last login to arrive keeps the player
+// (R8). The kick's leave itself is scoped by that generation, so it never removes a newer entry
+// that carries the kicked one's IDs (R10).
 // K6 (#588) turns a duplicate login into a rebind; the invariant carries over, and so does
 // this suite as its regression test.
 
 import Foundation
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 struct ReplacedJoinState: StateNodeProtocol {
@@ -503,8 +506,8 @@ struct JoinReplacedDuringOnJoinTests {
         }
     }
 
-    @Test("R8: a third login during the kick's OnLeave resolvers is kicked too, not taken over: join A, leave A, join B", arguments: [false, true], [false, true])
-    func thirdLoginDuringTheKickIsKickedToo(tick: Bool, reporting: Bool) async throws {
+    @Test("R8: a third login during the kick's OnLeave resolvers fences the kicking join out: join A, leave A, join C; B is superseded", arguments: [false, true], [false, true])
+    func thirdLoginDuringTheKickFencesTheKickerOut(tick: Bool, reporting: Bool) async throws {
         let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
         let leaveKey = ReplacedJoinGates.freshKey(), joinKey = ReplacedJoinGates.freshKey(), actionKey = ReplacedJoinGates.freshKey()
         let leaveGate = ReplacedJoinGates.gate(leaveKey), joinGate = ReplacedJoinGates.gate(joinKey), actionGate = ReplacedJoinGates.gate(actionKey)
@@ -525,28 +528,73 @@ struct JoinReplacedDuringOnJoinTests {
         guard let actionC = try await f.submitGated(actionKey, client: clientC, session: sessionC) else { return }
         guard await actionGate.waitUntilEntered() else { return }
 
-        // B resumes: the slot holds C's entry, not the one it kicked, so B kicks C too.
+        // B resumes: the slot holds C's entry, not the one it kicked. C's entry is newer, so B
+        // is refused, and C's entry is left as it is: its job keeps running.
         leaveGate.release()
         let errorB = await joinB.value
-        #expect(errorB == nil, "B's join \(describe(errorB))")
-        // C's kick cancelled its job: rejected while its resolver still holds.
-        #expect(await f.keeper.actionSlotIsFilledForTesting(actionC), "C's entry was taken over, not kicked")
+        #expect(isSuperseded(errorB), "B's join \(describe(errorB))")
+        #expect(await f.keeper.actionSlotIsFilledForTesting(actionC) == false, "C's entry was kicked: its job was cancelled")
 
         joinGate.release()
         let errorC = await joinC.value
-        actionGate.release()
+        #expect(errorC == nil, "C's join \(describe(errorC))")
         await f.settle()
-
         let log = await f.log
-        #expect(log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)", "join:\(clientB.rawValue)"], "tick=\(tick) reporting=\(reporting): log \(log), C's join \(describe(errorC))")
-        #expect(isSuperseded(errorC), "C's join \(describe(errorC))")
-        #expect(await isRejected(f.keeper, actionC))
+        #expect(log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)", "join:\(clientC.rawValue)"], "tick=\(tick) reporting=\(reporting): log \(log)")
         #expect(await f.keeper.playerCount() == 1)
 
-        // B's entry joined: its own leave applies.
-        try await f.keeper.leave(playerID: f.player, clientID: clientB, sessionID: sessionB)
+        // C's job was never cancelled: it applies once its resolver ends.
+        actionGate.release()
+        await f.keeper.waitForActionJobsForTesting()
         await f.settle()
-        #expect(await f.log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)", "join:\(clientB.rawValue)", "leave:\(clientB.rawValue)"])
+        #expect(await isRejected(f.keeper, actionC) == false)
+        #expect(await f.log == ["join:\(clientA.rawValue)", "leave:\(clientA.rawValue)", "join:\(clientC.rawValue)", "action:\(actionKey)"])
+
+        // C's entry joined: its own leave applies.
+        try await f.keeper.leave(playerID: f.player, clientID: clientC, sessionID: sessionC)
+        await f.settle()
+        #expect(await f.log.last == "leave:\(clientC.rawValue)")
+    }
+
+    @Test("R10: a kick's leave held before it starts, while a newer login with the kicked entry's IDs replaces it, leaves the newer entry alone", arguments: [false, true], [false, true])
+    func kicksLeaveIsScopedByGeneration(tick: Bool, reporting: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
+        let leaveHold = WatermarkGate()
+        defer { leaveHold.release() }
+        // The first `.leave` is B's kick of A; the second, C's, passes.
+        await f.keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>()
+            .on(.leave, arrival: 1) { await leaveHold.enterAndWait() }
+            .hook)
+        let clientA = ClientID("c-a"), sessionA = SessionID("s-a"), clientB = ClientID("c-b")
+
+        try await f.join(clientA, sessionA)
+        await f.settle()
+
+        // B kicks A; its leave of A's entry is held before it starts.
+        let joinB = f.joinInTask(clientB, SessionID("s-b"))
+        guard await leaveHold.waitUntilEntered("B's kick of A") else { return }
+        // C, a reconnect with A's client and session IDs, kicks A, and takes the player with a
+        // new entry carrying those IDs.
+        let joinC = f.joinInTask(clientA, sessionA)
+        // Bounded: B's held kick must not park C.
+        guard await withinHangBound({ _ = await joinC.value }) else {
+            Issue.record("C's join didn't end while B's kick was held")
+            return
+        }
+        let errorC = await joinC.value
+        #expect(errorC == nil, "C's join \(describe(errorC))")
+        await f.settle()
+        #expect(await f.log == ["join:c-a", "leave:c-a", "join:c-a"])
+
+        // B's leave names A's entry by its generation: the slot holds C's, whose IDs match but
+        // whose generation doesn't, so it is left alone, and B is fenced out.
+        leaveHold.release()
+        let errorB = await joinB.value
+        #expect(isSuperseded(errorB), "B's join \(describe(errorB))")
+        await f.settle()
+        let log = await f.log
+        #expect(log == ["join:c-a", "leave:c-a", "join:c-a"], "tick=\(tick) reporting=\(reporting): log \(log)")
+        #expect(await f.keeper.playerCount() == 1)
     }
 
     @Test("R9: A's OnJoin resolvers fail: an action submitted for A meanwhile is rejected at once, its resolver still held", arguments: [false, true])

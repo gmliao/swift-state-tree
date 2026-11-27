@@ -6235,8 +6235,11 @@ extension KeeperModel {
 
     /// J2c: after the kick's leave, which awaited. Another join of the player may have inserted
     /// its own entry meanwhile: the slot is checked by identity (the kicked entry's generation),
-    /// not by key, and a different entry is kicked too instead of taken over (#860). Taking it
-    /// over would keep its join's pending OnJoin, which that join then drops as superseded.
+    /// not by key. A different entry is a newer one, and it fences this join out: this join
+    /// throws `.superseded`, the way a stale fencing token is refused (Kleppmann 2016, "How to
+    /// do distributed locking"; ZooKeeper's zxid epochs). The last join to arrive wins. Kicking
+    /// that entry too would let two joins that keep arriving kick each other without bound,
+    /// and taking it over would keep its join's pending OnJoin (#860).
     fileprivate mutating func joinAfterKick(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
@@ -6245,7 +6248,8 @@ extension KeeperModel {
         kickedGeneration: Epoch
     ) throws -> JoinRequest {
         if let entry = players[decided.playerID], entry.generation != kickedGeneration {
-            return try joinKickCheck(behavior, &side, &outputs, decided)
+            behavior.logger.info("Join of player \(decided.playerID.rawValue) superseded during its kick by a newer entry: the newer join keeps the player")
+            throw JoinError.superseded
         }
         return try joinInsert(behavior, &side, &outputs, decided)
     }
@@ -6267,7 +6271,8 @@ extension KeeperModel {
             metadata: session.metadata
         )
         // An entry whose OnJoin is still pending never joined: this join runs its own OnJoin,
-        // and the flag isn't carried over (#860). J2c kicks such an entry before this point.
+        // and the flag isn't carried over (#860). J2c refuses the join instead when such an
+        // entry replaced the one it kicked.
         let isFirst = playerSession.clientID == nil || playerSession.onJoinPending
         playerSession.onJoinPending = false
 
