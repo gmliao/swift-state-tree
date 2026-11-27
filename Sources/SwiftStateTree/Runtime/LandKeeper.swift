@@ -2237,6 +2237,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         // The players' services live on the side, beside the entries the model copy carries.
         side.playerServices = turnSide.playerServices
+        // The source's test holds, so a staged start on the core reaches the same hold points.
+        side.holdPoints = turnSide.holdPoints
         let store = KeeperSideStore(side: side)
         var twin = behavior
         twin.sideStore = store

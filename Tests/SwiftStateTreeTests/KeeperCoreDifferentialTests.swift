@@ -95,7 +95,8 @@ struct CoreDiffShape: Sendable, CustomStringConvertible {
     var leaveResolver: Bool
     /// No OnLeave at all: L1 ends the leave at once.
     var noOnLeave = false
-    /// `DestroyWhenEmpty(after: 1 h)`: an emptied land stages the timer's start.
+    /// `DestroyWhenEmpty(after: 50 ms)`: an emptied land stages the timer's start, and a timer
+    /// nobody cancels reaches `.destroyTimerFired` soon.
     var destroysWhenEmpty = false
 
     var description: String {
@@ -146,7 +147,7 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
         if shape.tick && shape.destroysWhenEmpty {
             Lifetime {
                 Tick(every: .seconds(3600)) { state, ctx in coreDiffTick(&state, ctx) }
-                DestroyWhenEmpty(after: .seconds(3600))
+                DestroyWhenEmpty(after: .milliseconds(50))
             }
         } else if shape.tick {
             Lifetime {
@@ -154,7 +155,7 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
             }
         } else if shape.destroysWhenEmpty {
             Lifetime {
-                DestroyWhenEmpty(after: .seconds(3600))
+                DestroyWhenEmpty(after: .milliseconds(50))
             }
         }
     }
@@ -351,12 +352,17 @@ private struct CoreDiffPair {
     let harness: KeeperCoreHarness<CoreDiffState>
     let landID: String
 
-    static func make(_ shape: CoreDiffShape, _ name: String) async -> CoreDiffPair {
+    static func make(_ shape: CoreDiffShape, _ name: String, holds: (@Sendable (LandKeeperHoldPoint) async -> Void)? = nil) async -> CoreDiffPair {
         let landID = "core-diff:\(name):\(UUID().uuidString)"
         func keeper() -> LandKeeper<CoreDiffState> {
             LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: landID)
         }
         let direct = keeper(), twinSource = keeper()
+        if let holds {
+            // On both keepers, before the twin copies the source's side.
+            await direct.installHolds(holds)
+            await twinSource.installHolds(holds)
+        }
         await direct.awaitInitialization()
         await twinSource.awaitInitialization()
         let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting())
@@ -386,6 +392,18 @@ private struct CoreDiffPair {
 // MARK: - The calls, on each path
 
 private func session(_ player: String) -> PlayerSession { PlayerSession(playerID: player) }
+
+/// Whether `task` ends within `seconds`, so a task that never ends fails an expectation instead
+/// of hanging the suite.
+private func boundedEnd(_ task: Task<Void, Never>, seconds: Int) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask { await task.value; return true }
+        group.addTask { try? await safeTaskSleep(for: .seconds(seconds)); return false }
+        let first = await group.next() ?? false
+        group.cancelAll()
+        return first
+    }
+}
 private func caller(_ player: String, _ client: String) -> KeeperCaller {
     KeeperCaller(playerID: PlayerID(player), clientID: ClientID(client), sessionID: SessionID(client))
 }
@@ -575,11 +593,16 @@ struct KeeperCoreDifferentialTests {
         await pair.expectSame("after the kick")
     }
 
-    @Test("A kick that empties a one-player land stages the destroy timer, and the join in the same step cancels it before its start (§16 item 10, D14)", arguments: [false, true])
-    func kickCancelsStagedDestroyTimer(tick: Bool) async throws {
-        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false, noOnLeave: true, destroysWhenEmpty: true), "kick-destroy")
+    @Test("A kick on a one-player land: L1 installs the destroy timer and J3 cancels it, on both paths, and the timer never fires (§16 item 10)", arguments: [false, true])
+    func kickInstallsThenCancelsTheDestroyTimer(tick: Bool) async throws {
+        // Each step flushes at its end, on both paths: L1's staged start installs the timer before
+        // J3's `joinInsert` cancels it. So this pins install-then-cancel, not D14's cancel before
+        // install (a stage and a cancel in one frame), which #860's D2 shape or K1b-5's own test
+        // covers.
+        let fires = CoreDiffCounter()
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false, noOnLeave: true, destroysWhenEmpty: true), "kick-destroy",
+                                           holds: { point in if point == .destroyTimerFired { fires.increment() } })
         _ = await bothJoin(pair, "p1", "c1")
-        // The join itself cancels no ticket: the land was never empty with a player in it.
         let again = await bothJoin(pair, "p1", "c2")
         #expect(again.0 == again.1 && again.0 == .joined(allowed: true, admitted: false), "\(again)")
         await pair.expectSame("after the kick and the join")
@@ -588,14 +611,34 @@ struct KeeperCoreDifferentialTests {
         for (path, read) in [("keeper", keeperRead), ("core", coreRead)] {
             #expect(!read.holdsDestroyTicket, "\(path): the join cleared the slot")
             let ticket = try #require(read.lastDestroyTicket, "\(path): L1 staged the timer")
-            // The flush ran the staged start after the cancel: the task is installed and
-            // cancelled at once. Its delay is an hour, so a task that wasn't cancelled would hang
-            // this await until the suite's time limit.
             let task = try #require(ticket.installedTask, "\(path): the staged start installed its task")
-            #expect(task.isCancelled, "\(path): the install saw the cancel")
-            await task.value
+            #expect(task.isCancelled, "\(path): J3 cancelled it")
+            // Bounded: a timer nobody cancelled would fire after 50 ms and end, so this returns
+            // either way, and the count below tells the two apart.
+            let ended = await boundedEnd(task, seconds: 5)
+            #expect(ended, "\(path): the timer's task ended")
         }
+        #expect(fires.value == 0, "a cancelled timer reached .destroyTimerFired \(fires.value) time(s)")
         #expect(!pair.keeper.isDraining, "the timer ran no destroy")
+    }
+
+    @Test("The control: the last player's leave installs the destroy timer, and with no rejoin it fires on both paths", arguments: [false, true])
+    func uncancelledDestroyTimerFires(tick: Bool) async throws {
+        let fires = CoreDiffCounter()
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false, noOnLeave: true, destroysWhenEmpty: true), "destroy-fires",
+                                           holds: { point in if point == .destroyTimerFired { fires.increment() } })
+        _ = await bothJoin(pair, "p1", "c1")
+        #expect(await keeperLeave(pair, "p1", "c1") == "done")
+        #expect(await coreLeave(pair, "p1", "c1") == "done")
+        for (path, read) in [("keeper", await pair.keeper.differentialReadForTesting()), ("core", await pair.harness.differentialRead())] {
+            let ticket = try #require(read.lastDestroyTicket, "\(path): the leave staged the timer")
+            let task = try #require(ticket.installedTask, "\(path): installed")
+            #expect(!task.isCancelled, "\(path)")
+            #expect(await boundedEnd(task, seconds: 5), "\(path): the timer's task ended")
+        }
+        // One fire per path: the keeper's (which then drains) and the core's (whose staged hop
+        // finds no keeper, K2-1).
+        #expect(fires.value == 2, "fires: \(fires.value)")
     }
 
     @Test("A failure item in a tickless input turn fails the land the same way on both paths, up to the drain's start (§16 item 13's K2-1 part)")
