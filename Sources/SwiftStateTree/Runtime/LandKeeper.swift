@@ -2317,12 +2317,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         (model.actionJobs.count, model.actionSlots.count, model.actionJobsStarted)
     }
 
-    /// Test hook: whether the slot of `sequence` holds its outcome, unread.
     /// Test hook: the players with a join attempt in flight, by their latest arrival token.
     package func latestJoinArrivalsForTesting() -> [PlayerID: Epoch] {
         model.latestJoinArrivals
     }
 
+    /// Test hook: whether the slot of `sequence` holds its outcome, unread.
     package func actionSlotIsFilledForTesting(_ sequence: Int64) -> Bool {
         model.actionSlots[sequence]?.result != nil
     }
@@ -6235,7 +6235,10 @@ extension KeeperModel {
         return .done
     }
 
-    /// J2b: the kick target, after the hold. Without one it goes on to J3 in this segment.
+    /// J2b: the kick target, after the hold, which is an await: a later attempt of the player
+    /// may have reached J2, and even inserted, since this join's J2. So the fence comes first,
+    /// as at J2c: with a later token, this join throws `.superseded` before it picks a kick
+    /// target or inserts. Without a kick target it goes on to J3 in this segment.
     fileprivate mutating func joinKickCheck(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
@@ -6245,6 +6248,10 @@ extension KeeperModel {
         // A drain clears `players` in the segment that sets the flag, so this is reached only
         // through a test's flag (`markDrainingForTesting`); the join isn't inserted then either.
         guard !side.isDraining else { throw JoinError.landShuttingDown }
+        guard latestJoinArrivals[decided.playerID] == decided.arrival else {
+            behavior.logger.info("Join of player \(decided.playerID.rawValue) superseded before its kick check by a later join: the later join keeps the player")
+            throw JoinError.superseded
+        }
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[decided.playerID], let oldClientID = existingSession.clientID {
             behavior.logger.info("Duplicate playerID login detected: \(decided.playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
@@ -6254,18 +6261,20 @@ extension KeeperModel {
     }
 
     /// J2c: after the kick's leave, which awaited. Other joins of the player may have run
-    /// meanwhile, so two checks follow, in this order:
-    /// - **The fence.** A later attempt reached J2 (`latestJoinArrivals` holds another token):
-    ///   this join throws `.superseded`, the way a stale fencing token is refused (Kleppmann
-    ///   2016, "How to do distributed locking"; ZooKeeper's zxid epochs). The token is the
-    ///   attempt's arrival, not the slot's entry: the slot can be empty, or hold an older
-    ///   attempt's entry, while a later attempt waits in its own kick (#940). So the last
+    /// meanwhile, so the checks follow, in this order:
+    /// - **The drain.** A land that is ending answers `landShuttingDown`, as at J2b and the
+    ///   append.
+    /// - **The fence.** A later attempt reached J2 (`latestJoinArrivals` holds another token, or
+    ///   none: a later attempt that ended removed its own): this join throws `.superseded`, the
+    ///   way a stale fencing token is refused (Kleppmann 2016, "How to do distributed locking";
+    ///   ZooKeeper's zxid epochs). The token is the attempt's arrival, not the slot's entry: the
+    ///   slot can be empty while a later attempt waits in its own kick (#940). So the last
     ///   attempt to arrive keeps the player, whichever kick returns first.
-    /// - **The slot, by identity** (the kicked entry's generation), not by key. With this join
-    ///   still the latest, another entry there was inserted by an attempt that arrived earlier,
-    ///   at its J2b, after this join's J2: it is kicked too, never taken over, since taking it
-    ///   over would keep its join's pending OnJoin (#860). Bounded: only attempts that reached
-    ///   J2 before this one can insert while it is the latest.
+    /// - **The slot, by identity** (the kicked entry's generation), not by key. Every insert is
+    ///   behind the fence (J2b and here), so while this join holds the latest token no other
+    ///   attempt inserts, and the kick's leave removed the kicked entry: another entry there is
+    ///   a broken invariant. It is refused, never taken over, since taking it over would keep
+    ///   its join's pending OnJoin (#860).
     fileprivate mutating func joinAfterKick(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
@@ -6280,7 +6289,8 @@ extension KeeperModel {
             throw JoinError.superseded
         }
         if let entry = players[decided.playerID], entry.generation != kickedGeneration {
-            return try joinKickCheck(behavior, &side, &outputs, decided)
+            assertionFailure("Player \(decided.playerID.rawValue)'s slot holds an entry inserted while this join held the latest token")
+            throw JoinError.superseded
         }
         return try joinInsert(behavior, &side, &outputs, decided)
     }

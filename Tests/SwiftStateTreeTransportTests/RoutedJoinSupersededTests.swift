@@ -329,7 +329,8 @@ struct RoutedJoinSupersededTests {
 
     @Test("A routed join fenced out at its kick (J2c) by a later join gets the 4017 close, never reaches OnJoin or the admission, and leaves no join bookkeeping")
     func fencedAtTheKickClosesWith4017() async throws {
-        let h = try await RoutedSupersedeHarness.make()
+        // No join budget: no deadline is part of the ordering.
+        let h = try await RoutedSupersedeHarness.make(joinBudget: .zero)
         let adapter = h.container.transportAdapter
         // A holds the player; its OnLeave (the routed join's kick of it) is held.
         let sessionA = RoutedLeaveHold.gates.fresh { SessionID("s-a-leave-\($0)") }

@@ -247,9 +247,12 @@ struct RejoinHoldsPlaceTests {
             // expected
         }
         try await newerLeaves.value
-        let finalCount = await keeper.playerCount()
         #expect(newcomer == .roomIsFull, "the older login's place was given away when the newer login ended")
-        #expect(finalCount <= 2, "the land holds more than maxPlayers: players.count == \(finalCount)")
+        // Both p1 logins have ended: only p2 is left, and the fenced login's reservation went
+        // with it, so the place opens up.
+        #expect(await keeper.playerCount() == 1)
+        #expect(try await join(keeper, "p3", client: "p3-b") == .admitted, "the fenced login's reservation still holds p1's place")
+        #expect(await keeper.playerCount() == 2)
     }
 
     @Test("a rejoin that succeeded leaves no reservation behind: after the player leaves, its place is free")

@@ -670,6 +670,92 @@ struct JoinReplacedDuringOnJoinTests {
         #expect(await f.keeper.latestJoinArrivalsForTesting().isEmpty, "every attempt removed its token")
     }
 
+    @Test("R12: a join held after its J2 while a later login joins is fenced out at its kick check, whether the later login still holds the player or has left", arguments: [false, true], [false, true])
+    func heldBeforeItsKickCheckIsFencedOut(tick: Bool, reporting: Bool) async throws {
+        for newerLeft in [false, true] {
+            let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
+            let joinHold = WatermarkGate()
+            defer { joinHold.release() }
+            // The first `.join` is A's, after its J2 took its token; B's passes.
+            await f.keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>()
+                .on(.join, arrival: 1) { await joinHold.enterAndWait() }
+                .hook)
+            let clientA = ClientID("c-a"), clientB = ClientID("c-b"), sessionB = SessionID("s-b")
+            let label = "tick=\(tick) reporting=\(reporting) newerLeft=\(newerLeft)"
+
+            let joinA = f.joinInTask(clientA, SessionID("s-a"))
+            guard await joinHold.waitUntilEntered("A after its J2") else { return }
+            // B arrives later, finds the slot empty and joins.
+            guard let errorB = await valueWithinHangBound(f.joinInTask(clientB, sessionB)) else {
+                Issue.record("\(label): B's join didn't end while A was held")
+                return
+            }
+            #expect(errorB == nil, "\(label): B's join \(describe(errorB))")
+            await f.settle()
+            if newerLeft {
+                try await f.keeper.leave(playerID: f.player, clientID: clientB, sessionID: sessionB)
+                await f.settle()
+            }
+
+            // A resumes with a stale token: it is refused before it picks B's entry as its kick
+            // target, or inserts into the slot B left empty.
+            joinHold.release()
+            guard let errorA = await valueWithinHangBound(joinA) else {
+                Issue.record("\(label): A's join didn't end")
+                return
+            }
+            #expect(isSuperseded(errorA), "\(label): A's join \(describe(errorA))")
+            await f.settle()
+            let log = await f.log
+            #expect(log == (newerLeft ? ["join:c-b", "leave:c-b"] : ["join:c-b"]), "\(label): log \(log)")
+            #expect(await f.keeper.playerCount() == (newerLeft ? 0 : 1), "\(label)")
+            #expect(await f.keeper.latestJoinArrivalsForTesting().isEmpty, "\(label): every attempt removed its token")
+        }
+    }
+
+    @Test("R13: a drain while the kicking join waits in its kick, after a later login joined: the kicker is told the land is shutting down, not superseded", arguments: [false, true], [false, true])
+    func drainDuringTheKickAnswersShuttingDown(tick: Bool, reporting: Bool) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: reporting)
+        let leaveKey = ReplacedJoinGates.freshKey()
+        let leaveGate = ReplacedJoinGates.gate(leaveKey)
+        defer { leaveGate.release() }
+        let clientA = ClientID("lgate-\(leaveKey)")
+
+        try await f.join(clientA, SessionID("s-a"))
+        await f.settle()
+        // B kicks A, and waits in A's OnLeave resolvers.
+        let joinB = f.joinInTask(ClientID("c-b"), SessionID("s-b"))
+        guard await leaveGate.waitUntilEntered("A's OnLeave") else { return }
+        // C arrives later and joins: B's token is stale from here on.
+        guard let errorC = await valueWithinHangBound(f.joinInTask(ClientID("c-c"), SessionID("s-c"))) else {
+            Issue.record("C's join didn't end while B's kick was held")
+            return
+        }
+        #expect(errorC == nil, "C's join \(describe(errorC))")
+        await f.settle()
+
+        // The land drains while B is still in its kick.
+        let keeper = f.keeper
+        let shutdown = Task { await keeper.forceShutdown() }
+        defer { shutdown.cancel() }
+        guard await withinHangBound({ await keeper.waitUntilDrainStartedForTesting() }) else {
+            Issue.record("the drain never started")
+            return
+        }
+
+        // The kick's leave returns during the drain: B reaches J2c with a stale token, and the
+        // drain answers first.
+        leaveGate.release()
+        guard let errorB = await valueWithinHangBound(joinB) else {
+            Issue.record("B's join didn't end")
+            return
+        }
+        var shuttingDown = false
+        if case .landShuttingDown? = errorB as? JoinError { shuttingDown = true }
+        #expect(shuttingDown, "tick=\(tick) reporting=\(reporting): B's join \(describe(errorB))")
+        #expect(await withinHangBound({ await keeper.waitUntilDrained() }), "the drain didn't end")
+    }
+
     @Test("R9: A's OnJoin resolvers fail: an action submitted for A meanwhile is rejected at once, its resolver still held", arguments: [false, true])
     func failedOnJoinCancelsItsActionJobs(tick: Bool) async throws {
         let f = await ReplacedJoinFixture(tick: tick, reporting: true)
