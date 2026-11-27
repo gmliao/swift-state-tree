@@ -271,3 +271,78 @@ This section records where K2-2a's code differs from §3's commits 0 and 2. The 
 | A tickless job's apply window and reply order | (not stated) | **The core's `.inputDrainDue` follows the job's delivery in the same batch.** The keeper applies in a separate drain task, so a failure can land between delivery and apply. For a mixed batch `[job J, action A]`, the core stages A's reply first, and it publishes the slot replies before the freeze replies. The core's order is one of the keeper's possible orders. A case that pins the window with a failure between delivery and apply goes in K2-2b, with the facade's drain (Review on #948, S1) |
 | `.actionJobReleased`'s case | commit 0's differential | **In K2-2b.** A release needs an abandonment that is still running when the job completes, which needs resolver deadlines on, and the suite runs with them off. The deadline's task-local read in a step is checked there too (`Notes/solutions/2026-11-27-a-core-step-reads-the-drivers-task-not-the-callers.md`) |
 | The caller's cancel for `.awaitActionResult` in K2-2b | `.cancelsCall` with the box | **The box with `.ignoresCancel`**, as the harness does. `.cancelsCall` would let a cancelled caller skip a filled slot and leak its failure |
+
+## 11. Commit 1 against K2-1b's code (2026-11-27, read at #944's head ec99ae89)
+
+This section records where #944's segments differ from §3.1, and the stop flow, which K2-1b leaves unsegmented. The text above stays as it was planned; where the two disagree, this section governs. Line numbers are #944's `LandKeeper.swift`.
+
+### 11.1 The stop (M11): `runForceShutdown` on the core
+
+#944 segments the initialization and the drain, not the stop. `runForceShutdown` (LK:2585) still awaits four times, and `forceShutdown` (LK:2569) joins callers through a `SingleFlight`. On the core, `.shutdown` becomes a `sendAndWait` input (`.control`, from #948 round 2). Its caller is answered when the drain ends. Each await maps as follows:
+
+| Await or call today | On the core | Result input | Re-checks in its step | Held server inputs |
+|---|---|---|---|---|
+| `forceShutdown`'s `SingleFlight` (one flight, later callers wait for it) | model state: `shutdownStarted`, plus a waiter list in the model's barrier waits (`coreBarrierWaits`). A second `.shutdown` records its caller and is answered with the first | none | `shutdownStarted` | — |
+| the guard: no drain started, the initialization didn't fail, live mode (LK:2589); otherwise the no-turn branch | `.shutdown`'s step, arm 1: clears players, services and reservations, drops the pending inputs, then the drain start below | — | `isDraining`, `drainStarted`, `initializationFailure`, `mode`: the step's own reads, no ticket | dropped with the drain (`dropServerInputsHeldWhileFrozen`) |
+| `endDebugFreezeForShutdown` (sync) | in `.shutdown`'s step, arm 2: the generation is released, every freeze caller is answered false, and the held intakes go on through `releaseCoreHeldIntakes` at the step's end. A tickless land's shutdown item is appended first, so the intakes re-enter behind it and its turn's `completeShutdownTurn` drops them with `landClosed`, as on the keeper | — | — | **kept out of the queue**, then dropped by the drain. The difference from resume: `resumeStep` appends them and kicks a counted drain |
+| tick land: `shutdownRequested = true`, then `await waitForTickInFlight()` | a **barrier**, the same one as the drain's `.waitForTick`: the step records the wait while `ticksInFlight > 0`, and the tick's `.recordTaken` answers it (the tick-record hold commit 1 brings) | `.shutdownAfterTicks` (new) | `isDraining` / `drainStarted`: an empty-room drain that started during the wait is joined instead (LK:2605) | — |
+| tick land: `applyShutdownTurnBetweenTicks` → `submitTurnRecord`'s await | the shutdown body in `.shutdownAfterTicks`' step; its record is the record effect | `.shutdownRecorded` (new); without a recorder its work is done in the same step | — | — |
+| tickless: the shutdown item appended, `scheduleInputDrain`, `await shutdownTurnWaiters` | a core wait on the item's sequence (`KeeperCoreInputWait.shutdown(caller)`), answered by the input turn's step (`completeShutdownTurn`), or with `landClosed` by a drain that dropped the item | the `.recordTaken` that carries the turn | the wait's sequence | — |
+| `holds.at(.shutdownTurnApplied)` (tests) | an owner hold before the drain start, in the facade (commit 4); in K2-2a's harness, a gate at the effect | — | — | — |
+| `shutdownIfIdle(cause: .forceShutdown)`: joins a started drain, or checks emptiness, sets the drain flag, releases the held inputs, cancels the jobs, then starts and awaits the drain | the drain start (M7's owner call, then `drainBegin`) in the same step. The caller's wait is answered by `.drainFinished`'s step, as a joined drain's callers are | `.drainFinished` | `drainStarted`, `players.isEmpty` | `releaseHeldInputsForDrain` drops them |
+| `holds.at(.forceShutdownReturn)` (tests) | an owner hold after the reply, in the facade | — | — | — |
+
+**Probes (run 2026-11-27, macOS, debug, at #944's head a78339fc: hold points only, throwaway test code, not committed).**
+
+*P11-1, a tick land: a leave arrives while the stop waits for the tick in flight.*
+- Setup: p1 and p2 joined. A tick is held at `.turnRecord`, so `ticksInFlight > 0`. `forceShutdown` then reaches `shutdown-stop-gate`, and `leave(p1)` is sent.
+- The leave's segment appends its lifecycle item while the stop waits. The probe waited for that with bounded `Task.yield()`s, which took 2; the committed case will use a hold. Then the tick's record is released.
+
+```
+PROBE1 leave=leave: done
+PROBE1 log=["join:p1", "join:p2", "tick"]
+PROBE1 events=["probe turn-begin", "probe turn-end", "hold turnRecord", "probe force-shutdown-joined", "probe shutdown-stop-gate", "pending before release: [\"lifecycle(SwiftStateTree.LandKeeper<SwiftStateTreeTests.Shut\"] after 2 yields", "forceShutdown returned"]
+PROBE1 frame tick 0: actions 0 lifecycle ["join", "join"] serverInputs 0
+PROBE1 frame tick 1: actions 0 lifecycle ["shutdown"] serverInputs 0
+```
+
+What it shows:
+- The queued leave goes neither into the tick in flight nor into the shutdown turn. `completeShutdownTurn` drops it (`dropPendingInputs`), so **OnLeave doesn't run**.
+- The leave's caller gets a normal return, as `leave`'s doc says for a dropped OnLeave.
+- The shutdown turn is a frame of its own, the next tick ID, holding only `"shutdown"`.
+- So the core's barrier needs no ordering rule for the leave: the shutdown step drops what is pending, as the keeper's does.
+- This is open issue #512. The maintainer's decision (2026-11-11): the shutdown turn applies the queued leaves first, so OnLeave runs, and then destroys. Actions and joins are still dropped. The leaves are recorded in the same frame, before `"shutdown"`.
+- **Commit 1 ports today's behavior unchanged**, for differential parity: the core's `.shutdown` drops the queued leave, as the keeper does at a78339fc.
+- **#512's fix lands after the cut-over**, in the core's `.shutdown` step, so the change is made in one place instead of two. This is Main's recommendation; Review may decide otherwise.
+
+*P11-2, a tickless land: a shutdown while frozen, with a held intake and a held server input.*
+
+```
+PROBE2 froze=true serverInput=accepted(sequence: 1)
+PROBE2 action=action: landClosed
+PROBE2 log=["join:p1"] heldServerInputs=0 inFlight=0 frozen=false
+PROBE2 events=["probe input-held-frozen", "held server inputs before stop: 1, in flight 1", "probe force-shutdown-joined", "probe shutdown-queued", "probe action-queued", "probe turn-begin", "probe input-batch-2", "probe turn-end", "probe input-drain-end"]
+PROBE2 frame tick 0: actions 0 lifecycle ["join", "shutdown"] serverInputs 0
+```
+
+What it shows:
+- The held action re-enters behind the shutdown item (`shutdown-queued`, then `action-queued`), and both are taken in one batch of 2. The shutdown applies first, so the action gets `landClosed` and is never recorded.
+- The held server input is never queued: `heldWhileFrozen` and `inFlight` go to 0, `input:9` is never applied, and it isn't in the frame.
+- This matches the `endDebugFreezeForShutdown` row above, and the core's arm 2 must produce the same batch: the shutdown item first, then the released intakes.
+- Both probes become committed differential cases in commit 1, held with hold points.
+
+### 11.2 The initialization and the drain (M1–M10, M12)
+
+| # | #944 | §3.1 said | Commit 1 does |
+|---|---|---|---|
+| M1 | `.finish`: without a recorder, the guard runs in a turn of its own after OnInitialize's, so that turn's late backstop has run (LK:7932) | no row | a fifth new input, `.initializeFinish`, which the step queues behind `.land`. `.initializeRecorded`'s step calls `initializeFinish` directly, as #944 does |
+| M2 | `.done` | no row | answers the initialization barrier's waiters (commit 2's table). The init-wait watchers are a test hook on the owner |
+| M3 | re-evaluation: `.checkReplayHeader(source)` and `.runReplayBeforeTickZero`, with the result `initializeAfterReplayHeader(encoding:failure:)` | `.replayHeader`, `initializeAfterReplay` | both requests in `legacyOnly` (#612), under #944's names |
+| M4 | `initializeDone(tickLoopConfigured:syncLoopConfigured:)` | `initializeDone(loopsConfigured:)` | the two flags, which the owner call reads after `configureLoops` |
+| M5 | no `loopEpoch` | the bump in `initializeFinish`'s step, carried on `.startLoops` (rev 5) | commit 1 adds the field; it isn't in #944 |
+| M6 | `initializeResolved(…, cancelled:)`, read on the initialization's task | no mention | the resolver effect's perform reads its own task's cancellation and carries it on `.initializeResolved` (`Notes/solutions/2026-11-27-a-core-step-reads-the-drivers-task-not-the-callers.md`) |
+| M7 | the drain's start: `holds.at(.drainStart)`, then the tick and sync tasks are cancelled, before `drainBegin` (LK:4678) | no row | an owner call before the first drain step: the loops are actor fields until #762 |
+| M8 | `DestroyHandlerStep` and `AfterFinalizeStep` hold closures, a context and the generator | — | they ride the effect and come back on its result input, never in the model, as commit 0's job box does |
+| M9 | `runAfterFinalize` runs in `openStepScope(…, droppingInto: destroyHandlerOutputsDropped)` | "an effect … in its scope" | the effect carries the scope's counter from the side |
+| M10 | `.notifyTransport`: the port is `transport ?? boundSyncRequester`; after `drainFinished`, `releasedTransport = …` and then `setTransport(nil)` | `setTransport(nil)` only | the port effect takes the bound requester as a fallback. Two owner calls follow the step, in that order |
+| M12 | — | §3.2 | commit 1 lifts none of #938's refusals. It lifts #948's tick-land `.freeze` refusal, through the tick-record hold that `.waitForTick` and the stop's barrier also need, so the hold is built once. The tickless `.admitServerInput` precondition stays with K2-2b (§10) |
