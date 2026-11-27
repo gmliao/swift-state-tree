@@ -300,7 +300,42 @@ enum KeeperHeldIntake: Sendable {
 }
 
 struct KeeperCoreRefusal: Error, Sendable {
-    let reason: String
+    let kind: KeeperCoreRefusalReason
+    /// The refusal's message, as `refusals` records it.
+    var reason: String { kind.message }
+}
+
+/// Why a core refuses an input, one case per refused shape (K2-2 plan §3.2): the commit that
+/// lifts a refusal deletes its case, and commit 4's totality check requires the enum to be
+/// empty, so the cut-over can't wire while a refused shape is in place.
+enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
+    /// A join syncing in the turn: its admission reads the binding after up to three awaits.
+    case joinSyncingInTurn
+    /// Any input of a tickless land with a transport attached (except `.startLand`): the input
+    /// turn's output phase reads the binding inside the drain.
+    case ticklessLandWithTransport
+    /// A join that waits for its player's leave in flight (#943): it parks in a barrier wait.
+    /// #948's `coreBarrierWaits` hold only replies (the freeze, the initialization), and this
+    /// wait continues the join (J2c), so it waits for #953's barrier, whose payload release
+    /// hands the join back (its plan's §5, the first adopter).
+    case joinAwaitingLeaveInFlight
+
+    /// The message the refusal carries and `refusals` records.
+    var message: String {
+        switch self {
+        case .joinSyncingInTurn: "a join syncing in the turn needs the binding token (K2-2)"
+        case .ticklessLandWithTransport: "a tickless land with a transport needs the binding token (K2-2)"
+        case .joinAwaitingLeaveInFlight: "a join waiting for a leave in flight needs the core's barrier wait (#953)"
+        }
+    }
+
+    /// The K2-2 commit that lifts the refusal and deletes the case.
+    var liftedIn: String {
+        switch self {
+        case .joinSyncingInTurn, .ticklessLandWithTransport: "K2-2 commit 3: the binding token"
+        case .joinAwaitingLeaveInFlight: "#953's barrier wait, its first adopter (after #948's commit 2)"
+        }
+    }
 }
 
 /// The intakes answered at once, and the adapter's synchronous calls (plan §4.1).
@@ -405,9 +440,9 @@ extension KeeperModel: TurnMachine {
     mutating func handle(_ input: KeeperInput<State>, _ turn: inout Turn<KeeperModel<State>>) {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
-        if let reason = coreRefusal(behavior, hasTransport: store.withSide({ side in side.attachedTransport != nil }), input) {
-            store.withSide { side in side.coreInputReplies.refusals.append("\(input.routeName): \(reason)") }
-            if let caller = turn.input { turn.reply(to: caller, .failure(KeeperCoreRefusal(reason: reason))) }
+        if let kind = coreRefusal(behavior, hasTransport: store.withSide({ side in side.attachedTransport != nil }), input) {
+            store.withSide { side in side.coreInputReplies.refusals.append("\(input.routeName): \(kind.message)") }
+            if let caller = turn.input { turn.reply(to: caller, .failure(KeeperCoreRefusal(kind: kind))) }
             return
         }
         switch input {
@@ -784,9 +819,9 @@ extension KeeperModel {
     ///   notifications read the binding at the admission, after up to three awaits.
     /// - Any input of a tickless land with a transport attached: the input turn's output phase
     ///   reads it inside the drain.
-    func coreRefusal(_ behavior: KeeperBehavior<State>, hasTransport: Bool, _ input: KeeperInput<State>) -> String? {
+    func coreRefusal(_ behavior: KeeperBehavior<State>, hasTransport: Bool, _ input: KeeperInput<State>) -> KeeperCoreRefusalReason? {
         if case .join(_, syncsInTurn: true) = input {
-            return "a join syncing in the turn needs the binding token (K2-2)"
+            return .joinSyncingInTurn
         }
         // `.startLand` starts the core's key and reads no binding.
         if case .startLand = input { return nil }
@@ -796,7 +831,7 @@ extension KeeperModel {
             return "a tick land's freeze needs the tick record's hold (K2-2 commit 1)"
         }
         if behavior.isTickless, hasTransport {
-            return "a tickless land with a transport needs the binding token (K2-2)"
+            return .ticklessLandWithTransport
         }
         return nil
     }
@@ -1007,6 +1042,15 @@ extension KeeperModel {
                 // J2 took the reservation and the arrival in the segment that just ended.
                 decided = made
                 next = step(behavior, store) { m, side, outputs in Result { try m.joinKickCheck(behavior, &side, &outputs, made) } }
+            case .awaitLeave:
+                // A join waiting for its player's leave in flight (#943) parks in a barrier
+                // that continues the join when the leave ends. #948's `coreBarrierWaits` hold
+                // replies only, so it is refused on the core until #953's barrier, by a named
+                // reason commit 4's totality check enumerates. The differential has no such row.
+                let kind = KeeperCoreRefusalReason.joinAwaitingLeaveInFlight
+                store.withSide { side in side.coreInputReplies.refusals.append("join: \(kind.message)") }
+                finishJoin(behavior, store, &turn, .failure(KeeperCoreRefusal(kind: kind)), decided: decided, caller: caller)
+                return
             case let .kick(made, oldClientID, oldSessionID, kickedGeneration):
                 // The kick is the leave flow, nested, of the kicked entry alone: L1 in this
                 // step; J2c runs when it ends.

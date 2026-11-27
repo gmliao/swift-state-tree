@@ -223,35 +223,70 @@ struct RejoinHoldsPlaceTests {
         #expect(await keeper.playerCount() == 2)
     }
 
-    @Test("a newer login that inserts and leaves while the older one is still in its kick doesn't free the older one's place")
-    func newerLoginEndsFirst() async throws {
+    @Test("a newer login during the older one's kick waits for that leave (#943): the older one is fenced out, the newer one joins, and p1's place is never given away")
+    func newerLoginWaitsForTheKick() async throws {
         let (keeper, box) = try await makeFullKeeper()
         defer { box.gate.open() }
         // Login A kicks the old session and parks in OnLeave's resolver (arrival 1).
         let older = Task { try await join(keeper, "p1", client: "p1-b") }
         #expect(await box.gate.waitForArrivals(1))
-        // Login B finds no entry to kick, inserts, and leaves again; its OnLeave parks too (arrival 2).
-        #expect(try await join(keeper, "p1", client: "p1-c") == .admitted)
-        let newerLeaves = Task { try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("p1-c"), sessionID: SessionID("p1-c")) }
-        #expect(await box.gate.waitForArrivals(2))
-        // A is still pending and holds p1's place: p2 plus that place fill the land.
-        let newcomer = try await join(keeper, "p3", client: "p3-a")
+        // Login B finds the kick's leave in flight and waits for it: it neither inserts nor
+        // kicks (before #943 it inserted into the empty slot).
+        let newer = Task { try await join(keeper, "p1", client: "p1-c") }
+        guard await withinHangBound({ await keeper.waitForLeaveEndWaitersForTesting(PlayerID("p1"), count: 1) }) else {
+            Issue.record("the newer login never waited for the kick's leave")
+            return
+        }
+        #expect(await keeper.playerCount() == 1)
+        // Both logins hold p1's place: p2 plus that place fill the land.
+        #expect(try await join(keeper, "p3", client: "p3-a") == .roomIsFull, "p1's place was given away during the kick")
         box.gate.open()
-        // B arrived after A, so A is fenced out when its kick returns, although B has left
-        // since: the last login to arrive wins (#940), and a stale attempt doesn't take the
-        // player back. A's place was held until then.
+        // B arrived after A, so A is fenced out when its kick returns, and B joins (#940).
         do {
             let outcome = try await older.value
             Issue.record("the older login was \(outcome), not superseded")
         } catch JoinError.superseded {
             // expected
         }
-        try await newerLeaves.value
-        #expect(newcomer == .roomIsFull, "the older login's place was given away when the newer login ended")
-        // Both p1 logins have ended: only p2 is left, and the fenced login's reservation went
-        // with it, so the place opens up.
+        #expect(try await newer.value == .admitted)
+        #expect(await keeper.playerCount() == 2)
+        // B leaves: both p1 logins have ended, and no reservation is left behind.
+        try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("p1-c"), sessionID: SessionID("p1-c"))
         #expect(await keeper.playerCount() == 1)
-        #expect(try await join(keeper, "p3", client: "p3-b") == .admitted, "the fenced login's reservation still holds p1's place")
+        #expect(try await join(keeper, "p3", client: "p3-b") == .admitted, "a p1 login's reservation still holds p1's place")
+        #expect(await keeper.playerCount() == 2)
+    }
+
+    @Test("W7: a rejoin during its player's own OnLeave waits and holds the place: a newcomer meanwhile gets roomIsFull, and the count never passes maxPlayers (#943)")
+    func rejoinDuringOwnLeaveHoldsThePlace() async throws {
+        let (keeper, box) = try await makeFullKeeper()
+        defer { box.gate.open() }
+        // p1 leaves and parks in OnLeave's resolver: its entry is gone.
+        let leaving = Task { try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("p1-a"), sessionID: SessionID("p1-a")) }
+        #expect(await box.gate.waitForArrivals(1))
+        #expect(await keeper.playerCount() == 1)
+        // p1 rejoins: it waits for its leave, holding a place.
+        let rejoin = Task { try await join(keeper, "p1", client: "p1-b") }
+        guard await withinHangBound({ await keeper.waitForLeaveEndWaitersForTesting(PlayerID("p1"), count: 1) }) else {
+            Issue.record("the rejoin never waited for p1's leave")
+            return
+        }
+        #expect(try await join(keeper, "p3", client: "p3-a") == .roomIsFull, "the waiting rejoin's place was given to a newcomer")
+        box.gate.open()
+        try await leaving.value
+        #expect(try await rejoin.value == .admitted)
+        #expect(await keeper.playerCount() == 2)
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().log == ["join:p1:p1-a", "join:p2:p2-a", "join:p1:p1-b"])
+    }
+
+    @Test("W8: a leave without OnLeave resolvers opens no window: a rejoin right after it is admitted without waiting (#943)")
+    func leaveWithoutResolversOpensNoWindow() async throws {
+        let (keeper, _) = try await makeFullKeeper(withLeaveResolver: false)
+        try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("p1-a"), sessionID: SessionID("p1-a"))
+        #expect(await keeper.leavesInFlightForTesting().isEmpty)
+        #expect(try await join(keeper, "p1", client: "p1-b") == .admitted)
+        #expect(await keeper.leaveEndWaiterCountForTesting(PlayerID("p1")) == 0)
         #expect(await keeper.playerCount() == 2)
     }
 

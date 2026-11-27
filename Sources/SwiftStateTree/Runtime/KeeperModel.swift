@@ -36,6 +36,11 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// every exit, so the map holds only players with an attempt in flight.
     var latestJoinArrivals: [PlayerID: Epoch] = [:]
     var joinArrivals: EpochCounter = EpochCounter()
+    /// The players whose leave is between its entry's removal and its OnLeave's append (#943),
+    /// by the leaving entry's generation: L1 sets it when the OnLeave resolvers run, and the
+    /// segment that ends that window ends it. A join of the player meanwhile waits for it
+    /// (J2b's `.awaitLeave`), so no OnJoin of the player is appended before that OnLeave.
+    var leavesInFlight: [PlayerID: Epoch] = [:]
 
     // Queues, jobs and results.
     var pendingItems: [LandKeeper<State>.PendingItem] = []
@@ -161,6 +166,10 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// `transport?.recordsInTurnSyncFolds`, read when the transport is attached.
     var transportRecordsFolds: Bool = false
     var didInitialize: Bool = false
+    /// OnInitialize's body has applied (#946), set in its segment: the drain runs the destroy
+    /// handlers only then (or on a land without OnInitialize). `didInitialize` is set later,
+    /// after the record wait and the loops' start.
+    var initializationApplied: Bool = false
     /// The next tick turn includes the sync phase: set when the sync loop fires within
     /// `coincidentSyncWindow` of the next tick (the coincident-sync rule).
     var inTurnSyncDue: Bool = false

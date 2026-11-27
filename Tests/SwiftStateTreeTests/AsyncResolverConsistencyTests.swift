@@ -227,6 +227,23 @@ func testAsyncResolverConsistency() async throws {
         }
     }
 
+    // A join throws `.superseded` only when its entry went during its OnJoin resolvers (#860).
+    // With no re-join in the schedule, only the player's own leave removes it: every superseded
+    // join belongs to a player with a leave in the schedule, the pair is dropped, and the player
+    // is absent at the end. Whether a scheduled leave lands inside the 25 ms OnJoin resolvers
+    // depends on how fast `stepTickOnce` runs, so which leaving players are superseded isn't
+    // asserted (a known limitation: the order is timing, not a hold).
+    let supersededJoins = await rejections.supersededJoins
+    let finalPlayers = await rejections.finalPlayers
+    for entry in supersededJoins {
+        #expect(leavingPlayers.contains(entry.player), "\(entry.player) never leaves, yet its join at tick \(entry.tick) was superseded")
+        #expect(!finalPlayers.contains(entry.player), "\(entry.player)'s join was superseded, yet the player is in the final state")
+    }
+    #expect(Set(supersededJoins.map(\.player)).count == supersededJoins.count, "a player's join was superseded twice: \(supersededJoins)")
+    for player in players where !leavingPlayers.contains(player) {
+        #expect(finalPlayers.contains(player), "\(player) never leaves, yet it isn't in the final state")
+    }
+
     let replayHashes = try await runReevaluation(
         recordingFile: recordingFile.path,
         logger: logger
@@ -265,9 +282,22 @@ private actor RejectionLog {
         let tick: Int
     }
     private(set) var entries: [Entry] = []
+    /// The joins that threw `JoinError.superseded`: the player's leave came during their OnJoin
+    /// resolvers.
+    private(set) var supersededJoins: [Entry] = []
+    /// `playersJoined`'s keys after the live run's last tick.
+    private(set) var finalPlayers: Set<String> = []
 
     func add(player: String, tick: Int) {
         entries.append(Entry(player: player, tick: tick))
+    }
+
+    func addSupersededJoin(player: String, tick: Int) {
+        supersededJoins.append(Entry(player: player, tick: tick))
+    }
+
+    func setFinalPlayers(_ players: Set<String>) {
+        finalPlayers = players
     }
 }
 
@@ -319,11 +349,18 @@ private func runLive(
                 switch op {
                 case .join(let player):
                     opTasks.append(Task {
-                        try await keeper.join(
-                            playerID: PlayerID(player),
-                            clientID: ClientID("c-\(player)"),
-                            sessionID: SessionID("s-\(player)")
-                        )
+                        do {
+                            try await keeper.join(
+                                playerID: PlayerID(player),
+                                clientID: ClientID("c-\(player)"),
+                                sessionID: SessionID("s-\(player)")
+                            )
+                        } catch JoinError.superseded {
+                            // The player's leave came during its OnJoin resolvers: the OnJoin and
+                            // the OnLeave are both dropped (#860), and the join says so. The
+                            // test checks each one is justified.
+                            await rejections.addSupersededJoin(player: player, tick: tick)
+                        }
                     })
                 case .leave(let player):
                     opTasks.append(Task {
@@ -372,6 +409,8 @@ private func runLive(
         let state = await keeper.currentState()
         hashes[tickId] = hashState(state)
     }
+
+    await rejections.setFinalPlayers(Set(await keeper.currentState().playersJoined.keys))
 
     guard let recorder = await keeper.getReevaluationRecorder() else {
         throw NSError(domain: "AsyncResolverConsistencyTest", code: 1, userInfo: [

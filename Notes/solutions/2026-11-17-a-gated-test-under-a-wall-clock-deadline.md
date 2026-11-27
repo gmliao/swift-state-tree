@@ -21,6 +21,8 @@ tags:
 related:
   - "#447"
   - "#576"
+  - "#904"
+  - "#928"
 ---
 
 **Problem.** After #576 merged, main's `build (in-turn sync true)` job failed in `LandKeeperDebugFreezeTests` "Tickless: a resolver in flight at freeze time completes before freeze returns". It reported two issues: `currentState().value == "resolved"` was false, and "Resolvers timed out after 5.0 seconds: DebugFreezeGatedResolver". #576's own CI had passed both modes, and the test passed 50 of 50 runs on the Mac before and after #576.
@@ -34,3 +36,8 @@ related:
 - The same goes for any wall-clock deadline in the code under test: a held test is about order, and the time between its steps is unbounded on a loaded runner.
 - To check a held test for this, run it with the deadline set very short (`RESOLVER_TIMEOUT_MS=10`). If it fails, it depends on the deadline.
 - When a test fails on CI right after a merge that didn't touch its code, compare its duration across recent runs before blaming the merge (see [CPU-bound tests starve the cooperative pool](2026-11-11-cpu-bound-tests-starve-the-cooperative-pool.md)).
+
+**Recurrences.**
+- #904: Windows CI. The test windows were about 20 s, and `debugFreeze`'s 10 s drain fired inside two held tests. Fixed by #905 (105bb6c4).
+- #928: the same class through the adapter's settle deadline (10 s) and its 30 s auto-resume, which the held-settle tests left at their defaults. Fixed by fixture defaults: `freezeWithoutDeadline` in the test support, set by the fixtures that hold work while frozen.
+- The rule: a fixture whose tests hold work while frozen sets every deadline in the code under test to `freezeWithoutDeadline`. A test of a deadline sets its own short one.

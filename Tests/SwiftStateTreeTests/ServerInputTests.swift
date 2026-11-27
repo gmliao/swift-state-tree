@@ -7,6 +7,7 @@
 
 import Foundation
 import Testing
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTree
 
 @StateNodeBuilder
@@ -662,7 +663,7 @@ struct ServerInputTests {
         guard await kickHold.waitUntilEntered() else { return }
 
         // The freeze waits for A's turn, which is in flight; B is accepted meanwhile.
-        let freeze = Task { await keeper.debugFreeze(generation: 1, timeout: .seconds(30)) }
+        let freeze = Task { await keeper.debugFreeze(generation: 1, timeout: freezeWithoutDeadline) }
         await keeper.waitUntilFreezeWaitsForTesting()
         #expect(await keeper.debugIsFrozenForTesting())
         let tickBefore = await keeper.debugLastCommittedTickId()

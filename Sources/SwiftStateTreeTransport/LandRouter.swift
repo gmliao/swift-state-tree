@@ -1110,8 +1110,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // way. Its forwarded disconnect may have reached the adapter before this admission
             // was queued, as a no-op: the admission is then this join's to undo, whatever its
             // outcome. Idempotent, so a disconnect that came after the admission makes it a
-            // no-op.
-            await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+            // no-op. With this attempt's connection generation: a later connection that
+            // admitted under the same ID keeps its membership (#945).
+            await adapter.onDisconnect(sessionID: sessionID, clientID: clientID, generation: connectionGeneration)
             return
         }
 
@@ -1468,9 +1469,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         case .superseded:
             // A newer join of the player replaced this session. The error settles this
             // client's pending join before the supersede closes its connection.
-            await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: nil, code: .joinDenied, message: "Join superseded by a newer join of the player")
+            // For the connection that joined (#941): a later one under the ID doesn't get it.
+            await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: nil, code: .joinDenied, message: "Join superseded by a newer join of the player", generation: connectionGeneration)
         case .landClosed:
-            await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: nil, code: .joinDenied, message: "Land is shutting down, retry the join")
+            await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: nil, code: .joinDenied, message: "Land is shutting down, retry the join", generation: connectionGeneration)
         case .timeout, .onJoinFailed, .eventOverflow, .inboundOverflow:
             let (code, message): (ErrorCode, String) = switch failure {
             case .timeout: (.joinDenied, JoinTimeoutPhase.flip.message)
@@ -1717,16 +1719,20 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Send a join error to the client.
-    /// - Parameter frame: The client frame this refuses (`RefusedFrame`), or `nil` for an
-    ///   error that is the server's doing: only a refused client frame counts against the
-    ///   session's pre-join budget.
+    /// - Parameters:
+    ///   - frame: The client frame this refuses (`RefusedFrame`), or `nil` for an error that is
+    ///     the server's doing: only a refused client frame counts against the session's pre-join
+    ///     budget.
+    ///   - generation: The connection the error is for, read in the segment that decided it;
+    ///     `nil` for the session's current connection. See `deliver`.
     private func sendJoinError(
         requestID: String,
         sessionID: SessionID,
         refusing frame: RefusedFrame?,
         code: ErrorCode,
         message: String,
-        details: [String: AnyCodable]? = nil
+        details: [String: AnyCodable]? = nil,
+        generation: UInt64? = nil
     ) async {
         do {
             var errorDetails = details ?? [:]
@@ -1751,7 +1757,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 await refuseOverBudget(sessionID, errorData: errorData, kind: encoder.encoding.frameKind)
                 return
             }
-            await deliver(errorData, kind: encoder.encoding.frameKind, to: sessionID)
+            await deliver(errorData, kind: encoder.encoding.frameKind, to: sessionID, generation: generation)
         } catch {
             logger.error("Failed to send join error", metadata: [
                 "requestID": .string(requestID),
@@ -1802,7 +1808,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Sends a router frame. For a session that joined a land, the frame goes through that
     /// land's `TransportAdapter` writer, in order with the land's own frames (#60); during the
     /// handshake it goes to the transport directly.
-    private func deliver(_ data: Data, kind: WebSocketFrameKind, to sessionID: SessionID) async {
+    /// - Parameter generation: The connection the frame is for. In the handshake branch, the
+    ///   transport drops the frame when a later connection took the ID (#941); `nil` sends to
+    ///   whichever connection holds it.
+    private func deliver(_ data: Data, kind: WebSocketFrameKind, to sessionID: SessionID, generation: UInt64? = nil) async {
         if case .joining(let attempt) = sessionHandshakePhase[sessionID], let pending = attempt.admitted {
             // In order with the land's own frames, through the writer the flip sends through.
             // Before the flip that puts it ahead of the JoinResponse, encoded with the land's
@@ -1816,7 +1825,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await adapter.enqueueOutbound(data, to: sessionID, kind: kind)
         } else {
             await transport.sendSessionFrames([
-                SessionFrame(data: data, sessionID: sessionID, connectionGeneration: nil, kind: kind)
+                SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation, kind: kind)
             ])
         }
     }
