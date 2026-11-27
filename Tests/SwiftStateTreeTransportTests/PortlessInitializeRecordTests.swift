@@ -85,7 +85,7 @@ enum PortlessInitializeScenario {
     }
 }
 
-@Suite("Portless initialize: records across #546 L2d-2", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
+@Suite("Portless initialize: records across #546 L2d-2", .timeLimit(.minutes(1)), .resolverDeadlinesOff, .drainsFixtureKeepers)
 struct PortlessInitializeRecordTests {
     /// Every state hash the record holds is reproduced. A tickless land records none per tick (its
     /// replay still hashes tick 0); the tick land records one per tick.

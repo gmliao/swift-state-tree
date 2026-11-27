@@ -104,6 +104,8 @@ private struct InitRecordFixture {
             landID: landID
         )
         await keeper.setTransport(adapter)
+        // The adapter link is a cycle until the drain: the suite's trait drains it (#910).
+        FixtureKeepers.register(keeper)
         gate.open()
         await keeper.stepTickOnce()
         return InitRecordFixture(keeper: keeper, adapter: adapter)
@@ -115,7 +117,7 @@ private struct InitRecordFixture {
     }
 }
 
-@Suite("Initialize record and marker (record format 2.1)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
+@Suite("Initialize record and marker (record format 2.1)", .timeLimit(.minutes(1)), .resolverDeadlinesOff, .drainsFixtureKeepers)
 struct SyncStreamInitializeRecordTests {
     @Test("The sync path records OnInitialize's events and post-initialize state hash")
     func initializeRecordOnTheSyncPath() async throws {

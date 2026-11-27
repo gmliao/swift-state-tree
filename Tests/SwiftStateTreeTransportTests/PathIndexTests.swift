@@ -47,7 +47,7 @@ actor PathIndexReplyConnection: WebSocketConnection {
     func close() async throws {}
 }
 
-@Suite("Path index")
+@Suite("Path index", .drainsFixtureKeepers)
 struct PathIndexTests {
     // The path index alone: field merge and row addressing (on by default, their own features)
     // are covered by FieldMergeTests and RowAddressingAdapterTests. Row addressing stays off
