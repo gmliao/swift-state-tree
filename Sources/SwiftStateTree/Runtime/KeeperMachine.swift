@@ -110,7 +110,7 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     case freezeTimedOut(generation: UInt64, caller: InputID)
 }
 
-/// Which inputs `handle` routes in K2-1, and where each of the rest is routed (Review,
+/// Which inputs `handle` routes (K2-1, then K2-2a), and where each of the rest is routed (Review,
 /// 2026-11-27). `routeName` is exhaustive, so a new case must be named; the census test checks
 /// that the two lists split the cases, and the differential that no deferred input is sent.
 enum KeeperInputRoutes {
@@ -251,7 +251,7 @@ struct KeeperActionJobStart: Sendable {
 }
 
 /// The core's slot waits (K2-2 plan, commit 0): `awaitActionResult`'s callers, by sequence, and
-/// the answers a slot fill made, which the step's end replies (`answerCoreSlotReplies`). Kept
+/// the answers a slot fill made, which the step's end replies (`runCoreJobEffects`). Kept
 /// empty on the keeper's side, where `slotWaiters` holds the continuations.
 struct KeeperCoreSlotReplies: Sendable {
     var waits: [Int64: InputID?] = [:]
@@ -385,6 +385,16 @@ extension KeeperModel: TurnMachine {
     typealias Answer = KeeperAnswer<State>
     typealias Behavior = KeeperBehavior<State>
 
+    /// The resume and the teardown are `.control`: a closed or full queue must never refuse the
+    /// input that opens the freeze's barriers or ends the land (Review on #948). The choice
+    /// depends on the input alone, as `TurnMachine.inputPolicy` requires.
+    func inputPolicy(for input: KeeperInput<State>) -> InputPolicy<KeeperKey> {
+        switch input {
+        case .resume, .shutdown, .drainFinished: .control
+        default: .normal(waitsFor: nil, belongsTo: nil)
+        }
+    }
+
     mutating func handle(_ input: KeeperInput<State>, _ turn: inout Turn<KeeperModel<State>>) {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
@@ -408,6 +418,8 @@ extension KeeperModel: TurnMachine {
                 if case .failed(let id) = result { inFlightRecordResults.removeValue(forKey: id) }
                 inputTurnResults[sequence] = result
             }
+            let taken = Set(applied.map(\.sequence))
+            inFlightRecordSequences.removeAll { taken.contains($0) }
             let waits = store.withSide { side in resumeInputTurnWaiters(behavior, &side, for: applied) }
             answerCoreInputWaits(behavior, store, &turn, waits)
             inputDrainStep(behavior, store, &turn, endsTickWork: endsTickWork)
@@ -468,7 +480,7 @@ extension KeeperModel: TurnMachine {
         case let .actionJobReleased(sequence):
             step(behavior, store) { m, side, outputs in m.releaseCompletedActionJobBody(behavior, &side, &outputs, sequence) }
         case let .freeze(generation, timeout):
-            freezeStep(&turn, generation: generation, timeout: timeout)
+            freezeStep(&turn, generation: generation, timeout: timeout, assertsOnUnstartedLandKey: store.assertsOnUnstartedLandKey)
         case let .freezeTimedOut(generation, caller):
             // Only this caller's wait ends; the generation's other callers keep their own deadline.
             if var waits = coreBarrierWaits.freeze[generation], let index = waits.firstIndex(of: caller) {
@@ -526,7 +538,8 @@ extension KeeperModel: TurnMachine {
     mutating func freezeStep(
         _ turn: inout Turn<KeeperModel<State>>,
         generation: UInt64,
-        timeout: Duration
+        timeout: Duration,
+        assertsOnUnstartedLandKey: Bool
     ) {
         let caller = turn.input
         guard generation > debugReleasedGeneration else {
@@ -535,6 +548,8 @@ extension KeeperModel: TurnMachine {
         }
         debugFrozen = true
         debugActiveGeneration = generation
+        // As `.syncDue`'s fold: an output for `.land` before it started is dropped silently.
+        assert(turn.isLive(.land) || !assertsOnUnstartedLandKey, "KeeperModel: a fold drop emitted before .land was started")
         turn.emit(.dropFold, for: .land)
         guard debugInFlightWork > 0 else {
             if let caller { turn.reply(to: caller, .success(.frozen(true))) }
@@ -915,6 +930,7 @@ extension KeeperModel {
                     if case .failed(let id) = result { inFlightRecordResults[id] = item.sequence }
                     results[item.sequence] = result
                 }
+                inFlightRecordSequences.append(contentsOf: outcome.appliedItems.map(\.sequence))
                 turn.run(.awaitRecordTaken(submission: submission, applied: outcome.appliedItems, results: results, endsTickWork: endsTickWork))
                 return
             }
@@ -1243,7 +1259,8 @@ extension KeeperModel {
         _ sequence: Int64,
         _ wait: KeeperCoreInputWait
     ) {
-        guard inputTurnResults[sequence] != nil || pendingItems.contains(where: { $0.sequence == sequence }) else {
+        guard inputTurnResults[sequence] != nil || pendingItems.contains(where: { $0.sequence == sequence })
+                || inFlightRecordSequences.contains(sequence) else {
             answerCoreInputWait(behavior, store, &turn, wait, .success(.none))
             return
         }

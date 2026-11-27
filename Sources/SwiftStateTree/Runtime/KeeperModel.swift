@@ -44,6 +44,10 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// their owner while the record is in flight (K2-2 plan, item 15, K22-Q5). Empty on the
     /// keeper's path, where `inputTurnResults` owns them.
     var inFlightRecordResults: [FailureID: Int64] = [:]
+    /// The core's applied sequences whose record is in flight (`.awaitRecordTaken`), until
+    /// `.recordTaken`: a wait registered for one of them meanwhile is answered with its result,
+    /// not as an unknown sequence (Review on #948). Empty on the keeper's path.
+    var inFlightRecordSequences: [Int64] = []
     /// Set when OnInitialize's resolvers timed out (#104): the land never initialized, every
     /// call that awaits the initialization throws it, and the drain skips the destroy handlers.
     var initializationFailure: FailureID?

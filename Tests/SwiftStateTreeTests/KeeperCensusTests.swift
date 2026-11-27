@@ -194,6 +194,7 @@ enum KeeperCensus {
             "model.foldedSyncs": .model,
             "model.hasHeldTransport": .model,
             "model.inFlightRecordResults": .model,
+            "model.inFlightRecordSequences": .model,
             "model.inTurnDeferredTurns": .model,
             "model.inTurnDrainRetryBinding": .model,
             "model.inTurnSyncDue": .model,
@@ -417,7 +418,7 @@ struct KeeperCensusTests {
         #expect(named.subtracting(sideFields).isEmpty, "not a side field: \(named.subtracting(sideFields).sorted())")
     }
 
-    @Test("The machine's inputs and queries split into K2-1's routed set and the deferred ones, each named, and together every case (#700 K2-1)")
+    @Test("The machine's inputs and queries split into the routed set (K2-1, K2-2a) and the deferred ones, each named, and together every case (#700)")
     func inputRoutesSplitTheCases() {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
         #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")

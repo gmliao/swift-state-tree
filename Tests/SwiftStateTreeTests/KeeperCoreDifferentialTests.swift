@@ -280,8 +280,6 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     nonisolated let recordGate: WatermarkGate?
     /// The next `.awaitRecordTaken` effect after `arm` waits here (the freeze cases' held work).
     nonisolated let armedRecordGate = CoreDiffArmedGate()
-    /// Holds an action job's result before it steps, as the keeper's `.actionComplete` hold does.
-    nonisolated let jobGate: WatermarkGate?
     /// The twin's source keeper, whose executor this actor shares (as the facade will share the
     /// core's, plan §3): a callback that re-enters the keeper with `assumeIsolated` then runs.
     nonisolated let owner: LandKeeper<State>
@@ -290,10 +288,9 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     private var armedFlush: (input: KeeperInput<State>, query: KeeperQuery)?
     private(set) var flushQueryAnswers: [(answer: KeeperAnswer<State>, pendingAtQuery: [Int64], tickAtQuery: Int64)] = []
 
-    init(_ twin: (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>), recordGate: WatermarkGate? = nil, jobGate: WatermarkGate? = nil,
+    init(_ twin: (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>), recordGate: WatermarkGate? = nil,
          clock: CoreDiffClock? = nil) {
         self.recordGate = recordGate
-        self.jobGate = jobGate
         owner = twin.owner
         if let clock {
             core = TurnCore(machine: twin.model, behavior: twin.behavior, queueLimit: 1024, maxReleasesPerBatch: 64, clock: clock)
@@ -437,7 +434,6 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
             }
             start.box.install(task)
             await task.value
-            await jobGate?.enterAndWait()
             result = .actionResolved(sequence: start.sequence, resolved.value)
         case let .actionJobRelease(sequence, abandonment):
             await abandonment.waitUntilEnded()
@@ -761,6 +757,9 @@ private struct CoreDiffPair {
         }
         await direct.awaitInitialization()
         await twinSource.awaitInitialization()
+        // The action tables' mid-step audit, on both paths (the twin copies the source's flag).
+        await direct.setActionTableAuditForTesting(true)
+        await twinSource.setActionTableAuditForTesting(true)
         let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting(), clock: clock)
         await harness.start()
         // The destroy-timer cases read the last ticket after a cancel, on both paths.
@@ -952,7 +951,7 @@ private func describeJob(_ result: Result<InputOutcome, any Error>) -> String {
     case .success(.none): "none"
     case let .failure(error as CoreDiffError): "error \(error.token)"
     case .failure(is CancellationError): "cancelled"
-    case let .failure(error): "\(type(of: error))"
+    case let .failure(error): "\(type(of: error)): \(String(describing: error))"
     }
 }
 
@@ -1334,7 +1333,9 @@ struct KeeperCoreDifferentialTests {
         #expect(held.violations.isEmpty, "no owner violation while in flight: \(held.violations)")
         gate.release()
         let answer = await call.value
-        #expect(answer != .completed(7), "the caller got the handler's error: \(answer)")
+        // The exact error: a lost failure (`FailureTableMiss`) must not pass.
+        #expect(answer == .failed(CoreDiffError(token: 7), "CoreDiffError"), "the caller got the handler's error: \(answer)")
+        #expect(await keeperAction(pair, CoreDiffAction(n: 7, fails: true), "p1", "c1") == answer, "the keeper's caller gets the same")
         let after = await harness.differentialRead()
         #expect(after.model.inFlightRecordResults.isEmpty && after.model.inputTurnResults.isEmpty)
         #expect(after.violations.isEmpty, "\(after.violations)")

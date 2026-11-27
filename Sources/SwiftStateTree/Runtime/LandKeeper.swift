@@ -2191,6 +2191,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         precondition(model.initializationFailure == nil, "coreTwinForTesting: the initialization failed")
         // A drain still scheduled would be copied as scheduled, and the core would never run one.
         precondition(!model.inputDrainScheduled, "coreTwinForTesting: an input drain is still scheduled; wait for the keeper's work first")
+        // The model's slots would be copied without the side's failure table and job tasks.
+        precondition(model.actionSlots.isEmpty && model.actionJobs.isEmpty, "coreTwinForTesting: the source holds action jobs or slots")
         // The twin shares the source's mailbox and sentinel (Review round 2 on #938): it starts
         // from an empty mailbox, and one source closes at most one twin's gate, so a second twin
         // with a transport can't replace the first one's gate unseen.
@@ -2223,6 +2225,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         side.playerServices = turnSide.playerServices
         // The source's test holds, so a staged start on the core reaches the same hold points.
         side.holdPoints = turnSide.holdPoints
+        // The source's mid-step audit of the action tables (tests turn it on for both paths).
+        side.actions.auditOn = turnSide.actions.auditOn
         // A guarded entry refused on this keeper while the core steps (they share the sentinel)
         // closes the twin's gate, as the keeper's own refusal closes its transport's.
         // Only a twin with a transport sets the gate, so a later twin without one can't clear it.
@@ -2427,7 +2431,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func watchActionSlotForTesting(_ sequence: Int64, waiter: Bool) -> AsyncStream<Void> {
         let key = KeeperSlotWatchKey(waiter: waiter, sequence: sequence)
         let (stream, continuation) = AsyncStream<Void>.makeStream()
-        let already = waiter ? turnSide.actions.slotWaiters[sequence] != nil : model.actionSlots[sequence]?.result != nil
+        let already = waiter
+            ? turnSide.actions.slotWaiters[sequence] != nil || turnSide.coreInputReplies.slots.waits[sequence] != nil
+            : model.actionSlots[sequence]?.result != nil
         if already {
             continuation.yield()
             continuation.finish()
@@ -6004,6 +6010,12 @@ extension KeeperModel {
         }
         side.coreInputReplies.slots.waits[sequence] = caller
         checkActionTables(behavior, side, "awaitActionResult(sequence:)")
+        // The waiter's watchers (tests), as the keeper's handler wakes them once it waits. They
+        // wake inline: a test stream's yield runs no keeper code.
+        for watcher in side.takeSlotWatchers(KeeperSlotWatchKey(waiter: true, sequence: sequence)) {
+            watcher.yield()
+            watcher.finish()
+        }
         return nil
     }
 
