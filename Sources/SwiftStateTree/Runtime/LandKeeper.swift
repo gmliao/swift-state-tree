@@ -7934,7 +7934,8 @@ extension KeeperModel {
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         port: any LandKeeperTransport,
-        fence: SettleFence
+        fence: SettleFence,
+        inTurnForOwner: Bool? = nil
     ) -> SettleTurnOutcome {
         requestedSyncTurnsForTesting[.settle, default: 0] += 1
         guard behavior.config.mode == .live, side.failure == nil, !side.isDraining else { return .closed(side.failure) }
@@ -7952,12 +7953,17 @@ extension KeeperModel {
         // the requester only once every check has passed, so a refused one changes nothing.
         let markBeforePort = recorderSubmissionCount
         let runsInTurn: Bool
-        switch callOut(behavior, &side, &outputs, { _, side in side.keeperReference.keeper.map { port.runsSyncPhaseInTurn(of: $0) } ?? false }) {
-        case .refused(let refused):
-            enqueueTicklessTurnEnd(behavior, side, since: markBeforePort)
-            return .failed(side.failure ?? refused)
-        case .answered(let answer):
-            runsInTurn = answer
+        if let inTurnForOwner {
+            // A core's query: the sender read the port's answer for the owner (K2-2 plan §9).
+            runsInTurn = inTurnForOwner
+        } else {
+            switch callOut(behavior, &side, &outputs, { _, side in side.keeperReference.keeper.map { port.runsSyncPhaseInTurn(of: $0) } ?? false }) {
+            case .refused(let refused):
+                enqueueTicklessTurnEnd(behavior, side, since: markBeforePort)
+                return .failed(side.failure ?? refused)
+            case .answered(let answer):
+                runsInTurn = answer
+            }
         }
         guard runsInTurn, let settlePort = port as? any LandKeeperSettlePort, isSyncPort(side, port) else {
             return .refused(.notCurrent)

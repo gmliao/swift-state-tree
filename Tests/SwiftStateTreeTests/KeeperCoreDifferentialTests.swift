@@ -290,6 +290,22 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         store.withSide { $0.actions.jobTask(sequence) }
     }
 
+    /// The sync entries, as the keeper's: the port's in-turn read for the owner and the query in
+    /// one segment, with no await between (K2-2 plan §9).
+    func syncTurnNow(via port: any LandKeeperTransport, reason: SyncTurnReason, ticket: SyncTurnTicket? = nil) -> InTurnSyncResult {
+        guard case let .syncTurn(result) = ask(.syncTurnNow(port: port, inTurnForOwner: port.runsSyncPhaseInTurn(of: owner), reason: reason, ticket: ticket)) else {
+            preconditionFailure("syncTurnNow's answer")
+        }
+        return result
+    }
+
+    func syncTurnTicket(via port: any LandKeeperTransport) -> SyncTurnTicket? {
+        guard case let .syncTurnTicket(ticket) = ask(.syncTurnTicket(port: port, inTurnForOwner: port.runsSyncPhaseInTurn(of: owner))) else {
+            preconditionFailure("syncTurnTicket's answer")
+        }
+        return ticket
+    }
+
     func ask(_ question: KeeperQuery) -> KeeperAnswer<State> {
         query(question)
     }
@@ -1577,6 +1593,32 @@ struct KeeperCoreDifferentialTests {
             let (kf, cf) = try await frames()
             #expect(kf == cf, "\(step): the records differ\n keeper \(kf)\n core   \(cf)", sourceLocation: sourceLocation)
         }
+    }
+
+    @Test("The sync entries on the core: a ticket, a requested sync-only turn with and without it, and a stale ticket, the same answers, port calls and records on both paths (K2-2 plan, commit 3, §9)")
+    func syncEntries() async throws {
+        let pair = try await TracePair.make("sync-entries")
+        let keeperTicket = await pair.keeper.syncTurnTicket(via: pair.keeperTransport)
+        let coreTicket = await pair.harness.syncTurnTicket(via: pair.coreTransport)
+        #expect(keeperTicket != nil && coreTicket != nil, "the attached port gets a ticket on both paths")
+        let keeperNow = await pair.keeper.syncTurnNow(via: pair.keeperTransport, reason: .syncNow)
+        let coreNow = await pair.harness.syncTurnNow(via: pair.coreTransport, reason: .syncNow)
+        #expect("\(keeperNow)" == "\(coreNow)", "keeper \(keeperNow), core \(coreNow)")
+        let keeperTicketed = await pair.keeper.syncTurnNow(via: pair.keeperTransport, reason: .syncNow, ticket: keeperTicket)
+        let coreTicketed = await pair.harness.syncTurnNow(via: pair.coreTransport, reason: .syncNow, ticket: coreTicket)
+        #expect("\(keeperTicketed)" == "\(coreTicketed)", "keeper \(keeperTicketed), core \(coreTicketed)")
+        // A port that isn't the attached transport: refused, nothing bound, no phase.
+        let stranger = CoreDiffTraceTransport(CoreDiffTrace())
+        let keeperStranger = await pair.keeper.syncTurnNow(via: stranger, reason: .syncNow)
+        let coreStranger = await pair.harness.syncTurnNow(via: stranger, reason: .syncNow)
+        #expect("\(keeperStranger)" == "\(coreStranger)" && "\(coreStranger)" == "\(InTurnSyncResult.skipped)", "keeper \(keeperStranger), core \(coreStranger)")
+        await pair.harness.waitForSubmissions()
+        await pair.keeper.waitForRecorderSubmissionsForTesting()
+        try await pair.expectSameTrace("after the sync entries")
+        let keeperRequested = await pair.keeper.requestedSyncTurnsForTesting
+        let coreRequested = await pair.harness.differentialRead().model.requestedSyncTurnsForTesting
+        #expect(keeperRequested == coreRequested, "keeper \(keeperRequested), core \(coreRequested)")
+        #expect(await pair.harness.differentialRead().violations.isEmpty)
     }
 
     @Test("The ordered trace on an eventful tick: the same port calls with the same events, the same flush effects and the same record, entry by entry (§6)")

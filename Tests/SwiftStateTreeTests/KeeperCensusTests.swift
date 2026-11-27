@@ -427,7 +427,7 @@ struct KeeperCensusTests {
         let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
         #expect(queries.isDisjoint(with: deferredQueries))
         #expect(queries.union(deferredQueries) == Set(KeeperQueryRoute.allCases))
-        #expect(queries.count == 3 && deferredQueries.count == 3)
+        #expect(queries.count == 6 && deferredQueries.isEmpty)
         #expect(KeeperQueryRoutes.deferred.values.allSatisfy { !$0.isEmpty })
     }
 

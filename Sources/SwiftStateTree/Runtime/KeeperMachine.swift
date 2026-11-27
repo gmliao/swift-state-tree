@@ -133,12 +133,8 @@ enum KeeperQueryRoute: String, CaseIterable, Sendable {
 /// The queries K2-1 answers, and where each other one is routed. A tickless land's
 /// `.admitServerInput` is refused on the core too (a precondition: its kick needs the keeper).
 enum KeeperQueryRoutes {
-    static let routed: Set<KeeperQueryRoute> = [.admitAction, .admitServerInput, .admitClientEvent]
-    static let deferred: [KeeperQueryRoute: String] = [
-        .syncTurnNow: "K2-2: the sync entries",
-        .syncTurnTicket: "K2-2: the sync entries",
-        .settle: "K2-2: the sync entries",
-    ]
+    static let routed: Set<KeeperQueryRoute> = [.admitAction, .admitServerInput, .admitClientEvent, .syncTurnNow, .syncTurnTicket, .settle]
+    static let deferred: [KeeperQueryRoute: String] = [:]
 }
 
 extension KeeperQuery {
@@ -293,9 +289,13 @@ enum KeeperQuery: Sendable {
     case admitAction(ActionEnvelope, KeeperCaller, enforcingLimits: Bool)
     case admitClientEvent(AnyClientEvent, KeeperCaller)
     case admitServerInput(any ServerInputPayload)
-    case syncTurnNow(reason: SyncTurnReason, ticket: SyncTurnTicket?)
-    case syncTurnTicket
-    case settle
+    /// The sync entries (K2-2 commit 3). Each carries its port and the sender's
+    /// `port.runsSyncPhaseInTurn(of: owner)`, read in the segment that sends the query, with no
+    /// await between, as the keeper's entry reads it (K2-2 plan §9). `bindSyncRequester` runs in
+    /// the query's step.
+    case syncTurnNow(port: any LandKeeperTransport, inTurnForOwner: Bool, reason: SyncTurnReason, ticket: SyncTurnTicket?)
+    case syncTurnTicket(port: any LandKeeperTransport, inTurnForOwner: Bool)
+    case settle(port: any LandKeeperTransport, inTurnForOwner: Bool, fence: SettleFence)
 }
 
 /// Each query's answer.
@@ -640,8 +640,34 @@ extension KeeperModel: TurnMachine {
                 }
             }
             return .clientEventQueued(result)
-        default:
-            preconditionFailure("K2-1: \(query.route.rawValue) is routed in \(KeeperQueryRoutes.deferred[query.route] ?? "an unnamed PR")")
+        case let .syncTurnTicket(port, inTurnForOwner):
+            // The keeper's `syncTurnTicket(via:)`: a live land, not failed or draining, the port
+            // in-turn for the owner (read by the sender), then the binding in this step.
+            return .syncTurnTicket(step(behavior, store) { m, side, _ in
+                guard behavior.config.mode == .live, side.failure == nil, !side.isDraining,
+                      inTurnForOwner, m.bindSyncRequester(side, port) else { return nil }
+                return m.syncBinding.current
+            })
+        case let .syncTurnNow(port, inTurnForOwner, reason, ticket):
+            // The keeper's `syncTurnNow(via:reason:ticket:)`: the checks of `acceptsSyncTurn`,
+            // then one sync-only turn. On a core no follow-up is pending to consume: the guard
+            // drops each one after its phase (#938 r3), so `pendingSyncTurnAfterTurn` stays nil.
+            store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = inTurnForOwner }
+            defer { store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = nil } }
+            return .syncTurn(step(behavior, store) { m, side, outputs in
+                m.requestedSyncTurnsForTesting[reason, default: 0] += 1
+                guard behavior.config.mode == .live, side.failure == nil, !side.isDraining,
+                      inTurnForOwner, m.bindSyncRequester(side, port) else { return .skipped }
+                if let ticket, !m.syncBinding.isCurrent(ticket) { return .skipped }
+                assert(side.pendingSyncTurnAfterTurn == nil, "a core holds no pending follow-up")
+                return KeeperModel<State>.syncOnlyTurnBody(&m, behavior, &side, &outputs, transport: port, joinSyncOnly: false)
+            })
+        case let .settle(port, inTurnForOwner, fence):
+            // The keeper's `settleTurn(via:fence:)`, with the port's in-turn answer the sender
+            // read instead of the body's call through the keeper reference.
+            return .settle(step(behavior, store) { m, side, outputs in
+                m.settleBody(behavior, &side, &outputs, port: port, fence: fence, inTurnForOwner: inTurnForOwner)
+            })
         }
     }
 }
