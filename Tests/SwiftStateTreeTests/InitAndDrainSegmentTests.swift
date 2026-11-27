@@ -298,7 +298,9 @@ struct InitAndDrainSegmentTests {
         holds.gate.release()
         await keeper.awaitInitialization()
         #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false, "the drain began during the record: no loop")
-        #expect(await pollUntil { await keeper.lifecycleFlagsForTesting().destructionFinished }, "the failure's teardown ends")
+        // The failure installed the teardown as the drain: `forceShutdown` waits for that one.
+        await keeper.forceShutdown()
+        #expect(await keeper.lifecycleFlagsForTesting().destructionFinished, "the failure's teardown ended")
         #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
     }
 
@@ -328,7 +330,10 @@ struct InitAndDrainSegmentTests {
         #expect(flags.initializationFailed)
         #expect(flags.didInitialize)
         #expect(await keeper.currentState().log.isEmpty, "OnInitialize never ran")
-        #expect(await pollUntil { await keeper.lifecycleFlagsForTesting().destructionFinished }, "the teardown ends")
+        // `forceShutdown` waits for the failed initialization's teardown drain (or runs the
+        // drain the teardown then waits for).
+        await keeper.forceShutdown()
+        #expect(await keeper.lifecycleFlagsForTesting().destructionFinished, "the teardown ended")
     }
 
     @Test("T9: a waiter the initialization resumes sees it done and the tick loop configured, before the starter resumes (#934); so does a join right after")
