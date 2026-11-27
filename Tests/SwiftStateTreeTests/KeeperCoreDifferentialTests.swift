@@ -74,6 +74,37 @@ private enum CoreDiffLeaveFailures {
     static func fails(_ landID: String) -> Bool { lock.withLock { failing.contains(landID) } }
 }
 
+/// An action whose resolver runs in a job (K2-2 plan, commit 0): it throws
+/// `CoreDiffError(token: n)` when `fails`, and waits on its land's gate when one is set.
+@Payload
+struct CoreDiffJobAction: ActionPayload {
+    typealias Response = CoreDiffAck
+    let n: Int
+    let fails: Bool
+}
+
+@PlainData
+struct CoreDiffJobResolver: Resolver {
+    typealias Dependencies = NoServices
+    typealias Output = CoreDiffOutput
+    let n: Int
+    let fails: Bool
+    let landID: String
+    func resolve(_ deps: NoServices) async throws -> CoreDiffOutput {
+        await CoreDiffJobGates.gate(landID)?.enterAndWait()
+        if fails { throw CoreDiffError(token: n) }
+        return CoreDiffOutput(value: n)
+    }
+}
+
+/// A job's resolver gate, by land ID: a case that holds the job sets it on both lands.
+enum CoreDiffJobGates {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var gates: [String: WatermarkGate] = [:]
+    static func set(_ landID: String, _ gate: WatermarkGate?) { lock.withLock { gates[landID] = gate } }
+    static func gate(_ landID: String) -> WatermarkGate? { lock.withLock { gates[landID] } }
+}
+
 struct CoreDiffJoinResolver: ContextResolver {
     typealias Output = CoreDiffOutput
     static func resolve(ctx: ResolverContext) async throws -> CoreDiffOutput { CoreDiffOutput(value: 1) }
@@ -141,6 +172,12 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
                 state.log.append("action:\(action.n)")
                 return CoreDiffAck(n: action.n)
             })
+            HandleAction(CoreDiffJobAction.self, resolvers: { _, action, ctx in
+                CoreDiffJobResolver(n: action.n, fails: action.fails, landID: ctx.landID)
+            }, validate: { _, _, _, _ in }, apply: { state, action, output, _ in
+                state.log.append("job:\(action.n):\(output?.value ?? -1)")
+                return CoreDiffAck(n: action.n)
+            })
             HandleEvent(CoreDiffEvent.self, validate: { _, event, _ in
                 if event.fails { throw CoreDiffError(token: event.n) }
             }, apply: { state, event, _ in
@@ -181,6 +218,8 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     private(set) var inputsSeen: [String] = []
     /// When set, every `.awaitRecordTaken` effect waits here before it runs (released: passes).
     nonisolated let recordGate: WatermarkGate?
+    /// Holds an action job's result before it steps, as the keeper's `.actionComplete` hold does.
+    nonisolated let jobGate: WatermarkGate?
     /// The twin's source keeper, whose executor this actor shares (as the facade will share the
     /// core's, plan §3): a callback that re-enters the keeper with `assumeIsolated` then runs.
     nonisolated let owner: LandKeeper<State>
@@ -189,8 +228,9 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     private var armedFlush: (input: KeeperInput<State>, query: KeeperQuery)?
     private(set) var flushQueryAnswers: [(answer: KeeperAnswer<State>, pendingAtQuery: [Int64], tickAtQuery: Int64)] = []
 
-    init(_ twin: (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>), recordGate: WatermarkGate? = nil) {
+    init(_ twin: (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>), recordGate: WatermarkGate? = nil, jobGate: WatermarkGate? = nil) {
         self.recordGate = recordGate
+        self.jobGate = jobGate
         owner = twin.owner
         core = TurnCore(machine: twin.model, behavior: twin.behavior, queueLimit: 1024, maxReleasesPerBatch: 64, clock: SystemTurnClock())
         store = twin.store
@@ -244,6 +284,12 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         return try await sendAndWait(input, cancellation: .ignoresCancel)
     }
 
+    /// The box of the job `sequence` (the side's job table): a waiting caller cancels the job
+    /// through it, as the keeper's `awaitActionResult` handler does.
+    func jobBox(_ sequence: Int64) -> KeeperActionJobTask? {
+        store.withSide { $0.actions.jobTask(sequence) }
+    }
+
     func ask(_ question: KeeperQuery) -> KeeperAnswer<State> {
         query(question)
     }
@@ -284,12 +330,34 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
                 return nil
             }
             result = .leaveStepped(capture, continuation, await Self.resolve(handlers.onLeaveResolverExecutors, resolverContext, landContext, .onLeave))
-        case let .awaitRecordTaken(submission, applied, endsTickWork):
+        case let .awaitRecordTaken(submission, applied, results, endsTickWork):
             await recordGate?.enterAndWait()
             await submission?.taken()
-            result = .recordTaken(applied: applied, endsTickWork: endsTickWork)
-        case .action, .initialize, .destroyHandler:
-            Issue.record("K2-1 routes no \(effect) effect")
+            result = .recordTaken(applied: applied, results: results, endsTickWork: endsTickWork)
+        case let .actionJob(start):
+            // As the keeper's staged start: the task goes into the box (a cancel that came first
+            // cancels it), runs the resolvers under the job's own abandonment, and its result
+            // comes back as `.actionResolved`.
+            let resolved = CoreDiffResolved()
+            let task = Task<Void, Never> {
+                do {
+                    let ctx = try await ResolverExecutor.executeResolvers(
+                        executors: start.executors, resolverContext: start.resolverContext,
+                        landContext: start.landContext, abandonment: start.box.abandonment)
+                    resolved.set(.success(ctx.getAllResolverOutputs()))
+                } catch {
+                    resolved.set(.failure(error))
+                }
+            }
+            start.box.install(task)
+            await task.value
+            await jobGate?.enterAndWait()
+            result = .actionResolved(sequence: start.sequence, resolved.value)
+        case let .actionJobRelease(sequence, abandonment):
+            await abandonment.waitUntilEnded()
+            result = .actionJobReleased(sequence: sequence)
+        case .initialize, .destroyHandler:
+            Issue.record("K2-2a commit 0 routes no \(effect) effect")
             result = nil
         }
         if let result { await noteResult(result.routeName) }
@@ -429,6 +497,14 @@ final class CoreDiffTraceTransport: LandKeeperTransport, @unchecked Sendable {
     }
 }
 
+/// A job task's result, set once by the task and read after it ends.
+final class CoreDiffResolved: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<[String: HeldResolverOutput], any Error> = .failure(CancellationError())
+    func set(_ value: Result<[String: HeldResolverOutput], any Error>) { lock.withLock { stored = value } }
+    var value: Result<[String: HeldResolverOutput], any Error> { lock.withLock { stored } }
+}
+
 final class CoreDiffCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var n = 0
@@ -502,6 +578,9 @@ struct CoreDiffDigest: Equatable, Sendable, CustomStringConvertible {
     static let statedAsymmetries: [String: String] = [
         "hasHeldTransport": "the twin's copy sets it from the twin's own transport (`coreTwinForTesting`)",
         "transportRecordsFolds": "the same",
+        // K22-Q6: the keeper's path holds a batch's results here until its record is in; the
+        // core's results ride the record effect. Checked per path in `expectSame`.
+        "inputTurnResults": "the core carries a batch's results on its record effect (K2-2 item 15)",
     ]
     /// Fields the projections above compare. `players`, `rejoinReservations` and `pendingItems`
     /// are compared whole too, in `otherModelFields` (metadata, guest and device identity,
@@ -619,6 +698,9 @@ private struct CoreDiffPair {
         let keeperModel = await keeper.differentialReadForTesting().model, coreModel = await harness.differentialRead().model
         #expect(keeperModel.hasHeldTransport == transports && coreModel.hasHeldTransport == transports, "\(step): held transport", sourceLocation: sourceLocation)
         #expect(!keeperModel.transportRecordsFolds && !coreModel.transportRecordsFolds, "\(step): no fold recording", sourceLocation: sourceLocation)
+        // K22-Q6, per path: with the work waited for, neither holds a result, and the core never
+        // keeps one in the table between steps.
+        #expect(keeperModel.inputTurnResults.isEmpty && coreModel.inputTurnResults.isEmpty, "\(step): results left: keeper \(keeperModel.inputTurnResults.keys.sorted()), core \(coreModel.inputTurnResults.keys.sorted())", sourceLocation: sourceLocation)
         #expect(coreDigest.violations.isEmpty, "\(step): \(coreDigest.violations)", sourceLocation: sourceLocation)
         let leftover = await harness.differentialRead().coreWaitsLeft
         #expect(leftover == 0, "\(step): core waits left", sourceLocation: sourceLocation)
@@ -762,6 +844,52 @@ private func coreTickAction(_ pair: CoreDiffPair, _ action: CoreDiffAction, _ pl
         return .failed(nil, "not an action answer")
     }
     return CoreDiffActionResult(result)
+}
+
+// MARK: - Action jobs (K2-2 plan, commit 0)
+
+private func jobEnvelope(_ action: CoreDiffJobAction) -> ActionEnvelope {
+    ActionEnvelope(typeIdentifier: String(describing: CoreDiffJobAction.self), payload: AnyCodable(action))
+}
+
+/// A job's outcome on either path, as text both can match.
+private func describeJob(_ result: Result<InputOutcome, any Error>) -> String {
+    switch result {
+    case let .success(.response(response)): "ack \((response as? CoreDiffAck)?.n ?? -1)"
+    case .success(.none): "none"
+    case let .failure(error as CoreDiffError): "error \(error.token)"
+    case .failure(is CancellationError): "cancelled"
+    case let .failure(error): "\(type(of: error))"
+    }
+}
+
+/// The intake on either path, answered `.pending(sequence:)`.
+private func keeperJobIntake(_ pair: CoreDiffPair, _ action: CoreDiffJobAction) async -> Int64? {
+    let submission = try? await pair.keeper.submitAction(jobEnvelope(action), playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1"))
+    guard case let .pending(sequence)? = submission else { Issue.record("keeper: not pending: \(String(describing: submission))"); return nil }
+    return sequence
+}
+
+private func coreJobIntake(_ pair: CoreDiffPair, _ action: CoreDiffJobAction, tick: Bool) async -> Int64? {
+    let submission: Result<ActionSubmission, any Error>
+    if tick {
+        guard case let .actionSubmission(result) = await pair.harness.ask(.admitAction(jobEnvelope(action), caller("p1", "c1"), enforcingLimits: true)) else { return nil }
+        submission = result
+    } else {
+        guard case let .action(result)? = try? await pair.harness.call(.action(jobEnvelope(action), caller("p1", "c1"))) else { return nil }
+        submission = result
+    }
+    guard case let .pending(sequence)? = try? submission.get() else { Issue.record("core: not pending: \(submission)"); return nil }
+    return sequence
+}
+
+private func coreJobResult(_ pair: CoreDiffPair, _ sequence: Int64) async -> String {
+    do {
+        guard case let .input(result) = try await pair.harness.call(.awaitActionResult(sequence: sequence)) else { return "not an input reply" }
+        return describeJob(result)
+    } catch {
+        return "core: \(error)"
+    }
 }
 
 /// An event's result on either path: done, or the error's value.
@@ -1139,6 +1267,77 @@ struct KeeperCoreDifferentialTests {
     }
 
     // MARK: Review round 1 on #938
+
+    @Test("An action job: the intake answers pending, the resolvers run as the core's effect, and the result comes back through the slot, on both paths (K2-2 plan, commit 0)",
+          arguments: [(false, false), (false, true), (true, false), (true, true)])
+    func actionJob(tick: Bool, fails: Bool) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "job")
+        _ = await bothJoin(pair, "p1", "c1")
+        let action = CoreDiffJobAction(n: 9, fails: fails)
+        let keeperSequence = try #require(await keeperJobIntake(pair, action))
+        let keeperResult = describeJob(await Result { try await pair.keeper.awaitActionResult(sequence: keeperSequence) })
+        await pair.keeper.waitForActionJobsForTesting()
+        let coreSequence = try #require(await coreJobIntake(pair, action, tick: tick))
+        #expect(coreSequence == keeperSequence, "the same sequence on both paths")
+        let coreResult = await coreJobResult(pair, coreSequence)
+        #expect(keeperResult == coreResult, "keeper \(keeperResult), core \(coreResult)")
+        // A tick land acknowledges at delivery; a tickless one answers with the handler's response;
+        // a failing resolver's error comes back wrapped by the executor, the same on both.
+        if fails {
+            #expect(keeperResult != "none" && keeperResult != "ack 9", "\(keeperResult)")
+        } else {
+            #expect(keeperResult == (tick ? "none" : "ack 9"), "\(keeperResult)")
+        }
+        await pair.expectSame("after the job")
+        let seen = await pair.harness.inputsSeen
+        #expect(seen.contains("actionResolved"), "\(seen)")
+    }
+
+    @Test("An action job whose caller cancels while its resolver runs is not applied, and its caller gets CancellationError, on both paths (K2-2 plan, commit 0: the box rides the effect)",
+          arguments: [false, true])
+    func actionJobCallerCancel(tick: Bool) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "job-cancel")
+        _ = await bothJoin(pair, "p1", "c1")
+        let action = CoreDiffJobAction(n: 4, fails: false)
+        defer { CoreDiffJobGates.set(pair.landID, nil) }
+
+        // The keeper's path: the caller waits on the slot, is cancelled, then the resolver returns.
+        let keeperGate = WatermarkGate()
+        defer { keeperGate.release() }
+        CoreDiffJobGates.set(pair.landID, keeperGate)
+        let keeperSequence = try #require(await keeperJobIntake(pair, action))
+        var waiting = await pair.keeper.watchActionSlotForTesting(keeperSequence, waiter: true).makeAsyncIterator()
+        let keeperWait = Task { describeJob(await Result { try await pair.keeper.awaitActionResult(sequence: keeperSequence) }) }
+        _ = await waiting.next()
+        keeperWait.cancel()
+        keeperGate.release()
+        let keeperResult = await keeperWait.value
+        await pair.keeper.waitForActionJobsForTesting()
+
+        // The core's path: the caller's own cancel handler cancels the box (K2-2b's wait does the same).
+        let coreGate = WatermarkGate()
+        defer { coreGate.release() }
+        CoreDiffJobGates.set(pair.landID, coreGate)
+        let coreSequence = try #require(await coreJobIntake(pair, action, tick: tick))
+        let box = await pair.harness.jobBox(coreSequence)
+        #expect(box != nil, "the core's side holds the job's box")
+        let coreWait = Task {
+            await withTaskCancellationHandler {
+                await coreJobResult(pair, coreSequence)
+            } onCancel: {
+                box?.callerCancelled.set()
+                box?.cancel()
+            }
+        }
+        await pair.harness.waitForInputs(named: "awaitActionResult", count: 1)
+        coreWait.cancel()
+        coreGate.release()
+        let coreResult = await coreWait.value
+
+        #expect(keeperResult == "cancelled" && coreResult == "cancelled", "keeper \(keeperResult), core \(coreResult)")
+        await pair.expectSame("after the cancelled job")
+        #expect(!(await pair.digests().core.log.contains { $0.hasPrefix("job:") }), "not applied")
+    }
 
     @Test("Each core has its own side box: two twins of one source share no store, and a step on one leaves the other's side unchanged")
     func eachCoreHasItsOwnBox() async {

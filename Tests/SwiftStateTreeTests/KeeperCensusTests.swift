@@ -192,6 +192,7 @@ enum KeeperCensus {
             "model.failureTableMisses": .model,
             "model.foldedSyncs": .model,
             "model.hasHeldTransport": .model,
+            "model.inFlightRecordResults": .model,
             "model.inTurnDeferredTurns": .model,
             "model.inTurnDrainRetryBinding": .model,
             "model.inTurnSyncDue": .model,
@@ -420,7 +421,7 @@ struct KeeperCensusTests {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
         #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")
         #expect(routed.union(deferred) == Set(KeeperInputRoute.allCases), "neither: \(Set(KeeperInputRoute.allCases).subtracting(routed.union(deferred)).map(\.rawValue).sorted())")
-        #expect(routed.count == 11 && deferred.count == 10, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
+        #expect(routed.count == 14 && deferred.count == 9, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
         #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
         let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
         #expect(queries.isDisjoint(with: deferredQueries))

@@ -40,6 +40,10 @@ struct KeeperModel<State: StateNodeProtocol> {
     var pendingItemScans: Int = 0
     /// The input-turn outcome of each waiting caller, kept until the turn's record is submitted.
     var inputTurnResults: [Int64: InputResult] = [:]
+    /// The held failures a core's record effect carries, by ID, with their input's sequence:
+    /// their owner while the record is in flight (K2-2 plan, item 15, K22-Q5). Empty on the
+    /// keeper's path, where `inputTurnResults` owns them.
+    var inFlightRecordResults: [FailureID: Int64] = [:]
     /// Set when OnInitialize's resolvers timed out (#104): the land never initialized, every
     /// call that awaits the initialization throws it, and the drain skips the destroy handlers.
     var initializationFailure: FailureID?

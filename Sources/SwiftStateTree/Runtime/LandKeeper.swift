@@ -2310,8 +2310,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The abandoned resolvers of a completed job ended: it leaves the caps.
     fileprivate func releaseCompletedActionJob(_ sequence: Int64) {
         withTurn { m, side, outputs in
-            guard m.actionJobs[sequence]?.completed == true else { return }
-            m.removeActionJob(behavior, &side, &outputs, sequence)
+            m.releaseCompletedActionJobBody(behavior, &side, &outputs, sequence)
         }
     }
 
@@ -5313,6 +5312,10 @@ extension KeeperModel {
         if let id = initializationFailure { owners[id, default: 0] += 1 }
         for slot in actionSlots.values { if case .failed(let id)? = slot.result { owners[id, default: 0] += 1 } }
         for result in inputTurnResults.values { if case .failed(let id) = result { owners[id, default: 0] += 1 } }
+        for id in inFlightRecordResults.keys { owners[id, default: 0] += 1 }
+        if !side.coreInputReplies.onCore, !inFlightRecordResults.isEmpty {
+            violations.append("in-flight record results \(inFlightRecordResults.values.sorted()) on the keeper's side")
+        }
         for (id, count) in owners where count > 1 { violations.append("\(id) has \(count) owners") }
         for id in owners.keys where side.failures[id] == nil { violations.append("\(id) has no table entry") }
         for id in side.failures.keys where owners[id] == nil { violations.append("\(id) has no owner") }
@@ -5321,10 +5324,16 @@ extension KeeperModel {
         if !coreReplies.onCore, !coreReplies.waits.isEmpty || !coreReplies.dropped.isEmpty {
             violations.append("core input waits \(coreReplies.waits.keys.sorted()) (\(coreReplies.dropped.count) dropped) on the keeper's side")
         }
-        // K2-1 routes the action intake without jobs; K2-2 routes them on the core (plan §16
-        // item 17). A job a core's intake registered has nothing that runs or completes it.
-        if coreReplies.onCore, !actionJobs.isEmpty || !actionSlots.isEmpty {
-            violations.append("core side: a job intake \(actionJobs.keys.sorted()), routed in K2-2")
+        // The core's job lane (K2-2 plan, commit 0): its starts, releases and slot waits live on
+        // a core's side only, and a slot wait has its slot, as a keeper's waiter does.
+        if !coreReplies.onCore, !coreReplies.jobStarts.isEmpty || !coreReplies.jobReleases.isEmpty
+            || !coreReplies.slots.waits.isEmpty || !coreReplies.slots.ready.isEmpty {
+            violations.append("core job lane entries on the keeper's side")
+        }
+        for sequence in coreReplies.slots.waits.keys {
+            if actionSlots[sequence] == nil { violations.append("core slot wait \(sequence) without a slot") }
+            if actionSlots[sequence]?.result != nil { violations.append("slot \(sequence) holds a result and a core wait") }
+            if actions.slotWaiters[sequence] != nil { violations.append("slot \(sequence) has a keeper waiter and a core wait") }
         }
         for refusal in coreReplies.refusals { violations.append("core side: refused \(refusal)") }
         // A sync follow-up that slipped past the refusal (Review round 2 on #938): its work count
@@ -5367,17 +5376,29 @@ extension KeeperModel {
         let sequence = item.sequence
         let resolverContext = makeResolverContext(behavior, ctx)
         let keeperReference = side.keeperReference
+        // On a core the release is an effect its completion starts (`.actionJobRelease`); the
+        // keeper's comes from the abandonment's end.
+        let onCore = side.coreInputReplies.onCore
         let abandonment = ResolverAbandonment(
             kind: .action,
             counter: side.sharedAbandonmentCounter,
             metrics: ResolverDeadline.metrics
         ) { [weak keeperReference] in
+            guard !onCore else { return }
             Task { await (keeperReference?.keeper as? LandKeeper<State>)?.releaseCompletedActionJob(sequence) }
         }
         actionSlots[sequence] = KeeperActionSlot()
         actionJobs[sequence] = KeeperActionJob(item: item, ticket: ticket, input: input)
         let box = side.actions.insertJobTask(sequence, abandonment: abandonment)
         actionJobsStarted += 1
+        if onCore {
+            // The step's end runs it as `.actionJob` (K2-2 plan, commit 0); `perform` installs
+            // its task in the box, as the staged start below does.
+            side.coreInputReplies.jobStarts.append(KeeperActionJobStart(
+                sequence: sequence, box: box, executors: executors, resolverContext: resolverContext, landContext: ctx))
+            checkActionTables(behavior, side, #function)
+            return
+        }
         // A copy, so the task doesn't hop to the keeper for it: with no hook it returns at once.
         let holds = side.holdPoints
         outputs.stage { [weak keeperReference] in
@@ -5798,6 +5819,8 @@ extension KeeperModel {
     mutating func scheduleInputDrain(_ side: KeeperTurnSide, _ outputs: inout TurnOutputs) {
         guard !inputDrainScheduled else { return }
         inputDrainScheduled = true
+        // On a core the step that set the flag queues `.inputDrainDue` itself (K2-2 commit 0).
+        guard !side.coreInputReplies.onCore else { return }
         let keeperReference = side.keeperReference
         outputs.stage { [weak keeperReference] in
             let keeper = keeperReference?.keeper as? LandKeeper<State>
@@ -5903,6 +5926,10 @@ extension KeeperModel {
         if let waiter = side.actions.slotWaiters.removeValue(forKey: sequence) {
             actionSlots.removeValue(forKey: sequence)
             resume { waiter.resume(with: outcome) }
+        } else if let caller = side.coreInputReplies.slots.waits.removeValue(forKey: sequence) {
+            // A core's waiting caller: the step's end replies (K2-2 plan, commit 0).
+            actionSlots.removeValue(forKey: sequence)
+            side.coreInputReplies.slots.ready.append((caller, outcome))
         } else {
             // `held` writes the model, and an optional-chain assignment begins its access to the
             // model before it evaluates its right side: run it first, or the two accesses overlap.
@@ -5933,6 +5960,44 @@ extension KeeperModel {
         #endif
     }
 
+    /// The abandoned resolvers of a completed job ended: it leaves the caps (the keeper's
+    /// `releaseCompletedActionJob`, and a core's `.actionJobReleased`).
+    mutating func releaseCompletedActionJobBody(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs,
+        _ sequence: Int64
+    ) {
+        guard actionJobs[sequence]?.completed == true else { return }
+        removeActionJob(behavior, &side, &outputs, sequence)
+    }
+
+    /// A core's `awaitActionResult` (K2-2 plan, commit 0), as the keeper's runs it in its one
+    /// segment: the outcome when the slot holds it (the slot leaves), nil when the caller now
+    /// waits on it, or `ActionResultUnavailable` (no slot, or a waiter already). The caller's
+    /// cancel is its own: it cancels the job's box, as the keeper's handler does, so this body
+    /// doesn't read `Task.isCancelled` (a core step runs on the core's task).
+    mutating func awaitActionResultBody(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ sequence: Int64,
+        caller: InputID?
+    ) -> Result<InputOutcome, any Error>? {
+        guard let slot = actionSlots[sequence], side.actions.slotWaiters[sequence] == nil,
+              side.coreInputReplies.slots.waits[sequence] == nil else {
+            return .failure(ActionResultUnavailable(sequence: sequence))
+        }
+        if let result = slot.result {
+            actionSlots.removeValue(forKey: sequence)
+            let outcome = taken(behavior, &side, result, path: .slot, sequence: sequence)
+            checkActionTables(behavior, side, "awaitActionResult(sequence:)")
+            return outcome
+        }
+        side.coreInputReplies.slots.waits[sequence] = caller
+        checkActionTables(behavior, side, "awaitActionResult(sequence:)")
+        return nil
+    }
+
     /// The worker's segment (A2): delivers the result like any input, with the intake's ticket
     /// checked against the current state, and fills the job's slot with the outcome. The slot's
     /// resume and the drain's task are staged.
@@ -5948,9 +6013,13 @@ extension KeeperModel {
         // is there; an optional read keeps the guard above the only early return.
         let jobTask = side.actions.jobTasks[sequence]
         // The job's place in the caps lasts until its resolvers' task ends.
-        if jobTask?.abandonment.isRunning == true {
+        if let jobTask, jobTask.abandonment.isRunning {
             job.completed = true
             actionJobs[sequence] = job
+            // A core's release is the effect's: it waits for the abandoned resolvers to end.
+            if side.coreInputReplies.onCore {
+                side.coreInputReplies.jobReleases.append((sequence, jobTask.abandonment))
+            }
         } else {
             removeActionJob(behavior, &side, &outputs, sequence)
         }

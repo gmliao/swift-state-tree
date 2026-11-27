@@ -62,14 +62,22 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// continuation says where the leave's answer goes. No ticket: L1 removed the entry, and L2
     /// re-reads only `isDraining`, as on the keeper.
     case leaveStepped(LandKeeper<State>.LeaveCapture, KeeperContinuation, Result<[String: HeldResolverOutput], any Error>)
+    /// An action job's resolvers returned (`.actionJob`'s run): the worker's segment
+    /// (`completeActionBody`) checks the job, its ticket and its caller's cancel, as on the keeper.
     case actionResolved(sequence: Int64, Result<[String: HeldResolverOutput], any Error>)
+    /// A completed job's abandoned resolvers ended (`.actionJobRelease`'s run): the job leaves
+    /// the caps, as the keeper's `releaseCompletedActionJob` does from the abandonment's `onEnded`.
+    case actionJobReleased(sequence: Int64)
+    /// A `sendAndWait` for the job's slot (`awaitActionResult`): the outcome at once when the
+    /// slot holds it, or when the job fills it. The caller's cancel rides the job's box, which
+    /// the waiting caller cancels itself (K2-2 plan, commit 0), not this input.
+    case awaitActionResult(sequence: Int64)
     case initializeResolved(Result<[String: HeldResolverOutput], any Error>)
     case destroyHandlerResolved(index: Int, Result<[String: HeldResolverOutput], any Error>)
-    /// A tickless input turn's record was taken by the recorder: its callers resume (K2-1 keeps
-    /// their results in the model's `inputTurnResults`, as the keeper does; K2-2 moves them onto
-    /// the effect and this input, plan §4.3).
+    /// A tickless input turn's record was taken by the recorder: its callers resume with the
+    /// results the effect carried (K2-2 plan, item 15).
     /// `endsTickWork`: the drain was a tick's, whose in-flight work ends with it.
-    case recordTaken(applied: [LandKeeper<State>.PendingItem], endsTickWork: Bool)
+    case recordTaken(applied: [LandKeeper<State>.PendingItem], results: [Int64: InputResult], endsTickWork: Bool)
     /// An input drain a flow's wait scheduled (the keeper's `scheduleInputDrain` task), queued
     /// behind `.land`.
     case inputDrainDue
@@ -85,6 +93,7 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
 enum KeeperInputRoutes {
     static let routed: Set<KeeperInputRoute> = [
         .tickDue, .syncDue, .recordTaken, .inputDrainDue, .join, .joinStepped, .leave, .leaveStepped, .action, .clientEvent, .startLand,
+        .actionResolved, .actionJobReleased, .awaitActionResult,
     ]
     static let deferred: [KeeperInputRoute: String] = [
         .freeze: "K2-2: the freeze barrier",
@@ -93,7 +102,6 @@ enum KeeperInputRoutes {
         .awaitInitialized: "K2-2: the initialization barrier",
         .awaitResume: "K2-2: the freeze barrier",
         .syncStreamDraft: "K2-2",
-        .actionResolved: "K2-2: the action jobs (plan §16 item 17)",
         .initializeResolved: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
         .destroyHandlerResolved: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
         .drainFinished: "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
@@ -133,7 +141,7 @@ extension KeeperQuery {
 /// Each `KeeperInput` case by name: `route` is exhaustive, so a new case needs a route here, and
 /// the census checks that every route is routed or deferred.
 enum KeeperInputRoute: String, CaseIterable, Sendable {
-    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, awaitResume, syncStreamDraft, joinStepped, leaveStepped, actionResolved, initializeResolved, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand
+    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, awaitResume, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initializeResolved, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand
 }
 
 extension KeeperInput {
@@ -155,6 +163,8 @@ extension KeeperInput {
         case .joinStepped: .joinStepped
         case .leaveStepped: .leaveStepped
         case .actionResolved: .actionResolved
+        case .actionJobReleased: .actionJobReleased
+        case .awaitActionResult: .awaitActionResult
         case .initializeResolved: .initializeResolved
         case .destroyHandlerResolved: .destroyHandlerResolved
         case .recordTaken: .recordTaken
@@ -210,6 +220,26 @@ enum KeeperCoreInputWait: Sendable {
     case clientEvent(caller: InputID?)
 }
 
+/// An action job's start, as a value an effect carries (K2-2 plan, commit 0): what the keeper's
+/// staged start captures. Not plain data: the box (the task handle, the caller's cancel and the
+/// abandonment) is shared with the side's job table and the waiting caller, as it is today; the
+/// model never stores it. The contexts are the resolvers' own, as a join's request carries them.
+struct KeeperActionJobStart: Sendable {
+    let sequence: Int64
+    let box: KeeperActionJobTask
+    let executors: [any AnyResolverExecutor]
+    let resolverContext: ResolverContext
+    let landContext: LandContext
+}
+
+/// The core's slot waits (K2-2 plan, commit 0): `awaitActionResult`'s callers, by sequence, and
+/// the answers a slot fill made, which the step's end replies (`answerCoreSlotReplies`). Kept
+/// empty on the keeper's side, where `slotWaiters` holds the continuations.
+struct KeeperCoreSlotReplies: Sendable {
+    var waits: [Int64: InputID?] = [:]
+    var ready: [(caller: InputID?, Result<InputOutcome, any Error>)] = []
+}
+
 /// The core's input-turn waits, by input sequence, and the ones a drop of the pending inputs
 /// failed, which the next step's end answers (`KeeperModel.answerDroppedCoreInputWaits`).
 struct KeeperCoreInputReplies: Sendable {
@@ -222,6 +252,12 @@ struct KeeperCoreInputReplies: Sendable {
     /// (a core's side has no keeper to ask the port with). Nil outside those steps, and always on
     /// the keeper's side, where `KeeperTurnSide.syncsInTurn` asks the port.
     var carriedSyncsInTurn: Bool?
+    /// A core's job starts and releases a step made, which the step's end runs as effects
+    /// (`runCoreJobEffects`), and its slot waits (K2-2 plan, commit 0). Empty on the keeper's
+    /// side, where the start and the release are staged through the keeper reference.
+    var jobStarts: [KeeperActionJobStart] = []
+    var jobReleases: [(sequence: Int64, abandonment: ResolverAbandonment)] = []
+    var slots = KeeperCoreSlotReplies()
     /// The routed inputs a core refused because they need the binding token (K2-2): each names
     /// the input and why. A core path that reaches one is a bug in K2-1; `actionTableViolations`
     /// reports each, so the differential's invariant fails on it.
@@ -264,13 +300,18 @@ enum KeeperEffect<State: StateNodeProtocol>: Sendable {
     /// A leave's OnLeave resolvers (`.runOnLeaveResolvers`); `perform` returns `.leaveStepped`
     /// with the request's capture and the continuation.
     case leave(LandKeeper<State>.LeaveRequest, KeeperContinuation)
-    case action(sequence: Int64)
+    /// An action job's resolvers (A1's start): `perform` installs its task in the start's box,
+    /// runs the resolvers, and returns `.actionResolved`.
+    case actionJob(KeeperActionJobStart)
+    /// A completed job whose resolvers were abandoned: `perform` waits for them to end and
+    /// returns `.actionJobReleased`.
+    case actionJobRelease(sequence: Int64, ResolverAbandonment)
     case initialize
     case destroyHandler(index: Int)
-    /// A tickless input turn's record submission, awaited off the core; its applied inputs come
-    /// back in `.recordTaken`. K2-1 keeps their results in the model (`inputTurnResults`); K2-2
-    /// carries them here instead (plan §4.3).
-    case awaitRecordTaken(submission: RecorderSubmission?, applied: [LandKeeper<State>.PendingItem], endsTickWork: Bool)
+    /// A tickless input turn's record submission, awaited off the core; its applied inputs and
+    /// their results come back in `.recordTaken` (K2-2 plan, item 15). The results are plain: a
+    /// failure is its ID, owned meanwhile by the model's `inFlightRecordResults`.
+    case awaitRecordTaken(submission: RecorderSubmission?, applied: [LandKeeper<State>.PendingItem], results: [Int64: InputResult], endsTickWork: Bool)
 }
 
 /// What a step leaves for the adopter's flush (plan §4.4, §4.5): record drafts, and the writes
@@ -319,9 +360,14 @@ extension KeeperModel: TurnMachine {
             } else {
                 tickDueStep(behavior, store, fold: fold, foldStart: foldStart, syncsInTurn: syncsInTurn)
             }
-        case let .recordTaken(applied, endsTickWork):
+        case let .recordTaken(applied, results, endsTickWork):
             // The keeper's drain after `submitTurnRecord`'s await: the callers resume (the
-            // keeper's, then the core's waits), then the next batch.
+            // keeper's, then the core's waits), then the next batch. The carried results go back
+            // for the resume, which takes each one, and leave the in-flight owners.
+            for (sequence, result) in results {
+                if case .failed(let id) = result { inFlightRecordResults.removeValue(forKey: id) }
+                inputTurnResults[sequence] = result
+            }
             let waits = store.withSide { side in resumeInputTurnWaiters(behavior, &side, for: applied) }
             answerCoreInputWaits(behavior, store, &turn, waits)
             inputDrainStep(behavior, store, &turn, endsTickWork: endsTickWork)
@@ -368,12 +414,49 @@ extension KeeperModel: TurnMachine {
                 assert(turn.isLive(.land) || !store.assertsOnUnstartedLandKey, "KeeperModel: a fold emitted before .land was started")
                 turn.emit(.fold(fold), for: .land)
             }
+        case let .actionResolved(sequence, resolved):
+            // The worker's segment (A2), after the keeper's `.actionComplete` hold (the harness
+            // holds the run instead).
+            let drainWasScheduled = inputDrainScheduled
+            step(behavior, store) { m, side, outputs in
+                m.completeActionBody(behavior, &side, &outputs, sequence: sequence, resolved: resolved)
+            }
+            // A delivered tickless job kicks the drain (K2-2 plan §3.2): on the core that kick is
+            // a queue entry, not the keeper's drain task (`scheduleInputDrain(_:_:)` stages none
+            // on a core).
+            if !drainWasScheduled, inputDrainScheduled { turn.queue(.inputDrainDue, behind: .land) }
+        case let .actionJobReleased(sequence):
+            step(behavior, store) { m, side, outputs in m.releaseCompletedActionJobBody(behavior, &side, &outputs, sequence) }
+        case let .awaitActionResult(sequence):
+            let caller = turn.input
+            let outcome = step(behavior, store) { m, side, _ in m.awaitActionResultBody(behavior, &side, sequence, caller: caller) }
+            if let outcome, let caller { turn.reply(to: caller, .success(.input(outcome))) }
         default:
             // `KeeperInputRoutes.deferred` names where each of these is routed.
             preconditionFailure("K2-1: \(input.routeName) is routed in \(KeeperInputRoutes.deferred[input.route] ?? "an unnamed PR")")
         }
         // A drop of the pending inputs in this step failed the core's waits on them.
         answerDroppedCoreInputWaits(behavior, store, &turn)
+        runCoreJobEffects(store, &turn)
+    }
+
+    /// The job lane's effects and replies a step left on the core's side (K2-2 plan, commit 0):
+    /// each start as `.actionJob`, each release as `.actionJobRelease`, then the slot waits a
+    /// fill answered, in the order the step made them.
+    mutating func runCoreJobEffects(_ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        let (starts, releases, ready) = store.withSide { side in
+            defer {
+                side.coreInputReplies.jobStarts.removeAll()
+                side.coreInputReplies.jobReleases.removeAll()
+                side.coreInputReplies.slots.ready.removeAll()
+            }
+            return (side.coreInputReplies.jobStarts, side.coreInputReplies.jobReleases, side.coreInputReplies.slots.ready)
+        }
+        for start in starts { turn.run(.actionJob(start)) }
+        for release in releases { turn.run(.actionJobRelease(sequence: release.sequence, release.abandonment)) }
+        for (caller, outcome) in ready {
+            if let caller { turn.reply(to: caller, .success(.input(outcome))) }
+        }
     }
 
     mutating func answer(_ query: KeeperQuery, _ turn: inout Turn<KeeperModel<State>>) -> KeeperAnswer<State> {
@@ -385,6 +468,8 @@ extension KeeperModel: TurnMachine {
         // two routed queries are a tick land's, which has no input-turn waits, so none is
         // reachable yet; K2-2's tickless intakes are.
         answerDroppedCoreInputWaits(behavior, store, &turn)
+        // A tick land's job intake is this query's (`.admitAction`): its start runs here.
+        runCoreJobEffects(store, &turn)
         return answer
     }
 
@@ -590,7 +675,15 @@ extension KeeperModel {
                 let (_, submission) = stepSubmitting(behavior, store) { m, _, outputs in
                     m.stageRecorderSubmission(behavior, outcome.record, endsTurn: behavior.isTickless, outputs: &outputs)
                 }
-                turn.run(.awaitRecordTaken(submission: submission, applied: outcome.appliedItems, endsTickWork: endsTickWork))
+                // The results ride the effect (item 15): out of `inputTurnResults`, with each held
+                // failure owned by `inFlightRecordResults` until `.recordTaken` (K22-Q5).
+                var results: [Int64: InputResult] = [:]
+                for item in outcome.appliedItems {
+                    guard let result = inputTurnResults.removeValue(forKey: item.sequence) else { continue }
+                    if case .failed(let id) = result { inFlightRecordResults[id] = item.sequence }
+                    results[item.sequence] = result
+                }
+                turn.run(.awaitRecordTaken(submission: submission, applied: outcome.appliedItems, results: results, endsTickWork: endsTickWork))
                 return
             }
             let waits = store.withSide { side in
