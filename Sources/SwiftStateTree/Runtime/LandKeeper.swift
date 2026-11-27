@@ -6581,13 +6581,12 @@ extension KeeperModel {
     ) throws {
         // Same synchronous segment as the append: a drain that started during the resolvers
         // must not get an OnJoin input after it took the pending inputs. The entry this join
-        // inserted goes too (if it is still this join's), so `players` doesn't keep a player
-        // that never joined.
+        // inserted is already gone: every drain start clears `players` and the player services
+        // first (the shutdown turn, `failLand`, `shutdownIfIdle` on an empty land, the failed
+        // initialization's teardown).
         guard !side.isDraining else {
-            if players[capture.playerID]?.generation == capture.entryGeneration {
-                players.removeValue(forKey: capture.playerID)
-                side.removePlayerServices(of: capture.playerID, generation: capture.entryGeneration)
-            }
+            assert(players[capture.playerID]?.generation != capture.entryGeneration,
+                   "a drain start clears players before a resolved join's append runs")
             // Actions submitted for this entry during the resolvers can't be delivered, as after
             // a leave (their tickets name the entry).
             cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: capture.entryGeneration)
