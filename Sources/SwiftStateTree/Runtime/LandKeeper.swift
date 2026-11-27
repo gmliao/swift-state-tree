@@ -5330,6 +5330,9 @@ extension KeeperModel {
             || !coreReplies.slots.waits.isEmpty || !coreReplies.slots.ready.isEmpty {
             violations.append("core job lane entries on the keeper's side")
         }
+        if !coreReplies.onCore, !coreBarrierWaits.isEmpty {
+            violations.append("core barrier waits on the keeper's side")
+        }
         for sequence in coreReplies.slots.waits.keys {
             if actionSlots[sequence] == nil { violations.append("core slot wait \(sequence) without a slot") }
             if actionSlots[sequence]?.result != nil { violations.append("slot \(sequence) holds a result and a core wait") }

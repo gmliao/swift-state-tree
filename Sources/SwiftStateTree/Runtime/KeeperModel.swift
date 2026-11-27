@@ -181,6 +181,10 @@ struct KeeperModel<State: StateNodeProtocol> {
     var debugActiveGeneration: UInt64?
     /// Highest generation released by `debugResume(generation:)`; such a generation cannot freeze again.
     var debugReleasedGeneration: UInt64 = 0
+    /// The core's barrier waits (K2-2 plan, commit 2): callers of `.freeze`, `.awaitResume` and
+    /// `.awaitInitialized` whose barrier was closed, answered by the step that opens it. Empty on
+    /// the keeper's path, whose callers wait on continuations on the side.
+    var coreBarrierWaits: KeeperCoreBarrierWaits = KeeperCoreBarrierWaits()
     /// Tests: requests that passed `requestJoinSyncTurn`'s own guards (counted before
     /// `runSyncOnlyTurn`, whose guards may still skip the phase).
     var joinSyncRequestTurnsForTesting: Int = 0

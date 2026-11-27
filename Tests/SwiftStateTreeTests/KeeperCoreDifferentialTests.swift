@@ -1339,6 +1339,65 @@ struct KeeperCoreDifferentialTests {
         #expect(!(await pair.digests().core.log.contains { $0.hasPrefix("job:") }), "not applied")
     }
 
+    @Test("A freeze with no work in flight answers true at once, and its resume thaws the land, on both paths (K2-2 plan, commit 2)", arguments: [false, true])
+    func freezeAndResume(tick: Bool) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "freeze")
+        _ = await bothJoin(pair, "p1", "c1")
+        let keeperFroze = await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5))
+        guard case let .frozen(coreFroze) = try await pair.harness.call(.freeze(generation: 1, timeout: .seconds(5))) else {
+            Issue.record("not a freeze reply"); return
+        }
+        #expect(keeperFroze && coreFroze, "keeper \(keeperFroze), core \(coreFroze)")
+        await pair.expectSame("frozen")
+        #expect(await pair.digests().core.otherModelFields["debugFrozen"] == "true")
+        await pair.keeper.debugResume(generation: 1)
+        await pair.harness.drive(.resume(generation: 1))
+        await pair.expectSame("resumed")
+        #expect(await pair.digests().core.otherModelFields["debugFrozen"] == "false")
+        #expect(await pair.harness.flushed.contains { if case .dropFold = $0 { true } else { false } }, "the freeze dropped the driver's fold")
+    }
+
+    @Test("A released generation doesn't freeze again: a late freeze answers false and changes nothing, on both paths (K2-2 plan, commit 2)")
+    func releasedGenerationDoesNotFreeze() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "freeze-late")
+        await pair.keeper.debugResume(generation: 2)
+        await pair.harness.drive(.resume(generation: 2))
+        let keeperFroze = await pair.keeper.debugFreeze(generation: 2, timeout: .seconds(5))
+        guard case let .frozen(coreFroze) = try await pair.harness.call(.freeze(generation: 2, timeout: .seconds(5))) else {
+            Issue.record("not a freeze reply"); return
+        }
+        #expect(!keeperFroze && !coreFroze, "keeper \(keeperFroze), core \(coreFroze)")
+        await pair.expectSame("after the late freeze")
+    }
+
+    @Test("The resume barrier: an intake's .awaitResume waits while frozen and is answered by the resume's step, not parked by a hold (K2-2 plan, commit 2)")
+    func awaitResumeIsABarrier() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "resume-barrier")
+        _ = try await pair.harness.call(.freeze(generation: 1, timeout: .seconds(5)))
+        let waiting = Task { try await pair.harness.call(.awaitResume) }
+        await pair.harness.waitForInputs(named: "awaitResume", count: 1)
+        // A query isn't parked behind it.
+        _ = await pair.harness.differentialRead()
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.resume.count == 1)
+        await pair.harness.drive(.resume(generation: 1))
+        guard case .done = try await waiting.value else { Issue.record("not a done reply"); return }
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.isEmpty)
+    }
+
+    @Test("A tick land's client event is queued for its next tick, with no value, on both paths (K2-2 plan, commit 2: .admitClientEvent)")
+    func tickLandClientEvent() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "tick-event")
+        _ = await bothJoin(pair, "p1", "c1")
+        let event = CoreDiffEvent(n: 3, fails: false)
+        let keeperResult = await keeperEvent(pair, event, "p1", "c1")
+        guard case let .clientEventQueued(coreResult) = await pair.harness.ask(.admitClientEvent(AnyClientEvent(event), caller("p1", "c1"))) else {
+            Issue.record("not an event answer"); return
+        }
+        #expect(keeperResult == "done")
+        #expect((try? coreResult.get()) != nil, "\(coreResult)")
+        await pair.expectSame("after the queued event")
+    }
+
     @Test("Each core has its own side box: two twins of one source share no store, and a step on one leaves the other's side unchanged")
     func eachCoreHasItsOwnBox() async {
         let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false)

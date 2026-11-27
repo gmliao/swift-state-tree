@@ -177,6 +177,7 @@ enum KeeperCensus {
             "model.actionJobsStarted": .model,
             "model.actionSlots": .model,
             "model.alignmentViolations": .model,
+            "model.coreBarrierWaits": .model,
             "model.debugActiveGeneration": .model,
             "model.debugFrozen": .model,
             "model.debugInFlightWork": .model,
@@ -421,12 +422,12 @@ struct KeeperCensusTests {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
         #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")
         #expect(routed.union(deferred) == Set(KeeperInputRoute.allCases), "neither: \(Set(KeeperInputRoute.allCases).subtracting(routed.union(deferred)).map(\.rawValue).sorted())")
-        #expect(routed.count == 14 && deferred.count == 9, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
+        #expect(routed.count == 19 && deferred.count == 5, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
         #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
         let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
         #expect(queries.isDisjoint(with: deferredQueries))
         #expect(queries.union(deferredQueries) == Set(KeeperQueryRoute.allCases))
-        #expect(queries.count == 2 && deferredQueries.count == 4)
+        #expect(queries.count == 3 && deferredQueries.count == 3)
         #expect(KeeperQueryRoutes.deferred.values.allSatisfy { !$0.isEmpty })
     }
 
