@@ -4,7 +4,7 @@ Revision 0 (2026-11-27). This is the job text for a cloud worker. It is one smal
 
 **Start after #940 merges:** #947 uses the `close:` parameter that #940 adds to `sendFinalFrameAndClose`, and the line numbers below are at #940's head 7b2dda84 (`LR` is `Sources/SwiftStateTreeTransport/LandRouter.swift`, `TA` is `TransportAdapter.swift`). Re-find each site by its text, not by the number.
 
-The rule behind all three is "never remove or overwrite keyed state by key alone from a callback that can outlive its instance" (CLAUDE.md, Reentrancy). A frame, close or undo for a connection carries the generation read in the segment that decided about that connection. The lessons are `2026-11-05-callback-outlives-its-instance-clears-by-key` and `2026-11-27-a-new-terminal-answer-goes-through-every-path-that-can-answer`.
+The rule behind all three is "never remove or overwrite keyed state by key alone from a callback that can outlive its instance" (CLAUDE.md, Reentrancy). A frame, close or undo for a connection carries the generation read in the segment that decided about that connection. The lessons are `2026-11-05-callback-outlives-its-instance-clears-by-key` and `2026-11-27-a-new-terminal-answer-goes-through-every-path-that-can-answer`. The second lands with #940, so it isn't on main until #940 merges.
 
 ## 1. #941: the flip-stage JOIN_DENIED carries the connection's generation
 
@@ -67,7 +67,7 @@ Two stages, one row each:
 - Each commit's test fails first without its edit. Quote the failing line.
 - `bash scripts/pre-push-checks.sh origin/main`.
 - Mutants, one per edit, for the PR body: put `nil` back at each site; each new test must fail.
-- The PR says "Refs #941, #945, #947", with no closing keyword. Each issue is closed by hand after the merge.
+- The PR closes only the issues it fixes: "Closes #941", "Closes #945", and "Closes #947" only once the #947 commit is in the PR. If #947 lands in a later PR, this one says "#947 stays open".
 
 ## Probes
 
