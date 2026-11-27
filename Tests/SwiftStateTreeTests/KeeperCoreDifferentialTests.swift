@@ -536,6 +536,12 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         await tracker.waitForAll()
     }
 
+    /// The keeper's `markDrainingForTesting` on the twin: sets the twin's own drain flag, as the
+    /// land's stop does first, without starting a drain (Review on #966, MF2 (e)).
+    func markDraining(cause: LandDestructionCause) {
+        store.withSide { side in side.sharedDrainFlag.set(cause: cause) }
+    }
+
     func keepLastDestroyTicket() {
         store.withSide { side in side.keepsLastDestroyTicketForTesting = true }
     }
@@ -2699,6 +2705,81 @@ extension KeeperCoreDifferentialTests {
         #expect(await pair.harness.differentialRead().model.coreBarrierWaits.initialized.isEmpty)
         // The keeper's teardown then drains; the core's is K2-2 commit 1b's, so the paths are
         // compared on the initialization's outcome only.
+    }
+
+    @Test("A drain flag set while OnInitialize's resolver is held: the initialization ends .abandonedByDrain, applies nothing, and the waiter gets the closed land, on both paths (Review on #966, MF2 (e), the keeper's T12)")
+    func initializationDrainDuringResolvers() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let pair = await CoreDiffPair.make(shape, "init-drain-resolvers", initializes: false, autoStartLoops: true)
+        defer { CoreDiffInitGates.set(pair.landID, nil) }
+
+        let keeperGate = WatermarkGate()
+        defer { keeperGate.release() }
+        CoreDiffInitGates.set(pair.landID, keeperGate)
+        let keeperInit = Task { await pair.keeper.awaitInitialization() }
+        guard await keeperGate.waitUntilEntered("the keeper's OnInitialize resolver") else { return }
+        await pair.keeper.markDrainingForTesting(cause: .forceShutdown)
+        keeperGate.release()
+        await keeperInit.value
+
+        let coreGate = WatermarkGate()
+        defer { coreGate.release() }
+        CoreDiffInitGates.set(pair.landID, coreGate)
+        let waiter = Task { try await pair.harness.call(.awaitInitialized) }
+        await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
+        await pair.harness.drive(.initialize)
+        guard await coreGate.waitUntilEntered("the core's OnInitialize resolver") else { return }
+        await pair.harness.markDraining(cause: .forceShutdown)
+        coreGate.release()
+        let answer = await Result { try await waiter.value }
+
+        let keeperPhase = await pair.keeper.differentialReadForTesting().model.initializationPhase
+        let corePhase = await pair.harness.differentialRead().model.initializationPhase
+        #expect(keeperPhase == .abandonedByDrain && corePhase == .abandonedByDrain, "keeper \(keeperPhase), core \(corePhase)")
+        // An abandoned initialization is a failed one to its waiters (K2 §3.3.1), as the keeper's
+        // `ensureInitialized` throws: the land closed under it.
+        guard case let .failure(error) = answer, error is LandInitializationError else { Issue.record("the core's waiter: \(answer)"); return }
+        #expect(!(await pair.harness.flushed.contains { if case .startLoops = $0 { true } else { false } }), "no loop on a draining land")
+        let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
+        #expect(keeperLog.isEmpty && coreLog.isEmpty, "keeper \(keeperLog), core \(coreLog)")
+        await pair.expectSame("after the drain during the resolvers")
+    }
+
+    @Test("A drain flag set while the initialize record is held: OnInitialize still applied, the phase ends without starting loops, and the waiter is answered, on both paths (Review on #966, MF2 (e), the keeper's T2b)")
+    func initializationDrainDuringRecord() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let keeperRecord = CoreDiffArmedGate()
+        let pair = await CoreDiffPair.make(shape, "init-drain-record", keeperRecordGate: keeperRecord, initializes: false, records: true, autoStartLoops: true)
+
+        let keeperHold = WatermarkGate()
+        defer { keeperHold.release() }
+        keeperRecord.arm(keeperHold)
+        let keeperInit = Task { await pair.keeper.awaitInitialization() }
+        guard await keeperHold.waitUntilEntered("the keeper's initialize record") else { return }
+        await pair.keeper.markDrainingForTesting(cause: .forceShutdown)
+        keeperHold.release()
+        await keeperInit.value
+
+        let coreHold = WatermarkGate()
+        defer { coreHold.release() }
+        pair.harness.armedRecordGate.arm(coreHold)
+        let waiter = Task { try await pair.harness.call(.awaitInitialized) }
+        await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
+        await pair.harness.drive(.initialize)
+        guard await coreHold.waitUntilEntered("the core's initialize record") else { return }
+        await pair.harness.markDraining(cause: .forceShutdown)
+        coreHold.release()
+        let answer = await Result { try await waiter.value }
+
+        let keeperPhase = await pair.keeper.differentialReadForTesting().model.initializationPhase
+        let corePhase = await pair.harness.differentialRead().model.initializationPhase
+        #expect(keeperPhase == corePhase, "keeper \(keeperPhase), core \(corePhase)")
+        guard case .success(.done) = answer else { Issue.record("the core's waiter: \(answer)"); return }
+        #expect(!(await pair.harness.flushed.contains { if case .startLoops = $0 { true } else { false } }), "no loop on a draining land")
+        #expect(await pair.keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
+        let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
+        #expect(keeperLog == ["init:1"] && coreLog == ["init:1"], "still applied: keeper \(keeperLog), core \(coreLog)")
+        await pair.expectSame("after the drain during the record")
     }
 
     @Test("autoStartLoops: the core's .startLoops is answered by the owner's .initializeDone, which ends the phase and answers the waiter, on both paths (Review on #966, MF2 (c))")
