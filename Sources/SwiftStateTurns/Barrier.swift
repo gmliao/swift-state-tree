@@ -26,22 +26,25 @@ public struct ReleasedWait<M: TurnMachine>: Sendable {
 /// or entry that ended it, before the caller's answer leaves the core.
 public enum WaitEnd: Sendable, Equatable {
     /// The caller's `.cancelsCall` cancellation withdrew it; it is answered `CancellationError`
-    /// once the hook's step ends. A reply from the hook finds no waiter.
+    /// once the hook's step has run and its outputs are flushed. A reply from the hook is dropped.
     case withdrawn
     /// Its `timeout` passed. The hook answers it (the default: `TurnError.timedOut`).
     case timedOut
     /// A reply to the caller was published while it waited (`Turn.reply`, also one
-    /// `reply(after:)` published): the caller has its answer; the hook only cleans up.
+    /// `reply(after:)` published): that reply is its answer, held until the hook's step has run
+    /// and its outputs are flushed; the hook only cleans up, and a reply from it is dropped.
     case answered
     /// `endAll()` ended the core. The hook answers it (the default: `TurnError.closed`).
     case ended
 
-    /// The default hook's answer.
-    @inlinable public var error: any Error {
+    /// The default hook's answer: `TurnError.timedOut` and `TurnError.closed` for the two ends
+    /// whose caller is the hook's to answer, nil for `.withdrawn` and `.answered`, whose caller
+    /// has its answer already.
+    @inlinable public var error: (any Error)? {
         switch self {
-        case .withdrawn: CancellationError()
         case .timedOut: TurnError.timedOut
-        case .answered, .ended: TurnError.closed
+        case .ended: TurnError.closed
+        case .withdrawn, .answered: nil
         }
     }
 }
@@ -84,33 +87,30 @@ struct BarrierEntry<M: TurnMachine> {
     }
 }
 
-/// A reply the driver claimed for a waiting caller, held until `handleWaitEnded(.answered)` ran.
-@usableFromInline
-struct HeldAnswer<M: TurnMachine> {
-    @usableFromInline let waiter: CheckedContinuation<M.Reply, any Error>
-    @usableFromInline let result: Result<M.Reply, any Error>
-
-    @inlinable init(waiter: CheckedContinuation<M.Reply, any Error>, result: Result<M.Reply, any Error>) {
-        self.waiter = waiter
-        self.result = result
-    }
-}
-
 /// A registered wait that ended without a release, for the driver to step (`handleWaitEnded`).
 @usableFromInline
 struct WaitEnded<M: TurnMachine> {
     @usableFromInline let caller: InputID
     @usableFromInline let entry: BarrierEntry<M>
     @usableFromInline let why: WaitEnd
-    /// `.answered`: the published reply, resumed after the hook's step.
-    @usableFromInline let answer: HeldAnswer<M>?
 
-    @inlinable init(caller: InputID, entry: BarrierEntry<M>, why: WaitEnd, answer: HeldAnswer<M>?) {
+    @inlinable init(caller: InputID, entry: BarrierEntry<M>, why: WaitEnd) {
         self.caller = caller
         self.entry = entry
         self.why = why
-        self.answer = answer
     }
+}
+
+/// A caller whose wait ended and whose hook hasn't stepped yet (`Runtime.settling`). Until it
+/// has, the caller counts as claimed: a reply published for it is held, never resumed.
+@usableFromInline
+struct Settling<M: TurnMachine> {
+    /// The caller's answer, once known: the withdraw's `CancellationError`, the reply that claimed
+    /// it (`.answered`), or the first reply published for it while its hook was queued. Nil: the
+    /// hook answers it (`.timedOut`, `.ended`).
+    @usableFromInline var answer: Result<M.Reply, any Error>?
+
+    @inlinable init(answer: Result<M.Reply, any Error>?) { self.answer = answer }
 }
 
 /// The `.cancelsCall` callers whose task was cancelled, on a core with barriers. Written by the
@@ -195,6 +195,13 @@ extension Turn {
         if TurnCore<M>.usesMailbox, core.mailReplay != nil {
             fatalError("TurnCore: a replaying core doesn't take barrier waits")
         }
+        if core.rt.ended { return .refused(payload, .ended) }
+        // A settled caller first: it has no waiter, or its answer is fixed (`Settling`), so it
+        // can't wait, whatever it left staged.
+        guard core.waiters[caller] != nil, core.rt.settling[caller]?.answer == nil,
+              core.rt.releasing.isEmpty || !core.rt.releasing.contains(caller) else {
+            return .refused(payload, .noWaiter)
+        }
         if core.rt.barrierWaiters[caller] != nil {
             fatalError("TurnCore: a caller waits on a barrier once at a time")
         }
@@ -202,12 +209,11 @@ extension Turn {
             || core.rt.repliesAfter.values.contains(where: { $0.contains { $0.0 == caller } }) {
             fatalError("TurnCore: a caller with a staged reply can't wait")
         }
-        if core.rt.ended { return .refused(payload, .ended) }
-        guard core.waiters[caller] != nil else { return .refused(payload, .noWaiter) }
         if core.isCancelled(caller) { return .refused(payload, .cancelled) }
         var timer: UInt64?
         if let timeout {
-            if timeout <= .zero { return .expired(payload) }
+            // Whole nanoseconds: a positive budget under one is expired, never a zero timer.
+            if timeout.turnNanoseconds <= 0 { return .expired(payload) }
             let instant = TurnCore<M>.saturatingDeadline(core.segmentNow().nanoseconds, timeout)
             core.rt.nextBarrierTimer &+= 1
             let generation = core.rt.nextBarrierTimer
@@ -265,16 +271,27 @@ extension TurnCore {
     /// barrier paths fold away for a machine without them.
     @inlinable static var usesBarriers: Bool { M.BarrierKey.self != Never.self }
 
-    /// A registered wait that ended without a release, in a step of its own.
+    /// A registered wait that ended without a release, in a step of its own. The caller is
+    /// `settling` from the end until this step: a fixed answer is then released, published in
+    /// the drain's replies phase after the hook's outputs; with none, the caller is an ordinary
+    /// waiter again, and the hook's reply (or a later one) answers it.
     @inlinable func stepWaitEnded(_ caller: InputID, _ entry: BarrierEntry<M>, _ why: WaitEnd) {
         noteDispatch()
         enterStep(nil)
-        defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)
         let released = ReleasedWait<M>(caller: caller, key: entry.key, payload: entry.payload,
                                    cancelled: isCancelled(caller))
         machine.handleWaitEnded(released, why, &turn)
+        leaveStep()
+        if let settled = rt.settling.removeValue(forKey: caller), let answer = settled.answer {
+            rt.releasing.insert(caller)
+            rt.released.append((caller, answer))
+            rt.dirty = true
+        }
     }
+
+    /// Tests: the next dispatch ordinal.
+    package var nextOrdinalForTesting: UInt64 { nextOrdinal }
 
     /// `now + budget` for a positive budget, clamped at `Int64.max` as an instant (not as a
     /// budget first: a budget past `Int64`'s range still lands below it from a negative `now`).
@@ -284,7 +301,7 @@ extension TurnCore {
             let (sum, overflow) = now.addingReportingOverflow(budget.turnNanoseconds)
             return overflow ? .max : sum
         }
-        if now >= 0 { return .max }
+        if now >= 0 || budget - widest > widest { return .max }
         let (sum, overflow) = (now &+ Int64.max).addingReportingOverflow((budget - widest).turnNanoseconds)
         return overflow ? .max : sum
     }

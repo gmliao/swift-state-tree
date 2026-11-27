@@ -16,7 +16,7 @@ struct BarrierTests {
         return task
     }
 
-    @Test("A release answers its callers once, oldest first across the matching keys, and leaves the rest waiting")
+    @Test("A release of every key answers its callers once, oldest first by call across the keys")
     func releaseOrder() async {
         let f = Fixture()
         let a = BarrierActor(fixture: f)
@@ -256,6 +256,10 @@ struct BarrierTests {
     func saturatingDeadlineArithmetic() {
         let past = Duration.nanoseconds(Int64.max) + .nanoseconds(5)
         #expect(TurnCore<BarrierMachine>.saturatingDeadline(-10, past) == Int64.max - 5)
+        // The far edge: from Int64.min, a budget of 2 × Int64.max + 1 ns lands on Int64.max.
+        let widest = Duration.nanoseconds(Int64.max)
+        #expect(TurnCore<BarrierMachine>.saturatingDeadline(.min, widest + widest + .nanoseconds(1)) == Int64.max)
+        #expect(TurnCore<BarrierMachine>.saturatingDeadline(.min, widest + widest) == Int64.max - 1)
         #expect(TurnCore<BarrierMachine>.saturatingDeadline(10, past) == Int64.max)
         #expect(TurnCore<BarrierMachine>.saturatingDeadline(10, .nanoseconds(Int64.max)) == Int64.max)
         #expect(TurnCore<BarrierMachine>.saturatingDeadline(10, .seconds(1)) == 1_000_000_010)
@@ -385,5 +389,213 @@ struct BarrierTests {
         #expect(Array(log.suffix(2)) == ["ended 1 timedOut cancelled=false", "released 2 from b cancelled=false"])
         #expect(log.filter { $0.hasPrefix("ended 2") }.isEmpty)
         #expect(await a.table == [0, 0])
+    }
+
+    // MARK: Rev 3: the answer leaves after the hook's outputs
+
+    /// A `.cancelsCall` wait whose task returns the fixture's count of flushed "out 0" outputs at
+    /// the moment its `sendAndWait` returned (+1000 when it threw).
+    private func countingWait(_ a: BarrierActor, _ f: Fixture, payload: Int, timeout: Int64? = nil, registration n: Int) async -> Task<Int, any Error> {
+        let task = Task { () async throws -> Int in
+            do {
+                _ = try await a.sendAndWait(.wait("a", payload: payload, timeoutSeconds: timeout), cancellation: .cancelsCall)
+                return f.count(of: "out 0")
+            } catch {
+                return 1000 + f.count(of: "out 0")
+            }
+        }
+        await f.reach("barrier wait #\(n)")
+        return task
+    }
+
+    @Test("The withdraw's CancellationError leaves after the hook's outputs are flushed")
+    func withdrawAnswerAfterHookOutputs() async {
+        let f = Fixture()
+        let a = BarrierActor(fixture: f)
+        await a.send(.emitOnEnd)
+        let task = await countingWait(a, f, payload: 1, registration: 1)
+        task.cancel()
+        #expect(outcome(await boundedResult(task)) == "success 1001")
+        #expect(await a.log.contains("ended 1 withdrawn cancelled=true"))
+        #expect(await a.table == [0, 0])
+    }
+
+    @Test("An answered caller's reply leaves after its hook's outputs are flushed")
+    func answeredAfterHookOutputs() async {
+        let f = Fixture()
+        let a = BarrierActor(fixture: f)
+        await a.send(.emitOnEnd)
+        let task = await countingWait(a, f, payload: 1, registration: 1)
+        await a.send(.replyTo(payload: 1, value: 5))
+        #expect(outcome(await boundedResult(task)) == "success 1")
+        #expect(await a.log.contains("ended 1 answered cancelled=false"))
+    }
+
+    @Test("A timeout's answer leaves after its hook's outputs are flushed")
+    func timeoutAfterHookOutputs() async {
+        let f = Fixture()
+        let a = BarrierActor(fixture: f)
+        await a.send(.emitOnEnd)
+        let task = await countingWait(a, f, payload: 1, timeout: 5, registration: 1)
+        a.clock.release(through: 5)
+        #expect(outcome(await boundedResult(task)) == "success 1001")
+    }
+
+    @Test("After endAll, an abandonment's reply to a caller whose .ended hook is queued is held until that hook has stepped, and is its answer")
+    func abandonReplyHeldUntilEndedHook() async {
+        let f = Fixture()
+        let a = BarrierActor(fixture: f)
+        await a.send(.readNowOnEnd)
+        // The caller returns the clock's read count at the moment it resumed, and its value.
+        let task = Task { () async throws -> Int in
+            let value = try await a.sendAndWait(.wait("a", payload: 1, timeoutSeconds: nil), cancellation: .cancelsCall)
+            return a.clock.reads * 1000 + value
+        }
+        await f.reach("barrier wait #1")
+        await a.send(.workRepliesOnAbandon(payload: 1, gate: "g"))
+        await f.reach("at g")
+        let before = a.clock.reads
+        await a.send(.teardown)
+        // The abandonment's reply (100) is the answer, published only after the .ended hook
+        // read the clock.
+        #expect(outcome(await boundedResult(task)) == "success \((before + 1) * 1000 + 100)")
+        let log = await a.log
+        #expect(Array(log.suffix(2)) == ["abandoned 1", "ended 1 ended cancelled=false"])
+        #expect(await a.table == [0, 0])
+        f.open("g")
+    }
+
+    @Test("After endAll, an earlier .ended hook's reply to a caller whose hook is queued is held until that hook has stepped")
+    func earlierHookReplyHeld() async {
+        let f = Fixture()
+        let a = BarrierActor(fixture: f)
+        let first = await waiting(a, f, "a", payload: 1, registration: 1)
+        let second = await waiting(a, f, "b", payload: 2, registration: 2)
+        await a.send(.onEndReply(from: 1, to: 2, value: 77))
+        await a.send(.teardown)
+        #expect(outcome(await boundedResult(first)) == "closed")
+        #expect(outcome(await boundedResult(second)) == "success 77")
+        let log = await a.log
+        #expect(Array(log.suffix(2)) == ["ended 1 ended cancelled=false", "ended 2 ended cancelled=false"])
+        #expect(await a.table == [0, 0])
+    }
+
+    @Test("A settled caller's lingering reply(after:) doesn't trap a later wait: it is refused .noWaiter")
+    func settledCallerRefusedBeforeTrap() async {
+        let f = Fixture()
+        let a = BarrierActor(fixture: f)
+        let task = await waiting(a, f, "a", payload: 1, registration: 1)
+        await a.send(.replyAfterWork(payload: 1, gate: "g"))
+        await f.reach("at g")
+        task.cancel()
+        #expect(outcome(await boundedResult(task)) == "cancelled")
+        await a.send(.waitAgain("a", payload: 1, timeoutSeconds: nil))
+        #expect(await a.log.last == "refused 1 noWaiter")
+        f.open("g")
+    }
+
+    @Test("A positive budget under one nanosecond is expired, never a zero timer")
+    func subNanosecondBudget() async {
+        let f = Fixture()
+        let a = BarrierActor(fixture: f)
+        let second = Task { try await a.sendAndWait(.waitSubNanosecond("a", payload: 2), cancellation: .cancelsCall) }
+        #expect(outcome(await boundedResult(second)) == "timedOut")
+        #expect(await a.log.last == "expired 2")
+        #expect(await a.heap.sleeperStarts == 0)
+    }
+
+    @Test("A caller both cancelled and expired at its wait is refused .cancelled")
+    func cancelledBeatsExpired() async {
+        let f = Fixture()
+        let a = BarrierActor(fixture: f)
+        let task = await waiting(a, f, "a", payload: 6, registration: 1)
+        await a.send(.rewaitOnRelease(6, timeoutSeconds: 0))
+        await a.cancel(onNextFlush: task)
+        await a.send(.emitThenRelease("a"))
+        #expect(outcome(await boundedResult(task)) == "cancelled")
+        await f.reach("stale cancellation #1")
+        #expect(Array(await a.log.suffix(2)) == ["released 6 from a cancelled=true", "refused 6 cancelled"])
+    }
+
+    @Test("Compaction drops stale barrier entries and keeps live ones")
+    func compactionKeepsLiveBarrierEntries() async {
+        let f = Fixture()
+        let a = BarrierActor(fixture: f)
+        var stale: [Task<Int, any Error>] = []
+        for n in 1 ... 70 { stale.append(await waiting(a, f, "a", payload: n, timeout: 100, registration: n)) }
+        let live1 = await waiting(a, f, "b", payload: 71, timeout: 100, registration: 71)
+        let live2 = await waiting(a, f, "b", payload: 72, timeout: 100, registration: 72)
+        await a.send(.release("a"))
+        for task in stale { _ = await boundedResult(task) }
+        #expect(await a.heap.entries == 72)
+        // The next arm compacts: 70 stale of 72 is past the floor and half the heap.
+        let live3 = await waiting(a, f, "b", payload: 73, timeout: 100, registration: 73)
+        #expect(await a.heap.entries == 3)
+        #expect(await a.liveDeadlines == 3)
+        await a.send(.release("b"))
+        #expect(outcome(await boundedResult(live1)) == "success 71")
+        #expect(outcome(await boundedResult(live2)) == "success 72")
+        #expect(outcome(await boundedResult(live3)) == "success 73")
+    }
+
+    // MARK: Mail
+
+    @Test("A mail releases waiting callers through MailTurn.release")
+    func mailRelease() async {
+        let f = Fixture()
+        let a = BarrierMailActor(fixture: f)
+        let task = Task { try await a.sendAndWait(.wait("a", payload: 3, timeoutSeconds: nil), cancellation: .cancelsCall) }
+        await f.reach("barrier wait #1")
+        #expect(a.post("a"))
+        #expect(outcome(await boundedResult(task)) == "success 3")
+        #expect(await a.log == ["waiting 3 on a", "mail a: 1 waiting", "released 3 by mail"])
+        #expect(await a.table == [0, 0])
+    }
+
+    @Test("A cancellation's mailbox take releases the caller first: the hop is stale")
+    func mailTakeBeatsCancel() async {
+        let f = Fixture()
+        let a = BarrierMailActor(fixture: f)
+        let task = Task { try await a.sendAndWait(.wait("a", payload: 3, timeoutSeconds: nil), cancellation: .cancelsCall) }
+        await f.reach("barrier wait #1")
+        // The mail is in the mailbox, its wake held: the cancellation's hop takes it first.
+        let post = Task {
+            await a.postForTesting("a", afterAppend: {
+                f.open("appended")
+                await f.wait("wake")
+            })
+        }
+        await f.reach("appended")
+        task.cancel()
+        #expect(outcome(await boundedResult(task)) == "success 3")
+        await f.reach("stale cancellation #1")
+        f.open("wake")
+        _ = await post.value
+        #expect(await a.log == ["waiting 3 on a", "mail a: 1 waiting", "released 3 by mail"])
+        #expect(await a.table == [0, 0])
+    }
+
+    @Test("With a mailbox, a live barrier timeout takes two ordinals (its entry and its hook), a withdraw two, and a stale timeout none")
+    func barrierOrdinals() async {
+        let f = Fixture()
+        let a = BarrierMailActor(fixture: f)
+        let timed = Task { try await a.sendAndWait(.wait("a", payload: 1, timeoutSeconds: 5), cancellation: .cancelsCall) }
+        await f.reach("barrier wait #1")
+        let beforeTimeout = await a.ordinal
+        a.clock.release(through: 5)
+        #expect(outcome(await boundedResult(timed)) == "timedOut")
+        let afterTimeout = await a.ordinal
+        let withdrawn = Task { try await a.sendAndWait(.wait("a", payload: 2, timeoutSeconds: 10), cancellation: .cancelsCall) }
+        await f.reach("barrier wait #2")
+        let beforeWithdraw = await a.ordinal
+        withdrawn.cancel()
+        #expect(outcome(await boundedResult(withdrawn)) == "cancelled")
+        let afterWithdraw = await a.ordinal
+        a.clock.release(through: 15)
+        await f.reach("stale timer #1")
+        let afterStale = await a.ordinal
+        #expect(afterTimeout - beforeTimeout == 2)
+        #expect(afterWithdraw - beforeWithdraw == 2)
+        #expect(afterStale == afterWithdraw)
     }
 }

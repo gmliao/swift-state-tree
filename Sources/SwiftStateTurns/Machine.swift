@@ -60,9 +60,11 @@ public protocol TurnMachine: Sendable {
     mutating func handleMail(_ mail: Mail, _ turn: inout MailTurn<Self>)
     /// A registered barrier wait ended without a release (`WaitEnd`): its entry and timer are
     /// gone, and `ended.payload` is the machine's to clean up. Stepped after the step or entry
-    /// that ended it, before the caller's answer leaves the core. For `.timedOut` and `.ended`
-    /// the machine answers the caller; for `.withdrawn` and `.answered` the caller has its answer,
-    /// and a reply finds no waiter. Default: answers `.failure(why.error)`.
+    /// that ended it, before the caller's answer leaves the core (after this step's outputs). For
+    /// `.timedOut` and `.ended` the machine answers the caller, unless another reply was published
+    /// for it first, which is then its answer; for `.withdrawn` and `.answered` the caller has its
+    /// answer, and a reply from here is dropped. Default: answers `.failure(error)` when
+    /// `why.error` has one.
     mutating func handleWaitEnded(_ ended: ReleasedWait<Self>, _ why: WaitEnd, _ turn: inout Turn<Self>)
 }
 
@@ -74,7 +76,7 @@ extension TurnMachine {
 
 extension TurnMachine {
     @inlinable public mutating func handleWaitEnded(_ ended: ReleasedWait<Self>, _ why: WaitEnd, _ turn: inout Turn<Self>) {
-        turn.reply(to: ended.caller, .failure(why.error))
+        if let error = why.error { turn.reply(to: ended.caller, .failure(error)) }
     }
 }
 

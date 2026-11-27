@@ -212,7 +212,13 @@ struct Runtime<M: TurnMachine> {
     @usableFromInline var barrierTimersToArm: [(UInt64, TurnInstant)] = []
     /// Registered waits that ended without a release (a published reply, `endAll`), for the
     /// driver to step through `handleWaitEnded`, in order.
-    @usableFromInline var waitsEnded: [WaitEnded<M>] = []
+    @usableFromInline var waitsEnded = FIFO<WaitEnded<M>>()
+    /// Callers whose wait ended and whose hook hasn't stepped (`Settling`).
+    @usableFromInline var settling: [InputID: Settling<M>] = [:]
+    /// Answers fixed for callers whose hook has stepped, published in the drain's replies phase
+    /// after the outputs; `releasing` drops the hook's own reply to them meanwhile.
+    @usableFromInline var released: [(InputID, Result<M.Reply, any Error>)] = []
+    @usableFromInline var releasing: Set<InputID> = []
     /// Set by `endAll` while waits remain: the driver ends them after publishing the step's replies.
     @usableFromInline var endingWaits = false
 

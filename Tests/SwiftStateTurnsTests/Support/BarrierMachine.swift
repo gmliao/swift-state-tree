@@ -36,11 +36,23 @@ struct BarrierMachine: TurnMachine {
         /// From now on the hook emits output 0 before it answers: the flush lands between the
         /// hook's step and its reply's publication.
         case emitOnEnd
+        /// From now on the hook reads `turn.now`: after `endAll` no keyed output can be emitted,
+        /// so a clock read is how a check sees that the hook has stepped.
+        case readNowOnEnd
         /// Replies `value` to `payload`'s caller after work under "w" (gate `gate`), then calls
         /// `endAll` in the same step, which closes that work.
         case replyAfterWorkThenTeardown(payload: Int, gate: String)
         case teardown
         case close
+        /// Starts work under key "w" (gate `gate`); when it is abandoned, `handleAbandoned` replies
+        /// `payload * 100` to `payload`'s caller.
+        case workRepliesOnAbandon(payload: Int, gate: String)
+        /// When `from`'s wait ends, its hook replies `value` to `to`'s caller.
+        case onEndReply(from: Int, to: Int, value: Int)
+        /// Waits `payload`'s caller again on `key` (a step that isn't the caller's own).
+        case waitAgain(String, payload: Int, timeoutSeconds: Int64?)
+        /// A normal call that waits with a budget of one attosecond: positive, under a nanosecond.
+        case waitSubNanosecond(String, payload: Int)
         /// The work's result.
         case finished
     }
@@ -62,12 +74,15 @@ struct BarrierMachine: TurnMachine {
     var rewaitWithoutBudget: [Int] = []
     var releaseAllOnTimeout: [Int] = []
     var emitOnEnd: Bool = false
+    var readNowOnEnd: Bool = false
+    var abandonReplies: [RequestID: Int] = [:]
+    var endReplies: [Int: [Int]] = [:]
 
     init() {}
 
     func inputPolicy(for input: Input) -> InputPolicy<String> {
         switch input {
-        case .wait: .normal(waitsFor: nil, belongsTo: nil)
+        case .wait, .waitSubNanosecond: .normal(waitsFor: nil, belongsTo: nil)
         default: .control
         }
     }
@@ -78,6 +93,10 @@ struct BarrierMachine: TurnMachine {
             guard let caller = turn.input else { return }
             callers[payload] = caller
             doWait(caller, key, payload, seconds.map { .seconds($0) }, &turn)
+        case .waitSubNanosecond(let key, let payload):
+            guard let caller = turn.input else { return }
+            callers[payload] = caller
+            doWait(caller, key, payload, .seconds(1) / 1_000_000_000_000_000_000, &turn)
         case .controlWait(let key, let payload):
             guard let caller = turn.input else { return }
             callers[payload] = caller
@@ -116,6 +135,15 @@ struct BarrierMachine: TurnMachine {
             turn.endAll()
         case .emitOnEnd:
             emitOnEnd = true
+        case .readNowOnEnd:
+            readNowOnEnd = true
+        case .workRepliesOnAbandon(let payload, let gate):
+            turn.start("w")
+            if let request = turn.request(.work(gate: gate), for: "w") { abandonReplies[request] = payload }
+        case .onEndReply(let from, let to, let value):
+            endReplies[from] = [to, value]
+        case .waitAgain(let key, let payload, let seconds):
+            if let caller = callers[payload] { doWait(caller, key, payload, seconds.map { .seconds($0) }, &turn) }
         case .replyAfterWorkThenTeardown(let payload, let gate):
             turn.start("w")
             let request = turn.request(.work(gate: gate), for: "w")
@@ -128,6 +156,12 @@ struct BarrierMachine: TurnMachine {
         case .finished:
             log.append("finished")
         }
+    }
+
+    mutating func handleAbandoned(_ request: RequestID, _ why: Abandonment, _ turn: inout Turn<BarrierMachine>) {
+        guard let payload = abandonReplies.removeValue(forKey: request) else { return }
+        log.append("abandoned \(payload)")
+        if let caller = callers[payload] { turn.reply(to: caller, .success(payload * 100)) }
     }
 
     mutating func doWait(_ caller: InputID, _ key: String, _ payload: Int, _ timeout: Duration?, _ turn: inout Turn<BarrierMachine>) {
@@ -165,15 +199,20 @@ struct BarrierMachine: TurnMachine {
 
     mutating func handleWaitEnded(_ ended: ReleasedWait<BarrierMachine>, _ why: WaitEnd, _ turn: inout Turn<BarrierMachine>) {
         log.append("ended \(ended.payload) \(why) cancelled=\(ended.cancelled)")
+        if readNowOnEnd { _ = turn.now }
         if emitOnEnd {
             turn.start("out")
             turn.emit(0, for: "out")
+        }
+        if let target = endReplies.removeValue(forKey: ended.payload), let caller = callers[target[0]] {
+            turn.reply(to: caller, .success(target[1]))
         }
         if why == .timedOut, let index = releaseAllOnTimeout.firstIndex(of: ended.payload) {
             releaseAllOnTimeout.remove(at: index)
             releaseEach(turn.release(where: { _ in true }), &turn)
         }
-        // A reply for a withdrawn or answered caller finds no waiter and is dropped.
-        turn.reply(to: ended.caller, .failure(why.error))
+        // The default's reply; for a withdrawn or answered caller, or one another reply reached
+        // first, the core drops it.
+        turn.reply(to: ended.caller, .failure(why.error ?? TurnError.closed))
     }
 }

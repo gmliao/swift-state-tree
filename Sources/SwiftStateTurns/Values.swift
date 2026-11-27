@@ -140,7 +140,8 @@ public enum TurnError: Error, Sendable, Equatable {
     case queueFull
     /// Its scope ended or was superseded, or its token was withdrawn, before it stepped.
     case withdrawn
-    /// Its barrier wait's timeout passed (`Turn.wait`), answered by the default hook.
+    /// Its barrier wait's timeout passed (`Turn.wait`): the default `handleWaitEnded`'s answer. A
+    /// call that stepped can get it, unlike the cases above.
     case timedOut
 }
 

@@ -306,19 +306,21 @@ extension TurnActor {
             }
             entryBoundary()
         }
+        // A waiting caller's entry leaves with it: its payload goes back to the machine first,
+        // and its `CancellationError` is published after that step's outputs (`Settling`).
+        if TurnCore<M>.usesBarriers, let entry = core.rt.removeBarrier(id) {
+            _ = core.rt.withdraw(caller: id)
+            core.counters.cancelledCalls += 1
+            // A step, so a new batch's `now` (with a mailbox, `beginEntry` ran above).
+            if !TurnCore<M>.usesMailbox { beginEntry() }
+            core.rt.settling[id] = Settling(answer: .failure(CancellationError()))
+            core.stepWaitEnded(id, entry, .withdrawn)
+            runSegment()
+            return
+        }
         guard let waiter = core.waiters.removeValue(forKey: id) else { return }
         _ = core.rt.withdraw(caller: id)
         core.counters.cancelledCalls += 1
-        // A waiting caller's entry leaves with it: its payload goes back to the machine first
-        // (a reply from that step finds no waiter), then the caller is answered.
-        if TurnCore<M>.usesBarriers, let entry = core.rt.removeBarrier(id) {
-            // A step, so a new batch's `now` (with a mailbox, `beginEntry` ran above).
-            if !TurnCore<M>.usesMailbox { beginEntry() }
-            core.stepWaitEnded(id, entry, .withdrawn)
-            waiter.resume(throwing: CancellationError())
-            if core.rt.dirty { runSegment() }
-            return
-        }
         waiter.resume(throwing: CancellationError())
     }
 
@@ -597,6 +599,7 @@ extension TurnActor {
             // Live: only the matching generation is consumed; a re-wait has a fresh one.
             // Its entry has left the heap already, so the removal counts nothing stale.
             if let caller = core.rt.barrierTimers[entry.ticket], let waiting = core.rt.removeBarrier(caller, fired: true) {
+                core.rt.settling[caller] = Settling(answer: nil)
                 core.stepWaitEnded(caller, waiting, .timedOut)
             }
         case .request:
@@ -851,10 +854,8 @@ extension TurnActor {
                 core.stepAbandoned(id, why)
                 continue
             }
-            if TurnCore<M>.usesBarriers, !core.rt.waitsEnded.isEmpty {
-                let ended = core.rt.waitsEnded.removeFirst()
+            if TurnCore<M>.usesBarriers, let ended = core.rt.waitsEnded.pop() {
                 core.stepWaitEnded(ended.caller, ended.entry, ended.why)
-                ended.answer?.waiter.resume(with: ended.answer!.result)
                 continue
             }
             if let next = core.queued.pop() {
@@ -938,18 +939,20 @@ extension TurnActor {
                 var replies: [(InputID, Result<M.Reply, any Error>)] = []
                 swap(&replies, &core.rt.replies)
                 for (caller, result) in replies {
-                    // A published reply settles its caller: a barrier entry it still has leaves
-                    // with it, and its payload goes back through `handleWaitEnded(.answered)`.
-                    // The answer is held until that step has run, so the caller can't act on it
-                    // before its payload is cleaned up.
-                    if TurnCore<M>.usesBarriers, !core.rt.barrierWaiters.isEmpty, let entry = core.rt.removeBarrier(caller) {
-                        let held = core.waiters.removeValue(forKey: caller).map { HeldAnswer<M>(waiter: $0, result: result) }
-                        core.rt.waitsEnded.append(WaitEnded(caller: caller, entry: entry, why: .answered, answer: held))
-                        continue
-                    }
+                    if TurnCore<M>.usesBarriers, claimForBarrier(caller, result) { continue }
                     if let waiter = core.waiters.removeValue(forKey: caller) {
                         waiter.resume(with: result)
                     }
+                }
+                progressed = true
+            }
+            if TurnCore<M>.usesBarriers, !core.rt.released.isEmpty {
+                // Answers fixed for callers whose hook has stepped: after its outputs, as replies.
+                var released: [(InputID, Result<M.Reply, any Error>)] = []
+                swap(&released, &core.rt.released)
+                for (caller, result) in released {
+                    core.rt.releasing.remove(caller)
+                    core.waiters.removeValue(forKey: caller)?.resume(with: result)
                 }
                 progressed = true
             }
@@ -958,7 +961,8 @@ extension TurnActor {
                 core.rt.endingWaits = false
                 for id in core.rt.barrierWaiters.keys.sorted(by: { $0.raw < $1.raw }) {
                     if let entry = core.rt.removeBarrier(id) {
-                        core.rt.waitsEnded.append(WaitEnded(caller: id, entry: entry, why: .ended, answer: nil))
+                        core.rt.settling[id] = Settling(answer: nil)
+                        core.rt.waitsEnded.push(WaitEnded(caller: id, entry: entry, why: .ended))
                     }
                 }
                 progressed = true
@@ -1020,6 +1024,28 @@ extension TurnActor {
             }
             if !progressed { break }
         }
+    }
+
+    /// A published reply for a caller with barrier state. True: it is held, not resumed.
+    /// - The caller still waits: the reply claims it. Its entry and timer leave, its payload
+    ///   goes back through `handleWaitEnded(.answered)`, and the reply is its answer, published
+    ///   after that step's outputs.
+    /// - Its hook is queued (`settling`): the first reply is its answer, held the same way; a
+    ///   later one is dropped.
+    /// - Its answer is fixed and on its way (`releasing`): dropped.
+    @inlinable func claimForBarrier(_ caller: InputID, _ result: Result<M.Reply, any Error>) -> Bool {
+        let core = self.core
+        if !core.rt.barrierWaiters.isEmpty, let entry = core.rt.removeBarrier(caller) {
+            core.rt.settling[caller] = Settling(answer: result)
+            core.rt.waitsEnded.push(WaitEnded(caller: caller, entry: entry, why: .answered))
+            core.rt.dirty = true
+            return true
+        }
+        if !core.rt.settling.isEmpty, let settling = core.rt.settling[caller] {
+            if settling.answer == nil { core.rt.settling[caller]?.answer = result }
+            return true
+        }
+        return !core.rt.releasing.isEmpty && core.rt.releasing.contains(caller)
     }
 
     @inlinable func launch(_ pending: PendingEffect<M>) {

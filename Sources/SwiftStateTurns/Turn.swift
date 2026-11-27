@@ -124,6 +124,10 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         // claimed by that reply (`.answered`), and the rest end `.ended`, oldest first. A caller
         // the machine means to answer otherwise is released (`release(where:)`) in this step.
         if TurnCore<M>.usesBarriers, !core.rt.barrierWaiters.isEmpty { core.rt.endingWaits = true }
+        // Their timers go with the deadlines: none is left to count stale after the stop. Until
+        // the driver ends them, `release(where:)` and `waiterCount(on:)` in this step still see
+        // the waits.
+        core.rt.barrierTimers.removeAll()
         core.rt.barrierTimersToArm.removeAll()
         // No entry can be live again: the core's timer stops here, in this step (plan §3.7).
         core.stopDeadlines()
