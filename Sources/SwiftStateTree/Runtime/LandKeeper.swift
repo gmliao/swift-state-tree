@@ -4208,7 +4208,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Tests: marks the land draining with `cause`, as the land's stop does first, without
-    /// starting the drain.
+    /// starting the drain. Unlike every production drain start, it leaves `players` and the
+    /// player services as they are (tests use it to reach a post-await segment with a joined
+    /// player). So a join whose OnJoin resolvers are held across it reaches the OnJoin append's
+    /// drain branch with its entry still present, which the branch's assert names as the one
+    /// exception (Review on #966).
     package func markDrainingForTesting(cause: LandDestructionCause) {
         drainFlag.set(cause: cause)
     }
@@ -6585,8 +6589,10 @@ extension KeeperModel {
         // first (the shutdown turn, `failLand`, `shutdownIfIdle` on an empty land, the failed
         // initialization's teardown).
         guard !side.isDraining else {
+            // `markDrainingForTesting` is the one way to reach this with the entry present: it
+            // sets the flag without the clears (its doc).
             assert(players[capture.playerID]?.generation != capture.entryGeneration,
-                   "a drain start clears players before a resolved join's append runs")
+                   "a drain start clears players before a resolved join's append runs (markDrainingForTesting excepted)")
             // Actions submitted for this entry during the resolvers can't be delivered, as after
             // a leave (their tickets name the entry).
             cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: capture.entryGeneration)

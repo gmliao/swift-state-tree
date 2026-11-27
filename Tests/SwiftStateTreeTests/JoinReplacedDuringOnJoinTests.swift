@@ -1149,4 +1149,34 @@ struct JoinReplacedDuringOnJoinTests {
         await f.settle()
         #expect(await f.log == [])
     }
+
+    @Test("A drain start clears players and the player services in its own segment, while OnJoin's resolvers are still held (Review on #966)", arguments: [false, true], ["failLand", "forceShutdown"])
+    func drainStartClearsWhileOnJoinIsHeld(tick: Bool, start: String) async throws {
+        let f = await ReplacedJoinFixture(tick: tick, reporting: true)
+        let key = ReplacedJoinGates.freshKey()
+        let gate = ReplacedJoinGates.gate(key)
+        defer { gate.release() }
+        let clientA = ClientID("gate-\(key)"), sessionA = SessionID("s-a")
+
+        let joinA = f.joinInTask(clientA, sessionA)
+        guard await gate.waitUntilEntered() else { return }
+        #expect(await f.keeper.playerCount() == 1, "the entry is in before the drain")
+        var stop: Task<Void, Never>?
+        if start == "failLand" {
+            await f.keeper.failLandForTesting(LandFailure(kind: .syncPlan, detail: "test", position: LandFailurePosition(stage: .syncPhase)))
+        } else {
+            let keeper = f.keeper
+            stop = Task { await keeper.forceShutdown() }
+        }
+        #expect(await withinHangBound { await f.keeper.waitUntilDrainStartedForTesting() }, "\(start): the drain never started")
+        // Before the release: the segment that set the flag cleared both (a mutant dropping either
+        // clear fails here, not after the join returns).
+        #expect(await f.keeper.playerCount() == 0, "\(start): players left at the drain start")
+        #expect(await f.keeper.playerServiceGenerationsForTesting().services.isEmpty, "\(start): services left at the drain start")
+
+        gate.release()
+        _ = await joinA.value
+        await stop?.value
+        #expect(await f.keeper.playerCount() == 0)
+    }
 }
