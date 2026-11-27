@@ -406,6 +406,15 @@ struct KeeperCensusTests {
         #expect(named.subtracting(sideFields).isEmpty, "not a side field: \(named.subtracting(sideFields).sorted())")
     }
 
+    @Test("The machine's inputs split into K2-1's routed set and the deferred ones, each named (#700 K2-1)")
+    func inputRoutesSplitTheCases() {
+        let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
+        #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).sorted())")
+        // `KeeperInput` has 20 cases (`routeName` is exhaustive): a new one goes in a list, and this count moves.
+        #expect(routed.count == 10 && deferred.count == 10, "routed \(routed.sorted()), deferred \(deferred.sorted())")
+        #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
+    }
+
     @Test("The model is plain at compile time")
     func modelIsPlain() {
         // Compiles only while `KeeperModel` is `@PlainData` and every field it holds is plain.

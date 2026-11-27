@@ -128,6 +128,7 @@ enum ModelHoldsLint {
         "answerCoreInputWait": "one wait's answer: the join's end, or the leave's L3 as a step and its continuation",
         "answerDroppedCoreInputWaits": "the waits a drop failed, taken off the side and answered landClosed",
         "actionStep": "a tickless action's driver: the closed-land check, the intake as a step, the dropped-input check, its wait",
+        "clientEventStep": "a tickless client event's driver: the closed-land check, the intake as a step, the dropped-input check, its wait",
     ]
     static let sideStoreFramePath = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
 
@@ -1682,7 +1683,7 @@ struct ModelHoldsLintTests {
         // renamed one can't leave a stale exception.
         let frame = Set(report.holders.filter { $0.path == ModelHoldsLint.sideStoreFramePath && !$0.name.contains(" body in ") }.map(\.name))
         #expect(Set(ModelHoldsLint.sideStoreFrame.keys).isSubset(of: frame), "frame members missing: \(Set(ModelHoldsLint.sideStoreFrame.keys).subtracting(frame).sorted())")
-        #expect(ModelHoldsLint.sideStoreFrame.count == 18, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
+        #expect(ModelHoldsLint.sideStoreFrame.count == 19, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
         #expect(report.holders.contains { $0.path == drivers && $0.name == "tickStart" },
                 "holders in \(drivers): \(report.holders.filter { $0.path == drivers }.map(\.name))")
         // Each family of closure holders is found: every member that gives a closure the model

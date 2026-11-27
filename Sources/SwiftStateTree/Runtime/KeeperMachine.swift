@@ -76,6 +76,57 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     case drainFinished
 }
 
+/// Which inputs `handle` routes in K2-1, and where each of the rest is routed (Review,
+/// 2026-11-27). `routeName` is exhaustive, so a new case must be named; the census test checks
+/// that the two lists split the cases, and the differential that no deferred input is sent.
+enum KeeperInputRoutes {
+    static let routed: Set<String> = [
+        "tickDue", "syncDue", "recordTaken", "inputDrainDue",
+        "join", "joinStepped", "leave", "leaveStepped",
+        "action", "clientEvent",
+    ]
+    static let deferred: [String: String] = [
+        "freeze": "K2-2: the freeze barrier",
+        "resume": "K2-2: the freeze barrier",
+        "shutdown": "K2-2",
+        "awaitInitialized": "K2-2: the initialization barrier",
+        "awaitResume": "K2-2: the freeze barrier",
+        "syncStreamDraft": "K2-2",
+        "actionResolved": "K2-2: the action jobs (plan §16 item 17)",
+        "initializeResolved": "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
+        "destroyHandlerResolved": "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
+        "drainFinished": "the segment PR for the initialization and the destroy drain, then K2-2 (plan §16 item 18)",
+    ]
+}
+
+extension KeeperInput {
+    /// The case's name, for `KeeperInputRoutes`.
+    var routeName: String {
+        switch self {
+        case .action: "action"
+        case .clientEvent: "clientEvent"
+        case .join: "join"
+        case .leave: "leave"
+        case .tickDue: "tickDue"
+        case .syncDue: "syncDue"
+        case .freeze: "freeze"
+        case .resume: "resume"
+        case .shutdown: "shutdown"
+        case .awaitInitialized: "awaitInitialized"
+        case .awaitResume: "awaitResume"
+        case .syncStreamDraft: "syncStreamDraft"
+        case .joinStepped: "joinStepped"
+        case .leaveStepped: "leaveStepped"
+        case .actionResolved: "actionResolved"
+        case .initializeResolved: "initializeResolved"
+        case .destroyHandlerResolved: "destroyHandlerResolved"
+        case .recordTaken: "recordTaken"
+        case .inputDrainDue: "inputDrainDue"
+        case .drainFinished: "drainFinished"
+        }
+    }
+}
+
 /// Which of the join's awaits a `.joinStepped` result answers, with what its segment resumes
 /// from (plan §4.3). The kick has no stage: its answer is the leave flow's own (`.leaveStepped`,
 /// or its input-turn wait) under `.joinAfterKick`.
@@ -112,6 +163,9 @@ enum KeeperCoreInputWait: Sendable {
     /// A tickless delivered action's wait: the intake's work count ends, then the caller gets
     /// the turn's outcome as `.completed`.
     case action(caller: InputID?)
+    /// A tickless client event's wait: the work count ends, then the caller gets `.done` or the
+    /// handler's error.
+    case clientEvent(caller: InputID?)
 }
 
 /// The core's input-turn waits, by input sequence, and the ones a drop of the pending inputs
@@ -214,6 +268,9 @@ extension KeeperModel: TurnMachine {
         case let .action(envelope, who):
             let caller = turn.input
             actionStep(behavior, store, &turn, envelope, who, caller: caller)
+        case let .clientEvent(event, who):
+            let caller = turn.input
+            clientEventStep(behavior, store, &turn, event, who, caller: caller)
         case let .join(call, syncsInTurn):
             let caller = turn.input
             joinDrive(behavior, store, &turn, call: call, caller: caller, syncsInTurn: syncsInTurn, decided: nil) { m, side, outputs in
@@ -248,8 +305,8 @@ extension KeeperModel: TurnMachine {
                 turn.emit(.fold(fold), for: .land)
             }
         default:
-            // The routes with a `run` come in the next commit (plan §4.3).
-            preconditionFailure("K2-1: \(input) is not routed yet")
+            // `KeeperInputRoutes.deferred` names where each of these is routed.
+            preconditionFailure("K2-1: \(input.routeName) is routed in \(KeeperInputRoutes.deferred[input.routeName] ?? "an unnamed PR")")
         }
         // A drop of the pending inputs in this step failed the core's waits on them.
         answerDroppedCoreInputWaits(behavior, store, &turn)
@@ -545,6 +602,49 @@ extension KeeperModel {
         }
     }
 
+    /// A tickless land's client event (`.clientEvent`), as the keeper's `handleClientEvent` runs
+    /// it: the closed-land check, the intake's segment, then the input turn's wait. A tick land's
+    /// event is the `.admitClientEvent` query, routed in K2-2.
+    mutating func clientEventStep(
+        _ behavior: KeeperBehavior<State>,
+        _ store: KeeperSideStore,
+        _ turn: inout Turn<KeeperModel<State>>,
+        _ event: AnyClientEvent,
+        _ who: KeeperCaller,
+        caller: InputID?
+    ) {
+        precondition(behavior.isTickless, "K2-1: a tick land's client event is the .admitClientEvent query")
+        func reply(_ result: Result<Void, any Error>, _ turn: inout Turn<KeeperModel<State>>) {
+            if let caller { turn.reply(to: caller, result.map { _ in KeeperReply<State>.done }) }
+        }
+        do {
+            try store.withSide { side in try side.rejectIfLandClosed() }
+        } catch {
+            reply(.failure(error), &turn)
+            return
+        }
+        let intake = step(behavior, store) { m, side, _ in
+            Result {
+                try m.clientEventIntake(behavior, &side, event, playerID: who.playerID, clientID: who.clientID,
+                                        sessionID: who.sessionID ?? behavior.config.systemSessionID)
+            }
+        }
+        switch intake {
+        case let .failure(error):
+            reply(.failure(error), &turn)
+        case .success(nil):
+            reply(.success(()), &turn)
+        case let .success(sequence?):
+            let failed = store.withSide { side in side.failure } != nil
+            if failed, inputTurnResults[sequence] == nil, !pendingItems.contains(where: { $0.sequence == sequence }) {
+                store.withSide { side in debugEndWork(&side) }
+                reply(.failure(LandInputRejection.landClosed), &turn)
+                return
+            }
+            awaitCoreInputTurn(behavior, store, &turn, sequence, .clientEvent(caller: caller))
+        }
+    }
+
     /// `.joinStepped`: the segment after the join's resolvers, as the keeper's loop runs it.
     mutating func joinStepped(
         _ behavior: KeeperBehavior<State>,
@@ -684,6 +784,9 @@ extension KeeperModel {
             // The keeper's `defer { debugEndWork() }` after the input turn, on success and on a throw.
             store.withSide { side in debugEndWork(&side) }
             if let caller { turn.reply(to: caller, .success(.action(result.map { .completed($0) }))) }
+        case let .clientEvent(caller):
+            store.withSide { side in debugEndWork(&side) }
+            if let caller { turn.reply(to: caller, result.map { _ in KeeperReply<State>.done }) }
         case let .leave(continuation):
             switch result {
             case let .failure(error):
