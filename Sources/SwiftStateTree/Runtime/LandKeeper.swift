@@ -7716,7 +7716,8 @@ extension KeeperModel {
     /// D2: no tick runs. Intake has been closed since `isDraining` was set, so the pending
     /// inputs are all there will be: they are dropped and their waiting callers get
     /// `.landClosed`. Then the destroy handlers, except on a land whose initialization failed
-    /// (#104: they would act on, or save, a state never set up) or a re-evaluation keeper (#826:
+    /// (#104: they would act on, or save, a state never set up) or hasn't applied OnInitialize
+    /// (#946: the drain began during its resolvers), or a re-evaluation keeper (#826:
     /// the record holds no destroy or finalize event to verify them against, and their resolvers
     /// and AfterFinalize could reach outside services).
     fileprivate mutating func drainAfterTicks(
@@ -7726,7 +7727,10 @@ extension KeeperModel {
     ) -> DrainRequest {
         dropPendingInputs(behavior, &side, reason: "drain")
         destroyHandlersStarted = true
-        guard initializationFailure == nil, behavior.config.mode == .live else { return .notifyTransport }
+        // OnInitialize must have applied (#946): a drain that beat it (a land failure during its
+        // resolvers) would otherwise run the handlers on, and save, a state never set up.
+        let stateIsSetUp = initializationApplied || behavior.definition.lifetimeHandlers.onInitialize == nil
+        guard initializationFailure == nil, stateIsSetUp, behavior.config.mode == .live else { return .notifyTransport }
         // The drain's handlers aren't repeated from the record, so their draws come from one
         // copy of the land's generator, never written back: OnDestroyWhenEmpty, OnFinalize and
         // AfterFinalize continue one sequence instead of repeating each other's.
@@ -7970,6 +7974,11 @@ extension KeeperModel {
             numbersTakenOnlyByLandFailures(since: resolving.sequenceAfterTake, side),
             "an intake took a sequence number during OnInitialize's resolvers"
         )
+        // The segment after the resolvers' await, before any of its exits (the apply, a
+        // timeout, a `.failLand` throw): a drain that began during the resolvers (a land failure
+        // the transport reported, #946) ends the initialization with the land's failure, and
+        // owns the teardown.
+        guard !side.isDraining else { return initializeEndedByDrain(behavior, &side, &outputs) }
         var ctx = resolving.ctx
         switch result {
         case let .success(resolved):
@@ -7986,7 +7995,7 @@ extension KeeperModel {
             if LandKeeper<State>.initializeResolverFailureFailsLand(
                 error,
                 policy: behavior.definition.lifetimeHandlers.onInitializeResolverFailure,
-                shuttingDown: side.isDraining || cancelled
+                shuttingDown: cancelled
             ) {
                 // A resolver threw, with `.failLand` (#238): the same as a timeout.
                 ResolverDeadline.metrics.noteInitFailed()
@@ -7995,8 +8004,9 @@ extension KeeperModel {
                 ])
                 return initializeFail(behavior, &side, &outputs, error)
             }
-            // `.continue`, or cancelled by the land's shutdown: OnInitialize runs without the
-            // group's outputs.
+            // `.continue`, or cancelled by the land's shutdown with the land not yet draining:
+            // OnInitialize runs without the group's outputs. A draining land never gets here
+            // (the guard above, #946).
             behavior.logger.error("❌ OnInitialize resolvers failed", metadata: [
                 "error": .string(String(describing: error)),
             ])
@@ -8021,7 +8031,12 @@ extension KeeperModel {
         }
     }
 
-    /// OnInitialize's turn body; then its record, if the land records.
+    /// OnInitialize's turn body; then its record, if the land records. Not on a land that is
+    /// ending: a land failure the transport reported (`submitLandFailure`, the one taker that
+    /// doesn't wait for the initialization) starts the drain, which doesn't wait for the
+    /// initialization and may have destroyed the land by now (#946). `initializeResolved`
+    /// checks first after the resolvers; this check covers the land without resolvers, whose
+    /// begin segment calls this directly.
     private mutating func initializeApply(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
@@ -8030,6 +8045,7 @@ extension KeeperModel {
         ctx: LandContext,
         sequence taken: Int64
     ) -> InitializeRequest {
+        guard !side.isDraining else { return initializeEndedByDrain(behavior, &side, &outputs) }
         let output: InitializeTurnOutput
         switch initializeTurnBody(behavior, &side, &outputs, handler: handler, ctx: ctx, sequence: taken) {
         case let .failure(error):
@@ -8042,6 +8058,9 @@ extension KeeperModel {
         case let .success(initialized):
             output = initialized
         }
+        // OnInitialize has applied: the drain's handlers may run from here, also during the
+        // record wait, before `didInitialize` (#946).
+        initializationApplied = true
         // Without a record, the guard runs in a turn of its own: this turn's late re-entry
         // backstop (`withTurn`'s defer) can fail the land after the body (#944).
         guard behavior.reevaluationRecorder != nil else { return .finish }
@@ -8117,6 +8136,26 @@ extension KeeperModel {
             assert(startsNoLoop || syncLoopConfigured, "didInitialize before the sync loop was configured")
         }
         didInitialize = true
+    }
+
+    /// The land began draining during OnInitialize's resolvers (#946): OnInitialize doesn't run,
+    /// nothing is recorded and no loop starts. The initialization ends with the land's failure,
+    /// which every waiter of `ensureInitialized` gets, as `LandInitializationError`. The drain
+    /// owns the teardown, so none is staged here.
+    private mutating func initializeEndedByDrain(
+        _ behavior: KeeperBehavior<State>,
+        _ side: inout KeeperTurnSide,
+        _ outputs: inout TurnOutputs
+    ) -> InitializeRequest {
+        behavior.logger.warning("OnInitialize dropped: the land started closing during its resolvers", metadata: [
+            "failure": .string(side.failure.map { "\($0)" } ?? "none"),
+        ])
+        let underlying: any Error = side.failure ?? LandInputRejection.landClosed
+        let failure = recordFailure(&side, LandInitializationError(underlying: underlying))
+        initializationFailure = failure
+        checkActionTables(behavior, side, #function)
+        didInitialize = true
+        return .done
     }
 
     /// The initialization failed: its failure is held as every caller gets it (#700 K1b-2), the

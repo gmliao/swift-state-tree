@@ -174,6 +174,18 @@ private func makeSegmentDefinition(tick: Bool) -> LandDefinition<SegmentState> {
     return definition
 }
 
+/// `task.value`, bounded on an event its end appends (a task's value can't be bounded with a
+/// task group); nil when it doesn't end.
+private func valueWithinHangBound<T: Sendable>(_ task: Task<T, Never>) async -> T? {
+    let ended = EventLog()
+    Task {
+        _ = await task.value
+        ended.append("ended")
+    }
+    guard await ended.waitFor("ended") else { return nil }
+    return await task.value
+}
+
 private func makeSegmentKeeper(
     tick: Bool,
     landID: String,
@@ -433,6 +445,77 @@ struct InitAndDrainSegmentTests {
         #expect(done.didInitialize)
         #expect(done.destructionFinished)
         #expect(done.tickLoopConfigured == false)
+    }
+
+    @Test("T12: a land failure whose drain destroys the land during OnInitialize's resolvers: whether the resolver then succeeds or throws, the initialization doesn't apply, no destroy handler runs, no loop starts, and every caller gets the land's failure (#946)", arguments: ["init", "initfail"])
+    func drainFinishedDuringInitializeResolvers(phase: String) async throws {
+        // A tickless land applies the failure at once, during the resolvers; a tick land would
+        // only apply it in a tick, and no tick runs before the initialization ends. "initfail"'s
+        // resolver throws after the release, under `.failLand`: the exit a timeout takes too.
+        let (landID, gate) = segmentLandID(phase)
+        defer { gate.release() }
+        let keeper = makeSegmentKeeper(tick: false, landID: landID, autoStartLoops: true)
+        guard await gate.waitUntilEntered("OnInitialize's resolver") else { return }
+        // A caller that waits for the initialization from before the failure.
+        let waitingLeave = Task { () -> (any Error)? in
+            do {
+                try await keeper.leave(playerID: PlayerID("p0"), clientID: ClientID("c0"), sessionID: SessionID("s0"))
+                return nil
+            } catch {
+                return error
+            }
+        }
+        #expect(await keeper.waitForInitializationWaitersForTesting(1), "the leave never waited for the initialization")
+
+        let failure = LandFailure(kind: .syncPlan, detail: "#946", position: LandFailurePosition(stage: .syncPhase))
+        await keeper.submitLandFailure(failure)
+        #expect(await keeper.waitForFailureForTesting(), "the failure ended the land")
+        // The drain doesn't wait for the initialization: it finishes while the resolver is held.
+        // `waitUntilDrained` awaits the drain's task, which ignores cancellation: bound it on an
+        // event its end appends.
+        #expect(await withinHangBound { await keeper.waitUntilDrainStartedForTesting() }, "the drain never started")
+        let drained = EventLog()
+        Task {
+            await keeper.waitUntilDrained()
+            drained.append("drained")
+        }
+        guard await drained.waitFor("drained") else {
+            Issue.record("the drain didn't finish while OnInitialize's resolver was held")
+            return
+        }
+        #expect(await keeper.lifecycleFlagsForTesting().destructionFinished)
+        // The state was never set up: the drain ran none of the destroy handlers on it.
+        let logAfterDrain = await keeper.currentState().log
+        #expect(logAfterDrain.isEmpty, "\(phase): the drain ran on a state OnInitialize never set up: \(logAfterDrain)")
+
+        // The resolver returns now, on a destroyed land.
+        gate.release()
+        await keeper.awaitInitialization()
+        let flags = await keeper.lifecycleFlagsForTesting()
+        let log = await keeper.currentState().log
+        #expect(log.isEmpty, "\(phase): OnInitialize or a destroy handler applied to a destroyed land: \(log)")
+        #expect(flags.initializationFailed, "the initialization ended without the land's failure")
+        #expect(flags.tickLoopConfigured == false)
+        // Every caller gets the land's failure, not the resolver's error: the waiting leave and a
+        // later one, as the initialization's waiters; a join, which maps it, is told the land is
+        // shutting down.
+        guard let waited = await valueWithinHangBound(waitingLeave) else {
+            Issue.record("the waiting leave didn't end")
+            return
+        }
+        #expect((waited as? LandInitializationError)?.underlying as? LandFailure == failure, "\(phase): waiting leave: \(String(describing: waited))")
+        do {
+            try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
+            Issue.record("a leave of a land whose initialization ended without applying returned")
+        } catch {
+            #expect((error as? LandInitializationError)?.underlying as? LandFailure == failure, "\(phase): leave: \(error)")
+        }
+        do {
+            try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
+            Issue.record("a join after the drain was admitted")
+        } catch JoinError.landShuttingDown {
+            // expected
+        }
     }
 
     @Test("T11: OnInitialize's late re-entry fails the land in its own turn, before the loop guard: no loop is configured")
