@@ -16,6 +16,7 @@ tags:
   - unicode
 related:
   - "#805"
+  - "#479"
   - Notes/solutions/2026-11-26-a-check-inside-a-recursive-function-costs-stack-at-every-level.md
 ---
 
@@ -41,7 +42,10 @@ So a map from `JSONSerialization`, or one built by hand as an `NSMutableDictiona
 
 Before trusting the cast, check whether the base is an `NSDictionary` (`type(of: base) is NSDictionary.Type`, one type check for a Swift dictionary). If the cast's count is lower than the `NSDictionary`'s, find the merged key from `allKeys` with the same equivalence check, and refuse it (`AnyCodable.keyMergedByBridging`). On the generic path, `AnyCodable.encode(to:)` does this only under the canonical encoder, which marks itself in `userInfo`. Other encoders, the JSON wire's among them, keep the cast's map as before.
 
+Review's second round found the type check itself behind a cast that unwraps: `as? [String: Any]` looks through `Optional` levels, `type(of:)` doesn't. An `NSDictionary?` in an outer map (`["x": opt as Any]`) reached the check as `Optional<NSDictionary>`, failed `is NSDictionary.Type`, and was written merged. The check now peels the `Optional` levels first (`NestingOptionalPayload`, as `SnapshotValue.unwrappingOptionals` does for #716). This is #479's class again: a `type(of:)` guard behind an `as?` cast that unwraps.
+
 ## Prevention
 
 - A check on "what the value holds" must run before any conversion that can change it: a bridging cast, a `Dictionary(uniqueKeysWithValues:)`, a decode into a type with a weaker equality.
+- A guard on `type(of: x)` next to an `x as? T` sees a different value when the cast unwraps (`Optional`, and on Darwin bridging): unwrap first, then check the type of what the cast saw. Test the `Optional`-boxed shape.
 - When keys can come from Foundation (`JSONSerialization`, `NSDictionary`, `UserDefaults`, plist decoding), test with a Foundation container, not only with a Swift literal.

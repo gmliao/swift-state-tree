@@ -77,6 +77,40 @@ private func generic<R>(_ body: () throws -> R) rethrows -> R {
     try CanonicalMessagePack.$anyCodableGenericForTesting.withValue(true) { try body() }
 }
 
+/// Whether this platform's `NSMutableDictionary` holds two spellings of one key as two
+/// entries. Darwin's compares its `NSString` keys literally; swift-corelibs-foundation's may
+/// equate them by `String ==`, and then there is no merge for the cast to hide.
+private let nsDictionaryKeepsBothSpellings: Bool = twoSpellingDictionary().count == 2
+
+/// Whether `JSONSerialization` gives an `NSDictionary` with both spellings as two entries.
+/// swift-corelibs-foundation's parses into a Swift dictionary, which has already merged them.
+private let jsonSerializationKeepsBothSpellings: Bool = ((try? jsonObjectWithTwoSpellings()) as? NSDictionary)?.count == 2
+
+private func twoSpellingDictionary() -> NSMutableDictionary {
+    let dictionary = NSMutableDictionary()
+    dictionary["e\u{301}"] = 1
+    dictionary["\u{E9}"] = 2
+    return dictionary
+}
+
+private func jsonObjectWithTwoSpellings() throws -> Any {
+    try JSONSerialization.jsonObject(with: Data("{\"e\u{301}\": 1, \"\u{E9}\": 2}".utf8))
+}
+
+/// The UTF-8 of the key a `duplicateKey` refusal names, or nil for no refusal or another error.
+/// The error's `==` and its message compare the key as a `String`, which equates the two
+/// spellings, so the reported spelling is pinned by its bytes.
+private func refusedKeyBytes(_ body: () throws -> Void) -> [UInt8]? {
+    do {
+        try body()
+        return nil
+    } catch CanonicalMessagePackError.duplicateKey(let key) {
+        return Array(key.utf8)
+    } catch {
+        return nil
+    }
+}
+
 /// What an encode or decode gave: the bytes or value, or the error's type and text.
 private enum Outcome<Value>: CustomStringConvertible {
     case value(Value)
@@ -343,40 +377,59 @@ struct CanonicalAnyCodablePathTests {
 
     @Test("Two spellings of one key are refused on both paths, written and read (#805)")
     func twoSpellingsOfOneKey() throws {
+        let later = Array("\u{E9}".utf8)
         // Written: both paths end in the writer, which refuses the pair as a duplicate key.
-        let written = Outcome { try CanonicalMessagePack.encode(AnyCodable(TwoSpellings())) }
-        let writtenGeneric = generic { Outcome { try CanonicalMessagePack.encode(AnyCodable(TwoSpellings())) } }
+        #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(AnyCodable(TwoSpellings())) } == later)
+        #expect(refusedKeyBytes { _ = try generic { try CanonicalMessagePack.encode(AnyCodable(TwoSpellings())) } } == later)
         // Read: a map holding both, by hand ("e"+U+0301 then U+00E9, in byte order).
         let bytes: [UInt8] = [0x82, 0xa3, 0x65, 0xcc, 0x81, 0x02, 0xa2, 0xc3, 0xa9, 0x01]
-        let read = Outcome { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes).base }
-        let readGeneric = generic { Outcome { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes).base } }
-        let refusal = "CanonicalMessagePackError: \(CanonicalMessagePackError.duplicateKey("\u{E9}"))"
-        for outcome in [written.description, writtenGeneric.description, read.description, readGeneric.description] {
-            #expect(outcome == refusal || outcome.hasSuffix(refusal), "\(outcome)")
-        }
+        #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) } == later)
+        #expect(refusedKeyBytes { _ = try generic { try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) } } == later)
     }
 
-    @Test("A bridged NSDictionary holding two spellings of one key is refused on both paths, not merged by the cast (#805)")
+    /// Checks that every value is refused on both paths, the spelling later in byte order
+    /// reported, and that `JSONEncoder` still writes the cast's one-entry map: only the canonical
+    /// encoder refuses.
+    private func expectRefusedOnBothPaths(_ values: [(String, AnyCodable)], sourceLocation: SourceLocation = #_sourceLocation) throws {
+        let later = Array("\u{E9}".utf8)
+        for (name, value) in values {
+            #expect(refusedKeyBytes { _ = try CanonicalMessagePack.encode(value) } == later, "direct: \(name)", sourceLocation: sourceLocation)
+            #expect(refusedKeyBytes { _ = try generic { try CanonicalMessagePack.encode(value) } } == later, "generic: \(name)", sourceLocation: sourceLocation)
+        }
+        let json = try JSONEncoder().encode(values[0].1)
+        let decoded = try #require(try JSONSerialization.jsonObject(with: json) as? NSDictionary, sourceLocation: sourceLocation)
+        #expect(decoded.count == 1, "JSONEncoder: \(String(decoding: json, as: UTF8.self))", sourceLocation: sourceLocation)
+    }
+
+    @Test("A bridged NSDictionary holding two spellings of one key is refused on both paths, not merged by the cast (#805)",
+          .enabled(if: nsDictionaryKeepsBothSpellings, "this platform's NSDictionary merges the two spellings on insert"))
     func bridgedDictionaryWithTwoSpellings() throws {
         // `NSDictionary` compares its keys literally, so it holds both spellings; the bridging
-        // cast to `[String: Any]` would keep one value. A platform whose `NSDictionary` merges
-        // them on insert has nothing to refuse, and the case checks nothing there.
-        let bridged = NSMutableDictionary()
-        bridged["e\u{301}"] = 1
-        bridged["\u{E9}"] = 2
-        let fromJSON = try JSONSerialization.jsonObject(with: Data("{\"e\u{301}\": 1, \"\u{E9}\": 2}".utf8))
-        let refusal = "CanonicalMessagePackError: \(CanonicalMessagePackError.duplicateKey("\u{E9}"))"
-        for dictionary in [bridged as Any, fromJSON] {
-            guard let held = dictionary as? NSDictionary, held.count == 2 else { continue }
-            for value in [AnyCodable(dictionary), AnyCodable(["outer": dictionary])] {
-                let direct = Outcome { try CanonicalMessagePack.encode(value) }
-                let reference = generic { Outcome { try CanonicalMessagePack.encode(value) } }
-                for outcome in [direct.description, reference.description] {
-                    #expect(outcome == refusal || outcome.hasSuffix(refusal), "\(outcome)")
-                }
-            }
-        }
-        // A bridged dictionary with distinct keys still encodes, as its Swift copy does.
+        // cast to `[String: Any]` would keep one value.
+        let bridged = twoSpellingDictionary()
+        // An `Optional` around it: the cast unwraps it, so the check must too.
+        let optional: NSDictionary? = bridged
+        let inDictionary = NSMutableDictionary()
+        inDictionary["outer"] = bridged
+        try expectRefusedOnBothPaths([
+            ("NSDictionary", AnyCodable(bridged)),
+            ("in a Swift map", AnyCodable(["outer": bridged])),
+            ("Optional", AnyCodable(optional as Any)),
+            ("Optional in a Swift map", AnyCodable(["x": optional as Any])),
+            ("in an NSDictionary", AnyCodable(inDictionary)),
+            ("in an NSArray", AnyCodable(NSArray(array: [bridged]))),
+        ])
+    }
+
+    @Test("A JSONSerialization object holding two spellings of one key is refused on both paths (#805)",
+          .enabled(if: jsonSerializationKeepsBothSpellings, "this platform's JSONSerialization merges the two spellings"))
+    func jsonSerializationObjectWithTwoSpellings() throws {
+        let object = try jsonObjectWithTwoSpellings()
+        try expectRefusedOnBothPaths([("JSONSerialization", AnyCodable(object)), ("in a Swift map", AnyCodable(["outer": object]))])
+    }
+
+    @Test("A bridged NSDictionary with distinct keys encodes as its Swift copy does (#805)")
+    func bridgedDictionaryWithDistinctKeys() throws {
         let distinct = NSMutableDictionary()
         distinct["\u{E9}"] = 1
         distinct["\u{E8}"] = 2

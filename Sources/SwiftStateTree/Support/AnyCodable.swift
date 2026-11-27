@@ -90,8 +90,15 @@ extension AnyCodable {
     /// nil. An `NSDictionary` (from `JSONSerialization`, say) compares its `NSString` keys
     /// literally, so it can hold an NFC and an NFD spelling as two entries; the bridging cast to a
     /// Swift dictionary, whose keys compare by `String ==`, keeps one of them. A Swift dictionary
-    /// costs one type check.
+    /// costs one cast and one type check.
+    ///
+    /// The cast that made `bridged` also looks through `Optional` levels: an `NSDictionary?` in
+    /// an outer map (`["x": opt as Any]`) reaches here as `base` still boxed in its `Optional`.
+    /// So the type check reads the unwrapped value, not `base` itself (the class of #479: a
+    /// `type(of:)` guard behind an `as?` cast that unwraps).
     static func keyMergedByBridging(_ base: Any, into bridged: [String: Any]) -> String? {
+        var base = base
+        while let optional = base as? any NestingOptionalPayload, let payload = optional.nestingPayload { base = payload }
         guard type(of: base) is NSDictionary.Type, let dictionary = base as? NSDictionary,
               dictionary.count != bridged.count
         else { return nil }

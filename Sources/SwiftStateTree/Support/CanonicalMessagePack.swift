@@ -229,8 +229,9 @@ struct CanonicalKey: Hashable {
     /// accepted by a later toolchain; a code point unassigned here can gain a combining class
     /// later. Keys that are all ASCII skip the check: two ASCII strings are equal only when their
     /// bytes are. When any key isn't ASCII, every key is checked, ASCII ones included ("K" and
-    /// U+212A). The key reported is the one later in byte order, whatever the insertion or wire
-    /// order: the keys are sorted only after a collision is found.
+    /// U+212A). The keys are sorted only after a collision is found, so the key reported
+    /// doesn't depend on the insertion or wire order: for a pair, the spelling later in byte
+    /// order; for three spellings of one key, the second.
     static func firstEquivalentDuplicate<Keys: Collection>(in keys: Keys) -> String? where Keys.Element == CanonicalKey {
         guard keys.contains(where: { !$0.isASCII }) else { return nil }
         var seen = Set<String>(minimumCapacity: keys.count)
@@ -1074,7 +1075,7 @@ private struct CanonicalNodeDecoder: Decoder {
     let codingPath: [CodingKey]
     /// An integer decodes into `Double` or `Float` when it converts exactly (`decode(_:from:integralFloats:)`).
     let integralFloats: Bool
-    var userInfo: [CodingUserInfoKey: Any] { CanonicalMessagePack.encoderUserInfo }
+    var userInfo: [CodingUserInfoKey: Any] { [:] }
 
     static func unbox<T: Decodable>(_ node: CanonicalNode, as type: T.Type, codingPath: [CodingKey], integralFloats: Bool) throws -> T {
         #if DEBUG

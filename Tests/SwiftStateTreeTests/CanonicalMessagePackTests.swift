@@ -471,6 +471,22 @@ func equivalentKeysRefusedOnDecode() {
     }
 }
 
+@Test("With three spellings of one key, the second in byte order is reported, in every order (#805)")
+func threeSpellingsReportTheSecond() {
+    // "A"+U+030A, U+00C5 and U+212B ANGSTROM SIGN are one key under String ==; in byte order
+    // (0x41…, 0xC3 0x85, 0xE2 0x84 0xAB) the second is U+00C5.
+    let spellings = ["A\u{30A}", "\u{C5}", "\u{212B}"]
+    #expect(spellings[0] == spellings[1] && spellings[1] == spellings[2])
+    let second = Array("\u{C5}".utf8)
+    let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+    for order in orders {
+        let keys = order.map { CanonicalKey(spellings[$0]) }
+        #expect(CanonicalKey.firstEquivalentDuplicate(in: keys).map { Array($0.utf8) } == second, "\(order)")
+        let bytes = mapBytes(order.map { (spellings[$0], UInt8($0)) })
+        #expect(refusedKeyBytes { _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes) } == second, "\(order)")
+    }
+}
+
 @Test("Keys that differ under String == stay keys, non-ASCII ones and NFD ones included")
 func distinctNonASCIIKeysRoundTrip() throws {
     // "é" (NFC), "è", an NFD key with no other spelling beside it, and ASCII keys with them.
