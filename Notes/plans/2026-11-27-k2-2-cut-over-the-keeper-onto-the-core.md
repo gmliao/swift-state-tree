@@ -252,6 +252,6 @@ This section records two changes to commit 3. The text above stays as it was pla
   - The two keeper-only sites go with their flows:
     - LK:1355 is `tearDownAfterFailedInitialization`. Commit 1 routes it, as the teardown effect (§3.1).
     - LK:2606 is `runForceShutdown`'s branch without a turn (the drain already started, a failed initialization, or re-evaluation). Commit 1 routes it with `.shutdown`; the re-evaluation arm stays on the replay owner until #612.
-- **The sync queries.** `runsSyncPhaseInTurn(of: owner)` runs in the same segment as the query's send, with no await between, as the keeper's entry does. `bindSyncRequester` runs in the query's step.
+- **The sync queries.** `runsSyncPhaseInTurn(of: owner)` runs in the same segment as the query's send, with no await between, as the keeper's entry does. `bindSyncRequester` runs in the query's step. **No other step runs between the two:** a query is answered synchronously, in place, on the shared executor (`TurnActor.query`), so the read and the query's step are one actor job. The adopter calls it from the owner's isolation with no await: the harness in K2-2a, the facade's `assumeIsolated` forward from commit 4. The read still rides the query (`inTurnForOwner`), so the step uses the value read at the send and never reads the port again.
 
 The admission path still waits for #940 (§3, commit 3).
