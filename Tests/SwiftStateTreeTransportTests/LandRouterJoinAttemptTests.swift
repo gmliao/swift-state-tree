@@ -723,13 +723,13 @@ struct LandRouterFlipFailureGenerationTests {
             _ = await h.connect(a2)
             newerJoin = try h.startJoin(a2, requestID: "join-a2", player: "p1")
             #expect(await failed.waitForArrivals(1), "A's join failed (superseded) and its failure path is held")
-            // The server close tells the router first, then closes the connection; the
+            // The server close awaits the router's disconnect, then closes the connection; the
             // connection's own disconnect callback follows, and A's client is gone.
             #expect(await disconnect.waitForArrivals(1), "the 4017's disconnect reached the router")
             disconnect.open()
             #expect(await first.waitUntilClosed(), "A was closed by its supersede")
+            #expect(await !h.router.hasHandshakePhase(a), "the router handled A's disconnect before the close")
             await h.transport.handleDisconnection(sessionID: a)
-            #expect(await attemptPoll { await !h.router.hasHandshakePhase(a) }, "the router handled A's disconnect")
         case .landClosed:
             await h.adapter.endSessionTicketsForTeardown()
             #expect(await failed.waitForArrivals(1), "A's join failed (land closed) and its failure path is held")
