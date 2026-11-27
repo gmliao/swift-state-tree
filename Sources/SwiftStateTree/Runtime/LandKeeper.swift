@@ -1846,7 +1846,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Joins `playerID` through the land's admission (CanJoin, `MaxPlayers`), as
     /// `join(session:clientID:sessionID:services:)` with a `PlayerSession` of that player ID (no
     /// device ID, not a guest, no metadata). A denial throws `JoinError.custom` with CanJoin's
-    /// reason; a join past the player limit throws `JoinError.roomIsFull`.
+    /// reason; a join past the player limit throws `JoinError.roomIsFull`. The player admitted is
+    /// the one CanJoin's `.allow(playerID:)` names, which can differ from `playerID`; this method
+    /// returns nothing, so a caller that needs the decision (the admitted ID) uses
+    /// `join(session:clientID:sessionID:services:)`.
     ///
     /// - Parameters:
     ///   - playerID: The player's unique identifier.
