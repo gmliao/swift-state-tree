@@ -1,5 +1,27 @@
 # A barrier wait in SwiftStateTurns (#953)
 
+Revision 3 (2026-11-27). Answers Review's NOT GO on revision 2, whose two must-fixes broke the hook's own contract ("cleanup before the caller's answer leaves"):
+1. **The answer leaves after the hook's outputs.** `.withdrawn` and `.answered` resumed their caller before the drain flushed the hook's outputs. Now every caller whose wait ends without a release is *settling* from the end until its hook has stepped (§2.8). Its fixed answer (the withdraw's `CancellationError`, or the reply that claimed it) is then published in the drain's replies phase, after the outputs. Test: `withdrawAnswerAfterHookOutputs`, `answeredAfterHookOutputs`, `timeoutAfterHookOutputs`.
+2. **A settling caller counts as claimed.** After `endAll`, a reply from `handleAbandoned` or from an earlier `.ended` hook reached a caller whose `.ended` hook was still queued. Now the first reply published for a settling caller is held as its answer until its hook has stepped, and a later one is dropped. Test: `abandonReplyHeldUntilEndedHook`, `earlierHookReplyHeld`.
+
+The shoulds:
+- **Wait checks in a new order:** `.ended`, then `.noWaiter` (a caller that has no waiter or is settling with a fixed answer), then the two traps, then `.cancelled`, then `.expired`. So a settled caller with a lingering `reply(after:)` is refused, not trapped (`settledCallerRefusedBeforeTrap`).
+- **The budget's edges:**
+  - a positive budget under one nanosecond is expired (`subNanosecondBudget`);
+  - from `Int64.min`, the far edge saturates exactly (`saturatingDeadlineArithmetic`).
+- **`complete`'s `repliesAfter` move** is pinned by an exit test, which the cloud worker runs (a `wait` in the completion step of a request with a staged reply must stop). No non-trapping path can see it.
+- **`WaitEnd.error` is `(any Error)?`:** `TurnError.timedOut` and `TurnError.closed` for the two ends the hook answers, and `nil` for `.withdrawn` and `.answered`. The default hook replies only when there is one.
+- **Mail coverage:** `BarrierMailMachine` covers `MailTurn.release` (`mailRelease`), the cancellation's mailbox take (`mailTakeBeatsCancel`) and the ordinals (`barrierOrdinals`).
+- **Two new cases:** `cancelledBeatsExpired`, and a compaction with live and stale barrier entries (`compactionKeepsLiveBarrierEntries`).
+- **§2.7** now says two ordinals.
+
+The nits:
+- `endAll` clears `barrierTimers` before the stop.
+- `waitsEnded` is a `FIFO`, and the force-unwrap is gone.
+- `TurnError`'s doc is fixed, and `releaseOrder`'s title too.
+- §2.6 says what `release(where:)` and `waiterCount(on:)` see after `endAll` in the same step.
+- The plans README row is updated.
+
 Revision 2 (2026-11-27), code-first. Review's NOT GO on revision 1 was the plan's second semantics NOT GO, so the barrier is now implemented in SwiftStateTurns with core tests for every exit (`Sources/SwiftStateTurns/Barrier.swift`, `Tests/SwiftStateTurnsTests/BarrierTests.swift`), and this plan describes that code. Revision 1's seven must-fixes shared one theme: a waiter's leftovers (its flag, payload and timer) need an owner on every exit, not just the release. Each is answered here:
 1. **The flag's owner** is the cancellation's hop. It removes the flag on every exit, the stale ones included. A reply never touches the flag set (§2.3).
 2. **`.ignoresCancel` stays handler-free.** The flag and the `.cancelled` refusal are `.cancelsCall`'s only (§2.3).
@@ -82,14 +104,12 @@ Every payload comes back exactly once, by one of three routes:
 | Doesn't register: no waiter, cancelled, ended | `WaitOutcome.refused`, in the waiting step | the waiting step |
 | Expired budget (`<= .zero`) | `WaitOutcome.expired`, in the waiting step | the waiting step |
 | `release(where:)` | the returned array, in the releasing step | the releasing step: a reply, or a continuation that may `wait` again |
-| `.cancelsCall` withdraw | `handleWaitEnded(.withdrawn)`, stepped in the cancellation's entry | the core answers `CancellationError` after the hook's step; a reply from the hook finds no waiter |
-| Timeout | `handleWaitEnded(.timedOut)`, stepped in the deadline's entry | the hook (default `TurnError.timedOut`) |
-| A reply published while waiting | `handleWaitEnded(.answered)`, its own step after the drain | the published reply, held by the driver until the hook's step has run |
-| `endAll()` | `handleWaitEnded(.ended)`, one step per wait, oldest first, after the ending step and after its replies claimed theirs | the hook (default `TurnError.closed`) |
+| `.cancelsCall` withdraw | `handleWaitEnded(.withdrawn)`, stepped in the cancellation's entry | the core's `CancellationError`, published after the hook's outputs; a reply from the hook is dropped |
+| Timeout | `handleWaitEnded(.timedOut)`, stepped in the deadline's entry | the first reply published for it from the timeout on: the hook's (default `TurnError.timedOut`) |
+| A reply published while waiting | `handleWaitEnded(.answered)`, its own step after the drain | the published reply, held until the hook's step and published after its outputs; a reply from the hook is dropped |
+| `endAll()` | `handleWaitEnded(.ended)`, one step per wait, oldest first, after the ending step and after its replies claimed theirs | the first reply published for it from the end on (an abandonment's, an earlier hook's, or its own hook's, default `TurnError.closed`), published after its hook's outputs |
 
-So a #958 join that holds a #852 reservation undoes it in whichever step gets the payload back. Every hook steps before the caller's answer leaves the core, as #958's keeper ends the reservation before the join returns:
-- the withdraw's and the timeout's hooks run inside their entry;
-- a claimed reply's continuation is held in the hook's queue entry and resumed right after the hook.
+So a #958 join that holds a #852 reservation undoes it in whichever step gets the payload back. Every hook steps, and its outputs are flushed, before the caller's answer leaves the core, as #958's keeper ends the reservation before the join returns (§2.8).
 
 The public type is `ReleasedWait`, not `Released`. The plain name collided with a test helper class in SwiftStateTurnsTests, and an adopter's own `Released` would collide the same way.
 
@@ -97,7 +117,11 @@ Oldest first: `release(where:)` sorts the matching callers by `InputID` across t
 
 ### 2.2 Answers are `Result`s; the core answers only the withdraw
 
-Every answer is the machine's (`turn.reply`, a `Result<M.Reply, any Error>`), except the withdraw's `CancellationError`, which the core gives as it does for every `.cancelsCall` caller today. The hook's default answers `why.error`; a machine replaces it to answer a value instead (the freeze answers `false` on a timeout).
+Every answer is the machine's (`turn.reply`, a `Result<M.Reply, any Error>`), except the withdraw's `CancellationError`, which the core gives as it does for every `.cancelsCall` caller today. `WaitEnd.error` is `(any Error)?`:
+- `TurnError.timedOut` for `.timedOut`, and `TurnError.closed` for `.ended`: the two ends the hook answers;
+- `nil` for `.withdrawn` and `.answered`, whose caller has its answer.
+
+The default hook replies `.failure(error)` only when there is one. A machine replaces it to answer a value instead (the freeze answers `false` on a timeout).
 
 ### 2.3 Cancellation: the flag and its owner
 
@@ -161,12 +185,12 @@ One rule, at the place a reply is published (`drainProducts`): a published reply
   - a waiter whose reply was staged (a `reply(after:)` of a request `endAll` closes, or one staged in that step) is claimed by it, `.answered`, with that reply as its answer (`endAllWithStagedReply`);
   - every other waiter goes to the hook queue as `.ended`, oldest first.
 
-  Each payload comes back in a step of its own after the ending step. A step that must answer some callers otherwise (`.shutdown` with the destroy's result) releases them before `endAll`, in the same step (`releaseThenEndAll`). After it, `wait` is refused `.ended`.
+  Each payload comes back in a step of its own after the ending step. Until the driver ends them, `release(where:)` and `waiterCount(on:)` in the ending step still see the waits. `endAll` clears their timers with the deadlines. A step that must answer some callers otherwise (`.shutdown` with the destroy's result) releases them before `endAll`, in the same step (`releaseThenEndAll`). After it, `wait` is refused `.ended`.
 - **A wait is caller-bound** (an `InputID` with a waiter). A continuation of internal work, such as a drain started by the land's own timer, has no caller, so it can't be a barrier wait. It stays model state (a phase), released by the same step that would release the waiters.
 
 ### 2.7 Replay, counts and the public API
 
-- **Replay:** `wait` stops the process on a replaying core. The flag is ambient, so a replay can't re-read it. Every adopter in §1 is a live keeper path (#612). The registration, the release, the refusals and the `.answered` and `.ended` hooks take no entry. The `.answered` and `.ended` hooks take a dispatch ordinal each, as an abandonment's step does. A live timeout takes one through `entryBoundary`; the withdraw's hook runs inside the cancellation's entry.
+- **Replay:** `wait` stops the process on a replaying core. The flag is ambient, so a replay can't re-read it. Every adopter in §1 is a live keeper path (#612). The registration, the release, the refusals and the `.answered` and `.ended` hooks take no entry. Every hook step takes a dispatch ordinal, as an abandonment's step does. So a live timeout takes two, its `entryBoundary` and its hook, as a timer's fire takes its boundary and its input's step. A withdraw takes two too: the cancellation's boundary and the hook. A stale timeout takes none (`barrierOrdinals`, on a mailbox machine).
 - **Counts:** `waiterCount(on:)` is the production read. Tests count events: `TurnStats.barrierWaits` and `TurnDiagnostic.barrierWait` per registration, plus the `package` reads `barrierWaitersForTesting` and `cancelledCallersForTesting`.
 - **Public API (additive):**
   - `TurnMachine.BarrierKey`, `.BarrierPayload` and `.handleWaitEnded` (defaulted);
@@ -177,6 +201,21 @@ One rule, at the place a reply is published (`drainProducts`): a published reply
   The new public enum cases break an exhaustive switch over those enums: `TurnDiagnostic.barrierWait` and `TurnError.timedOut`. In this repository only the tests' `Fixture.observe` switches over `TurnDiagnostic`.
 
   `package`: `DeadlineEntry.kind` and `DeadlineKind`; `init(…, isTimer:)` stays as a convenience.
+
+### 2.8 Settling: the answer leaves after the hook
+
+A caller whose registered wait ends without a release is *settling* (`Runtime.settling`) from the end until its hook has stepped:
+- **The withdraw** settles with a fixed answer, `CancellationError`. The waiter stays registered; the hop steps the hook and runs a segment.
+- **A claiming reply** settles with that reply as its fixed answer.
+- **The timeout and `endAll`** settle with no answer yet.
+
+While it settles, the first reply published for the caller becomes its answer, held; a later one is dropped (`claimForBarrier`). When the hook has stepped:
+- **With an answer:** the caller moves to `releasing`, and the answer is published from `released` in the drain's replies phase, after the hook's outputs. A reply from the hook is dropped meanwhile.
+- **With none:** the caller is an ordinary waiter again, so the hook's own reply (or a later one) answers it, through the same replies phase.
+
+So every answer leaves after the hook's outputs, which is the driver's own order: outputs, then replies. A `wait` on a settling caller with a fixed answer is refused `.noWaiter`. One whose answer isn't fixed (a `.timedOut` hook that waits its caller again) may wait.
+
+The prior art is Erlang's `gen_server` with monitors: the server's cleanup for a caller runs in the server before anything else observes the caller's end.
 
 ## 3. Questions
 

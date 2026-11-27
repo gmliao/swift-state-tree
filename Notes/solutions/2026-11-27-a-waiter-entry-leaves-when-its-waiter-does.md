@@ -10,6 +10,7 @@ symptoms:
   - "a large wait budget is answered as expired at once"
   - "a cancellation flag outlives its call when the cancel lands after the reply"
   - "a held reservation is never undone because the wait ended by a timeout, a withdraw or the core's end"
+  - "a caller wakes before the cleanup hook's outputs are flushed, or before its hook has run at all"
 root_cause: the_wait_entry_and_the_waiter_had_separate_lifetimes_and_the_deadline_was_computed_by_the_caller_with_wrapping_arithmetic
 resolution_type: design_change
 severity: medium
@@ -52,6 +53,15 @@ Revision 1 still lost leftovers on the paths other than a release: the flag set 
 - **The payload:** it comes back through `WaitOutcome` when the wait doesn't register, through `release(where:)`, or through `handleWaitEnded` when a registered wait ends any other way. That includes a published reply, the hook stepping before the caller's answer leaves.
 - **The timer:** it has a kind on its heap entry, with a fresh generation per registration.
 
+Revision 2 still let the answer overtake the cleanup:
+- **The withdraw and a claiming reply** resumed their caller right after the hook's step, before the drain flushed the hook's outputs.
+- **After `endAll`,** a reply from an abandonment or from an earlier hook reached a caller whose own hook was still queued.
+
+Revision 3 makes such a caller *settling* from the end of its wait until its hook has stepped:
+- the first reply for it is held as its answer;
+- the answer is published in the drain's replies phase, after the hook's outputs;
+- the hook's own reply is dropped when an answer was already fixed.
+
 ## Prevention
 
 - Any table that stands for waiting callers: list every path that ends a caller (answer, timeout, cancel, close, drain), and check that each removes the entry in the same step. Prior art: the kernel wait queue's `finish_wait`, where a waiter removes itself on wake-up or interrupt.
@@ -60,3 +70,8 @@ Revision 1 still lost leftovers on the paths other than a release: the flag set 
 - Counts for tests are of events (a diagnostic, a stats counter), never a per-key total that only grows.
 - For every leftover a waiter carries (a cancellation flag, a payload that holds a reservation, a timer), name the owner that removes it on each exit, the stale exits included: release, withdraw, timeout, an answer by another path, teardown. A table of exits by leftover is the review aid. Prior art: Erlang's `gen_server` deferred `reply/2` with monitors, which tells the server when a waiting caller dies so it can clean up.
 - When the design's edge cases keep moving in review, write the code and the tests for every exit first. A second semantics NOT GO on a plan means code-first.
+- A cleanup hook's contract, "before the caller's answer leaves", has two halves:
+  - **the hook has stepped:** a caller counts as claimed from the moment its end is decided until its hook runs, whoever replies in between;
+  - **its outputs are flushed:** the answer goes through the same publication phase as every reply, never a direct resume next to the hook's step.
+
+  Pin both halves with a hook that leaves a mark (an output, or a clock read once outputs are closed) and a caller that reads the mark when it resumes. Prior art: Erlang's `gen_server` with monitors, where the server's cleanup runs before anything else observes the caller's end.
