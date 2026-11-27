@@ -33,52 +33,31 @@ public func safeTaskSleep(for duration: Duration) async throws {
     //
     // NOTE: We intentionally avoid Task.sleep(for:) here. It was observed to crash in
     // macOS release builds under load (SIGABRT in swift_task_dealloc).
-    let comps = duration.components
-    let seconds = comps.seconds
-    let attoseconds = comps.attoseconds
-    
-    // Validate non-negative values
-    guard seconds >= 0, attoseconds >= 0 else {
-        // Invalid duration, skip sleep
+    //
+    // NOTE: We read `attoseconds` (Int128), not `components`. `Duration.components` converts the
+    // seconds part to Int64 and traps for a duration past Int64.max seconds (#963).
+    let attoseconds = duration.attoseconds
+
+    // A negative duration needs no sleep.
+    guard attoseconds >= 0 else {
         return
     }
-    
-    // Convert attoseconds to nanoseconds (1e18 attos per second, 1e9 attos per nano)
-    let nanosFromAttos = UInt64(attoseconds / 1_000_000_000)
-    
-    // Convert seconds to UInt64, checking for overflow
-    guard let sec = UInt64(exactly: seconds) else {
-        // Duration too large, skip sleep
-        return
-    }
-    
-    // Multiply seconds by 1 billion to get nanoseconds
-    let mul = sec.multipliedReportingOverflow(by: 1_000_000_000)
-    guard !mul.overflow else {
-        // Overflow detected, skip sleep
-        return
-    }
-    
-    // Add attosecond-derived nanoseconds
-    let add = mul.partialValue.addingReportingOverflow(nanosFromAttos)
-    guard !add.overflow else {
-        // Overflow detected, skip sleep
-        return
-    }
-    
-    let totalNanos = add.partialValue
-    
+
+    // 1e9 attoseconds per nanosecond. A duration past UInt64's nanoseconds (about 584 years)
+    // sleeps for the longest the sleep can take, until cancelled.
+    let nanos = attoseconds / 1_000_000_000
+    let totalNanos = nanos > Int128(UInt64.max) ? UInt64.max : UInt64(nanos)
+
     // Use Task.sleep(nanoseconds:) instead of Task.sleep(for:)
     try await Task.sleep(nanoseconds: totalNanos)
 }
 
 /// The longest single sleep of `safeTaskSleep(until:)`: one hour.
 ///
-/// This cap is the loop's spin guard, not only a convenience. `safeTaskSleep(for:)` returns at
-/// once, without throwing, when its nanoseconds overflow `UInt64` (about 584 years). A far
-/// deadline sleeping its whole remainder would make every pass return at once, read the clock and
-/// go round again: a busy spin that never reaches a suspension point, so it ignores cancellation
-/// too. With the cap, every sleep is a real one, and a longer wait is taken in chunks.
+/// This cap keeps the clock read between sleeps. `safeTaskSleep(for:)` clamps a duration whose
+/// nanoseconds overflow `UInt64` (about 584 years) to the longest sleep it can take, so a far
+/// deadline sleeping its whole remainder would never read the clock again. With the cap, every
+/// sleep is short, and a longer wait is taken in chunks.
 private let longestDeadlineSleepChunk: Duration = .seconds(3600)
 
 /// Sleeps until `deadline` on the continuous clock, without `Task.sleep(until:clock:)`.
