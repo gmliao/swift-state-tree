@@ -1,6 +1,6 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
-Revision 4 (2026-11-27): item 15's two design points (K22-Q5, K22-Q6), found while drafting commit 0; §4 item 15's row. Revision 3 (2026-11-27): Review's NOT GO on rev 2. Commit 1 maps every K2-1b request to its core effect, result input or owner call (§3.1, with #942's boundary table as Review corrected it). Every #938 refusal is mapped to the commit that lifts it, and commit 4's precondition includes "no refusal reachable" (§3.2). Commit 0's box table lives on the harness until commit 4. Item 16 lists its tests. Item 15 goes in commit 0. The parent's §6 is amended (§8). The [#938] points are refreshed at #938's round-3 head fbc27f72. Revision 2: P-K22-3's Linux output quoted (§7). Revision 1: P-K22-1 run, P-K22-2 settled by reading the code; two PRs (K22-Q4); commits 0, 2 and 3 independent of commit 1. Revision 0 was the prep draft. It is based on K2-1's shape in #938 (head 25ec1efb), which is still in review. Each point that depends on Review's verdict on #938 is marked **[#938]**. The parent plan is `Notes/plans/2026-11-25-k2-cut-over-onto-the-turn-core.md` (here "K2 §n"), whose §6 defines K2-2 and K2-3 as one PR, and whose §16 items 14–18 are left open for K2-2.
+Revision 5 (2026-11-27): Review's GO on rev 4 with four shoulds. The services table's home while unwired (commit 3). K22-Q5's in-flight table moves to the model. The loop epoch's bump step and the stale `.tickDue`'s fold (Q3 note). §3.2's follow-up row follows #938's round-3 contract. K22-Q5 and K22-Q6 are answered (§6). Revision 4 (2026-11-27): item 15's two design points (K22-Q5, K22-Q6), found while drafting commit 0; §4 item 15's row. Revision 3 (2026-11-27): Review's NOT GO on rev 2. Commit 1 maps every K2-1b request to its core effect, result input or owner call (§3.1, with #942's boundary table as Review corrected it). Every #938 refusal is mapped to the commit that lifts it, and commit 4's precondition includes "no refusal reachable" (§3.2). Commit 0's box table lives on the harness until commit 4. Item 16 lists its tests. Item 15 goes in commit 0. The parent's §6 is amended (§8). The [#938] points are refreshed at #938's round-3 head fbc27f72. Revision 2: P-K22-3's Linux output quoted (§7). Revision 1: P-K22-1 run, P-K22-2 settled by reading the code; two PRs (K22-Q4); commits 0, 2 and 3 independent of commit 1. Revision 0 was the prep draft. It is based on K2-1's shape in #938 (head 25ec1efb), which is still in review. Each point that depends on Review's verdict on #938 is marked **[#938]**. The parent plan is `Notes/plans/2026-11-25-k2-cut-over-onto-the-turn-core.md` (here "K2 §n"), whose §6 defines K2-2 and K2-3 as one PR, and whose §16 items 14–18 are left open for K2-2.
 
 ## 1. Goal
 
@@ -53,7 +53,7 @@ Tests: the differential gets a job case per lane shape (a resolver job that succ
 - The queries `.syncTurnNow`, `.syncTurnTicket` and `.settle` are routed; `syncTurnNow` keeps its nested `.skipped` answer through `isStepping` (K2 §4.2 matrix).
 - `.syncStreamDraft` (the `submitSyncStream` entry) is routed for its awaited callers (the `.legacyCycle` branch, the disconnect's clear).
 - The package admission path `admitJoiningSessionInStep(…, recordsSyncStream:) -> (JoinAdmission, [SyncStreamDraft])` (K2 §4.5) replaces the port's `admitJoiningSession` call in the join step. It must land with the join's step on the core, not after it: otherwise every recorded supersede is refused and ends the land. `SyncStreamLeaveReplayTests.supersedingJoinWithOnJoinRecordsItsClear` (tick and tickless) compares the stream with P-K2-2b's golden, with the refusal count at 0.
-- The per-player services table moves to `LiveLandTurns`' storage (K2 §4.5): the 10 write sites become outputs `flush` applies. `KeeperPlayerServicesTests` runs unchanged.
+- The per-player services table's writes become outputs that `flush` applies: the 10 write sites emit `KeeperOutput.services`. While K2-2a is unwired, the table stays where K2-1 keeps it, on the side (`side.playerServices`, in the side store's census row). The adopter's `flush` applies the outputs there: the keeper on its own path, `KeeperCoreHarness` on the core. Commit 4 moves the table to `LiveLandTurns`' storage (K2 §4.5) with a `live.` census row, as commit 0's box table moves. `KeeperPlayerServicesTests` runs unchanged.
 - The binding token: the attached transport rides the inputs that need a port (K2 §4.2), and `setTransport` becomes a step that writes it.
 
 **4. The cut-over: the facade, `KeeperOwner` and the drivers.**
@@ -97,7 +97,7 @@ So the routed subset gains four new result inputs, `.initializeRecorded`, `.init
 | a join that syncs in the turn | `KeeperCoreRefusal` | 3 | the package admission path and the binding token |
 | any input of a tickless land with a transport (except `.startLand`) | `KeeperCoreRefusal` | 3 | the binding token (the attached transport rides the input) |
 | a tickless `.admitServerInput` | a precondition (the answer has no error channel) | 0 | the drain kick as a core queue entry (commit 0's last bullet) |
-| `scheduleJoinSyncTurn`, `requestSyncTurnAfterThisTurn`, `retrySyncOnlyTurnAfterWriterDrain` (#938 round 2) | refused by name in the step (`refusesSyncFollowUpOnCore`) | 3 | each follow-up becomes a core queue entry carrying the binding token. The follow-ups' own redesign stays K3's |
+| `scheduleJoinSyncTurn`, `requestSyncTurnAfterThisTurn`, `retrySyncOnlyTurnAfterWriterDrain` (#938 round 2) | **dropped after the completed phase**, by name (`refusesSyncFollowUpOnCore`, #938 round 3): the step's inputs, port events and sync result are applied, and only the follow-up is skipped. A core that holds this refusal isn't stepped again; the differential's `violations == []` ends the comparison there | 3 | each follow-up becomes a core queue entry carrying the binding token. The follow-ups' own redesign stays K3's |
 | `actionTableViolations`, core side: "a job intake" | a violation entry | 0 | the job lane on the core |
 | `actionTableViolations`, core side: "requested sync work / pending follow-up" | a violation entry | 3 | with the follow-ups above |
 
@@ -157,14 +157,14 @@ Both were found while drafting commit 0, at #938's head fbc27f72. Each is a prop
 
 **Proposal:**
 - The effect carries `InputResult`, which is plain and holds the `FailureID`, not the error.
-- The side keeps an in-flight owner table, `inFlightRecordResults: [FailureID: Int64]`, mapping each failure to its sequence. The step that runs the effect writes it, and `.recordTaken`'s step clears it when it answers the waiter.
+- The **model** keeps an in-flight owner table, `inFlightRecordResults: [FailureID: Int64]`, which maps each failure to its sequence. It is plain data, so the digest covers it on both paths (Review, rev 4). The step that runs the effect writes it, and `.recordTaken`'s step clears it when it answers the waiter. On the keeper's path it stays empty, because `inputTurnResults` owns those failures there.
 - The owner count reads that table as a fourth owner.
-- A census row names the new table. Commit 6 removes `inputTurnResults` as an owner, and the in-flight table stays.
+- Commit 6 removes `inputTurnResults` as an owner, and the in-flight table stays.
 
 **K22-Q6, what the differential compares.** #938's digest compares the model whole (`otherModelFields`), `inputTurnResults` included. In K2-2a the keeper path keeps that table until commit 6, and the core path doesn't. So the field differs while a record is in flight.
 
 **Proposal:**
-- `inputTurnResults` becomes a stated asymmetry, like `hasHeldTransport`, with its reason.
+- `inputTurnResults` becomes a stated asymmetry, like `hasHeldTransport`, with its reason. It is checked per path against that path's fixture: on the keeper's path it holds the in-flight results, and on the core it is always empty.
 - The digest compares instead each path's results as its callers received them: the `InputOutcome`, or the error's description, in sequence order.
 - `expectSame` also asserts that both sides hold none once the record is taken: `inputTurnResults` on the keeper path, and the in-flight table on the core path.
 
@@ -186,20 +186,20 @@ The asymmetry goes with the keeper path in commit 6.
 | K22-Q2 | `.admitClientEvent`'s answer: no value, as today (commit 2)? | **No value** (Review, rev 2): no caller in Sources reads a sequence from the client-event intake. `Result<Int64>` is dropped |
 | K22-Q3 | The loop drivers: core timers only if #762 is in, else the loop Task sends with the existing loop generation as its epoch (commit 4)? | **Yes** (Review, rev 2), with the epoch named. Reading the loop code at #938's head shows there is **no** loop generation; see the note below the table |
 | K22-Q4 | One PR for K2-2 + K2-3 (K2 §6), or two: K2-2a (commits 0–3, unwired) and K2-2b (4–6, the cut-over)? | **Two** (Review, rev 2). The parent's §6 is amended in this PR (§8) |
-| K22-Q5 | Item 15: an in-flight owner table on the side for the failures a record effect carries (§4.2)? | Review (proposal) |
-| K22-Q6 | Item 15: `inputTurnResults` as a stated asymmetry, with the callers' results compared instead (§4.2)? | Review (proposal) |
+| K22-Q5 | Item 15: an in-flight owner table for the failures a record effect carries (§4.2)? | **Yes** (Review, rev 4), with the table in the model, not the side |
+| K22-Q6 | Item 15: `inputTurnResults` as a stated asymmetry, with the callers' results compared instead (§4.2)? | **Yes** (Review, rev 4), with the asymmetry checked per path |
 
 **The Q3 note.** There is no loop generation to reuse:
 - `configureTickLoop` (LK:3019 at fbc27f72) cancels the old `tickTask` and starts a new one. `configureSyncLoop` (LK:4539) does the same with `syncTask`.
 - A stale iteration is stopped only by its own task's cancellation, `runTick`'s `guard !Task.isCancelled` (LK:3449).
 - That guard isn't enough on the core: a loop can send `.tickDue` and then be cancelled before the input steps. The send already left the cancelled task, so the step can't see its cancellation.
 
-**So commit 4 adds the epoch.** It is a `loopEpoch: UInt64` in the model:
-- the step that configures or stops the loops bumps it (initialization, a reconfigure, the stop);
-- each loop Task captures it at its start, and `.tickDue` and `.syncDue` carry it;
-- a step whose epoch isn't current drops the input, with no outputs.
+**So commit 4 adds the epoch.** It is a `loopEpoch: UInt64` in the model. `configureTickLoop` has one caller, the initialization (LK:1623), so the loops start once per keeper and stop once:
+- **Starting.** `.initializeDone`'s step (§3.1) bumps the epoch, and its output carries the new value to `.startLoops`, the owner call after the step. The owner's loop Tasks capture that value, and every `.tickDue` and `.syncDue` they send carries it.
+- **Stopping.** The step that stops the loops, `.shutdown`'s or the drain's first step, bumps it again, and the owner call that cancels the tasks follows it.
+- **A stale input.** A `.tickDue` or `.syncDue` whose epoch isn't current is dropped. A `.tickDue` can carry a folded sync (the pending fold rides it). Dropping it drops that fold too, with no outputs. The only bump after the start is the stop, which moves on to the drain, and the drain's own final sync covers what the fold held. So nothing a live loop needs is lost. If a later change adds a reconfigure, that change must re-queue the fold as a sync-only `.syncDue` with the new epoch, and the precondition on the bump names this.
 
-A differential case pins it: a `.tickDue` from the old loop, sent before a reconfigure and stepped after it, applies nothing.
+A differential case pins it: a `.tickDue` with a fold, sent before the stop and stepped after it, applies nothing, and the drain's sync still runs.
 
 ## 7. Probes
 
