@@ -642,6 +642,14 @@ extension KeeperModel {
                 // J2 took the reservation and the arrival in the segment that just ended.
                 decided = made
                 next = step(behavior, store) { m, side, outputs in Result { try m.joinKickCheck(behavior, &side, &outputs, made) } }
+            case .awaitLeave:
+                // A join waiting for its player's leave in flight (#943) parks in a barrier
+                // table the core doesn't have yet (K2-2 commit 2, #948's `coreBarrierWaits`):
+                // refused on the core until then. The differential has no such row.
+                let reason = "a join waiting for a leave in flight needs the core's barrier waits (K2-2 commit 2)"
+                store.withSide { side in side.coreInputReplies.refusals.append("join: \(reason)") }
+                finishJoin(behavior, store, &turn, .failure(KeeperCoreRefusal(reason: reason)), decided: decided, caller: caller)
+                return
             case let .kick(made, oldClientID, oldSessionID, kickedGeneration):
                 // The kick is the leave flow, nested, of the kicked entry alone: L1 in this
                 // step; J2c runs when it ends.

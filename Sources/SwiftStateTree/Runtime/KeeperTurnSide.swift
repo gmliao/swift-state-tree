@@ -80,6 +80,15 @@ package struct KeeperTurnSide {
     /// The replay fields (D17): set on a re-evaluation keeper, nil on a live one, so a body's
     /// write keeps its mode guard and unwraps inside it.
     var replay: ReplayFields?
+    /// Joins waiting for a leave of their player in flight (#943), parked by player, released
+    /// by the segment that ends the leave's window (`endLeaveInFlight`), or resumed with
+    /// `CancellationError` by the waiter's own cancel, whichever takes it first. Moves onto the
+    /// turn core's barrier wait (#953).
+    var leaveEnds = KeyedBarrierWaits<PlayerID>()
+    /// Tests: the waiters' cancels, by outcome (`leaveEndWaiterCancelsForTesting`).
+    var leaveEndWaiterCancelsForTesting: (removed: Int, foundGone: Int) = (0, 0)
+    /// Tests: callers of `waitForLeaveEndWaitersForTesting`, by watcher ID.
+    var leaveEndWaiterWatchersForTesting: [UInt64: (player: PlayerID, count: Int, continuation: CheckedContinuation<Void, Never>)] = [:]
     /// Tests: callers of `waitUntilDrainStartedForTesting`, resumed when the drain's handle is
     /// installed.
     var drainStartedWaitersForTesting: [Int: CheckedContinuation<Void, Never>] = [:]

@@ -72,6 +72,11 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     /// The initialization's starter (the caller that created its task), after the task ended
     /// and before the starter clears it (#934): a waiter that resumes first runs here.
     case initializationStarterResumed
+    /// A join's cancel while it waits for its player's leave (#943), before it removes its
+    /// waiter.
+    case leaveEndWaiterCancel
+    /// The same cancel, after it removed its waiter or found it gone.
+    case leaveEndWaiterCancelled
     /// The start of each input drain, before its first turn.
     case inputDrain
     /// A tickless server input's task, before it waits for (or runs) the turn applying it.
@@ -1916,6 +1921,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 arrived = (decided.arrival, decided.playerID)
                 await holds.at(.join)
                 request = try withTurn { m, side, outputs in try m.joinKickCheck(behavior, &side, &outputs, decided) }
+            case let .awaitLeave(decided, leavingGeneration):
+                // Registered before any suspension since J2b's segment, as `awaitInputTurn`'s.
+                try await awaitLeaveEnd(of: decided.playerID)
+                request = try withTurn { m, side, outputs in
+                    try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: leavingGeneration)
+                }
             case let .kick(decided, oldClientID, oldSessionID, kickedGeneration):
                 // Kick old connection by calling leave
                 // This will call OnLeave handler and clean up state
@@ -2030,6 +2041,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         /// The old session's leave (§4.3's flow), of the entry with `kickedGeneration`; J2c
         /// follows it.
         case kick(JoinDecided, oldClientID: ClientID, oldSessionID: SessionID?, kickedGeneration: Epoch)
+        /// A leave of the player is in flight (#943), of the entry with `leavingGeneration`: the
+        /// join waits for its window to end, then runs J2c, as after its own kick.
+        case awaitLeave(JoinDecided, leavingGeneration: Epoch)
         /// The transport's admission, between two segments; `joinSequence` is nil without an
         /// OnJoin input (J3a), else the appended input's (J4).
         case admit(JoinDecided, joinSequence: Int64?)
@@ -2371,6 +2385,81 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         model.latestJoinArrivals
     }
 
+    /// Test hook: the players with a leave in flight, by the leaving entry's generation (#943).
+    package func leavesInFlightForTesting() -> [PlayerID: Epoch] {
+        model.leavesInFlight
+    }
+
+    /// Test hook: the joins waiting for `player`'s leave in flight.
+    package func leaveEndWaiterCountForTesting(_ player: PlayerID) -> Int {
+        turnSide.leaveEnds.count(player)
+    }
+
+    /// Test hook: returns once `count` joins wait for `player`'s leave in flight, or when its
+    /// task is cancelled (a test bounds it with `withinHangBound`).
+    package func waitForLeaveEndWaitersForTesting(_ player: PlayerID, count: Int) async {
+        guard leaveEndWaiterCountForTesting(player) < count else { return }
+        let id = turnSide.leaveEnds.makeID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                turnSide.leaveEndWaiterWatchersForTesting[id] = (player, count, continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelLeaveEndWaiterWatcherForTesting(id) }
+        }
+    }
+
+    private func cancelLeaveEndWaiterWatcherForTesting(_ id: UInt64) {
+        turnSide.leaveEndWaiterWatchersForTesting.removeValue(forKey: id)?.continuation.resume()
+    }
+
+    /// J2b's wait for the player's leave in flight (#943). The waiter is resumed exactly once:
+    /// by the segment that ends the leave's window, or with `CancellationError` by its own
+    /// cancel, whichever removes it from the table first. A join already cancelled never
+    /// registers.
+    private func awaitLeaveEnd(of playerID: PlayerID) async throws {
+        let id = turnSide.leaveEnds.makeID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                turnSide.leaveEnds.park(playerID, id: id, continuation)
+                let count = turnSide.leaveEnds.count(playerID)
+                let ready = turnSide.leaveEndWaiterWatchersForTesting.filter { $0.value.player == playerID && $0.value.count <= count }
+                for (watcher, entry) in ready {
+                    turnSide.leaveEndWaiterWatchersForTesting[watcher] = nil
+                    entry.continuation.resume()
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelLeaveEndWaiter(id, of: playerID) }
+        }
+    }
+
+    /// The waiter's cancel: resumes it only if this call removed it; a leave's end that ran
+    /// first already took it out and resumed it.
+    private func cancelLeaveEndWaiter(_ id: UInt64, of playerID: PlayerID) async {
+        await holds.at(.leaveEndWaiterCancel)
+        if turnSide.leaveEnds.cancel(playerID, id: id) {
+            turnSide.leaveEndWaiterCancelsForTesting.removed += 1
+        } else {
+            turnSide.leaveEndWaiterCancelsForTesting.foundGone += 1
+        }
+        await holds.at(.leaveEndWaiterCancelled)
+    }
+
+    /// Test hook: the waiters' cancels so far (#943): those that removed and resumed their
+    /// waiter, and those that found it already resumed by its leave's end.
+    package func leaveEndWaiterCancelsForTesting() -> (removed: Int, foundGone: Int) {
+        turnSide.leaveEndWaiterCancelsForTesting
+    }
+
     /// Test hook: whether the slot of `sequence` holds its outcome, unread.
     package func actionSlotIsFilledForTesting(_ sequence: Int64) -> Bool {
         model.actionSlots[sequence]?.result != nil
@@ -2485,6 +2574,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// What the leave carries across its awaits: the outgoing entry, read in L1.
     struct LeaveCapture: Sendable {
         let playerID: PlayerID
+        /// The leaving entry's generation: the leave in flight's marker (#943).
+        let entryGeneration: Epoch
         let clientID: ClientID
         let sessionID: SessionID
         let deviceID: String?
@@ -4673,6 +4764,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Same synchronous segment as the emptiness check: joins from now on are rejected.
         drainFlag.set(cause: cause)
         model.releaseHeldInputsForDrain(behavior, &turnSide)
+        // The joins waiting for a leave in flight resume into a draining land (#943).
+        model.endAllLeavesInFlight(&turnSide)
         // No action job can be delivered any more; their callers get `.landClosed`.
         model.cancelAllActionJobs(behavior, &turnSide)
         let task = Task { await self.drainAfterIdleCheck() }
@@ -5666,6 +5759,24 @@ extension KeeperModel {
         if latestJoinArrivals[playerID] == arrival { latestJoinArrivals[playerID] = nil }
     }
 
+    /// Ends the leave of the entry with `generation` (#943), in the segment that ends its window
+    /// (the OnLeave's append, its drop, its resolvers' failure), and resumes the joins that wait
+    /// for it: each re-checks in its own J2c. A marker of another generation is left alone.
+    mutating func endLeaveInFlight(_ side: inout KeeperTurnSide, of playerID: PlayerID, generation: Epoch) {
+        guard leavesInFlight[playerID] == generation else { return }
+        leavesInFlight[playerID] = nil
+        side.leaveEnds.release(playerID)
+    }
+
+    /// The drain's start ends every leave in flight (#943), once the drain flag is set: the
+    /// waiters resume and find the land draining (J2c). Called by `failLand` and
+    /// `shutdownIfIdle`, after the flag; a teardown that clears `players` before the flag leaves
+    /// them to it.
+    mutating func endAllLeavesInFlight(_ side: inout KeeperTurnSide) {
+        leavesInFlight.removeAll()
+        side.leaveEnds.releaseAll()
+    }
+
     /// Ends one attempt's reservation; idempotent, and it leaves the player's other attempts' ones.
     mutating func endRejoinReservation(_ reservation: Epoch, of playerID: PlayerID) {
         guard var epochs = rejoinReservations[playerID] else { return }
@@ -6017,6 +6128,7 @@ extension KeeperModel {
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let capture = LeaveCapture(
             playerID: playerID,
+            entryGeneration: session.generation,
             clientID: clientID,
             sessionID: session.lastSessionID ?? behavior.config.systemSessionID,
             deviceID: session.deviceID,
@@ -6046,6 +6158,10 @@ extension KeeperModel {
             eventPayload: nil,
             currentState: state
         )
+        // The window opens: a join of the player waits for it to end (#943). One at a time: no
+        // join inserts for the player while it is open, so no second entry can start a leave.
+        assert(leavesInFlight[playerID] == nil, "a second leave in flight for player \(playerID.rawValue)")
+        leavesInFlight[playerID] = session.generation
         return .runOnLeaveResolvers(capture, resolverContext, ctx)
     }
 
@@ -6058,6 +6174,7 @@ extension KeeperModel {
         _ capture: LeaveCapture,
         error: any Error
     ) {
+        endLeaveInFlight(&side, of: capture.playerID, generation: capture.entryGeneration)
         ResolverDeadline.metrics.noteOnLeaveDropped()
         behavior.logger.warning("OnLeave dropped: its resolvers failed", metadata: [
             "playerID": .string(capture.playerID.rawValue),
@@ -6076,6 +6193,10 @@ extension KeeperModel {
         resolverOutputs: [String: HeldResolverOutput],
         resolvedAtTick: Int64
     ) -> LeaveRequest {
+        // The window ends in this segment, whether the OnLeave is appended or dropped: a join
+        // waiting for it resumes after this segment, so its OnJoin comes after this OnLeave.
+        // L1 without resolvers calls this too, with no marker set: a no-op.
+        endLeaveInFlight(&side, of: capture.playerID, generation: capture.entryGeneration)
         // Same synchronous segment as the append: a drain that started during the resolvers
         // has taken the pending inputs and runs the destroy handlers, so this OnLeave is dropped
         // (its sequence is a gap replay steps over). The player was already removed.
@@ -6127,6 +6248,12 @@ extension KeeperModel {
         guard latestJoinArrivals[decided.playerID] == decided.arrival else {
             behavior.logger.info("Join of player \(decided.playerID.rawValue) superseded before its kick check by a later join: the later join keeps the player")
             throw JoinError.superseded
+        }
+        // A leave of the player is in flight: its entry is gone, but its OnLeave isn't appended
+        // yet. The join waits for it, then re-checks at J2c (#943). Keyed on the leave's marker,
+        // not on `players`, which no longer lists the leaving entry.
+        if let leavingGeneration = leavesInFlight[decided.playerID] {
+            return .awaitLeave(decided, leavingGeneration: leavingGeneration)
         }
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[decided.playerID], let oldClientID = existingSession.clientID {
@@ -6541,6 +6668,7 @@ extension KeeperModel {
         players.removeAll()
         side.playerServices.removeAll()
         rejoinReservations.removeAll()
+        endAllLeavesInFlight(&side)
         // A keeper never attached reaches the adapter bound by its first sync request (#546 L2a).
         let transport = side.attachedTransport ?? side.sharedBoundRequester.port
         // The output gate closes in the mark: no new state or event frame from here (§3.2 step 4).
@@ -7402,6 +7530,9 @@ extension KeeperModel {
             applied.appliedOrder.append(recorded.sequence)
             // In re-evaluation `players` holds the replay's viewers: the shutdown only ends the
             // replay (`completeShutdownTurn`).
+            // The leaves in flight stay open: their waiters resume when the drain starts
+            // (`shutdownIfIdle`), not here, where a resumed join would find the land not yet
+            // draining and insert after the shutdown turn (#943).
             if behavior.config.mode == .live { players.removeAll(); side.playerServices.removeAll(); rejoinReservations.removeAll() }
 
         case let .lifecycle(lifecycleItem):
@@ -8483,7 +8614,9 @@ extension KeeperModel {
 
         // Reserve the returning player's place until its entry is back or this join fails. Each
         // attempt ends only its own reservation, at the insert and on every other exit.
-        let reservation = isReconnection ? rejoinReservationEpochs.next() : nil
+        // A join that will wait for the player's leave in flight (#943) holds a place too, so a
+        // newcomer can't take it while it waits; the cap above still applied to it.
+        let reservation = (isReconnection || leavesInFlight[playerID] != nil) ? rejoinReservationEpochs.next() : nil
         if let reservation { rejoinReservations[playerID, default: []].insert(reservation) }
         // The attempt's fencing token: every attempt that reaches this point is a later arrival
         // than every one before it (#940).
