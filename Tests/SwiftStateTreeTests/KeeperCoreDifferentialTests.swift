@@ -291,7 +291,9 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     }
 
     /// The sync entries, as the keeper's: the port's in-turn read for the owner and the query in
-    /// one segment, with no await between (K2-2 plan §9).
+    /// one segment, with no await between (K2-2 plan §9). `query` answers in place
+    /// (`TurnActor.query` steps synchronously), so no other step runs between the read and the
+    /// query's step.
     func syncTurnNow(via port: any LandKeeperTransport, reason: SyncTurnReason, ticket: SyncTurnTicket? = nil) -> InTurnSyncResult {
         guard case let .syncTurn(result) = ask(.syncTurnNow(port: port, inTurnForOwner: port.runsSyncPhaseInTurn(of: owner), reason: reason, ticket: ticket)) else {
             preconditionFailure("syncTurnNow's answer")
