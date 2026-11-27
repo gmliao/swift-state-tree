@@ -7,7 +7,7 @@
 - it returns the await it needs as a request;
 - the actor's driver loops over the requests.
 
-The change ends CLAUDE.md's #522 exception for the drain's post-await bookkeeping. It adds no behavior: the init and drain suites stay green unchanged, plus a hold test per await. The PR is keeper-only, based on main, and opens after #860. K2-2's commit 1 routes both flows on the core, with the jobs.
+The change ends CLAUDE.md's #522 exception for the drain's post-await bookkeeping. It adds no behavior: the init and drain suites stay green unchanged, plus a hold test per await. The PR is keeper-only, based on main, and opens after #860. K2-2's commit 0 moves the action jobs, and its later commits route both flows on the core.
 
 ## Problem
 
@@ -50,7 +50,7 @@ loop:
 | `initializeResolved(r, result)` | first, `assert(sequence.next == r.sequenceAfterTake)`: nothing but this initialization took a number during the resolvers (the survey's open point 3). It holds by the code: every intake entry awaits `ensureInitialized` before it takes one (`join`, `leave`, `submit`, `handleClientEvent`, `submitServerInput`), and the loops aren't configured yet. Then the timeout and `.failLand` handling (LK:1504–1528), reading `side.isDraining` in this segment; then `initializeTurnBody` (LK:1538), unchanged; on `.failure`, `fail`. With a recorder, `.submitRecord`; else `initializeFinish` | LK:1503–1556 |
 | `initializeRecorded` | `initializeFinish` | LK:1598's check after the record |
 | `initializeFinish` | `guard autoStartLoops, !side.isDraining` → `.startLoops(intervals)`; else `initializeDone` in this segment, then `.done` | LK:1598–1630 |
-| `initializeDone` | `didInitialize = true` and the watchers' resume (`resumeInitializationWaitWatchers`). It runs after the driver configured the loops, so "loops configured, then `didInitialize`" holds as today (Q2; T9) | LK:1265–1266 |
+| `initializeDone(loopsConfigured:)` | first, on a tick land, `assert(!autoStartLoops \|\| side.isDraining \|\| loopsConfigured)`; the driver passes `tickLoopConfiguredAt != nil`, an actor field the model can't read. Then `didInitialize = true` and the watchers' resume (`resumeInitializationWaitWatchers`). It runs after the driver configured the loops, so "loops configured, then `didInitialize`" holds as today (Q2; T9) | LK:1265–1266 |
 | `fail(error)` (helper) | `failInitialization` (`recordFailure`, `initializationFailure`), `didInitialize = true`, and stages the teardown task in `outputs`, as `scheduleDestroyIfNeeded` stages its timer (LK:6062) | the five `failInitialization` + `Task { … }` exits |
 
 Deletions:
@@ -131,7 +131,7 @@ T1–T3 run on tick and tickless lands. T4 and T9 need a tick land. T5–T8b run
 | 4 | OnFinalize's resolvers built in `drainAfterTicks` (before OnDestroyWhenEmpty's write) | T6 (its resolver sees the state before OnDestroyWhenEmpty: assert on a value it reads) |
 | 5 | `fail` doesn't stage the teardown task | T3, LandManagerFailedInitializationTests |
 | 6 | the `!isDraining` check in `initializeFinish` removed | T2b |
-| 7 | `didInitialize = true` moved from `initializeDone` into `initializeFinish`, with the loop configuration back behind an `await` (a `Task.yield()` before `configureTickLoop`) | T9 |
+| 7 | the driver runs `initializeDone` before the loop configuration (the two swapped), so `didInitialize` is true with no loop | `initializeDone`'s assert, deterministically, on every run. T9 sees the order only through timing. Rev 2's form of this mutant (the write in `initializeFinish`, a `Task.yield()` before the loops) still reaches `initializeDone` after the configuration, so the assert can't catch it; the swap is the shape the assert pins |
 | 8 | `boundRequester.object = nil` moved before the `onLandDestroyed` await | T8b |
 
 ## Probes
@@ -183,7 +183,7 @@ All five were decided by Review on rev 1 (2026-11-27).
 
 ## The boundary with K2-2
 
-What each request this plan creates becomes when K2-2 (#700, the K2 plan's PR K2-2, commit 1) drives these flows on the turn core. On the core, a step can't await: each await is an effect, and its result comes back as an input whose step runs the next segment. A call staged through the keeper (`outputs.stage { … }` reaching an actor method or field) is an owner call. On a core whose `keeperReference` is empty, an owner call is a no-op (#938 r1 MF4, r2). So each one needs a named home.
+What each request this plan creates becomes when K2-2 (#700, the K2 plan's PR K2-2) drives these flows on the turn core. On the core, a step can't await: each await is an effect, and its result comes back as an input whose step runs the next segment. A call staged through the keeper (`outputs.stage { … }` reaching an actor method or field) is an owner call. On a core whose `keeperReference` is empty, an owner call is a no-op (#938 r1 MF4, r2). So each one needs a named home.
 
 | Request or staged call | Today's await or call | On the core | Result input |
 |---|---|---|---|
@@ -192,12 +192,18 @@ What each request this plan creates becomes when K2-2 (#700, the K2 plan's PR K2
 | `.submitRecord(record)` | `submitTurnRecord` | the record effect | **`initializeRecorded`** (new) |
 | `.startLoops(tick, sync)` | `configureTickLoop`, `configureSyncLoop` (sync after P1) | an **owner call**: it writes the actor fields `tickTask` and `syncTask`. K2-2 keeps it as the owner's call after the step, until the core's timers (#762) replace the loops | **`initializeDone`** (new; no await before it) |
 | `fail(error)`'s staged teardown | `Task { tearDownAfterFailedInitialization() }` (LK:1336) | an **owner call** (a Task through the keeper). K2-2 makes it an effect, or keeps it as the owner's call after the step; either way it must not be dropped (mutant 5 and LandManagerFailedInitializationTests pin it) | none: the teardown starts its own leave and drain flows |
-| `.waitForTick` | `waitForTickInFlight` | none: on the core a tick is a step, so the drain's step starts after it, and `drainAfterTicks` runs in the drain's first step | **`drainAfterTicks`** (new; legacy driver only, unless K2-2 keeps a tick off the core) |
+| `.waitForTick` | `waitForTickInFlight` | a barrier. On a land with a recorder, K2-2 keeps `ticksInFlight` and the work count until the record's `.recordTaken` (the K2 plan's note "For K2-2", #938). So the drain can't take its pending inputs when the tick's step ends, only once `.recordTaken` has run. Without a recorder, the tick's step ends the hold | **`drainAfterTicks`** (new): a barrier the `.recordTaken` step answers, or a drain start deferred until it |
 | `.runDestroyResolvers(d)` | `executeResolversWithoutDeadline` | the resolver effect | `destroyHandlerResolved` (already in `deferred`) |
 | `.runAfterFinalize(snapshot)` | the land's AfterFinalize handler | an effect: the handler runs off the core with the snapshot, in its scope | **`drainAfterFinalize`** (new) |
 | `.notifyTransport(port)` | `port?.onLandDestroyed()` (transport, or the bound requester) | the port effect | `drainFinished` (already in `deferred`); then `setTransport(nil)`, the driver's owner call until K2-2's commit 3 (Q1) |
 
-So K2-2's "routed subset total" check gains three result inputs, `initializeRecorded`, `initializeDone` and `drainAfterFinalize`, beside the three already in `deferred`. It also gains two owner calls that need a home: `.startLoops` and `fail`'s teardown. `initializeAfterReplay` and `drainAfterTicks` stay outside the routed subset, the first until #612, and the second because a step already orders the drain after a tick.
+So K2-2's "routed subset total" check gains four result inputs, beside the three already in `deferred`:
+- `initializeRecorded`;
+- `initializeDone`;
+- `drainAfterTicks`;
+- `drainAfterFinalize`.
+
+It also gains two owner calls that need a home: `.startLoops` and `fail`'s teardown. `initializeAfterReplay` stays outside the routed subset until #612.
 
 ## Order of work
 
