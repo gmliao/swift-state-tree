@@ -64,10 +64,19 @@ public enum JoinError: Error, Sendable {
     /// The Land is shutting down (it became empty and is being destroyed). Retry the join:
     /// `LandManager.getOrCreateLand` creates a fresh instance for the same ID.
     case landShuttingDown
-    /// The join's entry was replaced by a newer join of the same player, or removed by a leave,
-    /// before its OnJoin input was appended (#860). Its OnJoin input and the OnLeave of the
-    /// leave that removed the entry are both dropped. Its OnJoin resolvers ran, so whatever
-    /// they did outside the land is not undone. Through the router, the session gets
-    /// `JOIN_DENIED` as its last frame, then the 4017 `superseded` close.
+    /// A newer join of the same player took the player first (#860). Two stages refuse a join
+    /// this way:
+    /// - **Its OnJoin was pending:** the join's entry was replaced by a newer join, or removed
+    ///   by a leave, before its OnJoin input was appended. Its OnJoin input and the OnLeave of
+    ///   the leave that removed the entry are both dropped. Its OnJoin resolvers ran, so
+    ///   whatever they did outside the land is not undone.
+    /// - **At its kick:** the join kicked the player's old session, and a later join of the
+    ///   player arrived while the kick's leave ran (the fence, #940). The join inserted nothing
+    ///   and ran no OnJoin resolver. The later join keeps the player; if that join fails or is
+    ///   cancelled afterwards, the player is left with no entry, since this join already has its
+    ///   answer.
+    ///
+    /// Through the router, the session gets `JOIN_DENIED` as its last frame, then the 4017
+    /// `superseded` close.
     case superseded
 }

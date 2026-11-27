@@ -1380,7 +1380,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         return true
     }
 
-    /// A join superseded during its OnJoin resolvers (#860), answered by its handler or by the
+    /// A join superseded by a newer join of its player (#860): during its OnJoin resolvers, or at
+    /// its kick, by the fence (`JoinError.superseded`). It is answered by its handler or by the
     /// budget's timer that the handler left the answer to: the error is the session's last
     /// frame, with the supersede's 4017 close behind it, as on the flip-stage supersede (#861),
     /// so the client doesn't rejoin into a kick loop. Called in a segment that checked the
@@ -1403,7 +1404,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             await transport.closeSession(sessionID, with: .superseded, generation: connectionGeneration)
         }
-        logger.info("Join superseded during its OnJoin resolvers: session=\(sessionID.rawValue)")
+        logger.info("Join superseded by a newer join of the player: session=\(sessionID.rawValue)")
     }
 
     private func noteJoinTimedOut(_ phase: JoinTimeoutPhase, sessionID: SessionID, landID: LandID?) {
@@ -1709,7 +1710,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             return (.joinDenied, "Land is shutting down, retry the join")
         case .superseded:
             // A newer join of the same player replaced this one, or a leave removed it, before
-            // its OnJoin applied: the newer session is the player's.
+            // its OnJoin applied; or a later join arrived while this one kicked the old session
+            // (the fence). The newer session is the player's.
             return (.joinDenied, "Join superseded by a newer join of the player")
         }
     }

@@ -543,8 +543,10 @@ struct JoinReplacedDuringOnJoinTests {
         guard let actionC = try await f.submitGated(actionKey, client: clientC, session: sessionC) else { return }
         guard await actionGate.waitUntilEntered() else { return }
 
-        // B resumes: the slot holds C's entry, not the one it kicked. C's entry is newer, so B
-        // is refused, and C's entry is left as it is: its job keeps running.
+        // B resumes: C arrived later, so B is refused, and C's entry is left as it is: its job
+        // keeps running. C's OnJoin is held until B returns. In the other order, A's late
+        // OnLeave would apply after C's OnJoin, and a handler that removes the player's state
+        // would remove C's: that is #943, which a plain reconnect hits too.
         leaveGate.release()
         let errorB = await joinB.value
         #expect(isSuperseded(errorB), "B's join \(describe(errorB))")

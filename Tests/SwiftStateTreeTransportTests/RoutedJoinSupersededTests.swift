@@ -4,9 +4,10 @@
 // `JoinError.superseded` (#860). The router answers it like the flip-stage supersede (#861): the
 // `JOIN_DENIED` error is the session's last frame, with the 4017 `superseded` close behind it, so
 // the client doesn't rejoin into a kick loop. That holds whoever answers: the join's handler, or
-// the join budget's timer that the handler left the answer to. Hosted joins of one player are
-// serialized by the adapter's membership queue, so here a direct keeper caller makes the newer
-// join.
+// the join budget's timer that the handler left the answer to; and whichever stage refused it:
+// the pending OnJoin, or the kick's fence (J2c), when a later join arrived while the routed join
+// waited in its kick. Hosted joins of one player are serialized by the adapter's membership
+// queue, so here a direct keeper caller makes the newer join.
 
 import Foundation
 import Testing
@@ -26,6 +27,22 @@ struct RoutedSupersedeOutput: ResolverOutput {}
 /// Holds the OnJoin resolver of a session registered here.
 private enum RoutedSupersedeHold {
     static let gates = KeyedGates<SessionID, TestGate> { TestGate() }
+}
+
+/// Holds the OnLeave resolver of a session registered here: the kick of that session's entry.
+private enum RoutedLeaveHold {
+    static let gates = KeyedGates<SessionID, TestGate> { TestGate() }
+}
+
+struct RoutedLeaveResolver: ContextResolver {
+    typealias Output = RoutedSupersedeOutput
+
+    static func resolve(ctx: ResolverContext) async throws -> RoutedSupersedeOutput {
+        if let gate = RoutedLeaveHold.gates.registeredGate(ctx.sessionID) {
+            await gate.arrive()
+        }
+        return RoutedSupersedeOutput()
+    }
 }
 
 struct RoutedSupersedeResolver: ContextResolver {
@@ -108,6 +125,7 @@ private struct RoutedSupersedeHarness {
                 OnJoin(resolvers: RoutedSupersedeResolver.self) { state, _, ctx in
                     state.joins.append(ctx.clientID.rawValue)
                 }
+                OnLeave(resolvers: RoutedLeaveResolver.self) { _, _, _ in }
             }
         }
         let transport = WebSocketTransport()
@@ -184,12 +202,13 @@ private struct RoutedSupersedeHarness {
     }
 
     /// Waits for the session's close, then checks that its whole log is the superseded answer
-    /// (nothing else sent, nothing after the close) and that the direct join keeps the player.
-    func expectSupersededAnswer(_ connection: RoutedSupersedeConnection, sourceLocation: SourceLocation = #_sourceLocation) async {
+    /// (nothing else sent, nothing after the close) and that the direct join keeps the player:
+    /// the land's OnJoin log is `joins`.
+    func expectSupersededAnswer(_ connection: RoutedSupersedeConnection, joins: [String] = ["c-direct"], sourceLocation: SourceLocation = #_sourceLocation) async {
         let closed = await withinHangBound { await connection.waitFor { $0.contains { $0.hasPrefix("close:") } } }
         #expect(closed, "the session wasn't closed", sourceLocation: sourceLocation)
         #expect(await connection.events == supersededAnswer, sourceLocation: sourceLocation)
-        #expect(await container.keeper.currentState().joins == ["c-direct"], sourceLocation: sourceLocation)
+        #expect(await container.keeper.currentState().joins == joins, sourceLocation: sourceLocation)
     }
 }
 
@@ -306,5 +325,38 @@ struct RoutedJoinSupersededTests {
 
         afterAdmit.open()
         await h.expectSupersededAnswer(connection)
+    }
+
+    @Test("A routed join fenced out at its kick (J2c) by a later join gets the 4017 close, never reaches OnJoin or the admission, and leaves no join bookkeeping")
+    func fencedAtTheKickClosesWith4017() async throws {
+        let h = try await RoutedSupersedeHarness.make()
+        let adapter = h.container.transportAdapter
+        // A holds the player; its OnLeave (the routed join's kick of it) is held.
+        let sessionA = RoutedLeaveHold.gates.fresh { SessionID("s-a-leave-\($0)") }
+        let leaveA = RoutedLeaveHold.gates.gate(sessionA)
+        defer { leaveA.open() }
+        try await h.container.keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c-a"), sessionID: sessionA)
+
+        let (session, connection, gate) = await h.connect()
+        defer { gate.open() }
+        let admissionsBefore = await adapter.inTurnAdmissionCountForTesting
+        let routedEnded = TestGate()
+        defer { routedEnded.open() }
+        let routed = try h.startRoutedJoin(session, ended: routedEnded)
+        defer { routed.cancel() }
+        guard await leaveA.waitForArrivals(1) else {
+            Issue.record("the routed join never kicked A")
+            return
+        }
+        // The direct join arrives later, finds the slot empty and joins.
+        guard await h.directJoin() else { return }
+
+        // The kick returns: a later join arrived, so the routed join is fenced out.
+        leaveA.open()
+        await h.expectSupersededAnswer(connection, joins: ["c-a", "c-direct"])
+        #expect(gate.arrivalCount == 0, "the routed join reached its OnJoin resolvers")
+        #expect(await adapter.inTurnAdmissionCountForTesting == admissionsBefore, "the routed join was admitted")
+        let bookkeeping = await adapter.joinBookkeepingForTesting(session)
+        #expect(bookkeeping.expectedAdmission == false && bookkeeping.memberJoinAttempt == false, "left behind: \(bookkeeping)")
     }
 }

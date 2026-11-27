@@ -3480,6 +3480,12 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return !registered && joiningSessions[sessionID]?.inTurn?.transportRegistered == false
     }
 
+    /// Tests: whether the adapter still holds a join attempt's bookkeeping for the session: its
+    /// expected admission, and its member join attempt.
+    package func joinBookkeepingForTesting(_ sessionID: SessionID) -> (expectedAdmission: Bool, memberJoinAttempt: Bool) {
+        (expectedAdmissions[sessionID] != nil, memberJoinAttempts[sessionID] != nil)
+    }
+
     /// Tests: an opaque token for the session's current membership ticket, nil when it has none.
     package func sessionTicketForTesting(_ sessionID: SessionID) -> Ticket<SessionID>? {
         sessionTickets.ticket(for: sessionID)

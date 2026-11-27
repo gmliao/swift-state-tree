@@ -6273,6 +6273,8 @@ extension KeeperModel {
         _ decided: JoinDecided,
         kickedGeneration: Epoch
     ) throws -> JoinRequest {
+        // A drain answers first, as at J2b and the append: the land is ending, not superseded.
+        guard !side.isDraining else { throw JoinError.landShuttingDown }
         guard latestJoinArrivals[decided.playerID] == decided.arrival else {
             behavior.logger.info("Join of player \(decided.playerID.rawValue) superseded during its kick by a later join: the later join keeps the player")
             throw JoinError.superseded
