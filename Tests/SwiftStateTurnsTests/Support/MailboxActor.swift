@@ -74,6 +74,11 @@ actor MailboxActor: TurnActor {
         switch effect {
         case .work(let label):
             fixture.open("at \(label)")
+            // A gate whose label starts with "cancel" honours a cancellation and returns nil
+            // then (the contract's mailbox rule: a replay sees the same completion).
+            if label.hasPrefix("cancel") {
+                return await fixture.waitUnlessCancelled("gate \(label)") ? .result(label) : nil
+            }
             await fixture.wait("gate \(label)")
             // A gate whose label starts with "nil" returns no input.
             return label.hasPrefix("nil") ? nil : .result(label)
@@ -136,6 +141,8 @@ actor MailboxActor: TurnActor {
 
     var log: [String] { core.read { $0.log } }
     var stats: TurnStats { core.stats }
+    /// Tracked workers with a handle now.
+    var workers: Int { core.workersForTesting }
     /// Entries in the core's timer, live or stale.
     var deadlineEntries: Int { core.deadlineEntriesForTesting }
 

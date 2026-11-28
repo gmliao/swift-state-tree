@@ -13,6 +13,12 @@ struct CancelMachine: TurnMachine {
         case makeThenCancel(String)
         case makeThenEnd(String)
         case makeUntracked(String)
+        /// A request for `label` under `key` (several per key).
+        case makeUnder(String, key: String)
+        /// A request whose worker cleans up after a cancel, holding "db" until it returns.
+        case makeHolding(String)
+        /// Waits behind the "db" hold, then notes "behind `label`".
+        case behind(String)
         case cancel(String)
         case end(String)
         case endAll
@@ -24,6 +30,8 @@ struct CancelMachine: TurnMachine {
         case work(String)
         /// Opens the fixture event (a step's note, seen after the step).
         case note(String)
+        /// As `.work`, but a cancelled worker parks at "cleanup `label`" before it returns.
+        case cleanup(String)
     }
 
     enum Query: Sendable { case none }
@@ -35,7 +43,10 @@ struct CancelMachine: TurnMachine {
     var open: [RequestID: String] = [:]
     var log: [String] = []
 
-    func inputPolicy(for input: Input) -> InputPolicy<Key> { .control }
+    func inputPolicy(for input: Input) -> InputPolicy<Key> {
+        if case .behind = input { return .normal(waitsFor: "db", belongsTo: nil) }
+        return .control
+    }
 
     mutating func handle(_ input: Input, _ turn: inout Turn<CancelMachine>) {
         switch input {
@@ -50,6 +61,12 @@ struct CancelMachine: TurnMachine {
             turn.end(label)
         case let .makeUntracked(label):
             turn.run(.work(label))
+        case let .makeUnder(label, key):
+            if let id = turn.request(.work(label), for: key) { open[id] = label }
+        case let .makeHolding(label):
+            if let id = turn.request(.cleanup(label), for: label, holding: .untilWorkerReturns("db", deadline: .seconds(60))) { open[id] = label }
+        case let .behind(label):
+            note("behind \(label)", &turn)
         case let .cancel(label):
             for (id, owner) in open where owner == label { turn.cancel(id) }
         case let .end(key):
@@ -109,6 +126,16 @@ actor CancelActor: TurnActor {
         case let .note(line):
             fixture.open(line)
             return nil
+        case let .cleanup(label):
+            fixture.open("entered \(label)")
+            let released = await fixture.waitUnlessCancelled("release \(label)")
+            if !released {
+                // The outside change settles before the worker returns: the hold lasts until then.
+                fixture.open("cleaning \(label)")
+                await fixture.wait("cleanup \(label)")
+            }
+            fixture.open("returned \(label) cancelled=\(Task.isCancelled) released=\(released)")
+            return .result(label)
         }
     }
 
@@ -128,10 +155,12 @@ struct AbandonedWorkerCancellationTests {
         let a = CancelActor(fixture: f)
         await a.send(.start(label))
         await a.send(.make(label, deadlineSeconds: why == "deadline" ? 5 : nil))
-        guard await f.reach("entered \(label)", sourceLocation: sourceLocation) else { return }
+        // Registered first, so the cancel provably wakes a suspended wait ("woken").
+        guard await f.reach("registered release \(label)", sourceLocation: sourceLocation) else { return }
         #expect(await a.workers == 1, "the parked worker has its handle", sourceLocation: sourceLocation)
         await abandon(a)
-        guard await f.reach("returned \(label) cancelled=true released=false", sourceLocation: sourceLocation),
+        guard await f.reach("woken release \(label)", sourceLocation: sourceLocation),
+              await f.reach("returned \(label) cancelled=true released=false", sourceLocation: sourceLocation),
               await f.reach("late \(label)", sourceLocation: sourceLocation) else { return }
         let log = await a.log
         #expect(log == ["abandoned \(label) \(why)", "late \(label)"], "\(log)", sourceLocation: sourceLocation)
@@ -213,5 +242,86 @@ struct AbandonedWorkerCancellationTests {
         }
         guard await f.reach("returned w cancelled=true released=false"), await f.reach("deinit") else { return }
         #expect(weakActor == nil)
+    }
+
+    @Test("An .untilWorkerReturns hold outlasts its worker's cancel: the worker settles its change first, and the input behind the hold steps only once the worker returns")
+    func holdLastsUntilTheCancelledWorkerReturns() async {
+        let f = Fixture()
+        let a = CancelActor(fixture: f)
+        await a.send(.start("h"))
+        await a.send(.makeHolding("h"))
+        guard await f.reach("registered release h") else { return }
+        await a.send(.behind("q"))
+        // The key's end, not `endAll`, which would drop the queued input with the intake.
+        await a.send(.end("h"))
+        guard await f.reach("woken release h"), await f.reach("cleaning h") else { return }
+        #expect(await a.log == ["abandoned h keyEnded"], "the input behind the hold waits for the cleanup")
+        f.open("cleanup h")
+        guard await f.reach("returned h cancelled=true released=false"), await f.reach("behind q") else { return }
+        let log = await a.log
+        #expect(log == ["abandoned h keyEnded", "late h", "behind q"], "\(log)")
+        #expect(await a.workers == 0)
+    }
+
+    @Test("Several workers under one key, and a start that supersedes it: every worker is cancelled once, each request abandoned keyEnded, and no handle is left")
+    func supersedeCancelsEveryWorker() async {
+        let f = Fixture()
+        let a = CancelActor(fixture: f)
+        await a.send(.start("s"))
+        await a.send(.makeUnder("s1", key: "s"))
+        await a.send(.makeUnder("s2", key: "s"))
+        guard await f.reach("registered release s1"), await f.reach("registered release s2") else { return }
+        #expect(await a.workers == 2)
+        await a.send(.start("s"))
+        guard await f.reach("woken release s1"), await f.reach("woken release s2"),
+              await f.reach("late s1"), await f.reach("late s2") else { return }
+        let log = await a.log
+        #expect(Set(log) == ["abandoned s1 keyEnded", "abandoned s2 keyEnded", "late s1", "late s2"] && log.count == 4, "\(log)")
+        let workers = await a.workers, requests = await a.openRequests
+        #expect(workers == 0 && requests == 0, "handles \(workers), requests \(requests)")
+        // The new generation makes its own request: a new handle, cancelled by its own end.
+        await a.send(.makeUnder("s3", key: "s"))
+        guard await f.reach("registered release s3") else { return }
+        await a.send(.end("s"))
+        guard await f.reach("woken release s3"), await f.reach("late s3") else { return }
+        #expect(await a.workers == 0)
+    }
+}
+
+/// The mailbox side of the rule: a cancelled worker that returns nil is an idle completion (no
+/// entry, no ordinal), live and replayed alike; a follow-up's gate has no handle and is never
+/// cancelled.
+@Suite("Cancelled workers on a mailbox core", .timeLimit(.minutes(1)))
+struct MailboxWorkerCancellationTests {
+    @Test("A cancelled worker's nil completion is idle: no step, no handle left, and the replay matches the live run")
+    func cancelledNilCompletionIsIdle() async {
+        var workersAtPark = -1, workersAfter = -1
+        let run = await MailReplayTests.liveThenReplay { a, on in
+            await a.send(.script([.start(1), .request(gate: "cancelz", key: 1)]))
+            await a.fixture.reach("registered gate cancelz")
+            if on { workersAtPark = await a.workers }
+            await a.send(.script([.end(1)]))
+            await a.fixture.reach("woken gate cancelz")
+            await a.fixture.reach("idle completion #1")
+            if on { workersAfter = await a.workers }
+        }
+        #expect(workersAtPark == 1 && workersAfter == 0, "handles: parked \(workersAtPark), after \(workersAfter)")
+        #expect(run.live == ["abandoned cancelz keyEnded"], "\(run.live)")
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("A follow-up's gate worker has no handle: an end of its key closes the follow-up, and its gate runs on, uncancelled")
+    func followUpGateIsNotCancelled() async {
+        let a = await MailboxActor.started()
+        // A cancellation-aware gate: a cancel would wake it ("woken").
+        await a.send(.script([.start(1), .arm("f", key: 1, gate: "cancelfg")]))
+        await a.fixture.reach("registered gate cancelfg")
+        #expect(await a.workers == 0, "a gate has no handle")
+        await a.send(.script([.end(1)]))
+        #expect(!a.fixture.isOpen("woken gate cancelfg"), "the end's step cancelled the gate")
+        a.fixture.open("gate cancelfg")
+        #expect(await a.waitForQuiescence(.followUps))
+        #expect(await a.workers == 0)
     }
 }

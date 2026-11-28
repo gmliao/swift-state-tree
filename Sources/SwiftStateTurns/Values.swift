@@ -64,8 +64,9 @@ public enum InputPolicy<Key: Hashable & Sendable>: Sendable {
 /// Every holding request has a deadline, and the deadline bounds the request: when it passes,
 /// the request is abandoned, its caller can be answered and `handleAbandoned` runs. An
 /// `.untilRequestCloses` hold ends with the request; an `.untilWorkerReturns` hold ends only when
-/// its worker returns, so the adopter bounds that worker (an abandoned request's worker is
-/// cancelled, and one that honours the cancellation returns soon). A request with no bound would leave
+/// its worker returns, so the adopter bounds that worker. An abandoned request's worker is
+/// cancelled; a worker under this hold settles its outside change before it returns, since
+/// returning ends the hold, and honours the cancellation only at safe points. A request with no bound would leave
 /// every input queued behind its key waiting for as long as its work hangs.
 public enum Hold<Key: Hashable & Sendable>: Sendable {
     /// Held until the request closes, for any reason.

@@ -45,7 +45,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     // MARK: Lifetimes
 
     /// Starts a generation of `key`. True: it superseded a live one, whose requests are closed
-    /// (also ones made earlier in this step), whose follow-ups close unrun, whose timer is
+    /// and their workers cancelled (also ones made earlier in this step), whose follow-ups close unrun, whose timer is
     /// dropped, and whose not-yet-stepped inputs scoped to `key` are withdrawn, as by `end`:
     /// queued ones now, deferred ones (sent while a step or batch ran) when they are admitted.
     /// An input carries no generation, so one sent under the old generation would otherwise
