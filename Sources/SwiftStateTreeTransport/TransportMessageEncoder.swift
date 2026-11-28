@@ -458,6 +458,8 @@ private struct PositionalPayloadJSONOf<P: PayloadCompression>: Encodable {
 
     func encode(to encoder: Encoder) throws {
         var writer = JSONPayloadFieldWriter(container: encoder.unkeyedContainer())
+        // PROBE #543 mutant b: every positional field one slot late.
+        try writer.container.encodeNil()
         try payload._writePayloadFields(into: &writer)
     }
 }
@@ -470,6 +472,8 @@ struct PositionalPayloadJSON: Encodable {
 
     func encode(to encoder: Encoder) throws {
         var writer = JSONPayloadFieldWriter(container: encoder.unkeyedContainer())
+        // PROBE #543 mutant b: every positional field one slot late.
+        try writer.container.encodeNil()
         try payload._writePayloadFields(into: &writer)
     }
 }
