@@ -185,6 +185,15 @@ enum CoreDiffInitGates {
     static func fails(_ landID: String) -> Bool { lock.withLock { failing.contains(landID) } }
 }
 
+/// OnLeave's resolver gate, by land ID: taken by the next OnLeave resolver that runs, so a
+/// case holds one leave on one path at a time.
+enum CoreDiffLeaveGates {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var gates: [String: WatermarkGate] = [:]
+    static func arm(_ landID: String, _ gate: WatermarkGate) { lock.withLock { gates[landID] = gate } }
+    static func take(_ landID: String) -> WatermarkGate? { lock.withLock { gates.removeValue(forKey: landID) } }
+}
+
 /// A job's resolver gate, by land ID: a case that holds the job sets it on both lands.
 enum CoreDiffJobGates {
     private static let lock = NSLock()
@@ -201,6 +210,7 @@ struct CoreDiffJoinResolver: ContextResolver {
 struct CoreDiffLeaveResolver: ContextResolver {
     typealias Output = CoreDiffOutput
     static func resolve(ctx: ResolverContext) async throws -> CoreDiffOutput {
+        await CoreDiffLeaveGates.take(ctx.landID)?.enterAndWait()
         if CoreDiffLeaveFailures.fails(ctx.landID) { throw CoreDiffError(token: 77) }
         return CoreDiffOutput(value: 2)
     }
@@ -408,6 +418,13 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     func call(_ input: KeeperInput<State>) async throws -> KeeperReply<State> {
         note(input)
         return try await sendAndWait(input, cancellation: .ignoresCancel)
+    }
+
+    /// A call whose task's cancel withdraws it (`.cancelsCall`): the facade's joins from commit 4.
+    /// A barrier wait it is in ends `.withdrawn` (#953), and the caller gets `CancellationError`.
+    func callCancellable(_ input: KeeperInput<State>) async throws -> KeeperReply<State> {
+        note(input)
+        return try await sendAndWait(input, cancellation: .cancelsCall)
     }
 
     /// The box of the job `sequence` (the side's job table): a waiting caller cancels the job
@@ -1268,6 +1285,114 @@ struct KeeperCoreDifferentialTests {
         await pair.expectKicked()
     }
 
+    @Test("A rejoin while the player's leave is in its OnLeave resolvers waits for the leave's end, then joins (#943), the same on both paths; on the core it waits in the barrier (#953, its first adopter)", arguments: [false, true])
+    func rejoinWaitsForTheLeaveInFlight(tick: Bool) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: true), "rejoin-waits")
+        _ = await bothJoin(pair, "p1", "c1")
+        // Each path in turn: the leave held in its resolver, the rejoin parked behind it.
+        let keeperGate = WatermarkGate()
+        defer { keeperGate.release() }
+        CoreDiffLeaveGates.arm(pair.landID, keeperGate)
+        let keeperLeft = Task { await keeperLeave(pair, "p1", "c1") }
+        guard await keeperGate.waitUntilEntered("the keeper's OnLeave resolver") else { return }
+        let keeperJoined = Task { await keeperJoin(pair, "p1", "c2") }
+        guard await valueWithinHangBound(Task { await pair.keeper.waitForLeaveEndWaitersForTesting(PlayerID("p1"), count: 1) }) != nil else {
+            Issue.record("the keeper's rejoin never waited"); return
+        }
+
+        let coreGate = WatermarkGate()
+        defer { coreGate.release() }
+        CoreDiffLeaveGates.arm(pair.landID, coreGate)
+        let coreLeft = Task { await coreLeave(pair, "p1", "c1") }
+        guard await coreGate.waitUntilEntered("the core's OnLeave resolver") else { return }
+        let (waits, probe) = probeEvents("join-awaits-leave")
+        await pair.harness.setProbe(probe)
+        let coreJoined = Task { await coreJoin(pair, "p1", "c2") }
+        guard await firstWithinHangBound(waits) else { Issue.record("the core's rejoin never waited in the barrier"); return }
+        await pair.harness.setProbe(nil)
+        let held = await pair.harness.differentialRead().model
+        #expect(held.leavesInFlight[PlayerID("p1")] != nil && held.players[PlayerID("p1")] == nil, "the leave is in flight, the rejoin not inserted")
+
+        keeperGate.release()
+        coreGate.release()
+        guard let kl = await valueWithinHangBound(keeperLeft), let cl = await valueWithinHangBound(coreLeft),
+              let kj = await valueWithinHangBound(keeperJoined), let cj = await valueWithinHangBound(coreJoined) else {
+            Issue.record("a leave or a rejoin never returned"); return
+        }
+        #expect(kl == "done" && cl == "done", "keeper \(kl), core \(cl)")
+        #expect(kj == cj && cj == .joined(allowed: true, admitted: false), "keeper \(kj), core \(cj)")
+        await pair.expectSame("after the leave and the rejoin")
+    }
+
+    @Test("W6 on the core: a rejoin cancelled while it waits in the barrier for the player's leave is withdrawn with CancellationError, and its reservation and arrival token end; the leave then ends and resumes nobody (#943, #953)")
+    func rejoinCancelledWhileItWaits() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: true), "rejoin-cancel")
+        _ = await bothJoin(pair, "p1", "c1")
+        let gate = WatermarkGate()
+        defer { gate.release() }
+        CoreDiffLeaveGates.arm(pair.landID, gate)
+        let left = Task { await coreLeave(pair, "p1", "c1") }
+        guard await gate.waitUntilEntered("the core's OnLeave resolver") else { return }
+        let (waits, probe) = probeEvents("join-awaits-leave")
+        await pair.harness.setProbe(probe)
+        let call = KeeperJoinCall(session: session("p1"), clientID: ClientID("c2"), sessionID: SessionID("c2"), services: LandServices(), admitThroughTransport: false)
+        let joined = Task { try await pair.harness.callCancellable(.join(call, syncsInTurn: false)) }
+        guard await firstWithinHangBound(waits) else { Issue.record("the core's rejoin never waited in the barrier"); return }
+        await pair.harness.setProbe(nil)
+        #expect(await pair.harness.differentialRead().model.rejoinReservations[PlayerID("p1")]?.isEmpty == false, "the waiting rejoin holds its reservation")
+
+        joined.cancel()
+        guard let answer = await resultWithinHangBound(joined) else { Issue.record("the cancelled rejoin never ended"); return }
+        guard case let .failure(error) = answer, error is CancellationError else { Issue.record("the cancelled rejoin: \(answer)"); return }
+        let after = await pair.harness.differentialRead().model
+        #expect(after.latestJoinArrivals.isEmpty, "the rejoin's token outlived its join: \(after.latestJoinArrivals)")
+        #expect(after.rejoinReservations[PlayerID("p1")]?.isEmpty ?? true, "the rejoin's reservation outlived its join: \(after.rejoinReservations)")
+
+        gate.release()
+        guard let leave = await valueWithinHangBound(left) else { Issue.record("the leave never returned"); return }
+        #expect(leave == "done")
+        let done = await pair.harness.differentialRead().model
+        #expect(done.players.isEmpty && done.leavesInFlight.isEmpty, "the leave resumed nobody: players \(done.players.keys), in flight \(done.leavesInFlight)")
+    }
+
+    @Test("A stop while a rejoin waits for the player's leave in flight: the drain's start ends the leave's window and the rejoin gets landShuttingDown, the same on both paths (#943, W6d)")
+    func stopWhileTheRejoinWaits() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: true), "rejoin-stop")
+        _ = await bothJoin(pair, "p1", "c1")
+        let keeperGate = WatermarkGate()
+        defer { keeperGate.release() }
+        CoreDiffLeaveGates.arm(pair.landID, keeperGate)
+        let keeperLeft = Task { await keeperLeave(pair, "p1", "c1") }
+        guard await keeperGate.waitUntilEntered("the keeper's OnLeave resolver") else { return }
+        let keeperJoined = Task { await keeperJoin(pair, "p1", "c2") }
+        guard await valueWithinHangBound(Task { await pair.keeper.waitForLeaveEndWaitersForTesting(PlayerID("p1"), count: 1) }) != nil else {
+            Issue.record("the keeper's rejoin never waited"); return
+        }
+        let keeperStop = Task { await pair.keeper.forceShutdown() }
+        guard let kj = await valueWithinHangBound(keeperJoined) else { Issue.record("the keeper's rejoin never returned"); return }
+
+        let coreGate = WatermarkGate()
+        defer { coreGate.release() }
+        CoreDiffLeaveGates.arm(pair.landID, coreGate)
+        let coreLeft = Task { await coreLeave(pair, "p1", "c1") }
+        guard await coreGate.waitUntilEntered("the core's OnLeave resolver") else { return }
+        let (waits, probe) = probeEvents("join-awaits-leave")
+        await pair.harness.setProbe(probe)
+        let coreJoined = Task { await coreJoin(pair, "p1", "c2") }
+        guard await firstWithinHangBound(waits) else { Issue.record("the core's rejoin never waited in the barrier"); return }
+        await pair.harness.setProbe(nil)
+        let coreStop = Task { try await pair.harness.call(.shutdown) }
+        guard let cj = await valueWithinHangBound(coreJoined) else { Issue.record("the core's rejoin never returned"); return }
+        #expect(kj == cj && cj == .failed(String(describing: JoinError.landShuttingDown)), "keeper \(kj), core \(cj)")
+
+        keeperGate.release()
+        coreGate.release()
+        guard await valueWithinHangBound(keeperLeft) != nil, await valueWithinHangBound(coreLeft) != nil,
+              await valueWithinHangBound(keeperStop) != nil else { Issue.record("a leave or the keeper's stop never returned"); return }
+        guard case .success(.done)? = await resultWithinHangBound(coreStop) else { Issue.record("the core's stop wasn't answered .done"); return }
+        await pair.expectSame("after the stop")
+    }
+
     @Test("A kick whose OnLeave resolver throws fails the join with the leave's error, and ends the reservation", arguments: [false, true])
     func kickWithFailingLeave(tick: Bool) async {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: true), "kick-fails")
@@ -1788,7 +1913,7 @@ struct KeeperCoreDifferentialTests {
     @Test("The core's refusals are named: one reason per refused shape, each with its own message and the K2-2 commit that lifts it (commit 4 requires none left)")
     func refusalReasonsAreNamed() {
         let reasons = KeeperCoreRefusalReason.allCases
-        #expect(Set(reasons.map(\.rawValue)) == ["joinSyncingInTurn", "ticklessLandWithTransport", "joinAwaitingLeaveInFlight"], "a refusal was added or lifted: update this list and the K2-2 plan's §3.2 table")
+        #expect(Set(reasons.map(\.rawValue)) == ["joinSyncingInTurn", "ticklessLandWithTransport"], "a refusal was added or lifted: update this list and the K2-2 plan's §3.2 table")
         #expect(Set(reasons.map(\.message)).count == reasons.count, "two refusals share a message")
         for reason in reasons {
             #expect(reason.liftedIn.hasPrefix("K2-2 commit "), "\(reason) names no lifting commit")

@@ -19,6 +19,20 @@ enum KeeperKey: Hashable, Sendable {
     case freezeWait(InputID)
 }
 
+/// What a caller waits on in the core's barrier (#953, `Turn.wait`).
+enum KeeperBarrierKey: Hashable, Sendable {
+    /// The end of `player`'s leave in flight of the entry `generation` (#943): released by the
+    /// step that ends it, the leave's own (`endLeaveInFlight`) or the drain's start
+    /// (`endAllLeavesInFlight`), as the keeper's `leaveEnds.release` (the barrier plan's §4).
+    case leaveEnd(PlayerID, generation: Epoch)
+}
+
+/// What a waiting caller holds; it comes back once, released or ended.
+enum KeeperBarrierPayload: Sendable {
+    /// A join waiting for a leave in flight: J2c runs with it when the leave ends.
+    case joinAfterLeave(KeeperJoinDecided, leavingGeneration: Epoch, syncsInTurn: Bool)
+}
+
 /// The core's barrier waits (K2-2 plan, commit 2), as plain values: each caller's input ID.
 /// "Barriers, not holds" (K2 §4.2): the core parks no intake behind a key, so a query can't
 /// overtake a parked call. The freeze's barrier holds an intake on the side instead
@@ -346,18 +360,12 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
     /// Any input of a tickless land with a transport attached (except `.startLand`): the input
     /// turn's output phase reads the binding inside the drain.
     case ticklessLandWithTransport
-    /// A join that waits for its player's leave in flight (#943): it parks in a barrier wait.
-    /// #948's `coreBarrierWaits` hold only replies (the freeze, the initialization), and this
-    /// wait continues the join (J2c), so it waits for #953's barrier, whose payload release
-    /// hands the join back (its plan's §5, the first adopter).
-    case joinAwaitingLeaveInFlight
 
     /// The message the refusal carries and `refusals` records.
     var message: String {
         switch self {
         case .joinSyncingInTurn: "a join syncing in the turn needs the binding token (K2-2)"
         case .ticklessLandWithTransport: "a tickless land with a transport needs the binding token (K2-2)"
-        case .joinAwaitingLeaveInFlight: "a join waiting for a leave in flight needs the core's barrier wait (#953)"
         }
     }
 
@@ -365,7 +373,6 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
     var liftedIn: String {
         switch self {
         case .joinSyncingInTurn, .ticklessLandWithTransport: "K2-2 commit 3: the binding token"
-        case .joinAwaitingLeaveInFlight: "K2-2 commit 4's precondition: #953's barrier wait, its first adopter, before the cut-over"
         }
     }
 }
@@ -488,6 +495,8 @@ extension KeeperModel: TurnMachine {
     typealias Query = KeeperQuery
     typealias Answer = KeeperAnswer<State>
     typealias Behavior = KeeperBehavior<State>
+    typealias BarrierKey = KeeperBarrierKey
+    typealias BarrierPayload = KeeperBarrierPayload
 
     /// The resume, the teardown and the initialization's two owner sends are `.control`: a closed
     /// or full queue must never refuse the input that opens the freeze's barriers, ends the land,
@@ -748,6 +757,7 @@ extension KeeperModel: TurnMachine {
         // The barrier's held intakes, when this step thawed or drained the land.
         releaseCoreHeldIntakes(behavior, store, &turn)
         resumeStopAfterShutdownTurn(behavior, store, &turn)
+        releaseEndedLeaveWaits(behavior, store, &turn)
         startFailureTeardownIfNeeded(behavior, store, &turn)
         // A drop of the pending inputs in this step failed the core's waits on them.
         answerDroppedCoreInputWaits(behavior, store, &turn)
@@ -1485,14 +1495,30 @@ extension KeeperModel {
                 // J2 took the reservation and the arrival in the segment that just ended.
                 decided = made
                 next = step(behavior, store) { m, side, outputs in Result { try m.joinKickCheck(behavior, &side, &outputs, made) } }
-            case .awaitLeave:
-                // A join waiting for its player's leave in flight (#943) parks in a barrier
-                // that continues the join when the leave ends. #948's `coreBarrierWaits` hold
-                // replies only, so it is refused on the core until #953's barrier, by a named
-                // reason commit 4's totality check enumerates. The differential has no such row.
-                let kind = KeeperCoreRefusalReason.joinAwaitingLeaveInFlight
-                store.withSide { side in side.coreInputReplies.refusals.append("join: \(kind.message)") }
-                finishJoin(behavior, store, &turn, .failure(KeeperCoreRefusal(kind: kind)), decided: decided, caller: caller)
+            case let .awaitLeave(made, leavingGeneration):
+                // A join waiting for its player's leave in flight (#943) waits in the core's
+                // barrier (#953) on the leave's end; the step that ends the leave releases it
+                // (`releaseEndedLeaveWaits`), and J2c runs with the payload. The reservation and
+                // the arrival token stay with the payload until the join ends.
+                decided = made
+                guard let caller else {
+                    // Every core join is a call (`.join`'s step has its input's caller).
+                    preconditionFailure("K2-2: a join that waits for a leave has a caller")
+                }
+                let payload = KeeperBarrierPayload.joinAfterLeave(made, leavingGeneration: leavingGeneration, syncsInTurn: syncsInTurn)
+                switch turn.wait(caller, on: .leaveEnd(made.playerID, generation: leavingGeneration), holding: payload) {
+                case .waiting:
+                    store.withSide { side in side.probe?("join-awaits-leave") }
+                case .refused(_, .cancelled):
+                    // The keeper's `awaitLeaveEnd`: a join already cancelled never registers.
+                    finishJoin(behavior, store, &turn, .failure(CancellationError()), decided: made, caller: caller)
+                case .refused(_, .ended):
+                    finishJoin(behavior, store, &turn, .failure(JoinError.landShuttingDown), decided: made, caller: caller)
+                case .refused(_, .noWaiter), .expired:
+                    // Its caller has no waiter (a pre-cancelled `.control`, or answered): no reply,
+                    // the reservation and the token end.
+                    finishJoin(behavior, store, &turn, .failure(CancellationError()), decided: made, caller: nil)
+                }
                 return
             case let .kick(made, oldClientID, oldSessionID, kickedGeneration):
                 // The kick is the leave flow, nested, of the kicked entry alone: L1 in this
@@ -1709,6 +1735,50 @@ extension KeeperModel {
 
     /// The join's end, success or failure: its reservation and its arrival token end (the
     /// keeper's `defer`, in a segment of its own), then the caller gets the join's own result.
+    /// The keeper's `leaveEnds.release` (#943), at the end of any step: a join waiting on a leave
+    /// whose marker is gone (its own end, `endLeaveInFlight`, or the drain's, `endAllLeavesInFlight`)
+    /// or replaced by another generation's is released, and J2c runs with it, as the keeper's
+    /// resumed join does after `awaitLeaveEnd`. Oldest first by `InputID`.
+    mutating func releaseEndedLeaveWaits(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        let inFlight = leavesInFlight
+        let released = turn.release { key in
+            switch key {
+            case let .leaveEnd(player, generation): inFlight[player] != generation
+            }
+        }
+        for wait in released {
+            switch wait.payload {
+            case let .joinAfterLeave(decided, leavingGeneration, syncsInTurn):
+                let cancelledWhileWaiting = wait.cancelled
+                joinDrive(behavior, store, &turn, call: decided.call, caller: wait.caller, syncsInTurn: syncsInTurn, decided: decided) { m, side, outputs in
+                    // The keeper's order after the wait: the drain first, then the cancel, then J2c.
+                    guard !side.isDraining else { throw JoinError.landShuttingDown }
+                    if cancelledWhileWaiting { throw CancellationError() }
+                    return try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: leavingGeneration)
+                }
+            }
+        }
+    }
+
+    /// A barrier wait that ended without a release (#953): the join's reservation and arrival
+    /// token end, as the keeper's `defer` ends them on every exit. A withdrawn caller has the
+    /// core's `CancellationError` already; an ended core answers `landShuttingDown`.
+    mutating func handleWaitEnded(_ ended: ReleasedWait<KeeperModel<State>>, _ why: WaitEnd, _ turn: inout Turn<KeeperModel<State>>) {
+        let behavior = turn.behavior
+        guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
+        switch ended.payload {
+        case let .joinAfterLeave(decided, _, _):
+            switch why {
+            case .withdrawn, .answered:
+                finishJoin(behavior, store, &turn, .failure(CancellationError()), decided: decided, caller: nil)
+            case .ended:
+                finishJoin(behavior, store, &turn, .failure(JoinError.landShuttingDown), decided: decided, caller: ended.caller)
+            case .timedOut:
+                preconditionFailure("K2-2: a join's leave wait has no timeout")
+            }
+        }
+    }
+
     mutating func finishJoin(
         _ behavior: KeeperBehavior<State>,
         _ store: KeeperSideStore,
