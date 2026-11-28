@@ -2416,16 +2416,38 @@ extension KeeperCoreDifferentialTests {
         await pair.expectSame("after the stop")
     }
 
-    @Test("A tick or sync from before the drain's epoch bump is a no-op on the core: the model is unchanged (M5, plan §13.1)")
-    func staleLoopInputsAfterDrainStart() async throws {
-        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "stale-epoch")
+    @Test("A tick or sync from before the drain's epoch bump is a no-op on the core, delivered mid-drain (the drain waits for a tick held at its record, the port still attached): no step, no call to the port, the model unchanged (M5, plan §13.1)")
+    func staleTickDueAfterDrainStart() async throws {
+        let pair = try await TracePair.make("stale-epoch")
+        let coreHold = WatermarkGate()
+        defer { coreHold.release() }
+        pair.harness.armedRecordGate.arm(coreHold)
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+        guard await coreHold.waitUntilEntered("the core's tick record") else { return }
         let epochBefore = await pair.harness.differentialRead().model.loopEpoch
-        _ = try await pair.harness.call(.shutdown)
-        let after = CoreDiffDigest(await pair.harness.differentialRead())
-        #expect(await pair.harness.differentialRead().model.loopEpoch == epochBefore &+ 1)
-        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true, epoch: epochBefore))
+        // A drain that starts with a tick in flight: the flag first, then the owner's
+        // `.drainStart`, as a land failure's teardown sends it (the failure itself would also
+        // mute the sync, so only the flag is set here; no player is joined).
+        await pair.harness.markDraining(cause: .forceShutdown)
+        await pair.harness.drive(.drainStart)
+        let draining = await pair.harness.differentialRead().model
+        #expect(draining.loopEpoch == epochBefore &+ 1, "the drain start bumps the epoch")
+        #expect(draining.drainPhase == .waitingForTick, "the drain waits for the held tick: \(draining.drainPhase)")
+        let before = CoreDiffDigest(await pair.harness.differentialRead())
+        pair.coreTrace.clear()
+
+        // A sync and a tick that the replaced loops sent before the bump. A sync step doesn't
+        // read the drain flag, so only the epoch keeps this one from reaching the port; the
+        // tick's step would also stop at `tickStart`'s drain check.
         await pair.harness.drive(.syncDue(now: ContinuousClock.now, tickDeadline: nil, foldPending: false, syncsInTurn: true, epoch: epochBefore))
-        #expect(CoreDiffDigest(await pair.harness.differentialRead()) == after)
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true, epoch: epochBefore))
+        #expect(pair.coreTrace.all.isEmpty, "a stale loop input reached the port: \(pair.coreTrace.all)")
+        let after = CoreDiffDigest(await pair.harness.differentialRead())
+        #expect(after == before, "differ in \(after.differingFields(from: before))")
+
+        coreHold.release()
+        guard await pair.coreTrace.waitFor("onLandDestroyed") else { Issue.record("the core's drain never ended: \(pair.coreTrace.all)"); return }
+        #expect(await pair.harness.differentialRead().model.drainPhase == .finished)
     }
 
     @Test("A second stop joins the first and is answered with it (the keeper's SingleFlight), on the core (K2-2 commit 1b)")
@@ -2550,7 +2572,7 @@ extension KeeperCoreDifferentialTests {
     }
 
     // TODO(1b), the cases plan §13 lists, each held with hold points (they need a build to
-    // settle the harness gates): staleTickDueAfterDrainStart (§13.1), ticklessRecordInFlightAtDrainStart (§13.2.1),
+    // settle the harness gates): ticklessRecordInFlightAtDrainStart (§13.2.1),
     // shutdownWhileFrozenDropsHeldIntakes (P11-2), K2-1b's
     // drain hold cases one per await, and teardownWaitsForTheFailingTurn on the core path.
 
