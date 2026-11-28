@@ -6377,18 +6377,17 @@ extension TransportAdapter {
         await holds.at(.settleBeforePublish)
         // Checked after the last await, in the publish's segment, so a release meanwhile is
         // never published and an older settle never writes over a newer freeze's state.
-        let published = debugFreezeTickets.ifCurrent(ticket) { _ -> DebugFreezeState<State>.Settled in
-            // Events still queued (kept by the settle's phase, or queued since): on a land
-            // without periodic sync nothing else delivers them, and syncs are frozen, so the
-            // resume does. After the hold, so an event queued there is seen.
-            if pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync {
-                debugFreezeState.deferredSyncNow = true
-            }
+        let published = debugFreezeTickets.ifCurrent(ticket) { _ -> Result<DebugFreezeState<State>.Settled, any Error> in
+            // A land that failed or closed since the settle's turn has ended: name the cause
+            // instead of publishing a success for it (#730). All three reads are nonisolated.
+            if let failure = keeper.failure ?? outputGate.failure { return .failure(failure) }
+            if keeper.isDraining { return .failure(LandInputRejection.landClosed) }
+            if debugFreezeKeepsEventsUnsent { debugFreezeState.deferredSyncNow = true }
             debugFreezeState.settled = settled
-            return settled
+            return .success(settled)
         }
         guard let published else { throw DebugFreezeError.released }
-        return published
+        return try published.get()
     }
 
     /// Waits until the writer holds no sync cycle element; `false` when `deadline` passed first.
@@ -6469,6 +6468,13 @@ extension TransportAdapter {
         return .committed(membershipEpoch: membershipEpoch, clearDirtyFlags: clearDirtyFlags)
     }
 
+    /// Events still queued (kept by the settle's phase, or queued since) that only the resume
+    /// delivers: on a land without periodic sync nothing else sends them, and syncs are frozen.
+    /// Read in the publish's segment and in the release's, so whichever runs sees them.
+    private var debugFreezeKeepsEventsUnsent: Bool {
+        pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync
+    }
+
     /// Release the current freeze generation. Does not wait for an unfinished settle: it cancels
     /// it, so a settle waiting for the writer or between retries ends at once instead of at its
     /// deadline. After the ticket ends, so every check after its await sees the release and
@@ -6484,7 +6490,9 @@ extension TransportAdapter {
         debugFreezeState.settleTask?.cancel()
         debugFreezeState.settleTask = nil
         debugFreezeState.settled = nil
-        let runSyncNow = debugFreezeState.deferredSyncNow
+        // Also checked here: a release before the settle's publish ends its ticket, so the
+        // publish never records the events the settle kept (#730).
+        let runSyncNow = debugFreezeState.deferredSyncNow || debugFreezeKeepsEventsUnsent
         debugFreezeState.deferredSyncNow = false
 
         await keeper.debugResume(generation: generation)
