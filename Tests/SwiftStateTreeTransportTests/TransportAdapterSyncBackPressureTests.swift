@@ -109,8 +109,10 @@ private struct BPFixture {
     /// `blockWithCycleInWriter(stamp: blocked)`, then sets `deferred`: the keeper defers a sync
     /// phase behind the writer's element and starts its writer-drain retry, whose wait registers
     /// from a task it starts, during either step (#807). Waits for that one registration, so it
-    /// can't be mistaken for a later wait's, and returns the writer's entry count then (1: the
-    /// retry's), which stays until the writer drains.
+    /// can't be mistaken for a later wait's, and returns the writer's entry count then, which
+    /// stays until the writer drains. It is always 1: `retrySyncOnlyTurnAfterWriterDrain` starts
+    /// at most one retry per sync binding (its `inTurnDrainRetryBinding` guard), so a second
+    /// deferred phase on the same binding adds no wait.
     func blockWithKeeperDrainRetry(blocked: Int, deferred: Int, writer: OutboundWriter) async throws -> Int {
         let retryRegistered = TestGate()
         retryRegistered.open()
@@ -132,6 +134,19 @@ private struct BPFixture {
         await adapter.syncNow()
         #expect(await adapter.outboundBacklog().syncCycleElements == 1, "the cycle's element waits in the writer")
     }
+}
+
+/// Waits for the settle's task to log its end, bounded by `EventLog`'s own timer: an
+/// unstructured task, so the suite's time limit (equal to `testHangBound`) can't cancel it. A
+/// guard that ran as a sibling of the settle under that limit was cancelled with the test and
+/// never released, and a settle wait that ignores cancellation then hung the run (#984's
+/// mutant). Only when the settle never ended: releasing the transport drains the writer, so
+/// such a wait returns and the test fails by name. A release after the settle ended would
+/// drain the writer, and the entry counts checked after it would race that drain (#807).
+private func waitForSettleEnd(_ ended: EventLog, transport: BlockingTransport) async -> Bool {
+    let freezeEnded = await ended.waitFor("ended")
+    if !freezeEnded { transport.release() }
+    return freezeEnded
 }
 
 @Suite("TransportAdapter sync back-pressure", .timeLimit(.minutes(1)))
@@ -277,24 +292,11 @@ struct TransportAdapterSyncBackPressureTests {
         await f.adapter.setDebugFreezeSettleDeadline(.milliseconds(100))
 
         let adapter = f.adapter
-        let freeze = Task { try await adapter.debugFreeze() }
-        // When the hang bound runs out first, releasing the transport drains the writer, so a
-        // wait the deadline couldn't end returns and the test fails by name instead of hanging.
-        // Only then: a release after the settle ended would drain the writer, and the entry
-        // count below would race that drain (#807).
-        let outcome = await withTaskGroup(of: Result<DebugFreezeResponse, any Error>?.self) { group in
-            group.addTask { await freeze.result }
-            group.addTask {
-                guard (try? await safeTaskSleep(for: testHangBound)) != nil else { return nil }
-                f.transport.release()
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
-        let result = try #require(outcome, "the settle didn't end at its deadline")
-        #expect(throws: DebugFreezeError.settleTimedOut) { try result.get() }
+        let ended = EventLog()
+        let freeze = Task { defer { ended.append("ended") }; return try await adapter.debugFreeze() }
+        let freezeEnded = await waitForSettleEnd(ended, transport: f.transport)
+        try #require(freezeEnded, "the settle didn't end at its deadline")
+        await #expect(throws: DebugFreezeError.settleTimedOut) { _ = try await freeze.value }
         // The writer is still blocked, so the keeper's retry still waits: only the settle's
         // own entry must be gone.
         #expect(writer.syncCycleDrainWaitEntriesForTesting == keeperRetry, "the timed-out wait left its waiter")
@@ -318,29 +320,16 @@ struct TransportAdapterSyncBackPressureTests {
         defer { writer.setOnSyncCycleDrainWaitRegisteredForTesting(nil) }
 
         let adapter = f.adapter
-        let freeze = Task { try await adapter.debugFreeze() }
+        let ended = EventLog()
+        let freeze = Task { defer { ended.append("ended") }; return try await adapter.debugFreeze() }
         // The keeper's retry registered before the hook was set, so this arrival is the settle's.
         try #require(await registered.waitForArrivals(1), "the settle never waited for the writer")
         let token = await f.adapter.debugFreezeState.token
         #expect(await f.adapter.debugResume(freezeToken: token).resumed)
 
-        // When the hang bound runs out first, releasing the transport drains the writer, so a
-        // wait the release couldn't end returns and the test fails by name instead of hanging.
-        // Only then: a release after the settle ended would drain the writer, and the entry
-        // count below would race that drain (#807).
-        let outcome = await withTaskGroup(of: Result<DebugFreezeResponse, any Error>?.self) { group in
-            group.addTask { await freeze.result }
-            group.addTask {
-                guard (try? await safeTaskSleep(for: testHangBound)) != nil else { return nil }
-                f.transport.release()
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
-        let result = try #require(outcome, "the released settle kept waiting for the writer")
-        #expect(throws: DebugFreezeError.released) { try result.get() }
+        let freezeEnded = await waitForSettleEnd(ended, transport: f.transport)
+        try #require(freezeEnded, "the released settle kept waiting for the writer")
+        await #expect(throws: DebugFreezeError.released) { _ = try await freeze.value }
         // The writer is still blocked, so the keeper's retry still waits: only the settle's
         // own entry must be gone.
         #expect(writer.syncCycleDrainWaitEntriesForTesting == keeperRetry, "the cancelled wait left its waiter")
