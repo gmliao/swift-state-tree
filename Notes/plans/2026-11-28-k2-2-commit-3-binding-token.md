@@ -1,6 +1,6 @@
 # K2-2 commit 3: the binding token (#700)
 
-Rev 1 (2026-11-28), plan only. It details the K2-2 plan's commit 3 (`2026-11-27-k2-2-cut-over-the-keeper-onto-the-core.md` §3, commit 3; §3.2; §9; §10) and the K2 plan's §4.5 and §18 item 19. Read at main 89af141f. LK = `LandKeeper.swift`, KM = `KeeperMachine.swift`, TS = `KeeperTurnSide.swift`, TA = `TransportAdapter.swift`, TAK = `TransportAdapter+LandKeeperTransport.swift`, CDT = `KeeperCoreDifferentialTests.swift`.
+Rev 2 (2026-11-28), plan only: §4's probes run and quoted (rev 1 listed them). It details the K2-2 plan's commit 3 (`2026-11-27-k2-2-cut-over-the-keeper-onto-the-core.md` §3, commit 3; §3.2; §9; §10) and the K2 plan's §4.5 and §18 item 19. Read at main 89af141f. LK = `LandKeeper.swift`, KM = `KeeperMachine.swift`, TS = `KeeperTurnSide.swift`, TA = `TransportAdapter.swift`, TAK = `TransportAdapter+LandKeeperTransport.swift`, CDT = `KeeperCoreDifferentialTests.swift`.
 
 ## 1. Goal
 
@@ -28,7 +28,7 @@ No public API changes. The admission path is a new package method on the adapter
 - `KeeperInput.setTransport(KeeperBindingToken?)`, with `KeeperBindingToken = (port: any LandKeeperTransport, syncsInTurn: Bool)`. The sender reads `syncsInTurn` = `port.runsSyncPhaseInTurn(of: owner)` outside the step, in the same segment as its send, as `.syncTurnNow` does today (§10's row). The harness is the sender in K2-2a's shape; commit 4's facade forwards `setTransport` with the read.
 - The step does what `setTransport` does: the re-entry refusal is the facade's (commit 4, `isStepping`); the trap on a live keeper whose port answers false; the post-drain `releasedTransport` arm; then the writes to `side.attachedTransport` and `transportRecordsFolds`, and `noteTransportBound`'s writes for a non-nil port. It also stores the read as `model.bindingSyncsInTurn` (plain).
 - `side.syncsInTurn(behavior)` on the core returns `live && attachedTransport != nil && bindingSyncsInTurn`. `carriedSyncsInTurn` and its three writers go.
-- The drain's end emits `.detachTransport`, and the owner sends `.setTransport(nil)`, as the keeper's drain calls `setTransport(nil)` today (§3.1's row "then `setTransport(nil)` … until commit 3's binding token makes it a step").
+- The drain's end attaches the released stand-in in `.drainFinished`'s own step, as the keeper's drain calls `setTransport(nil)` after `releasedTransport` (the K2-2 plan's §3.1 row "then `setTransport(nil)` … until commit 3's binding token makes it a step"). A later `.setTransport` attaches the stand-in too (P3).
 
 **Why a stored binding is the keeper's read.** The keeper re-reads `self.transport` and asks the port at each use, after every await. On the core every stage after an await is its own step, and a step that reads the stored binding reads it at that point, after the await. The binding changes only in `.setTransport`'s step, so no step can read a binding that was replaced in between. The port's answer can't change within a binding (§2), so reading it once at the attach gives the same value the keeper would get at each use. This replaces the K2 plan's "the token rides the inputs that need a port" (§4.5). That wording assumed a per-use read, which the adapter's `let keeper` makes unnecessary. **For Review:** this is a change to the K2 plan, stated here so it can be refused.
 
@@ -76,18 +76,35 @@ One PR per subsection, in order, each with its differential cases and the census
 
 ## 4. Probes
 
-Each probe is throwaway test code on a scratch branch, output quoted here before the code PR; none is committed.
-
 - **P1, the ports' answers** (§3.1). **Done by reading** (2026-11-28, main 89af141f; a grep of every `runsSyncPhaseInTurn(of:)` in `Sources/`, `Tests/`, `Examples/` and `Benchmarks/`, not run). 37 implementations besides the protocol's requirement:
   - `Sources`: the adapter (`keeper === self.keeper`, a `let`) and the dropping port (`false`, LandKeeperTransport.swift:461, exempt from the attach check).
   - `Tests`, 35: 28 return a constant `true`, 3 a constant `false` (TransportRefusalTests:13, LandKeeperReevaluationOutputModeTests:57, ReevaluationDrainTests:85), one is `keeper === owner` over a fixed owner (TransportRefusalTests:35), and three run code (below).
   - Three test ports run code in the witness: InTurnSyncFoldReportTests:194 and KeeperTurnSkeletonTests:282 re-enter the keeper from it, and both still return `true`. CDT:761 returns `witnessAnswer`, which `syncStaleTicketAndRefusingWitness` sets before the port's first use (CDT:1996).
 
   **Result:** no answer changes within one attachment. One effect to state: on the core the attached port's witness is asked once, by the sender of `.setTransport`, not at every use. The two witness re-entry cases test the keeper's path only and have no core twin, so they stay as they are. The sync queries keep their own per-call read, since each names its own port.
-- **P2, a deferred `.setTransport`.** On the keeper, a `setTransport` reached during a body is refused, and the land ends. On the core, a `send(.setTransport)` made during a step is deferred until the step ends (TurnActor), so without the facade's `isStepping` check it would apply. Probe: a port call inside a core step that sends `.setTransport`. Expected: the attach applies after the step, with no failure. That confirms the refusal must sit at the sender (commit 4's facade); 3a's harness records the trip as a violation, as K2-1 does for other guarded entries.
-- **P3, the late attach after the drain** (InitAndDrainSegmentTests:744, :785). Run both cases against the core twin with `.setTransport` as a step. Pass: `releasedTransport` is attached in the same cases, and `.detachTransport` followed by `.setTransport(nil)` leaves the side without a port.
-- **P4, the admission's drafts in order** (§3.3). Run P-K2-2b's four lands (tick and tickless, with and without OnJoin) with `admitJoiningSessionInStep` called from a core step. Pass: the stream matches the golden (the clear right after the superseded session's last sync output, before the new session's seed), with no refusal and no failure.
-- **P5, the writer-drain effect** (§3.4). A core effect awaiting `waitForWriterDrainForInTurnSync()` on a held writer, released by the test. Pass: `.writerDrained` steps after the release, and a `.setTransport` in between makes its ticket stale, so no sync-only turn runs.
+Run 2026-11-28, macOS, debug, at main bdaf9d79 (`swift test --skip-build --filter …`). P2–P5 ask how a core arm this plan adds will behave, and those arms don't exist yet. So each probe runs what can run now: the core's own rule (P2) or the keeper's behavior the arm must match (P3–P5). The core half of each becomes the first differential case of its PR, written before the arm.
+
+- **P2, a `.setTransport` sent during a step.** On the keeper, a `setTransport` reached during a body is refused, and the land ends. On the core, a send made during a step is queued and steps after it:
+  ```
+  ✔ Test "7: a send from inside a step is queued and steps after it" passed after 0.001 seconds.
+  ```
+  (`OrderedChecksTests.sendFromInsideStepIsQueued`: the log is `["hook start", "hook end", "queued"]`, two steps.) **So the refusal must sit at the sender**, before the send: commit 4's facade reads `isStepping` (K2 §4.2 (a)). Until then, 3a's harness checks `isStepping` before it sends `.setTransport` and records a trip as a violation, as K2-1 does for the other guarded entries. 3a's case: a port call inside a core step that reaches the attach; both paths end the land, and the core's attach never steps.
+- **P3, the late attach during the drain** (T8):
+  ```
+  ✔ Test "T8: a transport attached during onLandDestroyed is replaced by the released stand-in and never told the land was destroyed" passed after 0.006 seconds.
+  ✔ Test "T8, replay: a re-evaluation keeper's drain runs no destroy handler, and a transport attached during onLandDestroyed is replaced the same way" passed after 0.006 seconds.
+  ```
+  `attachDuringOnLandDestroyed` (InitAndDrainSegmentTests:733) pins the keeper's order: an attach during `onLandDestroyed` is applied (the transport is the late one while `destructionFinished` is false), then the drain's end replaces it with `ReleasedLandTransport`, and the late port hears of no destruction. **On the core:** the attach is its own step, between the `.notifyTransport` effect and `.drainFinished`. So `.setTransport`'s step applies it, and `.drainFinished`'s step attaches the released stand-in (the keeper's `setTransport(nil)` after `releasedTransport`). After `.drainFinished`, `.setTransport` attaches the stand-in, as the keeper's `destructionFinished ? releasedTransport : transport`. 3a's case runs T8 on the core with the attach held at the effect. The replay variant stays on the keeper until #612.
+- **P4, the supersede's clear in the record** (§3.3):
+  ```
+  ✔ Test "A superseding join with an OnJoin input records its clear with no refused re-entry" with 2 test cases passed after 0.033 seconds.
+  ```
+  The keeper's path still matches P-K2-2b's golden at main, tick and tickless. That is the stream 3b's core case compares against, through `admitJoiningSessionInStep`.
+- **P5, the writer-drain retry** (§3.4):
+  ```
+  ✔ Test "writer back-pressure defers the turn's sync: flags and 107 events kept; the drain retry sends them once" passed after 0.023 seconds.
+  ```
+  (`TransportAdapterInTurnSyncTests`, 13 tests in 2 suites passed with it.) On the keeper, the retry is a staged Task that awaits `waitForWriterDrainForInTurnSync()` and sends the kept events once. The adapter's method awaits `outboundWriter.waitForSyncCycleDrain()`, then polls the test override (TAK:75), so it needs nothing from the keeper and can run as a core effect. 3c's case: the same back-pressure on the core, with the effect's completion as `.writerDrained(ticket)`, and a `.setTransport` between the defer and the completion making the ticket stale, so no sync-only turn runs.
 
 ## 5. Tests
 
