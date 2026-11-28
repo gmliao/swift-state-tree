@@ -165,6 +165,10 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// A tickless land's server input (K2-2 plan §3.2): the intake as a `.normal` call, since a
     /// query can't queue the drain its kick needs. Replies `.serverInput` with the outcome. A
     /// tick land keeps the `.admitServerInput` query.
+    ///
+    /// The sender's contract (commit 4's facade), as the keeper's `submitServerInputErased`:
+    /// send `.awaitInitialized` first, and answer `.refused(.draining)` when the initialization
+    /// failed; a closed intake (`TurnError.closed`) is `.refused(.draining)` too, not a throw.
     case serverInput(any ServerInputPayload)
     /// The owner starts `.land` at initialization, which a step's outputs for it need (K2-1: the
     /// test harness's start; K2-2: the core's initialization).
@@ -365,9 +369,14 @@ struct KeeperCoreInputReplies: Sendable {
     var syncFollowUps: [UInt64: KeeperCoreSyncFollowUp] = [:]
     var stagedSyncFollowUps: [UInt64] = []
     var nextSyncFollowUpID: UInt64 = 0
-    /// Set by an attach or a detach: the open writer-drain requests wait on a port that is no
-    /// longer the binding's, and `endOfStep` cancels them (their workers with them, #988).
+    /// Set by a port attach, which rebinds: the open writer-drain requests wait on a port that
+    /// is no longer the binding's, and `endOfStep` cancels them (their workers with them, #988).
+    /// A detach rebinds nothing and sets none.
     var cancelsWriterDrains = false
+    /// Tests only: the step's end closes the core's intake (`Turn.close`), so a case can check
+    /// that the `.control` inputs still step on a closed intake. Nothing else closes it before
+    /// commit 4's owner.
+    var closesIntakeForTesting = false
 }
 
 /// A core's refusal of an input K2-1 doesn't route on the core (`KeeperCoreInputReplies.refusals`).
@@ -867,6 +876,11 @@ extension KeeperModel: TurnMachine {
         makeStagedSyncFollowUps(behavior, store, &turn)
         runCoreJobEffects(store, &turn)
         answerCoreFreezeWaits(&turn)
+        let closes = store.withSide { side in
+            defer { side.coreInputReplies.closesIntakeForTesting = false }
+            return side.coreInputReplies.closesIntakeForTesting
+        }
+        if closes { turn.close() }
     }
 
     /// `debugFreeze`'s decision as a step (K2-2 plan, commit 2): a released generation answers
@@ -1234,16 +1248,20 @@ extension KeeperModel {
     /// (a re-entry ended the land in it).
     mutating func admitJoiningBody(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, _ outputs: inout TurnOutputs, _ made: KeeperJoinDecided, joinSequence: Int64?) -> JoinAdmission? {
         guard side.storedSyncsInTurn, let port = side.attachedTransport else { return .notAdmitted }
+        let mark = recorderSubmissionCount
         switch callOut(behavior, &side, &outputs, { _, _ in
             port.admitJoiningSession(playerID: made.playerID, clientID: made.call.clientID, sessionID: made.call.sessionID, joinSequence: joinSequence)
         }) {
         case let .answered(admission): return admission
-        case .refused: return nil
+        case .refused:
+            // A tickless land's turn record ends here, as after `joinDecide`'s refusal.
+            enqueueTicklessTurnEnd(behavior, side, since: mark)
+            return nil
         }
     }
 
     /// Makes the requests of the follow-ups this step armed (K2-2 commit 3c), each a tracked
-    /// request under `.land`, and cancels the open writer-drain requests an attach or detach left
+    /// request under `.land`, and cancels the open writer-drain requests a port attach left
     /// waiting on the old port. A request the core can't make (`.land` not live) is undone: its
     /// slot or binding cleared and its work ended, as an abandonment would.
     mutating func makeStagedSyncFollowUps(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
@@ -1327,9 +1345,14 @@ extension KeeperModel {
         case .joinSync:
             if joinSyncTurnBinding == record.followUp.binding { joinSyncTurnBinding = nil }
             endRequestedSyncWorkOnCore()
-            guard !side.isDraining, let attached = side.attachedTransport,
-                  joinsAwaitingSync(behavior, &side, &outputs, transport: attached) == true,
-                  acceptsCoreFollowUp(behavior, side, record.followUp) else { return }
+            guard !side.isDraining, let attached = side.attachedTransport else { return }
+            let mark = recorderSubmissionCount
+            guard let awaiting = joinsAwaitingSync(behavior, &side, &outputs, transport: attached) else {
+                // A refused read ends a tickless land's turn record, as `joinDecide`'s does.
+                enqueueTicklessTurnEnd(behavior, side, since: mark)
+                return
+            }
+            guard awaiting, acceptsCoreFollowUp(behavior, side, record.followUp) else { return }
             joinSyncTurnsForTesting += 1
             _ = Self.syncOnlyTurnBody(&self, behavior, &side, &outputs, transport: record.followUp.port, joinSyncOnly: false)
         }
@@ -1356,10 +1379,20 @@ extension KeeperModel {
     /// at depth zero.
     mutating func requestJoinSyncTurnBody(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, _ outputs: inout TurnOutputs) {
         guard !side.isDraining, side.failure == nil, let transport = side.attachedTransport else { return }
-        guard joinsAwaitingSync(behavior, &side, &outputs, transport: transport) == true else { return }
+        // A refused read ends a tickless land's turn record, as `joinDecide`'s refusal does.
+        let mark = recorderSubmissionCount
+        guard let awaiting = joinsAwaitingSync(behavior, &side, &outputs, transport: transport) else {
+            enqueueTicklessTurnEnd(behavior, side, since: mark)
+            return
+        }
+        guard awaiting else { return }
         if behavior.hasPeriodicSync {
             let syncPort = side.storedSyncsInTurn ? transport : nil
-            guard periodicJoinSyncAllowed(behavior, &side, &outputs, transport: syncPort) == true, !inTurnSyncDue else { return }
+            guard let allowed = periodicJoinSyncAllowed(behavior, &side, &outputs, transport: syncPort) else {
+                enqueueTicklessTurnEnd(behavior, side, since: mark)
+                return
+            }
+            guard allowed, !inTurnSyncDue else { return }
             joinSyncRequestTurnsForTesting += 1
             _ = Self.syncOnlyTurnBody(&self, behavior, &side, &outputs, transport: transport, joinSyncOnly: true)
         } else {
@@ -1378,11 +1411,15 @@ extension KeeperModel {
         }
         var answer = false, folds = false
         if let port, !(port is ReleasedLandTransport) {
-            switch callOut(behavior, &side, &outputs, { _, _ in (port.runsSyncPhaseInTurn(of: owner), port.recordsInTurnSyncFolds) }) {
+            // In the keeper's order: the witness, its check (a trap), then the fold flag. A
+            // refused call ends a tickless land's turn record, as `joinDecide`'s refusal does.
+            let mark = recorderSubmissionCount
+            switch callOut(behavior, &side, &outputs, { _, _ in port.runsSyncPhaseInTurn(of: owner) }) {
             case .refused:
+                enqueueTicklessTurnEnd(behavior, side, since: mark)
                 return
             case let .answered(read):
-                (answer, folds) = read
+                answer = read
             }
             if behavior.config.mode == .live, !answer {
                 fatalError(
@@ -1390,12 +1427,22 @@ extension KeeperModel {
                         + "\(type(of: port)).runsSyncPhaseInTurn(of:) returned false. Attach the TransportAdapter built for this keeper, or no transport (#546 L2d)"
                 )
             }
+            switch callOut(behavior, &side, &outputs, { _, _ in port.recordsInTurnSyncFolds }) {
+            case .refused:
+                enqueueTicklessTurnEnd(behavior, side, since: mark)
+                return
+            case let .answered(read):
+                folds = read
+            }
         }
         side.attachedTransport = port
         side.attachedSyncsInTurn = answer
         transportRecordsFolds = folds
-        if side.coreInputReplies.onCore { side.coreInputReplies.cancelsWriterDrains = true }
+        // A detach rebinds nothing, as on the keeper: a retry bound to a requester stays current,
+        // and one waiting on a detached port is refused at its wake (`acceptsCoreFollowUp`).
+        // Only a port attach rebinds, so only it cancels the open writer-drain retries.
         guard port != nil else { return }
+        if side.coreInputReplies.onCore { side.coreInputReplies.cancelsWriterDrains = true }
         hasHeldTransport = true
         side.sharedBoundRequester.object = nil
         syncBinding.rebind()

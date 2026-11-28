@@ -442,6 +442,20 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     }
 
     var droppedOutputs: Int { core.stats.droppedOutputs }
+    /// The core's open requests and queued inputs, read between steps: a case checks a step's
+    /// effect at once instead of waiting for an event that a broken step never sends.
+    var openRequests: Int { core.stats.openRequests }
+    var queuedInputs: Int { core.stats.queued }
+    var syncFollowUpRecords: Int { store.withSide { side in side.coreInputReplies.syncFollowUps.count } }
+
+    /// Closes the core's intake at the end of a `.requestJoinSyncTurn` step (a `.control` input
+    /// that does nothing on a land without a port), and waits for that step.
+    func closeIntake() async -> Bool {
+        store.withSide { side in side.coreInputReplies.closesIntakeForTesting = true }
+        let before = steppedCount("requestJoinSyncTurn")
+        drive(.requestJoinSyncTurn)
+        return await waitForInputs(named: "requestJoinSyncTurn", count: before + 1)
+    }
 
     /// Yields once per input drain's end (the side's `input-drain-end` probe), and counts them.
     /// Install after `start` (the store must be bound) and before the drain.
@@ -828,6 +842,7 @@ final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
     /// and "drain cancelled" in `drainEntered`.
     var drainBlocks = false
     let drainEntered = EventLog()
+    private var drainWait: CoreDiffDrainWait?
     private let lock = NSLock()
     private weak var reentryKeeper: LandKeeper<CoreDiffState>?
     init(_ trace: CoreDiffTrace) { self.trace = trace }
@@ -915,6 +930,7 @@ final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
         guard lock.withLock({ drainBlocks }) else { return }
         let log = drainEntered
         let box = CoreDiffDrainWait()
+        lock.withLock { drainWait = box }
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 if box.park(continuation) { log.append("drain entered") }
@@ -922,8 +938,11 @@ final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
         } onCancel: {
             box.cancel()
         }
-        log.append("drain cancelled")
+        log.append(Task.isCancelled ? "drain cancelled" : "drain released")
     }
+
+    /// Ends the blocked writer-drain wait as a drained writer would (not a cancel).
+    func releaseDrain() { lock.withLock { drainWait }?.cancel() }
     var recordsInTurnSyncFolds: Bool { false }
     func noteInTurnSyncFold(_ fold: InTurnSyncFold) { trace.append("noteInTurnSyncFold \(fold)") }
     func noteInTurnJoinSyncTick() { trace.append("noteInTurnJoinSyncTick") }
@@ -4389,6 +4408,10 @@ extension KeeperCoreDifferentialTests {
         guard await hold.waitUntilEntered("the first wake") else { return }
         // Consumes A's slot (its work ends) and arms B.
         _ = await pair.harness.syncTurnNow(via: pair.coreTransport, reason: .syncNow)
+        // A's record (its wake held) and B's, made at the query's end: checked at once, so a
+        // `.syncTurnNow` that left A's slot armed (B never made) fails here, not at the hang bound.
+        let records = await pair.harness.syncFollowUpRecords
+        guard records == 2 else { Issue.record("follow-up records after .syncTurnNow: \(records), expected A's and B's"); return }
         guard await pair.harness.waitForInputs(named: "syncFollowUpDue", count: 1) else { return }
         #expect(phases(pair.coreTrace) == 3, "tick, syncTurnNow, B's wake: \(pair.coreTrace.all)")
         hold.release()
@@ -4408,6 +4431,9 @@ extension KeeperCoreDifferentialTests {
         #expect(await pair.harness.differentialRead().model.requestedSyncWork == 1)
         let next = CoreDiffTraceTransport(CoreDiffTrace())
         await pair.harness.drive(.setTransport(next, owner: pair.harness.owner))
+        // The attach's step cancels the retry's request at its end: checked at once, so a step
+        // that doesn't fails here instead of at the hang bound.
+        guard await pair.harness.openRequests == 0 else { Issue.record("the attach left the retry's request open"); return }
         guard await pair.coreTransport.drainEntered.waitFor("drain cancelled") else { Issue.record("the retry's wait wasn't cancelled"); return }
         // The cancelled worker's wake is a late result (`handleLateResult`), no step.
         guard await pair.harness.followUpWakes.waitFor("wake 0") else { Issue.record("the cancelled worker never returned"); return }
@@ -4462,6 +4488,11 @@ extension KeeperCoreDifferentialTests {
         await pair.keeper.waitForInputDrainIdleForTesting()
         guard let core = await coreServerInput(pair, CoreDiffServerInput(n: 9)) else { return }
         #expect(keeper == core && { if case .accepted = core { true } else { false } }(), "keeper \(keeper), core \(core)")
+        // The kick's drain is queued in the input's step, or has stepped already: checked at once,
+        // so a step that doesn't queue it fails here, not at the hang bound.
+        let queued = await pair.harness.queuedInputs, drained = await pair.harness.steppedCount("inputDrainDue")
+        let drainQueued = queued > 0 || drained > 0
+        guard drainQueued else { Issue.record("the server input's step queued no drain"); return }
         // The turn's record taken answers the kick's wait (`.recordTaken`).
         guard await pair.harness.waitForInputs(named: "recordTaken", count: 1) else { return }
         let read = await pair.harness.differentialRead()
@@ -4505,5 +4536,103 @@ extension KeeperCoreDifferentialTests {
         #expect(read.model.state.log.contains("input:9"), "\(read.model.state.log)")
         #expect(read.model.debugInFlightWork == 0 && read.coreWaitsLeft == 0, "work \(read.model.debugInFlightWork), waits \(read.coreWaitsLeft)")
         await pair.expectSame("after the resumed input's turn")
+    }
+}
+
+/// Review r1 on #990: the detach keeps a retry the keeper runs, a refused port call ends a
+/// tickless turn record, and the `.control` inputs step on a closed intake.
+extension KeeperCoreDifferentialTests {
+    @Test("A nil attach on a never-attached land keeps a bound requester's writer-drain retry: once the writer drains, the retry runs its sync-only turn on both paths, and no work is left (Review r1 on #990, MF2)")
+    func nilAttachKeepsABoundRetry() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "nil-attach-retry")
+        let keeperPort = CoreDiffTraceTransport(CoreDiffTrace()), corePort = CoreDiffTraceTransport(CoreDiffTrace())
+        for port in [keeperPort, corePort] {
+            port.followUp = .deferred
+            port.followUpPhasesLeft = 1
+            port.drainBlocks = true
+        }
+        _ = await pair.keeper.syncTurnNow(via: keeperPort, reason: .syncNow)
+        _ = await pair.harness.syncTurnNow(via: corePort, reason: .syncNow)
+        guard await keeperPort.drainEntered.waitFor("drain entered"), await corePort.drainEntered.waitFor("drain entered") else {
+            Issue.record("a retry never waited"); return
+        }
+        await pair.keeper.setTransport(nil)
+        await pair.harness.drive(.setTransport(nil, owner: pair.harness.owner))
+        guard await pair.harness.waitForInputs(named: "setTransport", count: 1) else { return }
+        // Read at once: a detach that cancels the retry fails here, not at the hang bound.
+        guard await pair.harness.openRequests == 1 else { Issue.record("the nil attach cancelled the core's retry"); return }
+        keeperPort.releaseDrain()
+        corePort.releaseDrain()
+        await pair.keeper.waitForRequestedSyncTurnsForTesting()
+        guard await pair.harness.waitForInputs(named: "syncFollowUpDue", count: 1) else { return }
+        let phases = { (port: CoreDiffTraceTransport) in port.trace.all.filter { $0.hasPrefix("runSyncPhaseInTurn") }.count }
+        #expect(phases(keeperPort) == 2 && phases(corePort) == 2, "keeper \(keeperPort.trace.all), core \(corePort.trace.all)")
+        #expect(corePort.drainEntered.events.contains("drain released"), "\(corePort.drainEntered.events)")
+        let read = await pair.harness.differentialRead()
+        #expect(read.model.requestedSyncWork == 0 && read.model.inTurnDrainRetryBinding == nil && read.coreWaitsLeft == 0 && read.violations.isEmpty,
+                "work \(read.model.requestedSyncWork), waits \(read.coreWaitsLeft), \(read.violations)")
+        #expect(await !pair.keeper.hasRequestedSyncWorkForTesting)
+    }
+
+    @Test("A real detach (after an attach) keeps the retry's request, and the retry's wake refuses the detached port: no turn on either path, and its work ends (Review r1 on #990, MF2)")
+    func detachRefusesTheOldPortAtTheWake() async throws {
+        let pair = try await TracePair.make("detach-retry")
+        for port in [pair.keeperTransport, pair.coreTransport] {
+            port.followUp = .deferred
+            port.followUpPhasesLeft = 1
+            port.drainBlocks = true
+        }
+        // A sync-only turn through the attached port, deferred by back-pressure: the retry waits.
+        _ = await pair.keeper.syncTurnNow(via: pair.keeperTransport, reason: .syncNow)
+        _ = await pair.harness.syncTurnNow(via: pair.coreTransport, reason: .syncNow)
+        guard await pair.keeperTransport.drainEntered.waitFor("drain entered"), await pair.coreTransport.drainEntered.waitFor("drain entered") else {
+            Issue.record("a retry never waited"); return
+        }
+        await pair.keeper.setTransport(nil)
+        await pair.harness.drive(.setTransport(nil, owner: pair.harness.owner))
+        guard await pair.harness.waitForInputs(named: "setTransport", count: 1) else { return }
+        guard await pair.harness.openRequests == 1 else { Issue.record("the detach cancelled the core's retry"); return }
+        pair.keeperTransport.releaseDrain()
+        pair.coreTransport.releaseDrain()
+        await pair.keeper.waitForRequestedSyncTurnsForTesting()
+        guard await pair.harness.waitForInputs(named: "syncFollowUpDue", count: 1) else { return }
+        let phases = { (trace: CoreDiffTrace) in trace.all.filter { $0.hasPrefix("runSyncPhaseInTurn") }.count }
+        #expect(phases(pair.keeperTrace) == 1 && phases(pair.coreTrace) == 1, "only the deferred phase: keeper \(pair.keeperTrace.all), core \(pair.coreTrace.all)")
+        let read = await pair.harness.differentialRead()
+        #expect(read.model.requestedSyncWork == 0 && read.model.inTurnDrainRetryBinding == nil && read.coreWaitsLeft == 0,
+                "work \(read.model.requestedSyncWork), waits \(read.coreWaitsLeft)")
+        #expect(await !pair.keeper.hasRequestedSyncWorkForTesting)
+    }
+
+    @Test("A witness that re-enters on a tickless land with a recorder: the attach's refused call ends the turn record after the failure's record (Review r1 on #990, should 1)")
+    func ticklessRefusedAttachEndsTheTurnRecord() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "attach-reentry-tickless", records: true)
+        let source = try #require(pair.source)
+        let tracker = await pair.harness.recorderSubmissions()
+        tracker.startTraceForTesting()
+        let corePort = CoreDiffTraceTransport(CoreDiffTrace())
+        corePort.armWitnessReentry(source)
+        await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
+        let after = await pair.harness.differentialRead()
+        #expect(after.failure?.kind == .keeperReentry, "\(String(describing: after.failure))")
+        let trace = tracker.traceForTesting
+        #expect(trace.count >= 2 && trace.last == "endTurn", "the failure's record, then the turn's end: \(trace)")
+    }
+
+    @Test("The three new .control inputs step on a closed intake, where an ordinary input is refused (Review r1 on #990, should 4)")
+    func controlInputsStepOnAClosedIntake() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "closed-intake")
+        guard await pair.harness.closeIntake() else { return }
+        let refused = await resultWithinHangBound(Task { try await pair.harness.call(.awaitInitialized) })
+        guard case .failure? = refused else { Issue.record("an ordinary input wasn't refused on a closed intake: \(String(describing: refused))"); return }
+        let port = CoreDiffTraceTransport(CoreDiffTrace())
+        await pair.harness.drive(.setTransport(port, owner: pair.harness.owner))
+        guard await pair.harness.waitForInputs(named: "setTransport", count: 1) else { return }
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.requestJoinSyncTurn) }) else {
+            Issue.record("requestJoinSyncTurn wasn't answered on a closed intake"); return
+        }
+        await pair.harness.drive(.syncFollowUpDue(id: 999))
+        guard await pair.harness.waitForInputs(named: "syncFollowUpDue", count: 1) else { return }
+        #expect(await pair.harness.differentialRead().attachedTransport != "-")
     }
 }

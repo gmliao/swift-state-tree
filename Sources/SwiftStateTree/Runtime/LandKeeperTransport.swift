@@ -147,7 +147,8 @@ public protocol LandKeeperTransport: Sendable {
     /// No default (#546 L2d-3): one that returned at once would make a transport that defers
     /// retry its sync-only turn again and again until its writer drains. A transport that never
     /// defers may return at once. It returns on a cancel too: a turn core cancels the wait of a
-    /// retry it abandoned (an attach, a detach, the land's end).
+    /// retry it abandoned. Today that is a port attach, which rebinds (K2-2 commit 3); the land's
+    /// end cancels it once the core is ended (`Turn.endAll`, commit 4).
     func waitForWriterDrainForInTurnSync() async
 
     /// Whether the transport records in-turn sync folds (`noteInTurnSyncFold`): true only while
