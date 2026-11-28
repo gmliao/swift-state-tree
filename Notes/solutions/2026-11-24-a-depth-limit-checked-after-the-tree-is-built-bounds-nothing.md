@@ -20,6 +20,7 @@ tags:
   - debug-build
   - darwin
 related:
+  - "#936"
   - "#802"
   - "#803"
   - "#716"
@@ -34,7 +35,7 @@ A replay test with a server input 129 levels deep killed the test process with S
 
 ## Symptoms
 
-- In a debug build, on Darwin's 544 KiB cooperative-pool thread, encoding an `AnyCodable` tree of nested maps took about 4.3 KB of stack per level. At 128 levels that is 601 KB, more than the whole thread. Its decode took 551 KB.
+- In a debug build, on Darwin's 524 KiB cooperative-pool thread, encoding an `AnyCodable` tree of nested maps took about 4.3 KB of stack per level. At 128 levels that is 601 KB, more than the whole thread. Its decode took 551 KB.
 - Every server input decode goes through this path. `ServerInputCodec.decode` encodes the recorded `AnyCodable` and decodes it back, at a live apply and in replay. So a live input near the limit had the same exposure.
 
 ## Root cause
@@ -70,10 +71,12 @@ Two things combine:
 
 - **A depth limit must be checked by every stage that recurses**, at the point where it descends. When a review sees a limit, it asks: which stages run before the check, and do they recurse?
 - **Every way down passes the same counter**, as a recursive-descent parser counts on every descent. In a `Codable` encoder, the ways down are `encode(_:)` and also the nested-container and super-encoder calls, which don't throw. A check on `encode(_:)` alone left a value that descends by nested containers unbounded.
-- **Measure the stack per level for every recursive stage at the limit,** on the smallest supported stack: Darwin, debug, a 544 KiB pool thread. Measure on an 8 MiB thread, with a probe that notes the deepest stack address (`CanonicalMessagePack.stackProbeForTesting`). Never measure by letting the pool thread overflow.
+- **Measure the stack per level for every recursive stage at the limit,** on the smallest supported stack: Darwin, debug, a 524 KiB pool thread. Measure on an 8 MiB thread, with a probe that notes the deepest stack address (`CanonicalMessagePack.stackProbeForTesting`). Never measure by letting the pool thread overflow.
 - **Pin the result with a stack-budget test** (`CanonicalAnyCodablePathTests.stackBudgetAtTheLimit`), plus a relative check against the generic path, so that a regression fails a test instead of crashing the process.
 - **A fast path that replaces a generic `Codable` path needs a differential test against it**, over fixtures that reach every case and its order: `NSNumber` kinds, `Bool` before `Int`, `Int` before `Double`, the `Encodable` fallback, and errors. Keep a debug-only switch to the generic path for that test (`anyCodableGenericForTesting`).
 - **A non-throwing refusal must still advance the progress the caller observes.** A refused nested container in an unkeyed container is detached, but it must still count, in `count` and in the next position's key. Otherwise an `encode(to:)` that loops until `count` reaches a target never returns, and the recorded error is never thrown (#809).
 - **On the Mac, run deep cases only on an 8 MiB Foundation thread or a task executor on one**, behind a check that the work runs there. Hand-made stacks and unbounded recursion probes go to a Linux worker first.
 - **A test helper that hands work to a `Thread` must be `Sendable`-clean for Linux.** In swift-corelibs-foundation the thread's block is `@Sendable`, but the Mac's Foundation doesn't mark it. So capturing a non-`Sendable` closure compiles on the Mac and fails in every Linux CI job. Capture a box (`@unchecked Sendable`) that holds the work and its result, and let the caller wait on a semaphore, so nothing is shared at once. Neither the Mac test run nor pre-push catches this; only a Linux build does.
 - The decode differential found an older nondeterminism. A map holding two keys that `String` equates (an NFC and an NFD spelling) decodes into a dictionary with either value, depending on the map's iteration order. Neither path fixes that order (#805). Such a map has no place in a differential, which compares two decodes, so it has its own test. A related replay divergence on payload keys is #806.
+
+**Correction (#936).** This entry first quoted the pool thread's stack as 544 KiB, the size of its VM region as a crash report names it. `pthread_get_stacksize_np` reports 524 KiB (536,576 bytes) down to the guard page. A VM-region query on a pool thread in #936 shows the 544 KiB region also holding 20 KiB above the stack's top. The measurements here were taken on that thread and stand; only the figure changed.
