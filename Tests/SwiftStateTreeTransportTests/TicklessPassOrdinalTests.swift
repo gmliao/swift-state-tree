@@ -85,6 +85,8 @@ struct OrdinalFixture {
         await transport.setDelegate(adapter)
         await keeper.awaitInitialization()
         await keeper.setTransport(adapter)
+        // The adapter link is a cycle until the drain: the suite's trait drains it (#910).
+        FixtureKeepers.register(keeper)
         return OrdinalFixture(keeper: keeper, adapter: adapter)
     }
 
@@ -210,7 +212,7 @@ private func playTies(_ f: OrdinalFixture) async throws {
     await f.adapter.waitForOutboundIdleForTesting()
 }
 
-@Suite("Tickless pass ordinals (#563) and the recorded land failure (#535 D9)", .timeLimit(.minutes(1)))
+@Suite("Tickless pass ordinals (#563) and the recorded land failure (#535 D9)", .timeLimit(.minutes(1)), .drainsFixtureKeepers)
 struct TicklessPassOrdinalTests {
     @Test("Each pass is numbered from 1, and every output and seed records the pass it read after")
     func passesAndEntriesAreNumbered() async throws {

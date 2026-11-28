@@ -136,7 +136,8 @@ struct SafeTaskSleepUntilTests {
     @Test("A far deadline sleeps in capped chunks, and cancelling it ends it with CancellationError")
     func farDeadlineIsCappedAndCancellable() async {
         // 2^40 seconds is about 35,000 years: its nanoseconds overflow UInt64, so a sleep of the
-        // whole remainder would return at once, and the loop would spin without suspending.
+        // whole remainder would be clamped to the longest sleep (until cancelled), and the loop
+        // would never read the clock again. The one-hour cap keeps each sleep short.
         let deadline = ContinuousClock.now + .seconds(1 << 40)
         guard let outcome = await cancelledSleep(until: deadline) else { return }
         guard case .failure(let error)? = outcome.result else {

@@ -235,6 +235,10 @@ func testAsyncResolverConsistency() async throws {
     // asserted (a known limitation: the order is timing, not a hold).
     let supersededJoins = await rejections.supersededJoins
     let finalPlayers = await rejections.finalPlayers
+    // Order, not timing: a join can be superseded only by its player's own leave, which was
+    // recorded as issued before it reached the keeper.
+    let early = await rejections.supersededBeforeTheirLeave
+    #expect(early.isEmpty, "joins superseded before their player's leave was sent: \(early)")
     for entry in supersededJoins {
         #expect(leavingPlayers.contains(entry.player), "\(entry.player) never leaves, yet its join at tick \(entry.tick) was superseded")
         #expect(!finalPlayers.contains(entry.player), "\(entry.player)'s join was superseded, yet the player is in the final state")
@@ -292,8 +296,22 @@ private actor RejectionLog {
         entries.append(Entry(player: player, tick: tick))
     }
 
-    func addSupersededJoin(player: String, tick: Int) {
+    func addSupersededJoin(player: String, tick: Int, leaveIssued: Bool) {
         supersededJoins.append(Entry(player: player, tick: tick))
+        if !leaveIssued { supersededBeforeTheirLeave.append(Entry(player: player, tick: tick)) }
+    }
+
+    /// The players whose scheduled leave was sent to the keeper, recorded before the call.
+    private var leavesIssued: Set<String> = []
+    /// Superseded joins whose player's leave hadn't been sent yet: none is justified.
+    private(set) var supersededBeforeTheirLeave: [Entry] = []
+
+    func issueLeave(player: String) {
+        leavesIssued.insert(player)
+    }
+
+    func leaveIssued(_ player: String) -> Bool {
+        leavesIssued.contains(player)
     }
 
     func setFinalPlayers(_ players: Set<String>) {
@@ -359,11 +377,13 @@ private func runLive(
                             // The player's leave came during its OnJoin resolvers: the OnJoin and
                             // the OnLeave are both dropped (#860), and the join says so. The
                             // test checks each one is justified.
-                            await rejections.addSupersededJoin(player: player, tick: tick)
+                            await rejections.addSupersededJoin(player: player, tick: tick, leaveIssued: await rejections.leaveIssued(player))
                         }
                     })
                 case .leave(let player):
                     opTasks.append(Task {
+                        // Before the keeper sees the leave: a superseded join must find it.
+                        await rejections.issueLeave(player: player)
                         try await keeper.leave(
                             playerID: PlayerID(player),
                             clientID: ClientID("c-\(player)")

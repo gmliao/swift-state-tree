@@ -134,12 +134,16 @@ public enum Abandonment: Sendable, Equatable {
 
 /// Why a normal input never stepped.
 public enum TurnError: Error, Sendable, Equatable {
-    /// The core is closed to normal inputs.
+    /// The core is closed to normal inputs. A call that stepped can get it too, as the default
+    /// `handleWaitEnded`'s answer when `endAll` ends its barrier wait.
     case closed
     /// The queue is full.
     case queueFull
     /// Its scope ended or was superseded, or its token was withdrawn, before it stepped.
     case withdrawn
+    /// Its barrier wait's timeout passed (`Turn.wait`): the default `handleWaitEnded`'s answer. A
+    /// call that stepped can get it, unlike the cases above.
+    case timedOut
 }
 
 /// What a `sendAndWait` does when its task is cancelled. There is no default: each call states it.
@@ -192,14 +196,14 @@ public struct TurnInstant: Hashable, Comparable, Sendable {
 }
 
 extension Duration {
-    /// Whole nanoseconds, saturating at `Int64`'s range.
+    /// Whole nanoseconds (truncated toward zero), saturating at `Int64`'s range. Read from
+    /// `attoseconds` (an `Int128`): `components` converts its seconds to `Int64`, which traps for
+    /// a duration past `Int64.max` seconds.
     @inlinable var turnNanoseconds: Int64 {
-        let (seconds, attoseconds) = components
-        let (scaled, overflow) = seconds.multipliedReportingOverflow(by: 1_000_000_000)
-        if overflow { return seconds < 0 ? .min : .max }
-        let (sum, overflow2) = scaled.addingReportingOverflow(attoseconds / 1_000_000_000)
-        if overflow2 { return seconds < 0 ? .min : .max }
-        return sum
+        let nanoseconds = attoseconds / 1_000_000_000
+        if nanoseconds > Int128(Int64.max) { return .max }
+        if nanoseconds < Int128(Int64.min) { return .min }
+        return Int64(nanoseconds)
     }
 }
 

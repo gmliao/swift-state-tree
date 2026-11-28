@@ -202,6 +202,25 @@ struct Runtime<M: TurnMachine> {
     @usableFromInline var dueFollowUps: [RequestID] = []
     /// Gates (`.afterWork`) for the driver to launch.
     @usableFromInline var followUpGates: [PendingEffect<M>] = []
+    // Barrier waits (#953): the waiting callers, by caller, and how many wait on each key.
+    @usableFromInline var barrierWaiters: [InputID: BarrierEntry<M>] = [:]
+    @usableFromInline var barrierCounts: [M.BarrierKey: Int] = [:]
+    /// The live barrier timeouts' generations, to their callers: a heap entry of kind `.barrier`
+    /// is live while its generation is here. Fresh per registration, so a re-wait gets a new one.
+    @usableFromInline var nextBarrierTimer: UInt64 = 0
+    @usableFromInline var barrierTimers: [UInt64: InputID] = [:]
+    @usableFromInline var barrierTimersToArm: [(UInt64, TurnInstant)] = []
+    /// Registered waits that ended without a release (a published reply, `endAll`), for the
+    /// driver to step through `handleWaitEnded`, in order.
+    @usableFromInline var waitsEnded = FIFO<WaitEnded<M>>()
+    /// Callers whose wait ended and whose hook hasn't stepped (`Settling`).
+    @usableFromInline var settling: [InputID: Settling<M>] = [:]
+    /// Answers fixed for callers whose hook has stepped, published in the drain's replies phase
+    /// after the outputs; `releasing` drops the hook's own reply to them meanwhile.
+    @usableFromInline var released: [(InputID, Result<M.Reply, any Error>)] = []
+    @usableFromInline var releasing: Set<InputID> = []
+    /// Set by `endAll` while waits remain: the driver ends them after publishing the step's replies.
+    @usableFromInline var endingWaits = false
 
     @inlinable init() {}
 

@@ -7,7 +7,7 @@ import Testing
 // (the CI legs): the frames read back against the 2.6 recorder's built from the same calls,
 // and the replay verdicts.
 
-@Test("A live run's 3.0 record gives the 2.6 recorder's frames and replays clean", arguments: SyncOutputGolden.allCases)
+@Test("A live run's 3.0 record gives the 2.6 recorder's frames and replays clean", .drainsFixtureKeepers, arguments: SyncOutputGolden.allCases)
 func liveRunMatchesLegacyFrames(golden: SyncOutputGolden) async throws {
     let f = await ReevaluationRecorder.$recordsLegacyFramesForTesting.withValue(true) {
         await VerifierFixture.make(encoding: golden.encoding)

@@ -270,8 +270,8 @@ final class DiffRun: @unchecked Sendable {
         // OnJoin waits for the tick. Registered first, so it runs before a scenario's own hold
         // there.
         if cell.land == .tickless {
-            run.holds.adapter.on(.keeperJoinReturned) { [keeper = container.keeper] in
-                await keeper.waitForInputDrainIdleForTesting()
+            run.holds.adapter.on(.keeperJoinReturned) { [weak keeper = container.keeper] in
+                await keeper?.waitForInputDrainIdleForTesting()
             }
         }
         // The phases the keeper starts on its own inside a step (a leave's turn, a kick's, the
@@ -283,7 +283,10 @@ final class DiffRun: @unchecked Sendable {
         let writer = await container.transportAdapter.outboundWriter
         // Bounded like every harness wait: a hold body can't throw, so a wait that runs out is
         // recorded on the run, the hold goes on, and the step fails with its name.
-        let settle: @Sendable (DiffDrainSite) async -> Void = { [weak run, keeper = container.keeper] site in
+        // The keeper holds this closure (its hold hook): a strong capture would keep the keeper,
+        // its recorder and its spool file alive after the run (#910).
+        let settle: @Sendable (DiffDrainSite) async -> Void = { [weak run, weak keeper = container.keeper] site in
+            guard let keeper else { return }
             do {
                 if landIsTickless {
                     try await bounded("the keeper's input drain before \(site)") { await keeper.waitForInputDrainIdleForTesting() }

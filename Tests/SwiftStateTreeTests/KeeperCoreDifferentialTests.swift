@@ -492,7 +492,7 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
             } catch {
                 resolved = .failure(error)
             }
-            result = .initializeResolved(resolving, resolved, cancelled: Task.isCancelled)
+            result = .initializeResolved(resolving, resolved, initializationTaskCancelled: Task.isCancelled)
         case let .initializeRecord(submission):
             await armedRecordGate.take()?.enterAndWait()
             await submission?.taken()

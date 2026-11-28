@@ -102,7 +102,7 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// what `initializeBegin` built for the resolvers (closures, a context: never the model's),
     /// their result, and the effect's task's cancellation, read where the resolvers ran.
     case initialize
-    case initializeResolved(LandKeeper<State>.InitializeResolving, Result<LandContext, any Error>, cancelled: Bool)
+    case initializeResolved(LandKeeper<State>.InitializeResolving, Result<LandContext, any Error>, initializationTaskCancelled: Bool)
     /// The initialize record was taken by the recorder.
     case initializeRecorded
     /// The owner configured its loops (`.startLoops`): the two flags it read.
@@ -576,11 +576,11 @@ extension KeeperModel: TurnMachine {
             case .replaying, .resolving, .recording, .finishing, .startingLoops, .done, .failed, .abandonedByDrain:
                 preconditionFailure("the initialization runs once: .initialize in phase \(initializationPhase)")
             }
-        case let .initializeResolved(resolving, result, cancelled):
+        case let .initializeResolved(resolving, result, initializationTaskCancelled):
             switch initializationPhase {
             case let .resolving(sequence) where sequence == resolving.sequence:
                 let request = step(behavior, store) { m, side, outputs in
-                    m.initializeResolved(behavior, &side, &outputs, resolving, result, cancelled: cancelled)
+                    m.initializeResolved(behavior, &side, &outputs, resolving, result, initializationTaskCancelled: initializationTaskCancelled)
                 }
                 initializeDrive(behavior, store, &turn, request)
             case .resolving, .notStarted, .replaying, .recording, .finishing, .startingLoops, .done, .failed, .abandonedByDrain:

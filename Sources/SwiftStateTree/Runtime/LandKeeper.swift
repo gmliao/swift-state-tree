@@ -1502,9 +1502,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     result = .failure(error)
                 }
                 // Read here, on the initialization's task: a core step (K2-2) has no such task.
-                let cancelled = Task.isCancelled
+                let initializationTaskCancelled = Task.isCancelled
                 request = withTurn { m, side, outputs in
-                    m.initializeResolved(behavior, &side, &outputs, resolving, result, cancelled: cancelled)
+                    m.initializeResolved(behavior, &side, &outputs, resolving, result, initializationTaskCancelled: initializationTaskCancelled)
                 }
             case let .submitRecord(record):
                 await submitTurnRecord(record)
@@ -1929,11 +1929,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // Registered before any suspension since J2b's (or J2c's) segment, as
                 // `awaitInputTurn`'s.
                 try await awaitLeaveEnd(of: decided.playerID)
-                // A cancel whose hop came after the release found the waiter gone: honored here,
-                // before J2c can insert (#943).
-                try Task.checkCancellation()
+                // A cancel whose hop came after the release found the waiter gone: honored in
+                // J2c's segment, before it can insert (#943), and after its drain check, so a
+                // land that is ending still answers `landShuttingDown` (W6d). A cancel whose hop
+                // beats the release throws `CancellationError` from `awaitLeaveEnd` instead: on a
+                // draining land, the answer depends on when the hop lands.
+                let cancelledWhileWaiting = Task.isCancelled
                 request = try withTurn { m, side, outputs in
-                    try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: leavingGeneration)
+                    guard !side.isDraining else { throw JoinError.landShuttingDown }
+                    if cancelledWhileWaiting { throw CancellationError() }
+                    return try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: leavingGeneration)
                 }
             case let .kick(decided, oldClientID, oldSessionID, kickedGeneration):
                 // Kick old connection by calling leave
@@ -8264,13 +8269,16 @@ extension KeeperModel {
 
     /// I2: OnInitialize's resolvers ended. A timeout, or a failure under `.failLand`, fails the
     /// initialization; otherwise OnInitialize runs, without the group's outputs on a failure.
+    /// `initializationTaskCancelled`: the initialization's task was cancelled, which the
+    /// shutdown exemption of `.failLand` reads. No current path cancels that task, so the case
+    /// is defensive; a draining land ends here first, by the guard below (#946).
     mutating func initializeResolved(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         _ resolving: InitializeResolving,
         _ result: Result<LandContext, any Error>,
-        cancelled: Bool
+        initializationTaskCancelled: Bool
     ) -> InitializeRequest {
         // No intake that waits for the initialization took a number during the resolvers:
         // every join, leave, action, client event, server input and `forceShutdown` awaits
@@ -8301,7 +8309,7 @@ extension KeeperModel {
             if LandKeeper<State>.initializeResolverFailureFailsLand(
                 error,
                 policy: behavior.definition.lifetimeHandlers.onInitializeResolverFailure,
-                shuttingDown: cancelled
+                shuttingDown: initializationTaskCancelled
             ) {
                 // A resolver threw, with `.failLand` (#238): the same as a timeout.
                 ResolverDeadline.metrics.noteInitFailed()
