@@ -37,6 +37,13 @@ struct DebugFreezeUpdateAck: ResponsePayload {
     let ok: Bool
 }
 
+/// A server event the settle tests queue (#730): with MessagePack messages it waits in the
+/// adapter's event queue for the next merged frame.
+@Payload
+struct DebugFreezeNoticeEvent: ServerEventPayload {
+    let note: String
+}
+
 @Payload
 struct DebugFreezeStuckAction: ActionPayload {
     typealias Response = DebugFreezeUpdateAck
@@ -84,6 +91,7 @@ struct DebugFreezeStuckOutput: ResolverOutput {
 /// broadcast-only sync.
 private func makeDefinition() -> LandDefinition<DebugFreezeAdapterState> {
     Land("debug-freeze-adapter", using: DebugFreezeAdapterState.self) {
+        ServerEvents { Register(DebugFreezeNoticeEvent.self) }
         Rules {
             OnJoin { state, ctx in
                 state.members[ctx.playerID] = true
@@ -143,7 +151,8 @@ private struct Fixture {
     let bob = (session: SessionID("s-bob"), client: ClientID("c-bob"), player: PlayerID("bob"))
 
     /// `attach: false` builds the adapter for the keeper but never calls `setTransport`.
-    init(attach: Bool = true) async throws {
+    /// `encodingConfig` nil keeps the adapter's default (JSON, events sent at once).
+    init(attach: Bool = true, encodingConfig: TransportEncodingConfig? = nil) async throws {
         keeper = LandKeeper<DebugFreezeAdapterState>(
             definition: makeDefinition(),
             initialState: DebugFreezeAdapterState()
@@ -157,7 +166,8 @@ private struct Fixture {
                 useSnapshotForSync: true,
                 syncStrategy: .delta,
                 profilingConfig: nil
-            )
+            ),
+            encodingConfig: encodingConfig
         )
         await transport.setDelegate(adapter)
         // Tests hold work while frozen: no deadline may fire inside the hold. A test of a
@@ -604,6 +614,94 @@ struct TransportAdapterDebugFreezeTests {
         #expect(await f.isStillDirty(), "the job's fence planned nothing")
         await f.adapter.installHolds(nil)
         await shutdown.value
+    }
+
+    @Test("A land that fails at the settle's publish ends the freeze with that failure and publishes nothing (#730)")
+    func publishOfAFailedLand() async throws {
+        let f = try await Fixture()
+        let publish = TestGate()
+        defer { publish.open() }
+        await f.adapter.installHolds(HoldRegistry.at(.settleBeforePublish) { await publish.arrive() })
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        #expect(await publish.waitForArrivals(1), "the settle didn't reach its publish")
+        await f.keeper.submitLandFailure(LandFailure(
+            kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase)
+        ))
+        #expect(await f.keeper.waitForFailureForTesting())
+        publish.open()
+
+        // The publish names the cause, not a success for a land that has ended.
+        await expectLandFailure(.syncEncode) { try await freeze.value }
+        #expect(await f.adapter.debugFreezeState.settled == nil, "the settle of a failed land was published")
+        #expect(await f.adapter.isDebugFrozen() == false)
+        await f.adapter.installHolds(nil)
+    }
+
+    @Test("A land shut down at the settle's publish ends the freeze as closed and publishes nothing (#730)")
+    func publishOfAShutDownLand() async throws {
+        let f = try await Fixture()
+        let publish = TestGate()
+        defer { publish.open() }
+        await f.adapter.installHolds(HoldRegistry.at(.settleBeforePublish) { await publish.arrive() })
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        #expect(await publish.waitForArrivals(1), "the settle didn't reach its publish")
+        let keeper = f.keeper
+        let shutdown = Task { await keeper.forceShutdown() }
+        try #require(await withinHangBound { await keeper.waitUntilDrainStartedForTesting() }, "the shutdown didn't start draining")
+        try #require(f.keeper.isDraining)
+        publish.open()
+
+        await #expect(throws: LandInputRejection.landClosed) {
+            try await freeze.value
+        }
+        #expect(await f.adapter.debugFreezeState.settled == nil, "the settle of a closed land was published")
+        await f.adapter.installHolds(nil)
+        await shutdown.value
+    }
+
+    @Test("An auto-resume between the settle's turn and its publish still delivers the events the freeze kept, on a land without periodic sync (#730)")
+    func autoResumeBeforePublishDeliversKeptEvents() async throws {
+        // MessagePack messages: an event waits in the queue for the next merged frame.
+        let f = try await Fixture(encodingConfig: TransportEncodingConfig(message: .messagepack, stateUpdate: .opcodeMessagePack))
+        #expect(f.keeper.hasPeriodicSync == false)
+        // The auto-resume fires at once and waits at its hold; the settle waits at its publish.
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.zero)
+        let publish = TestGate(), fired = TestGate()
+        defer { publish.open(); fired.open() }
+        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.settleBeforePublish) { await publish.arrive() }
+            .on(.debugFreezeAutoResumeFired) { await fired.arrive() }
+            .hook)
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        #expect(await publish.waitForArrivals(1), "the settle didn't reach its publish")
+        #expect(await fired.waitForArrivals(1), "the auto-resume didn't fire")
+        // Queued while frozen: nothing sends it before the resume.
+        await f.adapter.sendEvent(AnyServerEvent(DebugFreezeNoticeEvent(note: "kept-notice")), to: .all)
+        #expect(frames(await f.aliceFrames(), contain: "kept-notice") == false, "the event left while frozen")
+
+        // The release runs before the publish, which then finds its ticket ended.
+        let timer = try #require(await f.adapter.debugFreezeState.autoResumeTask)
+        fired.open()
+        await timer.value
+        #expect(await f.adapter.isDebugFrozen() == false, "the auto-resume released the freeze")
+        // The release awaited the resume's sync; the writer then sends what it queued.
+        let writer = await f.adapter.outboundWriter
+        #expect(await withinHangBound { await writer.waitForIdle() }, "outbound writer did not drain")
+        #expect(frames(await f.aliceFrames(), contain: "kept-notice"), "the resume left the kept event unsent")
+
+        publish.open()
+        await #expect(throws: DebugFreezeError.released) {
+            try await freeze.value
+        }
+        await f.adapter.installHolds(nil)
     }
 
     @Test("Freezing an empty land keeps its dirty flags for the next real sync")
