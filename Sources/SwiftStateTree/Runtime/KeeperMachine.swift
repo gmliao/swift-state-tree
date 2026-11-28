@@ -1398,16 +1398,19 @@ extension KeeperModel {
     }
 
     /// The drain's callers are answered; a stop that was draining has returned (`.ended`), so a
-    /// later one is answered at once. A stop still before its drain (waiting for the tick, for
-    /// its shutdown turn, or for its record) is never here: a drain is claimed only by the stop
-    /// itself, by a failed initialization (which ends before any stop begins), or by a land
-    /// failure's teardown, and a failure can't be stored once the shutdown turn set the flag
-    /// (`setFailed` keeps the first cause). A failure before that moves the stop to `.draining`
-    /// in the failing step (`resumeStopAfterShutdownTurn`, `stopAfterTicks`), before the drain's
-    /// end can come back. The keeper's `forceShutdown` awaits its record first, so an early
-    /// answer here would differ from it (Review r2 on #969).
+    /// later one is answered at once. A stop still before its drain (waiting for its tick, its
+    /// shutdown turn or its record) isn't answered here: the keeper's `forceShutdown` awaits
+    /// that step first, so its callers stay in `drained`, and the step that moves it on
+    /// (`stopAfterTicks`, `resumeStopAfterShutdownTurn`, `.shutdownRecorded`) reaches
+    /// `stopStartsDrain`, which joins the finished drain and answers them. In 1b no drain can
+    /// finish under such a stop (a land failure after the shutdown turn is refused by
+    /// `setFailed`); commit 4's empty-room timer can start one during a tick stop's record
+    /// (Review r3 on #969).
     mutating func answerStopCallers(_ turn: inout Turn<KeeperModel<State>>) {
-        assert(stopPhase == .notStarted || stopPhase == .draining || stopPhase == .ended, "the drain's callers answered with the stop in \(stopPhase)")
+        switch stopPhase {
+        case .waitingForTick, .awaitingShutdownTurn, .recording: return
+        case .notStarted, .draining, .ended: break
+        }
         if stopPhase == .draining { stopPhase = .ended }
         let waiting = coreBarrierWaits.drained
         coreBarrierWaits.drained.removeAll()
@@ -1417,9 +1420,13 @@ extension KeeperModel {
     /// A land failure's teardown on the core (the keeper's `runFailureTeardown`, which
     /// `failLand` stages through `keeperReference`, empty on the core): at the end of the step
     /// that failed the land, the owner tells the port (`landDidFail`), then starts the drain
-    /// (M7). A failed initialization's teardown is `tearDownAfterFailedInitialization`.
+    /// (M7). A failed initialization stores no land failure, so its own teardown
+    /// (`tearDownAfterFailedInitialization`) claims an ordinary drain. One that also failed the
+    /// land (OnInitialize's `validate` re-enters, then throws) takes the failure's teardown, as
+    /// the keeper's `failLand` stages it as the drain in that segment; the drain still skips the
+    /// destroy handlers on the initialization's failure (Review r3 on #969).
     mutating func startFailureTeardownIfNeeded(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
-        guard !drainRequested, initializationFailure == nil else { return }
+        guard !drainRequested else { return }
         guard let (failure, port) = store.withSide({ side in side.failure.map { ($0, side.attachedTransport ?? side.sharedBoundRequester.port) } }) else { return }
         drainRequested = true
         turn.emit(.failureTeardown(failure, port: port), for: .land)
