@@ -330,6 +330,8 @@ One timer in each core serves every request deadline, every follow-up's gate dea
 
 A clock's sleep must not return before its instant, unless its task is cancelled. The core fires the entries due at the instant it slept until, without reading the clock again, so a clock that woke early would fire them early. `SystemTurnClock` is the production clock that meets this: its instants are measured from the process's origin, and its sleep reads the clock again after every wake.
 
+A `TurnInstant` is signed nanoseconds since the process's origin. Its arithmetic saturates at the range's ends instead of wrapping: `turn.now + .seconds(.max)` is the latest instant, a timer that never fires, not one in the past, and the difference of two instants never has the wrong sign (#791).
+
 API: `timer(at:for:_:)`, `now`, `TurnClock`, `SystemTurnClock`, `TurnInstant`.
 
 ### Follow-ups
