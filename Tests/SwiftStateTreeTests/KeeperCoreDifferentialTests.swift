@@ -2627,6 +2627,10 @@ extension KeeperCoreDifferentialTests {
         for k in [direct, source] {
             await k.awaitInitialization()
             _ = try await k.joinReportingAdmission(session: session("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1"), services: LandServices(), admitThroughTransport: false)
+            // The join's work ends when its turn answers it; its drain ends after, and the twin
+            // copies only an idle keeper.
+            await k.waitForInFlightWorkForTesting()
+            await k.waitForInputDrainIdleForTesting()
             #expect(await k.debugFreeze(generation: 1, timeout: .seconds(5)))
             guard case .accepted = await k.submitServerInput(CoreDiffServerInput(n: 9)) else { Issue.record("not accepted"); return }
         }

@@ -536,7 +536,18 @@ Everything in §13.1–§13.4 is written, except the cases listed under "Left" b
 - **`loopEpoch`.** It is an optional `epoch` on `.tickDue` and `.syncDue`; nil (the tests' `drive`) is never stale. `.startLoops(epoch:)` carries the value to the owner. A stale `.syncDue` matters most, because `syncDueStep` doesn't read `isDraining`.
 - **The differential's stated asymmetries** gain `drainPhase`, `stopPhase`, `stopAwaitsInitialization`, `loopEpoch` and `drainRequested`. Each is a model field that only the core's flows use.
 
-**Left** (2026-11-28, after P1b-1 and the first build):
-- the facade's `.shutdownTurnApplied` and `.forceShutdownReturn` holds (commit 4); in the harness, gates;
-- the cases `ticklessRecordInFlightAtDrainStart`, `shutdownDropsQueuedLeave512` (P11-1), `shutdownWhileFrozenDropsHeldIntakes` (P11-2), K2-1b's drain hold cases and `teardownWaitsForTheFailingTurn` on the core path;
-- in `tickLandFreezeWaitsForTheRecord`, a hold that pins "not answered before the record".
+**Written since** (2026-11-28):
+- **The two stop holds.** The keeper's `.shutdownTurnApplied` window is, on the core, the owner's held drain start, because the core's stop runs the shutdown turn and asks for the start in one step (`shutdownTurnHeldBeforeTheDrain`, through the harness's `armedDrainStartGate`). `.forceShutdownReturn` is after the caller's answer, so it stays the facade's (commit 4).
+- **The cases:**
+  - `shutdownDropsQueuedLeave512` (P11-1). The keeper's leave append is observed through the resumed hook on `.leave`.
+  - `shutdownWhileFrozenDropsHeldIntakes` (P11-2). The held server input is set on both keepers before the twin copies the source.
+  - `ticklessRecordInFlightAtDrainStart`.
+  - `staleTickDueAfterDrainStart`.
+- **The freeze hold.** `tickLandFreezeWaitsForTheRecord` pins "not answered before the release" by events: the keeper's freeze registration, and the core's caller parked in `coreBarrierWaits.freeze`.
+- **The stale-epoch case** is delivered mid-drain: a tick is held at its record, so the drain waits with the port attached. Delivered after the drain had finished, neither epoch guard's mutant was killed, because no port or sync handler is left by then.
+  - The sync guard's mutant is killed 5/5 by hand.
+  - The tick guard's mutant is equivalent here: `tickStart` refuses on a draining land.
+
+**Left:**
+- K2-1b's drain hold cases on the core path, one per await;
+- `teardownWaitsForTheFailingTurn` on the core path.
