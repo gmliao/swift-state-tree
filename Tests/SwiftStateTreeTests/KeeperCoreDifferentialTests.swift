@@ -2571,9 +2571,51 @@ extension KeeperCoreDifferentialTests {
         #expect(keeperLast == ["shutdown"] && coreLast == ["shutdown"], "the shutdown frame: keeper \(keeperLast), core \(coreLast)")
     }
 
+    @Test("A tickless batch's record in flight when the stop arrives (plan §13.2.1): the batch counts in no tick, so nothing waits for it; once the record is taken its caller gets its result, then the shutdown turn and the drain run, the same on both paths")
+    func ticklessRecordInFlightAtDrainStart() async throws {
+        let keeperRecord = CoreDiffArmedGate()
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "stop-record-tickless", keeperRecordGate: keeperRecord, records: true)
+        let keeperHold = WatermarkGate(), coreHold = WatermarkGate()
+        defer {
+            keeperHold.release()
+            coreHold.release()
+        }
+        // A join's batch, held at its record on each path.
+        keeperRecord.arm(keeperHold)
+        pair.harness.armedRecordGate.arm(coreHold)
+        let keeperJoined = Task { await keeperJoin(pair, "p1", "c1") }
+        guard await keeperHold.waitUntilEntered("the keeper's batch record") else { return }
+        let coreJoined = Task { await coreJoin(pair, "p1", "c1") }
+        guard await coreHold.waitUntilEntered("the core's batch record") else { return }
+        #expect(await pair.keeper.differentialReadForTesting().model.ticksInFlight == 0, "a tickless batch counts in no tick")
+        #expect(await pair.harness.differentialRead().model.ticksInFlight == 0, "a tickless batch counts in no tick")
+
+        // The stop, queued behind the held batch on each path.
+        let (queued, probe) = probeEvents("shutdown-queued")
+        await pair.keeper.setInTurnProbeForTesting(probe)
+        let keeperStop = Task { await pair.keeper.forceShutdown() }
+        guard await firstWithinHangBound(queued) else { Issue.record("the keeper's stop never queued"); return }
+        await pair.keeper.setInTurnProbeForTesting(nil)
+        let coreStop = Task { try await pair.harness.call(.shutdown) }
+        await pair.harness.waitForInputs(named: "shutdown", count: 1)
+        #expect(await pair.harness.differentialRead().model.drainPhase == .notStarted, "the core's drain waits for the shutdown turn")
+
+        keeperHold.release()
+        coreHold.release()
+        guard let keeperJoin = await valueWithinHangBound(keeperJoined), let coreJoin = await valueWithinHangBound(coreJoined) else {
+            Issue.record("a join never returned"); return
+        }
+        #expect(keeperJoin == coreJoin, "keeper \(keeperJoin), core \(coreJoin)")
+        guard case .joined(allowed: true, _) = coreJoin else { Issue.record("the held batch's caller: \(coreJoin)"); return }
+        guard await valueWithinHangBound(keeperStop) != nil else { Issue.record("the keeper's stop never returned"); return }
+        guard case .success(.done)? = await resultWithinHangBound(coreStop) else { Issue.record("the core's stop wasn't answered .done"); return }
+        #expect(await pair.harness.differentialRead().model.drainPhase == .finished)
+        #expect(await pair.keeper.differentialReadForTesting().model.destructionFinished)
+        await pair.expectSame("after the stop")
+    }
+
     // TODO(1b), the cases plan §13 lists, each held with hold points (they need a build to
-    // settle the harness gates): ticklessRecordInFlightAtDrainStart (§13.2.1),
-    // shutdownWhileFrozenDropsHeldIntakes (P11-2), K2-1b's
+    // settle the harness gates): shutdownWhileFrozenDropsHeldIntakes (P11-2), K2-1b's
     // drain hold cases one per await, and teardownWaitsForTheFailingTurn on the core path.
 
     @Test("A tick land's freeze steps on the core since the tick-record hold (K2-2 commit 1b): an idle land freezes at once")
