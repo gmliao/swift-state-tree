@@ -787,6 +787,11 @@ extension KeeperModel: TurnMachine {
         landEnd: DebugDrainLandEnd
     ) {
         let caller = turn.input
+        // A closing land isn't frozen again: refused before any state changes (Review r1 on #987).
+        if let closed = debugDrainClosed(failure: landEnd.failure, draining: landEnd.draining) {
+            if let caller { turn.reply(to: caller, .success(.frozen(closed))) }
+            return
+        }
         guard generation > debugReleasedGeneration else {
             if let caller { turn.reply(to: caller, .success(.frozen(drainOutcome(.released, landEnd)))) }
             return
@@ -880,8 +885,8 @@ extension KeeperModel: TurnMachine {
     mutating func answerAllCoreFreezeWaits(_ turn: inout Turn<KeeperModel<State>>, _ landEnd: DebugDrainLandEnd, _ base: DebugDrainOutcome) {
         let waits = coreBarrierWaits.freeze
         coreBarrierWaits.freeze.removeAll()
-        for (generation, callers) in waits.sorted(by: { $0.key < $1.key }) {
-            let outcome = drainOutcome(base, landEnd)
+        let outcome = drainOutcome(base, landEnd)
+        for (_, callers) in waits.sorted(by: { $0.key < $1.key }) {
             for caller in callers {
                 turn.reply(to: caller, .success(.frozen(outcome)))
                 turn.end(.freezeWait(caller))
