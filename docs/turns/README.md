@@ -252,7 +252,7 @@ API: `start` (true when it superseded), `generation(of:)`, `Generation`.
 
 ### Request
 
-A *request* is an effect that a key's current generation owns. It has an ID, and it finishes in one of two ways. Its result arrives while it is open: the result steps in `handle`. Or it closes first, and it is *abandoned*: `handleAbandoned` runs with the reason (the deadline passed, the key ended, or it was cancelled). A result that arrives after that goes to `handleLateResult`, so a hung database load that finally returns changes nothing.
+A *request* is an effect that a key's current generation owns. It has an ID, and it finishes in one of two ways. Its result arrives while it is open: the result steps in `handle`. Or it closes first, and it is *abandoned*: `handleAbandoned` runs with the reason (the deadline passed, the key ended, or it was cancelled). A result that arrives after that goes to `handleLateResult`, so a hung database load that finally returns changes nothing. The abandonment also cancels the request's worker, as a task group cancels its child tasks. A cancellation asks the work to stop; it doesn't stop it. `perform` checks `Task.isCancelled` (or uses cancellable awaits) only at points where stopping is safe, and work that changes something outside settles that change before it returns: an `untilWorkerReturns` hold ends when the worker returns. Work that must run to its end goes through `run`, which is untracked and never cancelled. Work that ignores the cancellation keeps the actor alive until it ends. With a mailbox, a replay gets its completions from the same `perform`, so a cancelled `perform` returns nil, the same completion whenever the cancel landed.
 
 ```swift
 let hold = Hold.untilRequestCloses(Key.store, deadline: loadDeadline)

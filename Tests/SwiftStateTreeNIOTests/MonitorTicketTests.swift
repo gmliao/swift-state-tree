@@ -440,8 +440,7 @@ struct MonitorTicketTests {
             )
         )
         let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
-        // Spelled as the containment check standardizes it (see #366 item 1 on spellings).
-        let recordPath = URL(fileURLWithPath: recordsDir, isDirectory: true).standardizedFileURL.path + "/ticket.json"
+        let recordPath = try ticketRecordPath(recordsDir: recordsDir, file: "ticket.json")
         let token = base64URL(recordPath)
         let signer = ReplayTicketSigner.process
 
@@ -518,7 +517,7 @@ struct MonitorTicketTests {
             )
         )
         let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
-        let recordPath = URL(fileURLWithPath: recordsDir, isDirectory: true).standardizedFileURL.path + "/services.json"
+        let recordPath = try ticketRecordPath(recordsDir: recordsDir, file: "services.json")
         let token = base64URL(recordPath)
         let signer = ReplayTicketSigner.process
 

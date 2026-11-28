@@ -268,7 +268,7 @@ Action、client event、lifecycle event 與 server event 共用同一個 `sequen
 
 ### Sync Output 驗證
 
-每個 commit 的 sync plan 會依 scope（broadcast scope 與每位玩家的 scope）錄製其 canonical patch list 的 hash，以及隨之送出的 event。不比對編碼後的位元組：dynamic-key slot、frame 順序與 wire encoding 都不是 canonical 的。Replay 以餵入 replay 狀態的 shadow sync engine 重新規劃每個錄製的 sync output，並比對 hash（不符時 `ReevaluationRunner --verify` 以 exit code 8 結束）。有 tick 的 land 的 output 與它讀取的那個 tick 的 state 比對；沒有 tick 的 land 從 3.4 起，與它讀取時最後套用的那個 pass 之後的 state 比對（見「Pass 序號與 land 失敗」）。Replay 檢查的是 server 實際產生的內容：一筆 output 沒有送給的玩家會列在它的 `perPlayerUnverified`，在那筆 output 既不比對也不 stage。沒有 tick 的 land 上，玩家離開的那個 turn 會在該玩家的 clear 之前 sync，而這時該玩家的 session 已經結束，所以那筆 output 會列出離開的玩家，含有這種離開的錄製判定為 `partial`。
+每個 commit 的 sync plan 會依 scope（broadcast scope 與每位玩家的 scope）錄製其 canonical patch list 的 hash，以及隨之送出的 event。不比對編碼後的位元組：dynamic-key slot、frame 順序與 wire encoding 都不是 canonical 的。Replay 以餵入 replay 狀態的 shadow sync engine 重新規劃每個錄製的 sync output，並比對 hash（不符時 `ReevaluationRunner --verify` 以 exit code 8 結束）。有 tick 的 land 的 output 與它讀取的那個 tick 的 state 比對；沒有 tick 的 land 從 3.4 起，與它讀取時最後套用的那個 pass 之後的 state 比對（見「Pass 序號與 land 失敗」）。Replay 檢查的是 server 實際產生的內容：一筆 output 沒有送給的玩家會列在它的 `perPlayerUnverified`，在那筆 output 既不比對也不 stage。這也包括在那一輪所有 session 都因 sync lag 暫停（`resyncPending`）的玩家；暫停以 resync 的 clear 與 seed 結束，或以離開的 clear 結束（#572）。以這種方式略過的每個 scope 都計入結果的 `perPlayer.unverifiable`，所以含有暫停的錄製判定為 `partial`：這個計數會指出涵蓋範圍在哪裡減少，而不是默默略過。在 #572 修正之前錄製的檔案沒有這一項，遇到暫停仍會回報不符。沒有 tick 的 land 上，玩家離開的那個 turn 會在該玩家的 clear 之前 sync，而這時該玩家的 session 已經結束，所以那筆 output 會列出離開的玩家，含有這種離開的錄製判定為 `partial`。
 
 它能抓到：
 

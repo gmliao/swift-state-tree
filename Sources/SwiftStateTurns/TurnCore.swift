@@ -260,6 +260,16 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var quiescenceWaiters: [UInt64: QuiescenceWaiter<M>] = [:]
+    /// The worker of each open tracked request (`request`), by its ID: abandoning the request
+    /// cancels it, once (structured cancellation: the work a key owns ends with the key). A
+    /// handle leaves when its worker returns or its request is abandoned. `run`'s untracked
+    /// workers and follow-up gates have none.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var workers: [RequestID: Task<Void, Never>] = [:]
+    /// Tests: how many tracked workers have a handle now.
+    package var workersForTesting: Int { workers.count }
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif

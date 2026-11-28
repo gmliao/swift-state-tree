@@ -45,7 +45,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     // MARK: Lifetimes
 
     /// Starts a generation of `key`. True: it superseded a live one, whose requests are closed
-    /// (also ones made earlier in this step), whose follow-ups close unrun, whose timer is
+    /// and their workers cancelled (also ones made earlier in this step), whose follow-ups close unrun, whose timer is
     /// dropped, and whose not-yet-stepped inputs scoped to `key` are withdrawn, as by `end`:
     /// queued ones now, deferred ones (sent while a step or batch ran) when they are admitted.
     /// An input carries no generation, so one sent under the old generation would otherwise
@@ -77,10 +77,11 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         return superseded
     }
 
-    /// Ends `key`: its requests close, their `.untilRequestCloses` holds are released, its
-    /// follow-ups close unrun (`handleAbandoned(id, .keyEnded)`), its timer is dropped, and
-    /// not-yet-stepped inputs scoped to it are withdrawn (queued ones now, deferred ones when
-    /// they are admitted), whether or not the key is live.
+    /// Ends `key`: its requests close and their workers are cancelled, their
+    /// `.untilRequestCloses` holds are released, its follow-ups close unrun
+    /// (`handleAbandoned(id, .keyEnded)`), its timer is dropped, and not-yet-stepped inputs
+    /// scoped to it are withdrawn (queued ones now, deferred ones when they are admitted),
+    /// whether or not the key is live.
     @inlinable public mutating func end(_ key: M.Key) {
         core.rt.closeRequests(of: key)
         core.rt.closeFollowUps(of: key)
@@ -98,8 +99,9 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     }
 
     /// Ends every key, for good (a teardown), and closes intake from outside.
-    /// - Every open request is abandoned, then every pending follow-up. A worker that keeps a
-    ///   hold until it returns still keeps it, and its completion steps as stale.
+    /// - Every open request is abandoned, then every pending follow-up. Each abandoned request's
+    ///   worker is cancelled. A worker that keeps a hold until it returns still keeps it, and its
+    ///   completion steps as stale.
     /// - Queued inputs with a scope are withdrawn, what a step queued (`queue`) is dropped, and
     ///   every other queued call is answered `closed`, as by `close`. A caller the machine itself
     ///   keeps waiting is the machine's to answer, in this same step.
@@ -175,7 +177,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         return id
     }
 
-    /// Abandons `request` with `.cancelled`; its late result steps as stale.
+    /// Abandons `request` with `.cancelled` and cancels its worker; its late result steps as stale.
     @inlinable public mutating func cancel(_ request: RequestID) {
         core.rt.closeRequest(request, .cancelled)
     }
