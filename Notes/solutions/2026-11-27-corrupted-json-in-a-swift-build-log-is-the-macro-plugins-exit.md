@@ -33,10 +33,10 @@ It wasn't the cause of either. Two sessions read it that way on the same day.
 
 **Symptoms.** The line shows up in nearly every build, on Linux and on macOS, locally and on CI. On 2026-11-27 it appeared in 64 of 67 completed CI runs, about 30 times per full build, and in builds that end `Build complete!`.
 
-**Root cause.** The line is printed by our macro executables (`SwiftStateTreeMacros`, `SwiftStateTurnsMacros`). swift-syntax's plugin message loop (`SwiftCompilerPluginMessageHandling/CompilerPluginMessageHandler.swift`, `handleNextMessage`) prints `Internal Error: …` and calls `exit(1)` when a message fails to decode. Fed by hand, the plugin prints exactly this message for a complete frame (an 8-byte length header and that many bytes) whose JSON is empty or cut short. A closed stdin exits cleanly, and a pipe that closes inside a frame gives `read(2) reached end-of-file` instead:
+**Root cause.** The line is printed by our macro executables (`SwiftStateTreeMacros`, `SwiftStateTurnsMacros`). swift-syntax's plugin message loop (`SwiftCompilerPluginMessageHandling/CompilerPluginMessageHandler.swift`, `handleNextMessage`) prints `Internal Error: …` and calls `exit(1)` when a message fails to decode. Fed by hand, a plugin built on swift-syntax 602.0.0 prints exactly this message for a complete frame (an 8-byte length header and that many bytes) whose JSON is empty or cut short. A closed stdin exits cleanly, and a pipe that closes inside a frame gives `read(2) reached end-of-file` instead:
 
 ```
-printf '\0\0\0\0\0\0\0\0' | .build/debug/SwiftStateTreeMacros   # the line, rc 1
+printf '\0\0\0\0\0\0\0\0' | .build/debug/SwiftStateTreeMacros   # on 602.0.0: the line, rc 1; on 604.0.0: no output, rc 0
 ```
 
 The frame is the compiler's termination signal. Since Swift 6.2.3, a frontend ends each macro plugin it loaded by sending a zero-length frame (`sendMessage("")` in `~LoadedExecutablePlugin`, swiftlang/swift a0b9b54944), and then closes the pipes. swift-syntax 603.0.0 and later treat that frame as the end of the connection (7cee8ba40d); 602.0.0 hands the empty payload to its JSON scanner. So the line comes once per frontend that loaded a macro plugin, at that frontend's end, right after its compile task's diagnostics. No file, filelist, output-file map or cache is involved: the line also shows up without any cache.
@@ -45,7 +45,7 @@ What actually failed each job:
 - #935 (run 45925312935) had a real compile error, `ReplayServerInputDecodeFailureTests.swift:107:11: error: cannot find 'pthread_getattr_np' in scope`. The `Failed frontend command:` after the line was that file's compile command.
 - #925 (run 45846915801, attempt 1) built (`Build complete!`). It failed in a test step: `the test "A config built with init takes TYPED_LEAF_VALUES" did not run`.
 
-**Fix.** The swift-syntax pin moved to 604.0.0, so the plugins exit cleanly on the frame (#937). Until then, the triage rule below. A package that still resolves 602.0.0 prints the line, and the rule still applies to its logs.
+**Fix.** The swift-syntax pin moved to 604.0.0, so the plugins exit cleanly on the frame (#937). A package that still resolves 602.0.0 prints the line, and the triage rule below applies to its logs, as it did here before the bump.
 
 **Prevention.**
 - Treat this line as noise. Judge a build by `Build complete!`, the `error:` lines from the compiler (`<file>:<line>:<col>: error:`) and `Failed frontend command:`. Read the command below that last line: it names the file whose compile failed.
