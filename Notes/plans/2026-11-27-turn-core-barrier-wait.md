@@ -251,7 +251,7 @@ On the keeper's path, #958 parks a continuation in `KeyedBarrierWaits<PlayerID>`
 ### 4.1 Revision (2026-11-28): the release is level-triggered
 
 The table's `release(player)` from the step that ends the leave is replaced by a rule read at every step's end. `endOfStep` calls `releaseEndedLeaveWaits`, which does `turn.release(where:)` with: release `.leaveEnd(player, generation: g)` when `leavesInFlight[player] != g`. #953's API is unchanged. The reasons:
-- The two steps that end a leave, its own (`endLeaveInFlight`) and the drain's start (`endAllLeavesInFlight`), both end in `endOfStep`. Neither can forget its release, and a new exit gets the release without its own call.
+- The two steps that end a leave, its own (`endLeaveInFlight`) and the drain's start (`endAllLeavesInFlight`), both end in `endOfStep`. Neither can forget its release, and a new exit gets the release without its own call. `endOfStep` runs the teardown, the stop's resume and the release to a fixpoint: a released join's J2c runs after the first two, so a failure or a leave's end that it stores is seen by another pass in the same step (Review on #983).
 - The key carries the leave's generation, so a wait is released only when its own leave's marker is gone or replaced.
 
 **Who writes the marker.** "Any other generation" is a leave end only if no write moves the generation without ending the leave. Every write to `leavesInFlight`, in `LandKeeper.swift` (the model's methods, shared by both paths):
@@ -260,7 +260,7 @@ The table's `release(player)` from the step that ends the leave is replaced by a
 |---|---|---|
 | the leave's start (`leaveBegin`, before `.runOnLeaveResolvers`) | `nil → g`, after `assert(leavesInFlight[p] == nil)` | No, but it starts from nil: no wait on the player's earlier generation can still be keyed to a live marker |
 | `endLeaveInFlight` (OnLeave's append, its drop, its resolvers' failure) | `g → nil`, only when the marker is `g` | Yes, its own generation's |
-| `endAllLeavesInFlight` (the drain's start: `failLand`, `completeShutdownTurn`, `shutdownIfIdle`) | all → nil | Yes, every one |
+| `endAllLeavesInFlight` (the drain's start: `failLand`, `completeShutdownTurn`, `shutdownIfIdle`, and on the core `startDrainIfIdle`) | all → nil | Yes, every one |
 | the core twin's copy (`coreTwinForTesting`) | the source's value, before the core starts | Not a write in flight |
 
 No write takes `g1 → g2` directly; a new generation only follows a nil. So a key that no longer matches means its leave ended, and the rule's "another generation" is safe.

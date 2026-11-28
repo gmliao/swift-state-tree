@@ -202,9 +202,42 @@ enum CoreDiffJobGates {
     static func gate(_ landID: String) -> WatermarkGate? { lock.withLock { gates[landID] } }
 }
 
+/// A join resolver's gate, by land ID: taken by the next join resolver that runs (a case
+/// holds one join's CanJoin resolvers).
+enum CoreDiffJoinGates {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var gates: [String: WatermarkGate] = [:]
+    static func arm(_ landID: String, _ gate: WatermarkGate) { lock.withLock { gates[landID] = gate } }
+    static func take(_ landID: String) -> WatermarkGate? { lock.withLock { gates.removeValue(forKey: landID) } }
+}
+
 struct CoreDiffJoinResolver: ContextResolver {
     typealias Output = CoreDiffOutput
-    static func resolve(ctx: ResolverContext) async throws -> CoreDiffOutput { CoreDiffOutput(value: 1) }
+    static func resolve(ctx: ResolverContext) async throws -> CoreDiffOutput {
+        await CoreDiffJoinGates.take(ctx.landID)?.enterAndWait()
+        return CoreDiffOutput(value: 1)
+    }
+}
+
+/// A task a probe cancels from inside a step (the cancel's flag is set synchronously there,
+/// and its withdraw hop queues behind the step: `BarrierTests.flagSticksAcrossReleaseAndRewait`).
+final class CoreDiffCancelOnProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<KeeperReply<CoreDiffState>, any Error>?
+    private var name: String?
+    private(set) var fired = false
+    func arm(_ name: String, _ task: Task<KeeperReply<CoreDiffState>, any Error>) { lock.withLock { self.name = name; self.task = task } }
+    var probe: @Sendable (String) -> Void {
+        { [self] event in
+            let task: Task<KeeperReply<CoreDiffState>, any Error>? = lock.withLock {
+                guard event == name, let t = self.task else { return nil }
+                self.task = nil
+                fired = true
+                return t
+            }
+            task?.cancel()
+        }
+    }
 }
 
 struct CoreDiffLeaveResolver: ContextResolver {
@@ -656,6 +689,24 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     }
 
     /// Whether the twin's side holds a bound sync requester (`bindSyncRequester`, T8b's port).
+    /// The turn core's barrier waiters and its cancellation flags now (Review on #983).
+    func barrierTables() -> (waiters: Int, cancelled: Int) {
+        (core.barrierWaitersForTesting, core.cancelledCallersForTesting)
+    }
+
+    /// "stale cancellation" once per cancel hop that found its call answered: the hop that
+    /// removes the cancel's flag (`callerCancelled`).
+    func staleCancellations() -> EventLog {
+        let log = EventLog()
+        core.onDiagnostic = { if case .staleCancellation = $0 { log.append("stale cancellation") } }
+        return log
+    }
+
+    /// How many steps of `name` ran so far.
+    func steppedCount(_ name: String) -> Int {
+        steppedEvents.events.filter { $0 == name }.count
+    }
+
     func hasBoundRequester() -> Bool {
         store.withSide { side in side.sharedBoundRequester.port != nil }
     }
@@ -1068,6 +1119,8 @@ private struct CoreDiffPair {
         #expect(coreDigest.violations.isEmpty, "\(step): \(coreDigest.violations)", sourceLocation: sourceLocation)
         let leftover = await harness.differentialRead().coreWaitsLeft
         #expect(leftover == 0, "\(step): core waits left", sourceLocation: sourceLocation)
+        let barrier = await harness.barrierTables()
+        #expect(barrier.waiters == 0 && barrier.cancelled == 0, "\(step): the core's barrier holds \(barrier.waiters) waiters, \(barrier.cancelled) cancel flags", sourceLocation: sourceLocation)
         let deferredNames = await harness.inputsSeen.filter { KeeperInputRoute(rawValue: $0).flatMap { KeeperInputRoutes.deferred[$0] } != nil }
         #expect(deferredNames.isEmpty, "\(step): deferred inputs sent: \(deferredNames)", sourceLocation: sourceLocation)
     }
@@ -1365,6 +1418,9 @@ struct KeeperCoreDifferentialTests {
 
         keeperGate.release()
         coreGate.release()
+        // The leave's end releases the rejoin in that step (b1, b8 fail here, not at the bound).
+        guard await pair.harness.waitForInputs(named: "leaveStepped", count: 1) else { return }
+        #expect(await pair.harness.barrierTables().waiters == 0, "the leave's step released no waiting rejoin")
         guard let kl = await valueWithinHangBound(keeperLeft), let cl = await valueWithinHangBound(coreLeft),
               let kj = await valueWithinHangBound(keeperJoined), let cj = await valueWithinHangBound(coreJoined) else {
             Issue.record("a leave or a rejoin never returned"); return
@@ -1431,7 +1487,12 @@ struct KeeperCoreDifferentialTests {
         let coreJoined = Task { await coreJoin(pair, "p1", "c2") }
         guard await firstWithinHangBound(waits) else { Issue.record("the core's rejoin never waited in the barrier"); return }
         await pair.harness.setProbe(nil)
+        let drainSteps = await pair.harness.steppedCount("inputDrainDue")
         let coreStop = Task { try await pair.harness.call(.shutdown) }
+        // The shutdown turn and the drain's start run in `.inputDrainDue`'s step, which releases
+        // the rejoin (b1, b8 fail here, not at the bound).
+        guard await pair.harness.waitForInputs(named: "inputDrainDue", count: drainSteps + 1) else { return }
+        #expect(await pair.harness.barrierTables().waiters == 0, "the drain's start released no waiting rejoin")
         guard let cj = await valueWithinHangBound(coreJoined) else { Issue.record("the core's rejoin never returned"); return }
         #expect(kj == cj && cj == .failed(String(describing: JoinError.landShuttingDown)), "keeper \(kj), core \(cj)")
 
@@ -1441,6 +1502,99 @@ struct KeeperCoreDifferentialTests {
               await valueWithinHangBound(keeperStop) != nil else { Issue.record("a leave or the keeper's stop never returned"); return }
         guard case .success(.done)? = await resultWithinHangBound(coreStop) else { Issue.record("the core's stop wasn't answered .done"); return }
         await pair.expectSame("after the stop")
+    }
+
+    /// The core's W6c/W6d set-up: a tickless land whose p1 leave is held in OnLeave, and a
+    /// cancellable rejoin waiting in the barrier behind it, with `cancel` armed to cancel it from
+    /// inside the step that fires `probeName`.
+    private func cancellableRejoinBehindALeave(_ name: String, cancelAt probeName: String) async -> (pair: CoreDiffPair, gate: WatermarkGate, left: Task<String, Never>, joined: Task<KeeperReply<CoreDiffState>, any Error>, cancel: CoreDiffCancelOnProbe, stale: EventLog)? {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: true), name)
+        guard await valueWithinHangBound(Task { await bothJoin(pair, "p1", "c1") }) != nil else { Issue.record("the set-up join never returned"); return nil }
+        let gate = WatermarkGate()
+        CoreDiffLeaveGates.arm(pair.landID, gate)
+        let left = Task { await coreLeave(pair, "p1", "c1") }
+        guard await gate.waitUntilEntered("the core's OnLeave resolver") else { gate.release(); return nil }
+        let stale = await pair.harness.staleCancellations()
+        let (waits, probe) = probeEvents("join-awaits-leave")
+        await pair.harness.setProbe(probe)
+        let call = KeeperJoinCall(session: session("p1"), clientID: ClientID("c2"), sessionID: SessionID("c2"), services: LandServices(), admitThroughTransport: false)
+        let joined = Task { try await pair.harness.callCancellable(.join(call, syncsInTurn: false)) }
+        guard await firstWithinHangBound(waits) else { Issue.record("the core's rejoin never waited in the barrier"); gate.release(); return nil }
+        let cancel = CoreDiffCancelOnProbe()
+        cancel.arm(probeName, joined)
+        await pair.harness.setProbe(cancel.probe)
+        return (pair, gate, left, joined, cancel, stale)
+    }
+
+    /// One reply, then the cancel's hop (stale: the call was answered first), then no barrier
+    /// entry, flag, reservation or arrival token left.
+    private func expectRejoinCleanedUp(_ pair: CoreDiffPair, _ stale: EventLog, sourceLocation: SourceLocation = #_sourceLocation) async {
+        guard await stale.waitFor({ $0.count >= 1 }) else { Issue.record("the cancel's hop never ran", sourceLocation: sourceLocation); return }
+        let barrier = await pair.harness.barrierTables()
+        #expect(barrier.waiters == 0 && barrier.cancelled == 0, "barrier \(barrier)", sourceLocation: sourceLocation)
+        let model = await pair.harness.differentialRead().model
+        #expect(model.latestJoinArrivals.isEmpty, "the rejoin's token outlived its join: \(model.latestJoinArrivals)", sourceLocation: sourceLocation)
+        #expect(model.rejoinReservations.values.allSatisfy { $0.isEmpty }, "the rejoin's reservation outlived its join: \(model.rejoinReservations)", sourceLocation: sourceLocation)
+    }
+
+    @Test("W6c on the core: a rejoin cancelled inside the step that ends the player's leave is released with its cancel flag set, so J2c answers CancellationError and inserts nobody (#943, #953; b5)")
+    func rejoinCancelledAsTheLeaveEnds() async throws {
+        guard let s = await cancellableRejoinBehindALeave("rejoin-cancel-at-release", cancelAt: "leave-ended") else { return }
+        defer { s.gate.release() }
+        s.gate.release()
+        guard let answer = await resultWithinHangBound(s.joined) else { Issue.record("the rejoin never ended"); return }
+        #expect(s.cancel.fired, "the leave's end never fired its probe")
+        guard case let .success(.join(.failure(error))) = answer, error is CancellationError else { Issue.record("the rejoin cancelled at its release: \(answer)"); return }
+        guard let leave = await valueWithinHangBound(s.left) else { Issue.record("the leave never returned"); return }
+        #expect(leave == "done")
+        await expectRejoinCleanedUp(s.pair, s.stale)
+        #expect(await s.pair.harness.differentialRead().model.players.isEmpty, "the cancelled rejoin inserted its player")
+    }
+
+    @Test("W6d on the core: a rejoin cancelled inside the step whose drain start ends the player's leave answers landShuttingDown, since the drain is checked before the cancel (#943, #953; b4)")
+    func rejoinCancelledAsTheDrainStarts() async throws {
+        guard let s = await cancellableRejoinBehindALeave("rejoin-cancel-at-drain", cancelAt: "leaves-ended-for-drain") else { return }
+        defer { s.gate.release() }
+        let stop = Task { try await s.pair.harness.call(.shutdown) }
+        guard let answer = await resultWithinHangBound(s.joined) else { Issue.record("the rejoin never ended"); return }
+        #expect(s.cancel.fired, "the drain's start never fired its probe")
+        guard case let .success(.join(.failure(error))) = answer, String(describing: error) == String(describing: JoinError.landShuttingDown) else {
+            Issue.record("the rejoin cancelled at the drain's start: \(answer)"); return
+        }
+        await expectRejoinCleanedUp(s.pair, s.stale)
+        s.gate.release()
+        guard await valueWithinHangBound(s.left) != nil else { Issue.record("the leave never returned"); return }
+        guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the stop wasn't answered .done"); return }
+    }
+
+    @Test("A rejoin cancelled while its CanJoin resolvers run, whose resolvers then end while its player's leave is in flight, finds no waiter at the barrier: no reply, and its reservation and arrival token end (.noWaiter)")
+    func rejoinCancelledBeforeItWaits() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: true, leaveResolver: true), "rejoin-no-waiter")
+        guard await valueWithinHangBound(Task { await bothJoin(pair, "p1", "c1") }) != nil else { Issue.record("the set-up join never returned"); return }
+        let leaveGate = WatermarkGate(), joinGate = WatermarkGate()
+        defer { leaveGate.release(); joinGate.release() }
+        CoreDiffLeaveGates.arm(pair.landID, leaveGate)
+        let left = Task { await coreLeave(pair, "p1", "c1") }
+        guard await leaveGate.waitUntilEntered("the core's OnLeave resolver") else { return }
+        CoreDiffJoinGates.arm(pair.landID, joinGate)
+        let call = KeeperJoinCall(session: session("p1"), clientID: ClientID("c2"), sessionID: SessionID("c2"), services: LandServices(), admitThroughTransport: false)
+        let joined = Task { try await pair.harness.callCancellable(.join(call, syncsInTurn: false)) }
+        guard await joinGate.waitUntilEntered("the rejoin's CanJoin resolver") else { return }
+        joined.cancel()
+        guard let answer = await resultWithinHangBound(joined) else { Issue.record("the cancelled rejoin never ended"); return }
+        guard case let .failure(error) = answer, error is CancellationError else { Issue.record("the cancelled rejoin: \(answer)"); return }
+        let steps = await pair.harness.steppedCount("joinStepped")
+        joinGate.release()
+        guard await pair.harness.waitForInputs(named: "joinStepped", count: steps + 1) else { return }
+        let barrier = await pair.harness.barrierTables()
+        #expect(barrier.waiters == 0 && barrier.cancelled == 0, "barrier \(barrier)")
+        let model = await pair.harness.differentialRead().model
+        #expect(model.latestJoinArrivals.isEmpty, "the rejoin's token outlived its join: \(model.latestJoinArrivals)")
+        #expect(model.rejoinReservations.values.allSatisfy { $0.isEmpty }, "the rejoin's reservation outlived its join: \(model.rejoinReservations)")
+        #expect(model.leavesInFlight[PlayerID("p1")] != nil, "the leave is still in flight, so the join reached the barrier")
+        leaveGate.release()
+        guard await valueWithinHangBound(left) == "done" else { Issue.record("the leave never returned done"); return }
+        #expect(await pair.harness.differentialRead().model.players.isEmpty)
     }
 
     @Test("A kick whose OnLeave resolver throws fails the join with the leave's error, and ends the reservation", arguments: [false, true])
@@ -2919,12 +3073,15 @@ extension KeeperCoreDifferentialTests {
         let hold = WatermarkGate()
         defer { hold.release() }
         pair.harness.armedDrainStartGate.arm(hold)
+        let drainSteps = await pair.harness.steppedCount("inputDrainDue")
         let first = Task { try await pair.harness.call(.shutdown) }
-        // An idle tickless land applies the shutdown turn in the stop's own step, whose end
-        // resumes the stop into its drain: read right after it, so a stop left waiting for its
-        // turn fails here, not at the hang bound (Review r3 on #969, m8's narrowed reading).
-        guard await pair.harness.waitForInputs(named: "shutdown", count: 1) else { return }
-        #expect(await pair.harness.differentialRead().model.stopPhase == .draining, "the stop didn't move on after its shutdown turn")
+        // The stop's own step only queues `.inputDrainDue` (`stopBegin`'s tickless arm); that
+        // step applies the shutdown turn, and its end resumes the stop into its drain. Read right
+        // after it, so a stop left waiting for its turn fails here, not at the hang bound
+        // (Review r3 on #969, m8's narrowed reading; the step named, Review on #983).
+        guard await pair.harness.waitForInputs(named: "inputDrainDue", count: drainSteps + 1) else { return }
+        let resumed = await pair.harness.differentialRead().model
+        #expect(resumed.shutdownTurnApplied && resumed.stopPhase == .draining, "the stop didn't move on after its shutdown turn: applied \(resumed.shutdownTurnApplied), \(resumed.stopPhase)")
         guard await hold.waitUntilEntered("the drain's start") else { return }
         let second = Task { try await pair.harness.call(.shutdown) }
         guard await pair.harness.waitForInputs(named: "shutdown", count: 2) else { return }
