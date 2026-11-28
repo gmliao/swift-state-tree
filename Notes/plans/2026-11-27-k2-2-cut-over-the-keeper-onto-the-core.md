@@ -1,5 +1,7 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
+Revision 11 (2026-11-28): Review's NOT GO on rev 10 §15 (1 MF, 2 shoulds). One production cutover, in a named commit (4d-5): until then `KeeperOwner` and the facade are test-only and unwired, so no land has two state owners. 4d gets a per-entry table (entry, step-only check, replay branch). 4c's test hooks are named with their cost, and they live in one registry.
+
 Revision 10 (2026-11-28): §15, commit 4's facade as sub-commits and two PRs (Main, 2026-11-28). 4c goes code-first.
 
 Revision 9 (2026-11-28): §14.2 item 2 as built (commit 4b). The attached gate's copy has one write point instead of four: `KeeperTurnSide.attachedTransport`'s `didSet`, plus the init's seed, which `didSet` doesn't cover. So no writer can miss it; rev 7 listed four writers and relied on each one. The writers rev 7 listed all assign the property. The side is replaced whole in three places, and each builds a fresh side through the one init: the keeper's init, the core twin, and the store taking a new side. Every other copy of a side is a `let`, which can't write. The debug check at the step's end and the census row stay.
@@ -691,20 +693,33 @@ When `isStepping` is true, the facade's `setTransport` increments `reentryViolat
 - **4a, the admission in the step (§14.1), built.**
 - **4b, the attached gate's copy (§14.2, rev 9), built.**
 - **4c, `LiveLandTurns`.** The harness's production logic moves to `Sources/SwiftStateTree/Runtime/LiveLandTurns.swift`, unwired. The harness keeps only its test gates, as hooks on the moved actor. This is a move, and the differential rerunning against it is its proof, so it needs no probe.
+  - **The hooks (rev 11).** The test gates live in one registry on the actor, the `HoldPoints` shape (`HoldRegistry<LiveLandTurnsHoldPoint>`, nil in production), not one optional per gate. A hold point the registry doesn't list costs a nil check where it sits and nothing more: no hop, no task and no await. Only a listed point awaits its gate, and only tests list points.
 - **4d, `KeeperOwner` and the facade.** One entry group per commit:
   - 4d-1: the attach and the sync queries (`setTransport`, `syncTurnNow`, `syncTurnTicket`, `settle`, `requestJoinSyncTurn`), with §14.2's sender refusal. That refusal reads `isStepping`, then the gate from the two boxes, then bumps the counter and sets the sentinel's failure.
   - 4d-2: the joins and the leaves, with §14.1's adapter case. The adapter's supersede records its clear on a live keeper.
   - 4d-3: the actions and the server inputs, with the `.serverInput` facade contract.
   - 4d-4: freeze and debug, shutdown and drain, the initialization and the barriers.
+  - **4d-5, the cutover (rev 11, Review's MF).** Until this commit, `KeeperOwner` and the facade are built and tested but unwired: a live `LandKeeper` keeps its own path for every entry, and only tests construct the facade. Routing some entries to the core while others stay on the actor would give a land two state owners. 4d-5 makes the switch in one commit: a live keeper is built as `.live(LiveLandTurns)` and every entry forwards. It is gated by the differential, the full suite, and the E2E on all three encodings plus the reevaluation E2E (0 mismatch), run on CI or off the Mac. Its mutants each route one entry back to the actor's path. Each PR before it says so in its body: "This PR doesn't change production behavior".
   - The facade lint goes live with the file that declares `KeeperOwner`.
+  - **The per-entry table (rev 11, Review's should 1).** Each 4d commit adds rows for the entries it forwards, and a review checks the table against the code. A lint marker is optional. 4d-1's rows, read at the commit-4 branch after #990:
+
+    | Entry | Step-only check on the keeper today | On the facade | Replay branch |
+    |---|---|---|---|
+    | `setTransport` | `bodyDepth == 0`, else `noteReentry` (close the gate, store the failure) | `isStepping`, else the §14.2 refusal: the gate is `sharedAttachedGate.port ?? sharedBoundRequester.port`, then the counter bump and the sentinel failure | the witness check is skipped off `.live`; the replay owner keeps the actor's path (#612) |
+    | `syncTurnNow` | `bodyDepth == 0`, else `noteReentry` and `.skipped` | `isStepping`, else the refusal and `.skipped` (the nested answer K2 §4.2 names) | the replay owner's path |
+    | `settle` | `bodyDepth == 0`, else `noteReentry` | `isStepping`, else the refusal | the replay owner's path |
+    | `syncTurnTicket` | none: it reads the witness and binds the requester, then answers the binding | `isStepping`, else nil with the refusal (a binding made during a step would change the requester under the step) | `.live` only: replay answers nil |
+    | `requestJoinSyncTurn` | none: it reads `hasJoinsAwaitingSync`, then sends | `isStepping`, else the refusal (the read is a port call during the step) | the replay owner's path |
+
+    `syncTurnTicket` and `requestJoinSyncTurn` have no guard on the keeper today. On the facade they get one, because a call from inside a step reaches the core during the step. A case pins each one's refusal, and the keeper's twin answers by its own path. That is a stated contract change, as commit 3's were.
 - **4e, the drivers.** The loop Tasks send `.tickDue` and `.syncDue`. A stale tick's epoch is the keeper's existing loop generation; 4e names the field after reading the loop code at its base.
 - **4f, the sentinel** moves into `KeeperBehavior` as its one reference field (K2 §4.2 (a)), and the behavior lint lists it.
 - **4g, the census** gets its `live.` group. `coreTwinForTesting` and the differential read are rewritten against the facade.
 - **The replay owner** keeps today's bodies until #612. Every step-only check 4d adds needs a replay branch; the reevaluation E2E (0 mismatch) catches a missing one.
 
 **PRs (Main, 2026-11-28).**
-- **PR 1** is 4a, 4b, 4c and 4d-1. It opens once #990 merges.
-- **PR 2** is 4d-2 onward. It is cut after PR 1 merges, so the PRs aren't stacked.
+- **PR 1** is 4a, 4b, 4c and 4d-1. It opens once #990 merges. It doesn't change production behavior: 4a's admission and 4b's copy run on the core, which only the differential drives, and 4c and 4d-1 are unwired.
+- **PR 2** is 4d-2 to 4d-4, still unwired. It is cut after PR 1 merges, so the PRs aren't stacked. The cutover, 4d-5, and 4e to 4g follow in their own PR, named when PR 2 merges.
 - Each PR body lists its mutants.
 
 **Probes.** None for 4c: it is a move, and the differential's existing cases are its check. 4d-1's sender refusal rests on P-B1 (`isStepping` read from a port callback during a step, §14.4).
