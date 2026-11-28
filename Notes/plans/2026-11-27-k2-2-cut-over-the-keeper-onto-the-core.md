@@ -1,5 +1,7 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
+Revision 9 (2026-11-28): §14.2 item 2 as built (commit 4b). The attached gate's copy has one write point instead of four: `KeeperTurnSide.attachedTransport`'s `didSet`, plus the init's seed, which `didSet` doesn't cover. So no writer can miss it; rev 7 listed four writers and relied on each one. The writers rev 7 listed all assign the property. The side is replaced whole in three places, and each builds a fresh side through the one init: the keeper's init, the core twin, and the store taking a new side. Every other copy of a side is a `let`, which can't write. The debug check at the step's end and the census row stay.
+
 Revision 8 (2026-11-28): §14.1 item 6, the new requirement gets a forwarding default (Main and Review, 2026-11-28). 35 of the 37 conformers use `admitJoiningSession`'s default and admit nothing, and a wrong use is loud: a conformer that records its clear through the keeper during the step fails the land with `.keeperReentry`.
 
 Revision 7 (2026-11-28): Review's GO on rev 6 §14 with four notes. The facade's refusal fails the land in the step whose port call made it (§14.2). The gate mirror holds only the attached port, with its writers listed and a debug check (§14.2). The admission makes no other keeper call (§14.1). The new requirement has no default (§14.1).
