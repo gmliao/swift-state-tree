@@ -71,8 +71,8 @@ struct SystemTurnClockTests {
         #expect(clock.now < instant)
     }
 
-    // The wrapping `TurnInstant + Duration` and `-` (#791) can make an instant's sign disagree
-    // with its order. The clock compares by order first, as the core does.
+    // The clock compares by order first, as the core does: an instant at either end of the range
+    // works (`TurnInstant`'s arithmetic saturates there, #791).
 
     @Test("A sleep until the earliest possible instant returns")
     func minimumInstantReturns() async {
@@ -82,16 +82,16 @@ struct SystemTurnClockTests {
         #expect(clock.now >= instant)
     }
 
-    @Test("A sleep until a saturated deadline that wrapped to the past returns")
-    func wrappedDeadlineReturns() async {
+    @Test("A deadline past the range saturates at the latest instant instead of wrapping into the past (#791)")
+    func farDeadlineSaturates() {
         let clock = SystemTurnClock()
-        // Make sure the process origin exists, so that `now` is not negative: then
-        // `now + .seconds(.max)` saturates and wraps below `now`.
+        // Make sure the process origin exists, so that `now` is not negative: before #791,
+        // `now + .seconds(.max)` wrapped below `now`. Sleeping until `.max` is
+        // `farFutureStaysAsleep`'s case.
         _ = TurnInstant.processOrigin
-        let instant = clock.now + .seconds(Int64.max)
-        #expect(instant < clock.now)
-        await clock.sleep(until: instant)
-        #expect(clock.now >= instant)
+        let now = clock.now
+        #expect(now + .seconds(Int64.max) == TurnInstant(nanoseconds: .max))
+        #expect(now + .seconds(Int64.max) > now)
     }
 
     @Test("A sleep until a far future instant stays asleep until it is cancelled, and then returns")

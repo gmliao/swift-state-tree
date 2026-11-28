@@ -164,6 +164,10 @@ public enum CallerCancellation: Sendable {
 /// difference can be negative. Every production clock measures from one origin per process,
 /// captured once, so an instant a machine stored stays meaningful under a replaced core or a
 /// second clock. A test clock starts at zero and is never mixed with a production one.
+///
+/// The arithmetic saturates at `Int64`'s range instead of wrapping (#791): `now + .seconds(.max)`
+/// is the latest instant (a timer that never fires, not one in the past), and the difference of
+/// two instants never has the wrong sign.
 public struct TurnInstant: Hashable, Comparable, Sendable {
     public let nanoseconds: Int64
 
@@ -173,12 +177,23 @@ public struct TurnInstant: Hashable, Comparable, Sendable {
         lhs.nanoseconds < rhs.nanoseconds
     }
 
+    /// `lhs + rhs` in whole nanoseconds (the duration truncated toward zero), clamped at
+    /// `Int64`'s range. The sum is taken in `Int128`, so a negative instant plus a duration just
+    /// past the range lands exactly, below the end.
     @inlinable public static func + (lhs: TurnInstant, rhs: Duration) -> TurnInstant {
-        TurnInstant(nanoseconds: lhs.nanoseconds &+ rhs.turnNanoseconds)
+        TurnInstant(nanoseconds: clamped(Int128(lhs.nanoseconds) + rhs.attoseconds / 1_000_000_000))
     }
 
+    /// `lhs - rhs`, clamped at `Int64` nanoseconds: its sign always agrees with the order.
     @inlinable public static func - (lhs: TurnInstant, rhs: TurnInstant) -> Duration {
-        .nanoseconds(lhs.nanoseconds &- rhs.nanoseconds)
+        .nanoseconds(TurnInstant.clamped(Int128(lhs.nanoseconds) - Int128(rhs.nanoseconds)))
+    }
+
+    /// `wide` clamped at `Int64`'s range.
+    @inlinable static func clamped(_ wide: Int128) -> Int64 {
+        if wide > Int128(Int64.max) { return .max }
+        if wide < Int128(Int64.min) { return .min }
+        return Int64(wide)
     }
 
     /// The process's origin for production clocks, captured on first use.
