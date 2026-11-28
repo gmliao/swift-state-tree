@@ -1,7 +1,7 @@
 // Tests/SwiftStateTreeTransportTests/DrainsFixtureKeepersTrait.swift
 //
 // `.drainsFixtureKeepers`: after a test, or each test of a suite, shuts down every keeper that a
-// fixture registered during it (`FixtureKeepers.register`), and fails the test if one of their
+// fixture registered during it (`FixtureKeepers.register`), also when the test throws, and fails the test if one of their
 // spool files is still there (#910). A keeper with an attached adapter is a cycle until its drain
 // (#346), so a fixture that never drains keeps its keeper, its recorder and its spool file until
 // the process exits; a full test run left one file per such fixture in the temporary directory.
@@ -49,16 +49,31 @@ struct DrainsFixtureKeepersTrait: SuiteTrait, TestTrait, TestScoping {
         performing function: @Sendable () async throws -> Void
     ) async throws {
         let keepers = FixtureKeepers()
-        defer { _ = keepers.take() }
-        try await FixtureKeepers.$current.withValue(keepers) {
-            try await function()
+        // A test that throws (a `try #require`, a thrown error, a cancellation by its time limit)
+        // is drained too, and its error rethrown after: the failing runs are the ones whose leaks
+        // cascade. An `#expect` failure doesn't throw.
+        var thrown: (any Error)?
+        do {
+            try await FixtureKeepers.$current.withValue(keepers) {
+                try await function()
+            }
+        } catch {
+            thrown = error
         }
         let spools = await Self.shutDown(keepers.take())
         // The drains held the keepers; they are gone now, so each recorder's deinit deletes its
         // spool file on its writer's queue.
-        for spool in spools where !(await Self.removed(spool)) {
-            Issue.record("a fixture's spool file is left after its keeper's drain (#910): \(spool)")
+        for spool in spools {
+            switch await Self.removal(of: spool) {
+            case .removed:
+                break
+            case .left:
+                Issue.record("a fixture's spool file is left after its keeper's drain (#910): \(spool)")
+            case .cancelled:
+                Issue.record("the test was cancelled before its spool file was gone; not checked (#910): \(spool)")
+            }
         }
+        if let thrown { throw thrown }
     }
 
     /// Runs each drain, bounded by the hang bound: a test that ends with a hold still closed
@@ -81,14 +96,21 @@ struct DrainsFixtureKeepersTrait: SuiteTrait, TestTrait, TestScoping {
         return spools
     }
 
-    /// Whether `spool` is gone within the hang bound.
-    private static func removed(_ spool: String) async -> Bool {
+    private enum SpoolRemoval { case removed, left, cancelled }
+
+    /// Whether `spool` is gone within the hang bound. A cancelled test (its time limit) stops
+    /// polling at once, so the check neither spins nor outlives the test.
+    private static func removal(of spool: String) async -> SpoolRemoval {
         let deadline = ContinuousClock.now + testHangBound
         while FileManager.default.fileExists(atPath: spool) {
-            guard ContinuousClock.now < deadline else { return false } // wall-clock: the hang bound of this poll, never reached by a passing run
-            try? await Task.sleep(for: .milliseconds(10)) // wall-clock: the file removal on the writer's queue has no event the test can await; a passing run leaves at once
+            guard ContinuousClock.now < deadline else { return .left } // wall-clock: the hang bound of this poll, never reached by a passing run
+            do {
+                try await safeTaskSleep(for: .milliseconds(10)) // wall-clock: the file removal on the writer's queue has no event the test can await; a passing run leaves at once
+            } catch {
+                return FileManager.default.fileExists(atPath: spool) ? .cancelled : .removed
+            }
         }
-        return true
+        return .removed
     }
 }
 
