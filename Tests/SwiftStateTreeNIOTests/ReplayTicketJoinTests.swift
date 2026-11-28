@@ -274,8 +274,7 @@ struct RegisterWithGenericReplayTicketTests {
         let transport = try #require(await host.transportForTesting(webSocketPath: "/game/\(replayLandType)"))
         let router = try #require(await transport.delegate)
         let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
-        // Spelled as the containment check spells the records directory (the default is relative).
-        let pathToken = base64URL(URL(fileURLWithPath: recordsDir, isDirectory: true).standardizedFileURL.path + "/match.json")
+        let pathToken = base64URL(try ticketRecordPath(recordsDir: recordsDir, file: "match.json"))
         /// Joins through a recording connection and returns what the join got back: its reply, or
         /// its error code (#428: a failure then names whether the join was refused).
         func join(_ instanceId: String, _ session: String) async throws -> String {
@@ -315,5 +314,33 @@ struct RegisterWithGenericReplayTicketTests {
         #expect(valid == "joined", "the valid ticket's join: \(valid)")
         let lands = await replayLands()
         #expect(lands == 1, "replay lands after the valid join: \(lands), its join: \(valid)")
+    }
+}
+
+@Suite("A test's ticket record path (#428)")
+struct TicketRecordPathTests {
+    @Test("A path spelled before its records directory exists still decodes once another test creates it")
+    func spelledBeforeTheDirectoryExists() throws {
+        let tmp = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        // On macOS the temporary directory is under `/var`, a symlink to `/private/var`: the
+        // `/private` spelling is the one `standardizedFileURL` drops once the path exists, as
+        // for a checkout under `/private/tmp`. Elsewhere the plain spelling.
+        let root = FileManager.default.fileExists(atPath: "/private" + tmp) ? "/private" + tmp : tmp
+        let base = "\(root)/sst-ticket-path-\(UUID().uuidString.lowercased())"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let recordsDir = "\(base)/records"
+        #expect(!FileManager.default.fileExists(atPath: recordsDir))
+
+        let recordPath = try ticketRecordPath(recordsDir: recordsDir, file: "match.json")
+        // A concurrent test creates the shared directory between the issue and the land's
+        // creation (`NIOAdminRoutesReplayStartTests`' record helper in the full run).
+        try FileManager.default.createDirectory(atPath: recordsDir, withIntermediateDirectories: true)
+
+        let decoded = ReevaluationReplaySessionDescriptor.decode(
+            instanceId: "t.\(base64URL(recordPath))",
+            landType: replayLandType,
+            recordsDir: recordsDir
+        )
+        #expect(decoded?.recordFilePath == recordPath)
     }
 }
