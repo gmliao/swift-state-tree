@@ -151,6 +151,10 @@ private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
         landID: "join-flip"
     )
     await sent.setDelegate(adapter)
+    // The freeze tests assert, while frozen, that a ready join hasn't flipped: no deadline may
+    // fire inside that window, or the auto-resume flips it first. No test here tests a deadline.
+    await adapter.setDebugFreezeSettleDeadline(freezeWithoutDeadline)
+    await adapter.setDebugFreezeAutoResumeTimeout(freezeWithoutDeadline)
     await keeper.setTransport(adapter)
     if tick { await firstTickSleep.waitUntilReached() }
     return Fixture(keeper: keeper, adapter: adapter, sent: sent)
