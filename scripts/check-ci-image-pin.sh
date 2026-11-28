@@ -13,21 +13,30 @@
 # Dockerfiles: every tracked file named exactly `Dockerfile` or `Dockerfile.<suffix>`, at any depth
 # (`git ls-files`). Not read: `*.dockerfile` and `Containerfile` (none exist today); a file that
 # should be checked has to be named one of the two. Each `FROM` line naming a `swift` image, with
-# or without `--platform=…` and `AS <stage>`, must be `swift:<tag>@sha256:<64 hex>` with the digest
-# of the workflows' pin. A `FROM ubuntu` line (the run images' runtime stage) must name the Swift
-# pin's distro, by its release or its codename (`swift:6.4.3-noble` → `ubuntu:24.04` or
-# `ubuntu:noble`): the runtime stage loads the Swift runtime libraries the builder copied over, and
-# its libicu and glibc must be the ones they were built against (#780). The ubuntu base stays
-# pinned by tag, not by digest: the stage installs its packages with `apt-get` at build time, so
-# they float whatever the base pins, and a tag keeps the base's security fixes. A `FROM` of another
-# image or of an earlier stage isn't read. A `FROM` image holding a `$` (`FROM ${IMAGE}`, from an
-# `ARG`) can't be resolved here, so it is refused: pin the image inline.
-# Errors name the file and line.
+# or without `--platform=…` and `AS <stage>`, must be `swift:<tag>@sha256:<64 hex>`, and either:
+#   - the digest of the workflows' pin (the build image), or
+#   - the runtime-only slim variant of the same toolchain and distro, `swift:<pin tag>-slim` (#848).
+#     It is another image with its own digest (Docker Hub's index digest of that tag), so the check
+#     can't derive it from the pin. It requires the tag to match the pin's, so a toolchain bump
+#     that leaves the slim tag behind fails. Every slim `FROM` must carry one digest, and not the
+#     build image's (a copied digest). Both digests move together when the toolchain is bumped.
+# Every `FROM ubuntu` line, in any stage, must name the Swift pin's distro, by its release or its
+# codename (`swift:6.4.3-noble` → `ubuntu:24.04` or `ubuntu:noble`): a stage that runs or links
+# what the Swift image built needs the libicu and glibc it was built against (#780). An ubuntu base
+# stays pinned by tag, not by digest: a stage on it installs its packages with `apt-get` at build
+# time, so they float whatever the base pins, and a tag keeps the base's security fixes. None is
+# left since the run images moved to the slim variant (#848); the rule holds for any new one.
+# A `FROM` of another image or of an earlier stage isn't read. A `FROM` image holding a `$`
+# (`FROM ${IMAGE}`, from an `ARG`) can't be resolved here, so it is refused: pin the image inline.
+# The summary counts the Swift, slim and ubuntu `FROM` lines read, so a pattern that stops
+# matching shows as a count that dropped. Errors name the file and line.
 #
 # Usage: scripts/check-ci-image-pin.sh [--self-test] [workflows dir]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 exec python3 - "$@" <<'PY'
+import contextlib
+import io
 import pathlib
 import re
 import subprocess
@@ -46,6 +55,8 @@ FLOW_IMAGE = re.compile(r"""^\s*(?:-\s+)?container:\s*\{.*?\bimage:\s*["']?((?:[
 # it is refused, so an image can't hide from the check in a form it doesn't parse.
 BLOCK_IMAGE = re.compile(r"^\s*(?:-\s+)?(?:image|container):\s*[|>]")
 PINNED = re.compile(r"^swift:[\w.-]+@sha256:([0-9a-f]{64})$")
+# A pinned Swift `FROM` image: its tag and its digest.
+PINNED_FROM = re.compile(r"^swift:([\w.-]+)@sha256:([0-9a-f]{64})$")
 # A Dockerfile `FROM` line: its options (`--platform=…`), the image, and an optional `AS <stage>`.
 FROM_LINE = re.compile(r"^\s*FROM\s+((?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?\s*$", re.IGNORECASE)
 # A Swift image in a `FROM` line: `swift`, with a registry prefix, a tag or a digest or none of them.
@@ -110,10 +121,13 @@ def block_values(step, names):
     return values
 
 
-def dockerfile_errors(dockerfiles, digest, codename):
+def dockerfile_errors(dockerfiles, digest, pin_tag):
     """Errors for the Swift and ubuntu `FROM` lines of `dockerfiles` ({name: text}) against the
-    workflows' `digest` and distro `codename`, and how many Swift lines were read."""
-    errors, count = [], 0
+    workflows' `digest` and tag `pin_tag` (`<version>-<codename>`), and the counts of Swift (slim
+    included), slim and ubuntu lines read."""
+    codename = pin_tag.rsplit("-", 1)[-1]
+    errors, count, ubuntu_count = [], 0, 0
+    slim_digests = {}
     for name, text in sorted(dockerfiles.items()):
         stages = set()
         for n, line in enumerate(text.splitlines(), 1):
@@ -130,6 +144,7 @@ def dockerfile_errors(dockerfiles, digest, codename):
                 continue
             ubuntu = UBUNTU_FROM.match(image)
             if ubuntu:
+                ubuntu_count += 1
                 release = UBUNTU_RELEASES.get(codename)
                 if release is None:
                     errors.append(f"{name}:{n}: the check doesn't know the distro of the Swift pin's tag ({codename}); add it to UBUNTU_RELEASES: {image}")
@@ -139,12 +154,24 @@ def dockerfile_errors(dockerfiles, digest, codename):
             if not SWIFT_FROM.match(image):
                 continue
             count += 1
-            pinned = PINNED.match(image)
+            pinned = PINNED_FROM.match(image)
             if not pinned:
                 errors.append(f"{name}:{n}: a Swift FROM must be swift:<tag>@sha256:<64 hex>, not {image}")
-            elif pinned.group(1) != digest:
+                continue
+            tag, image_digest = pinned.groups()
+            if tag.endswith("-slim"):
+                if tag != f"{pin_tag}-slim":
+                    errors.append(f"{name}:{n}: a slim Swift FROM must be the pin's toolchain and distro, swift:{pin_tag}-slim: {image}")
+                elif image_digest == digest:
+                    errors.append(f"{name}:{n}: a slim Swift FROM carries the build image's digest; the slim image has its own: {image}")
+                else:
+                    slim_digests.setdefault(image_digest, []).append(f"{name}:{n}")
+            elif image_digest != digest:
                 errors.append(f"{name}:{n}: the digest differs from the workflows' pin ({digest}): {image}")
-    return errors, count
+    if len(slim_digests) > 1:
+        errors.append("the slim Swift FROM lines use more than one digest: "
+                      + "; ".join(f"{d} ({', '.join(w)})" for d, w in sorted(slim_digests.items())))
+    return errors, (count, sum(len(w) for w in slim_digests.values()), ubuntu_count)
 
 
 def tracked_dockerfiles():
@@ -201,13 +228,14 @@ def check(workflows, dockerfiles=None):
         return errors
     summary = f"{len(cache_steps)} SwiftPM cache steps key on its digest"
     if dockerfiles is not None:
-        codename = next(iter(images)).split("@")[0].rsplit("-", 1)[-1]
-        errors, count = dockerfile_errors(dockerfiles, digest, codename)
+        pin_tag = next(iter(images)).split("@")[0].split(":", 1)[1]
+        errors, (count, slim, ubuntu) = dockerfile_errors(dockerfiles, digest, pin_tag)
         if errors:
             return errors
         if not count:
             return ["no Swift FROM line found in the Dockerfiles"]
-        summary += f"; {count} Swift FROM lines in {len(dockerfiles)} Dockerfiles use it"
+        summary += (f"; {count} Swift FROM lines in {len(dockerfiles)} Dockerfiles use it or its slim variant"
+                    f" ({slim} slim), and {ubuntu} ubuntu FROM lines its distro")
     print(f"ci image pin: {next(iter(images))}; {summary}")
     return []
 
@@ -313,6 +341,40 @@ def self_test():
         ok = (not errors) if want is None else any(want in e for e in errors)
         print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {errors}"))
         failed += not ok
+    # The slim runtime variant (#848), with its own digest.
+    S, S2 = "1" * 64, "2" * 64
+    slim = f"swift:6.2.4-noble-slim@sha256:{S}"
+    slim_cases = [
+        ("slim: the pin's slim variant as the runtime", {"Dockerfile": f"FROM {pin} AS builder\nFROM {slim} AS runtime\n"}, None),
+        ("slim: another toolchain's slim, with its file and line",
+         {"Dockerfile": f"FROM {pin} AS builder\nFROM swift:6.2.3-noble-slim@sha256:{S} AS runtime\n"}, "Dockerfile:2: a slim Swift FROM must be the pin's toolchain and distro"),
+        ("slim: another distro's slim", {"Dockerfile": f"FROM {pin} AS builder\nFROM swift:6.2.4-jammy-slim@sha256:{S}\n"}, "a slim Swift FROM must be the pin's toolchain and distro"),
+        ("slim: unpinned", {"Dockerfile": f"FROM {pin} AS builder\nFROM swift:6.2.4-noble-slim AS runtime\n"}, "a Swift FROM must be"),
+        ("slim: the build image's digest copied", {"Dockerfile": f"FROM {pin} AS builder\nFROM swift:6.2.4-noble-slim@sha256:{D}\n"}, "carries the build image's digest"),
+        ("slim: two digests across files",
+         {"a/Dockerfile": f"FROM {pin} AS builder\nFROM {slim}\n", "b/Dockerfile": f"FROM {pin} AS builder\nFROM swift:6.2.4-noble-slim@sha256:{S2}\n"},
+         "the slim Swift FROM lines use more than one digest"),
+    ]
+    for name, files, want in slim_cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            (d / "w.yml").write_text(GOOD, encoding="utf-8")
+            errors = check(d, files)
+        ok = (not errors) if want is None else any(want in e for e in errors)
+        print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {errors}"))
+        failed += not ok
+    # The summary counts each kind of line it read.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = pathlib.Path(tmp)
+        (d / "w.yml").write_text(GOOD, encoding="utf-8")
+        files = {"a/Dockerfile": f"FROM {pin} AS builder\nFROM {slim}\n", "b/Dockerfile": f"FROM {pin} AS builder\nFROM ubuntu:24.04\n"}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            errors = check(d, files)
+    want = "3 Swift FROM lines in 2 Dockerfiles use it or its slim variant (1 slim), and 1 ubuntu FROM lines its distro"
+    ok = not errors and want in out.getvalue()
+    print(f"{'ok  ' if ok else 'FAIL'} self-test: the summary's counts" + ("" if ok else f": {errors} {out.getvalue()!r}"))
+    failed += not ok
     # A Swift pin whose distro codename the check doesn't know can't be matched with an ubuntu base.
     with tempfile.TemporaryDirectory() as tmp:
         d = pathlib.Path(tmp)

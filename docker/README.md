@@ -7,11 +7,15 @@ Docker images for SwiftStateTree servers, with clear separation between **build 
 | Image | Purpose | Use Case |
 |-------|---------|----------|
 | **Build image** | Full Swift toolchain for compilation | CI pipelines, local builds |
-| **Run image** | Minimal runtime (~150MB, ubuntu:24.04 + Swift runtime libs) | Deployment, Kubernetes |
+| **Run image** | Runtime only: `swift:<tag>-slim` (Ubuntu 24.04, the Swift runtime libraries, no compiler) | Deployment, Kubernetes |
 
-Run images use `ubuntu:24.04` + minimal deps (libicu74, libcurl4, etc.) + Swift runtime libs from builder—**not** swift:slim (~450MB).
+The run images' runtime stage is the official slim image of the builder's toolchain, `swift:6.4.3-noble-slim` (#848). It carries the Swift runtime libraries (`/usr/lib/swift/linux`) and the packages Foundation needs (libcurl4, libxml2, tzdata), so the Dockerfiles keep no package list of their own and copy no libraries from the builder. Foundation's ICU is bundled with the runtime libraries (`lib_FoundationICU.so`), so no system libicu is installed.
 
-The builder stage is pinned by digest, to the same `swift:<tag>@sha256:…` as CI. The runtime stage's `ubuntu:24.04` is pinned by tag only. Its packages come from `apt-get` at build time and would float whatever the base pinned, and the tag picks up the base's security fixes. What must hold is that the runtime is the builder's distro (noble is 24.04), because the Swift runtime libraries copied from the builder need its libicu and glibc. `scripts/check-ci-image-pin.sh` checks both: the Swift digest and the runtime's distro.
+Both stages are pinned by digest:
+- the builder to the same `swift:<tag>@sha256:…` as CI;
+- the runtime to the slim tag's own digest (Docker Hub's index digest of `swift:<tag>-slim`).
+
+`scripts/check-ci-image-pin.sh` checks that the slim tag is the builder's version and distro, that every slim `FROM` carries one digest, and that it isn't the builder's. When the toolchain is bumped, both digests move together. Any `FROM ubuntu` line must still be the pin's distro; none is left.
 
 ### Why not as small as Node Alpine?
 
@@ -19,7 +23,7 @@ The builder stage is pinned by digest, to the same `swift:<tag>@sha256:…` as C
 |--------|------|----------------------|
 | **Alpine** | Official `node:alpine` (~40MB); single runtime binary. | No official Swift Alpine. Swift uses glibc and dynamic Swift runtime libs (~50–80MB of `.so`). |
 | **Static binary** | Not required for Node. | `--static-swift-stdlib` exists but still needs system libs (libicu, libcurl). Fully static/musl is a Swift 6+ feature and not used here. |
-| **Result** | Can be ~40MB with Alpine. | Run image is ~100–150MB (ubuntu:24.04 + deps + Swift runtime). |
+| **Result** | Can be ~40MB with Alpine. | Run image: Ubuntu 24.04 + Foundation's packages + the Swift runtime (the slim image); sizes measured in #848. |
 
 To get closer to “Alpine small” you’d need either (1) official Swift support for Alpine/musl, or (2) a Swift 6 static Linux (musl) build and an Alpine base—both are outside this Dockerfile’s scope for now.
 
