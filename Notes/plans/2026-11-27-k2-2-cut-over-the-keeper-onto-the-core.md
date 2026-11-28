@@ -1,5 +1,7 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
+Revision 8 (2026-11-28): §14.1 item 6, the new requirement gets a forwarding default (Main and Review, 2026-11-28). 35 of the 37 conformers use `admitJoiningSession`'s default and admit nothing, and a wrong use is loud: a conformer that records its clear through the keeper during the step fails the land with `.keeperReentry`.
+
 Revision 7 (2026-11-28): Review's GO on rev 6 §14 with four notes. The facade's refusal fails the land in the step whose port call made it (§14.2). The gate mirror holds only the attached port, with its writers listed and a debug check (§14.2). The admission makes no other keeper call (§14.1). The new requirement has no default (§14.1).
 
 Revision 6 (2026-11-28): §14, commit 4's two gates from #990's review: the join's admission in the step (the drafts come back with the answer) and the sender-side refusal (the facade reads `TurnCore.isStepping`). Plan only; Review reads it after the #987 and #990 verdicts.
@@ -629,7 +631,7 @@ The keeper admits at depth zero, where both calls are allowed. `SyncStreamLeaveR
 3. **Order.** The keeper records the clear inside the admission call. The core records it right after `callOut` returns, still before `joinAfterAdmission` and its seed. A marker's position comes from `syncReadPosition(behavior, side)`, a function of the model, and a port call can't change the model except by a re-entry, which ends the land. So both paths record the clear at the same position, before the seed.
 4. The keeper's depth-zero path keeps `admitJoiningSession` until K2-3 deletes it. The adapter conforms to both.
 5. **No other keeper call (rev 7).** On the path the admission reaches, the clear is the only place the adapter calls its keeper: `keeperRecordsSyncStream()` and `recordSyncStreamClear`'s `submitSyncStream`. A walk of `admitJoining`'s callees in `Sources/SwiftStateTreeTransport` (by name, so the walk over-reaches) found no other `keeper` use on that path. Its other hits were `performJoinQueued`, which is the caller and not a callee, and `LandManager` functions that share a name. So the sink covers every call. A later keeper call added to this path needs the same sink, and the ported supersede case (no refusal) fails until it has one.
-6. **Public API (rev 7, Main approved 2026-11-28).** `admitJoiningSessionInStep` is a new requirement on the public `LandKeeperTransport`, so an outside conformer stops compiling. There are no external users yet, and the foundation comes before a release. The requirement gets no default: a default that returned no drafts would silently drop the clear. Commit 4's PR lists it in its Public API section.
+6. **Public API (rev 8, Main and Review 2026-11-28; rev 7 had no default).** `admitJoiningSessionInStep` is a new requirement on the public `LandKeeperTransport` with a forwarding default: `admitJoiningSession`'s answer, with no drafts. It is source-compatible. Of the 37 conformers, only the adapter and the differential's port implement `admitJoiningSession`; the other 35 admit nothing, so for them no drafts is right. A wrong use is loud, not silent: a conformer that implements the admission and records its clear through the keeper's `submitSyncStream` re-enters during the step, and the land fails with `.keeperReentry` (a case pins it). The default's doc names both duties during the admission: don't call the keeper, and don't read keeper state, `recordsSyncStream` included (P-A2's trap). A conformer that defers its clear to a `Task` orders it the same on both paths, but outside the step. That one shape is silent, and it is documented, not gated. The PR's Public API section says "new requirement with a forwarding default"
 
 **Cases (the gate).**
 - `supersedingJoinWithOnJoinRecordsItsClear` ported to the core, tick and tickless: no refusal, no failure, the clear before the new session's seed, and a replay that verifies.
@@ -666,7 +668,7 @@ When `isStepping` is true, the facade's `setTransport` increments `reentryViolat
 ### 14.3 Questions
 
 - Q1 (answered, Main 2026-11-28): a new requirement, not a change to `admitJoiningSession`'s shape. It is additive, and the depth-zero path stays as it is until K2-3.
-- Q3 (rev 7, Main 2026-11-28): the new requirement has no default implementation (§14.1 item 6).
+- Q3 (rev 8, Main and Review 2026-11-28; rev 7 said no default): the new requirement forwards to `admitJoiningSession` by default (§14.1 item 6).
 - Q2 (answered by P-B1): the step fact comes from the core (`TurnCore.isStepping`), which has the read already. No sentinel mirror.
 
 ### 14.4 Probes
