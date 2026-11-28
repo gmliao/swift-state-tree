@@ -1340,14 +1340,14 @@ private func keeperJoin(_ pair: CoreDiffPair, _ player: String, _ client: String
 private func readHoldingFailureTeardown<R>(
     _ pair: CoreDiffPair,
     step: () async -> Void,
-    read: () async throws -> R,
-    sourceLocation: SourceLocation = #_sourceLocation
-) async rethrows -> R? {
+    read: () async throws -> R
+) async rethrows -> R {
     let hold = WatermarkGate()
     pair.harness.armedFailureTeardownGate.arm(hold)
     defer { hold.release() }
     await step()
-    guard await hold.waitUntilEntered("the failure's teardown", sourceLocation: sourceLocation) else { return nil }
+    // No wait for the teardown's entry: armed, the hold stops it whether or not it entered, and
+    // a land that didn't fail (a mutant) then fails on the read's values, not at the hang bound.
     return try await read()
 }
 
@@ -4301,9 +4301,9 @@ struct KeeperCoreSetTransportTests {
         let source = try #require(pair.source)
         let corePort = CoreDiffTraceTransport(CoreDiffTrace())
         corePort.armWitnessReentry(source)
-        guard let after = await readHoldingFailureTeardown(pair, step: {
+        let after = await readHoldingFailureTeardown(pair, step: {
             await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
-        }, read: { await pair.harness.differentialRead() }) else { return }
+        }, read: { await pair.harness.differentialRead() })
         #expect(after.failure?.kind == .keeperReentry, "\(String(describing: after.failure))")
         #expect(after.attachedTransport == "-" && !after.attachedSyncsInTurn, "\(after.attachedTransport)")
         #expect(corePort.witnessCount == 1)
@@ -4364,9 +4364,9 @@ struct KeeperCoreAdmissionTests {
         corePort.admission = .admitted
         corePort.armAdmissionReentry(source)
         var core: CoreDiffJoinResult?
-        guard let read = await readHoldingFailureTeardown(pair, step: {
+        let read = await readHoldingFailureTeardown(pair, step: {
             core = await coreJoin(pair, "p1", "c1", admitThroughTransport: true)
-        }, read: { await pair.harness.differentialRead() }) else { return }
+        }, read: { await pair.harness.differentialRead() })
         guard case let .failed(error)? = core else { Issue.record("the join wasn't refused: \(String(describing: core))"); return }
         #expect(error.contains("landShuttingDown"), "\(error)")
         #expect(read.failure?.kind == .keeperReentry, "\(String(describing: read.failure))")
@@ -4680,9 +4680,9 @@ extension KeeperCoreDifferentialTests {
         }
         await pair.keeper.setTransport(keeperPort)
         #expect(await pair.keeper.differentialReadForTesting().failure == nil, "the keeper's depth-zero attach allows the callback")
-        guard let stored = await readHoldingFailureTeardown(pair, step: {
+        let stored = await readHoldingFailureTeardown(pair, step: {
             await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
-        }, read: { await pair.harness.differentialRead().attachedTransport }) else { return }
+        }, read: { await pair.harness.differentialRead().attachedTransport })
         #expect(stored == "-", "the refused attach stored no port: \(stored)")
         await expectTerminalThenTurnEnd(pair, tracker)
     }
