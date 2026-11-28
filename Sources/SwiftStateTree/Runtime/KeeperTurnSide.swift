@@ -66,9 +66,12 @@ package struct KeeperTurnSide {
     /// Errors held for callers that haven't read them, by the ID the model holds (`InputResult`'s
     /// `.failed`): a value the model's results name, beside it until K2 (#700).
     var failures: [FailureID: any Error] = [:]
-    /// The callers of `debugFreeze` and `waitForInFlightWorkForTesting`, woken when the in-flight
-    /// work count reaches zero.
-    var debugDrainWaiters: [UInt64: CheckedContinuation<Void, Never>] = [:]
+    /// The callers of `debugDrain` and `waitForInFlightWorkForTesting`, by waiter ID. A drain
+    /// caller is resumed with its outcome, decided in the segment that resolves it (the work's
+    /// end, its deadline, the resume, the stop's end of the freeze), as the core decides it in
+    /// the resolving step (Review r1 on #987); a test waiter (no generation) gets nil and
+    /// re-checks.
+    var debugDrainWaiters: [UInt64: DebugDrainWaiter] = [:]
     /// Tickless lands: callers waiting for their input's turn, by input sequence. Actions get
     /// their own response; other inputs get an empty one (or the handler's error).
     var inputTurnWaiters: [Int64: CheckedContinuation<InputOutcome, any Error>] = [:]

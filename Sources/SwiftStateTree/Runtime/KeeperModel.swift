@@ -183,8 +183,9 @@ struct KeeperModel<State: StateNodeProtocol> {
     var inputDrainScheduled: Bool = false
     /// A join-only sync phase was deferred by back-pressure; cleared when a sync phase commits.
     var joinSyncWaitsForCommit: Bool = false
-    /// Set by a tick land's forced shutdown before it waits for the tick in flight: `runTick`
-    /// starts no tick from then on (#382).
+    /// Set by a forced shutdown's turn arm, tick and tickless lands alike, in its first segment
+    /// and before it ends a freeze: a tick land starts no tick from then on (#382), and every drain
+    /// caller answered from then on answers `.closed` (#730, `debugDrainOutcome`).
     var shutdownRequested: Bool = false
     /// Whether a transport was ever attached: from the init's `transport:` argument or
     /// `setTransport`. A keeper that never had one accepts sync requests from the first adapter
@@ -589,6 +590,73 @@ enum InitializationPhase: Equatable, Sendable {
         switch self {
         case .recording, .finishing, .startingLoops, .done: true
         case .notStarted, .replaying, .resolving, .failed, .abandonedByDrain: false
+        }
+    }
+}
+
+/// How a debug freeze's drain ended (#730): what `LandKeeper.debugDrain(generation:timeout:)`
+/// returns and the core's `.freeze` reply carries.
+package enum DebugDrainOutcome: Sendable, Equatable {
+    /// The in-flight work finished with the caller's generation in effect.
+    case drained
+    /// The caller's deadline passed with work still in flight.
+    case timedOut
+    /// The caller's generation is no longer the freeze in effect (resumed or replaced).
+    case released
+    /// The land failed (its failure), is draining, or a forced shutdown has committed to stop it
+    /// (nil).
+    case closed(LandFailure?)
+}
+
+/// A parked keeper drain caller (#730): its generation (nil for a test waiter) and its
+/// continuation, resumed with the outcome its resolver decided.
+struct DebugDrainWaiter {
+    let generation: UInt64?
+    let continuation: CheckedContinuation<DebugDrainOutcome?, Never>
+}
+
+/// The land's end as a drain's answer reads it (#730): its failure and its drain flag. On the
+/// core, read from the side store by the step frame and passed in, as no model step reaches it.
+struct DebugDrainLandEnd: Sendable {
+    let failure: LandFailure?
+    let draining: Bool
+}
+
+extension KeeperModel {
+    /// The answer to a drain caller whose wait ended as `base`, on both paths: closed comes
+    /// first, so a land that ends while a drain waits names that, not a timeout or a release.
+    /// `failure` and `draining` are the land's, read in the answering segment. The stop is keyed
+    /// by its commitment (`shutdownRequested`), not by the generation it ended, so a freeze that
+    /// arrives in the stop's window before the drain flag, and a superseded generation parked
+    /// when the stop ends the active one, answer closed on both paths (Review on #987, MF2).
+    ///
+    /// A failed initialization closes too (`initializationFailure`): the keeper stages its
+    /// teardown in a task, so the drain flag can come after the failing segment (Review r1 on
+    /// #987).
+    ///
+    /// A failure or a drain flag doesn't wake a parked caller: it is answered when its work ends,
+    /// its generation is released, or its deadline passes, and the answer is then `.closed`.
+    func debugDrainOutcome(_ base: DebugDrainOutcome, failure: LandFailure?, draining: Bool) -> DebugDrainOutcome {
+        debugDrainClosed(failure: failure, draining: draining) ?? base
+    }
+
+    /// `.closed(failure)` once the land is closing for a drain, else nil. A drain is refused with
+    /// it at admission, before it freezes, installs its generation or parks: a closing land is
+    /// never frozen again, so a resume can't put held inputs back ahead of the stop (Review r1
+    /// on #987, MF).
+    func debugDrainClosed(failure: LandFailure?, draining: Bool) -> DebugDrainOutcome? {
+        failure != nil || draining || shutdownRequested || initializationFailure != nil ? .closed(failure) : nil
+    }
+
+    /// Resumes every parked keeper drain caller with the outcome `base` decides for its
+    /// generation, through the closed-first rule, in the resolving segment; a test waiter gets
+    /// nil. The table is emptied.
+    func resumeDebugDrainWaiters(_ side: inout KeeperTurnSide, _ base: (UInt64) -> DebugDrainOutcome) {
+        let waiters = side.debugDrainWaiters
+        side.debugDrainWaiters.removeAll()
+        let (failure, draining) = (side.failure, side.isDraining)
+        for waiter in waiters.values {
+            waiter.continuation.resume(returning: waiter.generation.map { debugDrainOutcome(base($0), failure: failure, draining: draining) })
         }
     }
 }

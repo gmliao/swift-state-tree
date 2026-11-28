@@ -6217,7 +6217,10 @@ extension TransportAdapter {
     ///   freeze is released), `DebugFreezeError.released` when the freeze was released (e.g. by
     ///   auto-resume) before its settle finished. A land that failed throws its `LandFailure`
     ///   (also when the settle's own plan fails, which ends the land in the settle's turn), and
-    ///   one that is closing throws `LandInputRejection.landClosed`.
+    ///   one that is closing throws `LandInputRejection.landClosed`. Those are the new freeze's
+    ///   answers (and a reference's taken while its settle runs): a reference added after the
+    ///   settle finished returns its token without asking the keeper again, even if the land
+    ///   has closed since.
     public func debugFreeze() async throws -> DebugFreezeResponse {
         if debugFreezeState.count == 0 {
             debugFreezeState.generation &+= 1
@@ -6338,9 +6341,15 @@ extension TransportAdapter {
         ticket: Ticket<DebugFreezeKey>
     ) async throws -> DebugFreezeState<State>.Settled {
         let deadline = ContinuousClock.now + debugFreezeState.settleDeadline
-        let drained = await keeper.debugFreeze(generation: generation, timeout: debugFreezeState.settleDeadline)
+        let drain = await keeper.debugDrain(generation: generation, timeout: debugFreezeState.settleDeadline)
         guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
-        guard drained else { throw DebugFreezeError.settleTimedOut }
+        switch drain {
+        case .drained: break
+        case .timedOut: throw DebugFreezeError.settleTimedOut
+        case .released: throw DebugFreezeError.released
+        // A land that ended while the drain waited names that, not a timeout (#730).
+        case .closed(let failure): throw failure ?? LandInputRejection.landClosed
+        }
         let fence = LandKeeper<State>.SettleFence(generation: generation, deadline: deadline)
         var found: DebugFreezeState<State>.Settled?
         while found == nil {

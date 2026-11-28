@@ -95,6 +95,15 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     /// The end of `forceShutdown`, after its flight finished and before it returns to its
     /// caller: a caller that records the destroy as finished does so after this point.
     case forceShutdownReturn
+    /// A drain caller's deadline timer (`debugDrain`), after its sleep and before it hops to the
+    /// keeper to wake its waiter; a cancelled timer doesn't stop here.
+    case drainTimerFired
+    /// A drain caller (`debugDrain`) after its resolver resumed it with the decided answer,
+    /// before it returns: a later segment (a stop's commitment) can run here first.
+    case drainWoken
+    /// The start of the teardown a failed initialization stages in a task, before it drops the
+    /// land's inputs and starts the destroy: the drain flag isn't set yet.
+    case failedInitializationTeardown
 }
 
 /// What `LandKeeper.submitAction` did with an action.
@@ -1395,6 +1404,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// in a Task of its own: the drain's `forceShutdown` path would otherwise wait for the
     /// initialization it is part of.
     fileprivate func tearDownAfterFailedInitialization() async {
+        await holds.at(.failedInitializationTeardown)
         model.players.removeAll()
         turnSide.playerServices.removeAll()
         model.rejoinReservations.removeAll()
@@ -1646,39 +1656,64 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// was already released does not freeze again, so a late call cannot re-pause the land.
     ///
     /// - Returns: `true` once tick bodies and tickless input processing that were already running
-    ///   (including their resolvers) have finished; `false` when `timeout` passes first or the
-    ///   generation is released meanwhile. The land stays frozen until
-    ///   `debugResume(generation:)` either way. Debug tooling only; the transport layer owns
+    ///   (including their resolvers) have finished; `false` when `timeout` passes first, the
+    ///   generation is released meanwhile, or the land failed, is draining or a forced shutdown was
+    ///   called (#730: even if the work finished; `debugDrain` says which). A land that is already
+    ///   closing (failed, draining, a failed initialization, or a forced shutdown called) isn't
+    ///   frozen: the call returns false at once and changes nothing. Otherwise the land stays
+    ///   frozen until `debugResume(generation:)` either way. Debug tooling only; the transport layer owns
     ///   reference counting.
     public func debugFreeze(generation: UInt64, timeout: Duration) async -> Bool {
-        guard generation > model.debugReleasedGeneration else { return false }
+        await debugDrain(generation: generation, timeout: timeout) == .drained
+    }
+
+    /// `debugFreeze(generation:timeout:)` with how the drain ended (#730): `.drained` where that
+    /// returns true; otherwise `.timedOut`, `.released`, or `.closed` when the land failed, is
+    /// draining, or a forced shutdown has committed to stop it, before or during this drain
+    /// (closed comes first, `KeeperModel.debugDrainOutcome`).
+    package func debugDrain(generation: UInt64, timeout: Duration) async -> DebugDrainOutcome {
+        // A closing land isn't frozen again: refused before any state changes (Review r1 on #987).
+        if let closed = model.debugDrainClosed(failure: failure, draining: isDraining) { return closed }
+        guard generation > model.debugReleasedGeneration else { return debugDrainAnswer(.released) }
         model.debugFrozen = true
         model.debugActiveGeneration = generation
         // A pending fold's tick turn doesn't run while frozen; reported after the resume, the
         // freeze would count as tick lateness (#232). The next sync iteration folds again.
         pendingFold = nil
 
-        let deadline = ContinuousClock.now + timeout
-        while model.debugInFlightWork > 0, model.debugActiveGeneration == generation {
-            let remaining = deadline - ContinuousClock.now
-            guard remaining > .zero else { return false }
-            model.debugNextWaiterID &+= 1
-            let waiterID = model.debugNextWaiterID
-            let timer = Task { [weak self] in
-                try? await safeTaskSleep(for: remaining)
-                await self?.debugWakeDrainWaiter(waiterID)
-            }
-            await withCheckedContinuation { continuation in
-                turnSide.debugDrainWaiters[waiterID] = continuation
-                freezeRegistrationsForTesting += 1
-                let registered = freezeRegistrationsForTesting
-                let ready = freezeWaitWatchersForTesting.filter { $0.value.count <= registered }
-                ready.keys.forEach { freezeWaitWatchersForTesting[$0] = nil }
-                ready.values.forEach { $0.continuation.resume(returning: true) }
-            }
-            timer.cancel()
+        // This generation is in effect: with no work in flight it has drained.
+        guard model.debugInFlightWork > 0 else { return debugDrainAnswer(.drained) }
+        guard timeout > .zero else { return debugDrainAnswer(.timedOut) }
+        model.debugNextWaiterID &+= 1
+        let waiterID = model.debugNextWaiterID
+        let timer = Task { [weak self, holds] in
+            try? await safeTaskSleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            await holds.at(.drainTimerFired)
+            await self?.debugWakeDrainWaiter(waiterID)
         }
-        return model.debugActiveGeneration == generation && model.debugInFlightWork == 0
+        // One wait: the resolver that ends it (the work's end, the deadline, the resume, the
+        // stop's end of the freeze) decides the answer in its own segment, and this resumes with
+        // it, whatever ran on the keeper since.
+        let decided = await withCheckedContinuation { (continuation: CheckedContinuation<DebugDrainOutcome?, Never>) in
+            turnSide.debugDrainWaiters[waiterID] = DebugDrainWaiter(generation: generation, continuation: continuation)
+            freezeRegistrationsForTesting += 1
+            let registered = freezeRegistrationsForTesting
+            let ready = freezeWaitWatchersForTesting.filter { $0.value.count <= registered }
+            ready.keys.forEach { freezeWaitWatchersForTesting[$0] = nil }
+            ready.values.forEach { $0.continuation.resume(returning: true) }
+        }
+        timer.cancel()
+        await holds.at(.drainWoken)
+        // A drain waiter carries its generation, so every resolver decides an answer for it;
+        // nil is only for the tests' waiters without one (`waitForInFlightWorkForTesting`).
+        guard let decided else { preconditionFailure("a drain waiter was resumed without an answer") }
+        return decided
+    }
+
+    /// The drain's answer, read in the answering segment: the shared closed-first rule.
+    private func debugDrainAnswer(_ base: DebugDrainOutcome) -> DebugDrainOutcome {
+        model.debugDrainOutcome(base, failure: failure, draining: isDraining)
     }
 
     /// Release the freeze of `generation`: held tickless inputs continue and ticks start again.
@@ -1692,10 +1727,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let held = turnSide.debugHeldInputs
         turnSide.debugHeldInputs.removeAll()
         held.forEach { $0.resume() }
-        // Waiters of this generation re-check and return false.
-        let waiters = turnSide.debugDrainWaiters
-        turnSide.debugDrainWaiters.removeAll()
-        waiters.values.forEach { $0.resume() }
+        // Every parked drain caller answers `.released` (or `.closed`), decided here.
+        model.resumeDebugDrainWaiters(&turnSide) { _ in .released }
     }
 
     /// Whether a debug freeze is in effect.
@@ -1787,8 +1820,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         model.debugEndWork(&turnSide)
     }
 
+    /// A drain caller's deadline: timed out with its generation in effect, else released (a
+    /// newer freeze replaced it), decided in this segment, as the core's `.freezeTimedOut`.
     private func debugWakeDrainWaiter(_ waiterID: UInt64) {
-        turnSide.debugDrainWaiters.removeValue(forKey: waiterID)?.resume()
+        guard let waiter = turnSide.debugDrainWaiters.removeValue(forKey: waiterID) else { return }
+        let base: DebugDrainOutcome = waiter.generation == model.debugActiveGeneration ? .timedOut : .released
+        waiter.continuation.resume(returning: waiter.generation.map { _ in model.debugDrainOutcome(base, failure: failure, draining: isDraining) })
     }
 
     // MARK: - Player Lifecycle
@@ -2789,11 +2826,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await shutdownIfIdle(cause: .forceShutdown)
             return
         }
-        // One synchronous segment: end a freeze (held intake then re-enters behind the
-        // shutdown), then stop new ticks or queue the shutdown input.
+        // One synchronous segment: commit to the stop (no tick starts, and every drain caller
+        // answered from here on answers closed, #730), end a freeze (held intake then re-enters
+        // behind the shutdown), then wait for the tick in flight or queue the shutdown input.
+        model.shutdownRequested = true
         endDebugFreezeForShutdown()
         if definition.lifetimeHandlers.tickHandler != nil {
-            model.shutdownRequested = true
             turnSide.probe?("shutdown-stop-gate")
             await waitForTickInFlight()
             // If the empty-room drain started during the wait, it is awaited instead.
@@ -2825,14 +2863,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func endDebugFreezeForShutdown() {
         guard let generation = model.debugActiveGeneration else { return }
         model.debugReleasedGeneration = max(model.debugReleasedGeneration, generation)
+        // Its drain waiters wake before the drain flag is set: `shutdownRequested`, set first,
+        // tells them the land is closing.
         model.debugActiveGeneration = nil
         model.debugFrozen = false
         let held = turnSide.debugHeldInputs
         turnSide.debugHeldInputs.removeAll()
         held.forEach { $0.resume() }
-        let waiters = turnSide.debugDrainWaiters
-        turnSide.debugDrainWaiters.removeAll()
-        waiters.values.forEach { $0.resume() }
+        // Decided here: `.closed`, as `shutdownRequested` is set.
+        model.resumeDebugDrainWaiters(&turnSide) { _ in .released }
     }
 
     /// A tick land's shutdown turn (#382), between ticks: the stop gate is set and no tick is in
@@ -4302,8 +4341,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // whether the work was still in flight when the case waited (K2-2 commit 3).
             let waiterID = testDrainWaiterIDForTesting
             testDrainWaiterIDForTesting &-= 1
-            await withCheckedContinuation { continuation in
-                turnSide.debugDrainWaiters[waiterID] = continuation
+            _ = await withCheckedContinuation { (continuation: CheckedContinuation<DebugDrainOutcome?, Never>) in
+                turnSide.debugDrainWaiters[waiterID] = DebugDrainWaiter(generation: nil, continuation: continuation)
             }
         }
         await recorderSubmissions.waitForAll()
@@ -5103,9 +5142,9 @@ extension KeeperModel {
     mutating func debugEndWork(_ side: inout KeeperTurnSide) {
         debugInFlightWork -= 1
         guard debugInFlightWork == 0, !side.debugDrainWaiters.isEmpty else { return }
-        let waiters = side.debugDrainWaiters
-        side.debugDrainWaiters.removeAll()
-        waiters.values.forEach { $0.resume() }
+        // The generation in effect is drained, a stale one released, decided here.
+        let active = debugActiveGeneration
+        resumeDebugDrainWaiters(&side) { $0 == active ? .drained : .released }
     }
 
     /// The server input intake's segment (S1, #700 K1b-5b), on the model.
@@ -8721,7 +8760,9 @@ extension KeeperModel {
         owner: (any AnyObject & Sendable)? = nil
     ) -> SettleTurnOutcome {
         requestedSyncTurnsForTesting[.settle, default: 0] += 1
-        guard behavior.config.mode == .live, side.failure == nil, !side.isDraining else { return .closed(side.failure) }
+        // The drain's closing rule (Review r2 on #987): a failed initialization whose teardown
+        // hasn't set the drain flag yet is closed too.
+        guard behavior.config.mode == .live, debugDrainClosed(failure: side.failure, draining: side.isDraining) == nil else { return .closed(side.failure) }
         // A failure a transport noted outside a turn ends the land first (#704): no phase runs,
         // and a tickless land's turn still ends its record, as after a failed phase.
         let markBeforeNote = recorderSubmissionCount
