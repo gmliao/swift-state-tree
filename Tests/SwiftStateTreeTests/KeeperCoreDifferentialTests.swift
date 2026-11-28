@@ -2614,8 +2614,60 @@ extension KeeperCoreDifferentialTests {
         await pair.expectSame("after the stop")
     }
 
+    @Test("A shutdown while frozen (P11-2): the freeze ends first, so the held action re-enters behind the shutdown item and gets .landClosed, and the held server input is never applied, the same on both paths")
+    func shutdownWhileFrozenDropsHeldIntakes() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false)
+        let landID = "core-diff:stop-frozen:\(UUID().uuidString)"
+        func keeper() -> LandKeeper<CoreDiffState> {
+            LandKeeper<CoreDiffState>(definition: coreDiffDefinition(shape), initialState: CoreDiffState(), autoStartLoops: false, landID: landID)
+        }
+        let direct = keeper(), source = keeper()
+        // Joined, frozen, and a server input held by the freeze, on both keepers before the twin
+        // copies the source (the core has no server-input entry of its own yet).
+        for k in [direct, source] {
+            await k.awaitInitialization()
+            _ = try await k.joinReportingAdmission(session: session("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1"), services: LandServices(), admitThroughTransport: false)
+            #expect(await k.debugFreeze(generation: 1, timeout: .seconds(5)))
+            guard case .accepted = await k.submitServerInput(CoreDiffServerInput(n: 9)) else { Issue.record("not accepted"); return }
+        }
+        let harness = KeeperCoreHarness(await source.coreTwinForTesting(), clock: CoreDiffClock())
+        await harness.start()
+        let pair = CoreDiffPair(keeper: direct, harness: harness, landID: landID, source: source)
+        // The held item is each keeper's own value, so the two are compared by count here.
+        #expect(await direct.differentialReadForTesting().model.serverInputsHeldWhileFrozen.count == 1)
+        #expect(await harness.differentialRead().model.serverInputsHeldWhileFrozen.count == 1)
+
+        // An action held at the freeze, on each path.
+        let (keeperHeld, keeperProbe) = probeEvents("input-held-frozen")
+        await direct.setInTurnProbeForTesting(keeperProbe)
+        let keeperAct = Task { await keeperAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        guard await firstWithinHangBound(keeperHeld) else { Issue.record("the keeper's action was never held"); return }
+        await direct.setInTurnProbeForTesting(nil)
+        let (coreHeld, coreProbe) = probeEvents("input-held-frozen")
+        await harness.setProbe(coreProbe)
+        let coreAct = Task { await coreTicklessAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        guard await firstWithinHangBound(coreHeld) else { Issue.record("the core's action was never held"); return }
+        await harness.setProbe(nil)
+
+        await direct.forceShutdown()
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await harness.call(.shutdown) }) else {
+            Issue.record("the core's stop wasn't answered .done"); return
+        }
+        guard let keeperResult = await valueWithinHangBound(keeperAct), let coreResult = await valueWithinHangBound(coreAct) else {
+            Issue.record("a held action never returned"); return
+        }
+        #expect(keeperResult == coreResult, "keeper \(keeperResult), core \(coreResult)")
+        // The result keeps the error's type only: the keeper's `.landClosed`, the same on both.
+        #expect(coreResult == .failed(nil, "LandInputRejection"), "the held action re-enters behind the shutdown: \(coreResult)")
+        let core = await harness.differentialRead().model
+        #expect(!core.state.log.contains("input:9") && !core.state.log.contains("action:2"), "\(core.state.log)")
+        #expect(core.serverInputsHeldWhileFrozen.isEmpty && !core.debugFrozen && core.debugInFlightWork == 0)
+        #expect(core.drainPhase == .finished)
+        await pair.expectSame("after the stop")
+    }
+
     // TODO(1b), the cases plan §13 lists, each held with hold points (they need a build to
-    // settle the harness gates): shutdownWhileFrozenDropsHeldIntakes (P11-2), K2-1b's
+    // settle the harness gates): K2-1b's
     // drain hold cases one per await, and teardownWaitsForTheFailingTurn on the core path.
 
     @Test("A tick land's freeze steps on the core since the tick-record hold (K2-2 commit 1b): an idle land freezes at once")
