@@ -69,7 +69,7 @@ docker run -p 3000:3000 -e PORT=3000 -e TRANSPORT_ENCODING=messagepack game:late
 
 ```bash
 # Build, run container, and run E2E tests against it
-./docker/test-e2e-docker.sh          # All encodings (json, jsonOpcode, messagepack)
+./docker/test-e2e-docker.sh          # All encodings (json, jsonOpcode, opcode, messagepack)
 ./docker/test-e2e-docker.sh json     # Single encoding
 ```
 

@@ -44,6 +44,8 @@ state_update_encoding_for() {
     case "$1" in
         json) echo "jsonObject" ;;
         jsonOpcode|json_opcode) echo "opcodeJsonArray" ;;
+        # Opcode JSON messages with payload compression on (#543); state updates as jsonOpcode's.
+        opcode) echo "opcodeJsonArray" ;;
         messagepack) echo "messagepack" ;;
         *) return 1 ;;
     esac
@@ -381,7 +383,7 @@ main() {
     # E2E_ENCODINGS narrows the list (space-separated), e.g. to the opcode encodings, where row
     # addressing (on by default) takes effect.
     local encodings
-    read -r -a encodings <<< "${E2E_ENCODINGS:-json jsonOpcode messagepack}"
+    read -r -a encodings <<< "${E2E_ENCODINGS:-json jsonOpcode opcode messagepack}"
     local failed_encodings=()
     
     for encoding in "${encodings[@]}"; do
@@ -505,7 +507,7 @@ main() {
 # Trap to ensure cleanup on exit
 # shellcheck disable=SC2329  # invoked by the trap below
 cleanup() {
-    cleanup_servers "$SERVER_NAME" "json" "jsonOpcode" "messagepack"
+    cleanup_servers "$SERVER_NAME" "json" "jsonOpcode" "opcode" "messagepack"
 }
 
 trap cleanup EXIT INT TERM

@@ -5,7 +5,7 @@
 # ("(drop one /score patch, json)" is json's). A section that names none, or more than one,
 # fails once it holds a join or a count, rather than going unchecked.
 #
-# An opcode encoding (jsonOpcode, messagepack), where row addressing takes effect:
+# An opcode encoding (jsonOpcode, opcode, messagepack), where row addressing takes effect:
 #   1. every join negotiated rowAddressing, and every section of it holds a join;
 #   2. each of its live hero-defense sections applied row-derived patches. Without it, a server that
 #      stopped sending row entries would pass as a copy of the normal run. Other runs (the
@@ -61,7 +61,7 @@ sections=$(awk '
     if (joins + counted > 0) print encoding, joins, without, patches, live, counted
     joins = 0; without = 0; patches = 0; counted = 0
   }
-  BEGIN { encoding = "-"; live = 0; known["json"]; known["jsonOpcode"]; known["messagepack"] }
+  BEGIN { encoding = "-"; live = 0; known["json"]; known["jsonOpcode"]; known["opcode"]; known["messagepack"] }
   /^▶ Running / {
     flush()
     encoding = "?"
