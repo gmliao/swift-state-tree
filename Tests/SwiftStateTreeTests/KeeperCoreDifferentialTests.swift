@@ -2865,8 +2865,7 @@ extension KeeperCoreDifferentialTests {
         #expect(await pair.harness.differentialRead().model.coreBarrierWaits.drained.isEmpty)
     }
 
-    @Test("A tickless [join, shutdown] batch whose join report is refused emits the failure's teardown, not an ordinary drain start (Review r1 on #969, MF3): the teardown runs before the stop goes on, which then joins it",
-          .disabled("unreachable until K2-2 commit 3: the core refuses a tickless land with a transport (ticklessLandWithTransport), and without one the batch's join report calls no port"))
+    @Test("A tickless [join, shutdown] batch whose join report is refused emits the failure's teardown, not an ordinary drain start (Review r1 on #969, MF3): the teardown runs before the stop goes on, which then joins it")
     func shutdownBatchThatFailsTheLand() async throws {
         let trace = CoreDiffTrace()
         let port = CoreDiffTraceTransport(trace)
