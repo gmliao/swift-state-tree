@@ -730,6 +730,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         holds.install(hook)
         turnSide.holdPoints.install(hook)
     }
+
+    /// Tests: `HoldPoints.installResumed` on the keeper's own hold points (not the side's).
+    func installResumedHoldsForTesting(_ hook: (@Sendable (LandKeeperHoldPoint, isolated (any Actor)?) -> Void)?) {
+        holds.installResumed(hook)
+    }
     private var initializationTask: Task<Void, Never>?
 
     /// Throws the initialization's failure, if it failed. Every caller gets the same value: the
@@ -986,7 +991,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     struct LifecycleFlagsForTesting: Sendable, Equatable {
         var didInitialize: Bool
         /// `InitializationPhase.applied`: OnInitialize set the state up. It differs from
-        /// `didInitialize` only in `.recording`, where the drain's `stateIsSetUp` reads it.
+        /// `didInitialize` in `.recording`, `.finishing` and `.startingLoops` (applied, not
+        /// over), where the drain's `stateIsSetUp` reads it, and in `.failed` and
+        /// `.abandonedByDrain` (over, not applied), where `initializationFailure` guards the
+        /// drain first.
         var initializationApplied: Bool
         var initializationFailed: Bool
         var destroyHandlersStarted: Bool

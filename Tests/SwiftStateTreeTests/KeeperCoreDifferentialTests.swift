@@ -112,6 +112,14 @@ final class CoreDiffArmedGate: @unchecked Sendable {
     func take() -> WatermarkGate? { lock.withLock { defer { armed = nil }; return armed } }
 }
 
+/// The latest value set, read from any task.
+final class CoreDiffLatest<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: Value?
+    func set(_ value: Value) { lock.withLock { latest = value } }
+    var value: Value? { lock.withLock { latest } }
+}
+
 @PlainData
 struct CoreDiffOutput: ResolverOutput {
     let value: Int
@@ -324,6 +332,13 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     /// The owner's `.drainStart` hold (the keeper's `holds.at(.drainStart)`, M7): when armed, the
     /// next drain start waits at it before `.drainStart` is sent (P1b-1).
     nonisolated let armedDrainStartGate = CoreDiffArmedGate()
+    /// The last `.initializeResolvers` effect's request, kept as it starts (a stale resolution's
+    /// case builds its input from it).
+    nonisolated let initializeResolvingSeen = CoreDiffLatest<LandKeeper<State>.InitializeResolving>()
+    /// Each `.initializeRecord` effect, as it starts its wait for the recorder: "awaiting the
+    /// hand-off", or "no submission" when the step gave it none (966 mutant at the record's
+    /// staging).
+    nonisolated let recordHandOffs = EventLog()
     /// The twin's source keeper, whose executor this actor shares (as the facade will share the
     /// core's, plan §3): a callback that re-enters the keeper with `assumeIsolated` then runs.
     nonisolated let owner: LandKeeper<State>
@@ -482,6 +497,7 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
             await abandonment.waitUntilEnded()
             result = .actionJobReleased(sequence: sequence)
         case let .initializeResolvers(resolving):
+            initializeResolvingSeen.set(resolving)
             // As the keeper's driver: the resolvers, then this task's cancellation, read here
             // (Notes/solutions/2026-11-27-a-core-step-reads-the-drivers-task-not-the-callers.md).
             let resolved: Result<LandContext, any Error>
@@ -498,6 +514,7 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
             result = .initializeResolved(resolving, resolved, initializationTaskCancelled: Task.isCancelled)
         case let .initializeRecord(submission):
             await armedRecordGate.take()?.enterAndWait()
+            recordHandOffs.append(submission == nil ? "no submission" : "awaiting the hand-off")
             await submission?.taken()
             result = .initializeRecorded
         case let .destroyResolvers(destroyStep):
@@ -583,6 +600,11 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     func waitForInputs(named name: String, count: Int) async {
         guard inputsSeen.filter({ $0 == name }).count < count else { return }
         await withCheckedContinuation { inputWaiters.append((name, count, $0)) }
+    }
+
+    /// The twin's own recorder queue (tests that hold a submission ahead of the core's record).
+    func recorderSubmissions() -> ReevaluationSubmissionTracker {
+        store.withSide { side in side.submissionsForTesting }
     }
 
     /// Waits for the record submissions the core's flushes made (the twin's own tracker).
@@ -2112,6 +2134,17 @@ private func resultWithinHangBound<T: Sendable>(_ task: Task<T, any Error>) asyn
     return await task.result
 }
 
+/// `task.value`, bounded as `resultWithinHangBound` is; nil when it doesn't end.
+private func valueWithinHangBound<T: Sendable>(_ task: Task<T, Never>) async -> T? {
+    let ended = EventLog()
+    Task {
+        _ = await task.value
+        ended.append("ended")
+    }
+    guard await ended.waitFor("ended") else { return nil }
+    return await task.value
+}
+
 /// A harness call's reply, bounded as `resultWithinHangBound` is.
 private func replyWithinHangBound(_ pair: CoreDiffPair, _ input: KeeperInput<CoreDiffState>) async -> Result<KeeperReply<CoreDiffState>, any Error>? {
     await resultWithinHangBound(Task { try await pair.harness.call(input) })
@@ -2718,7 +2751,7 @@ extension KeeperCoreDifferentialTests {
         guard await keeperGate.waitUntilEntered("the keeper's resolver") else { return }
         keeperAct.cancel()
         keeperGate.release()
-        let keeperResult = await keeperAct.value
+        guard let keeperResult = await valueWithinHangBound(keeperAct) else { Issue.record("the keeper's cancelled caller never ended"); return }
         await pair.keeper.waitForActionJobsForTesting()
 
         // The core.
@@ -2750,7 +2783,7 @@ extension KeeperCoreDifferentialTests {
         let ends = await pair.harness.drainEnds().stream
         coreAct.cancel()
         coreGate.release()
-        let coreResult = await coreAct.value
+        guard let coreResult = await valueWithinHangBound(coreAct) else { Issue.record("the core's cancelled caller never ended"); return }
         guard await firstWithinHangBound(ends) else { Issue.record("the core's input drain never ended"); return }
         await pair.harness.setProbe(nil)
 
@@ -2877,8 +2910,9 @@ extension KeeperCoreDifferentialTests {
         // Held at the record: OnInitialize applied, the waiters still parked.
         let held = await pair.harness.differentialRead().model
         guard case .recording = held.initializationPhase else { Issue.record("phase \(held.initializationPhase)"); return }
-        // `.recording` is the one phase where `applied` and `didInitialize` differ (Review r2 on
-        // #966, MF): the drain's `stateIsSetUp` reads `applied`.
+        // In `.recording` (as in `.finishing` and `.startingLoops`) `applied` is true and
+        // `didInitialize` false (Review r2 on #966, MF): the drain's `stateIsSetUp` reads
+        // `applied`.
         #expect(held.initializationApplied && !held.didInitialize, "held at the record: applied \(held.initializationApplied), didInitialize \(held.didInitialize)")
         #expect(held.coreBarrierWaits.initialized.count == 2)
         hold.release()
@@ -2888,6 +2922,37 @@ extension KeeperCoreDifferentialTests {
         #expect(await pair.harness.differentialRead().model.initializationPhase == .done)
         await pair.keeper.awaitInitialization()
         await pair.expectSame("after the held record")
+    }
+
+    @Test("The core's initialization waits for the recorder to take its record: with a submission held ahead of it in the twin's recorder queue, the record effect carries the submission and waits on it, the phase stays .recording, and the waiter is answered only after the queue moves (966 mutant (a), Review r3 should 1)")
+    func initializationWaitsForTheRecorderOnTheCore() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let pair = await CoreDiffPair.make(shape, "init-recorder-queue", initializes: false, records: true)
+        // The recorder's queue applies in submit order (a FIFO): a held submission ahead of the
+        // record keeps the record from being taken.
+        let queueHold = WatermarkGate()
+        defer { queueHold.release() }
+        let log = EventLog()
+        await pair.harness.recorderSubmissions().submit(label: "held") {
+            await queueHold.enterAndWait()
+            log.append("queue moved")
+        }
+        let waiter = Task { try await pair.harness.call(.awaitInitialized) }
+        await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
+        await pair.harness.drive(.initialize)
+        // The effect's own event, before it waits: the step staged the record and handed the
+        // effect its submission. A step that hands it none lets the core finish at once.
+        guard await pair.harness.recordHandOffs.waitFor({ !$0.isEmpty }) else { Issue.record("the record effect never ran"); return }
+        #expect(pair.harness.recordHandOffs.events == ["awaiting the hand-off"], "\(pair.harness.recordHandOffs.events)")
+        let held = await pair.harness.differentialRead().model
+        guard case .recording = held.initializationPhase else { Issue.record("phase \(held.initializationPhase) while the record waits"); return }
+        #expect(held.initializationApplied && !held.didInitialize)
+        #expect(held.coreBarrierWaits.initialized.count == 1, "the waiter is still parked")
+
+        queueHold.release()
+        guard case .success(.done)? = await resultWithinHangBound(waiter) else { Issue.record("the waiter wasn't answered .done"); return }
+        #expect(log.events == ["queue moved"])
+        #expect(await pair.harness.differentialRead().model.initializationPhase == .done)
     }
 
     @Test("A failed initialization (OnInitialize's resolver throws): an early and a late waiter both get the failure, the phase is .failed, on both paths (Review on #966, MF2 (b), and the should on §3.3.1)")
@@ -2920,7 +2985,7 @@ extension KeeperCoreDifferentialTests {
         guard await keeperGate.waitUntilEntered("the keeper's OnInitialize resolver") else { return }
         await pair.keeper.markDrainingForTesting(cause: .forceShutdown)
         keeperGate.release()
-        await keeperInit.value
+        guard await valueWithinHangBound(keeperInit) != nil else { Issue.record("the keeper's initialization never ended"); return }
 
         let coreGate = WatermarkGate()
         defer { coreGate.release() }
@@ -2959,7 +3024,7 @@ extension KeeperCoreDifferentialTests {
         guard await keeperHold.waitUntilEntered("the keeper's initialize record") else { return }
         await pair.keeper.markDrainingForTesting(cause: .forceShutdown)
         keeperHold.release()
-        await keeperInit.value
+        guard await valueWithinHangBound(keeperInit) != nil else { Issue.record("the keeper's initialization never ended"); return }
 
         let coreHold = WatermarkGate()
         defer { coreHold.release() }
@@ -3046,6 +3111,34 @@ extension KeeperCoreDifferentialTests {
         #expect(await pair.harness.differentialRead().model.initializationPhase == .done)
         await pair.keeper.awaitInitialization()
         await pair.expectSame("after the loops' start")
+    }
+
+    @Test("A resolution of another sequence, while the core's initialization is in .resolving, stops the process: the result step checks the sequence its request left, not only the phase (966 mutant (f))")
+    func staleInitializeResolutionStops() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+            let gate = WatermarkGate()
+            let pair = await CoreDiffPair.make(shape, "init-stale-resolution", initializes: false, before: { CoreDiffInitGates.set($0, gate) })
+            await pair.harness.drive(.initialize)
+            // The core's resolvers are held, so its phase is `.resolving(sequence:)` of this
+            // request; a resolution carrying another sequence is a broken flow.
+            guard await gate.waitUntilEntered("the core's OnInitialize resolver"),
+                  let resolving = pair.harness.initializeResolvingSeen.value else { return }
+            let stale = LandKeeper<CoreDiffState>.InitializeResolving(
+                handler: resolving.handler,
+                ctx: resolving.ctx,
+                sequence: resolving.sequence + 1,
+                sequenceAfterTake: resolving.sequenceAfterTake + 1,
+                executors: resolving.executors,
+                resolverContext: resolving.resolverContext
+            )
+            await pair.harness.drive(.initializeResolved(stale, .success(resolving.ctx), initializationTaskCancelled: false))
+            // A waiter queued behind it: answered only if the stale resolution was applied, so
+            // the body doesn't end (and the process exit 0) before the stale input steps.
+            _ = try? await pair.harness.call(.awaitInitialized)
+        }
+        let standardError = result.map { String(decoding: $0.standardErrorContent, as: UTF8.self) } ?? ""
+        #expect(standardError.contains("OnInitialize's resolvers ended in phase"), "\(standardError)")
     }
 
     @Test("The initialization's barrier is open after OnInitialize, on both paths (Review on #948, MF6: the open case until commit 1)")

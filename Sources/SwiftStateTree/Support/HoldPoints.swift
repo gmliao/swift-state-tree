@@ -17,12 +17,25 @@ import Foundation
 /// ```
 package struct HoldPoints<Point: Hashable & Sendable>: Sendable {
     private var hook: (@Sendable (Point) async -> Void)?
+    private var resumedHook: (@Sendable (Point, isolated (any Actor)?) -> Void)?
 
     package init() {}
 
     /// Installs (or, with `nil`, removes) the hook. Tests only.
     package mutating func install(_ hook: (@Sendable (Point) async -> Void)?) {
         self.hook = hook
+    }
+
+    /// Installs (or, with `nil`, removes) the resumed hook. Tests only.
+    ///
+    /// It runs synchronously on the caller's executor right after `at`'s hook returned, in the
+    /// segment that resumes there. A job it starts on that executor (a `Task` that captures the
+    /// `isolated` parameter) runs only after that segment ends, at the caller's next suspension:
+    /// so a test can read what the code did between the hold and its next `await`, which a read
+    /// issued from the hook's own task can't order (the hook is nonisolated, and its return
+    /// enqueues the caller's resumption from another thread).
+    package mutating func installResumed(_ hook: (@Sendable (Point, isolated (any Actor)?) -> Void)?) {
+        resumedHook = hook
     }
 
     /// Awaits the hook at `point`, if one is installed.
@@ -33,8 +46,8 @@ package struct HoldPoints<Point: Hashable & Sendable>: Sendable {
     /// method would hop off the actor here even with no hook, and open a reentrancy window at
     /// every hold point in production.
     package func at(_ point: Point, isolation: isolated (any Actor)? = #isolation) async {
-        guard let hook else { return }
-        await hook(point)
+        if let hook { await hook(point) }
+        resumedHook?(point, isolation)
     }
 }
 
