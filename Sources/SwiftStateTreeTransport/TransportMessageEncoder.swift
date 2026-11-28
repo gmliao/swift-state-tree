@@ -369,7 +369,7 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         // An empty payload, `Void`, is an empty array, as in the MessagePack encoder: the
         // immediate ACK of an action queued for a tick is `.completed(AnyCodable(()))` (#541).
         if actualPayload is Void {
-            return AnyCodable([AnyCodable]())
+            fatalError("PROBE #543 mutant a: no Void branch in encodePayloadAsArray (pre-#542)")
         }
 
         // Every payload type (ActionPayload, ResponsePayload, ClientEventPayload,
@@ -440,7 +440,7 @@ private struct ActionResponseOpcodeArray: Encodable {
         try array.encode(requestID)
         switch outcome {
         case .none:
-            if positional { try array.encode([Int]()) } else { try array.encodeNil() }
+            if positional { fatalError("PROBE #543 mutant a: no Void branch in the positional action response (pre-#542)") } else { try array.encodeNil() }
         case .response(let response):
             // Opened, not converted: the response isn't boxed again.
             if positional { try Self.encodePositional(response, into: &array) } else { try array.encode(response) }
