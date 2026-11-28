@@ -149,6 +149,14 @@ package struct KeeperTurnSide {
     let sharedTransportFailure: LandFailureMailbox
     /// The attached transport: the keeper sets it with its own at both of its assignments.
     var attachedTransport: (any LandKeeperTransport)?
+    /// A core's stored binding (K2-2 commit 3a): the attached port's witness answer for its owner,
+    /// read once by `.setTransport`'s step (the adapter's answer is fixed per attachment: its
+    /// `keeper` is a `let`). False with no port or the released stand-in. Unused on the keeper's
+    /// side, which asks the port at each use.
+    var attachedSyncsInTurn = false
+    /// A core's released stand-in, made by `.drainFinished`'s step (the keeper's
+    /// `releasedTransport`): a later `.setTransport` attaches it.
+    var releasedStandIn: ReleasedLandTransport?
 
     /// The keeper, for a body's staged starts only (D14): a staged action that starts a task
     /// whose first await is a hold reaches the keeper through it. Weak, and never read by a body
@@ -278,11 +286,15 @@ package struct KeeperTurnSide {
     /// Whether the attached transport runs the sync phase in the turn (a live keeper only):
     /// the keeper's `syncsInTurn`, read from a body. A port call: a body reads it inside
     /// `callOut`.
+    /// Whether a port other than the released stand-in is attached (a type check, no port call).
+    var holdsLivePort: Bool { attachedTransport != nil && !(attachedTransport is ReleasedLandTransport) }
+    /// A core's stored binding: a port attached and its witness's answer (no port call).
+    var storedSyncsInTurn: Bool { attachedTransport != nil && attachedSyncsInTurn }
+
     func syncsInTurn<State>(_ behavior: KeeperBehavior<State>) -> Bool {
         guard behavior.config.mode == .live else { return false }
-        // A core's tick or sync step carries its input's read (K2-1); K2-2's binding token
-        // replaces it.
-        if let carried = coreInputReplies.carriedSyncsInTurn { return carried && attachedTransport != nil }
+        // A core reads its stored binding (K2-2 commit 3a), set by `.setTransport`'s step.
+        if coreInputReplies.onCore { return storedSyncsInTurn }
         guard let keeper = keeperReference.keeper else { return false }
         return attachedTransport?.runsSyncPhaseInTurn(of: keeper) ?? false
     }

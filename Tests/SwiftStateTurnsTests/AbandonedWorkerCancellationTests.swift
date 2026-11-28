@@ -263,7 +263,7 @@ struct AbandonedWorkerCancellationTests {
         #expect(await a.workers == 0)
     }
 
-    @Test("Several workers under one key, and a start that supersedes it: every worker is cancelled once, each request abandoned keyEnded, and no handle is left")
+    @Test("Several workers under one key, and a start that supersedes it: every worker is cancelled, each request abandoned keyEnded, and no handle is left")
     func supersedeCancelsEveryWorker() async {
         let f = Fixture()
         let a = CancelActor(fixture: f)
@@ -303,10 +303,31 @@ struct MailboxWorkerCancellationTests {
             await a.send(.script([.end(1)]))
             await a.fixture.reach("woken gate cancelz")
             await a.fixture.reach("idle completion #1")
-            if on { workersAfter = await a.workers }
+            if on {
+                workersAfter = await a.workers
+                // Mail after the completion: its step's ordinal shows whether the nil took one.
+                _ = a.post(MailNote("after", then: [.log("after")]))
+                await a.fixture.reach("wake #1")
+                _ = await a.log
+            }
         }
         #expect(workersAtPark == 1 && workersAfter == 0, "handles: parked \(workersAtPark), after \(workersAfter)")
-        #expect(run.live == ["abandoned cancelz keyEnded"], "\(run.live)")
+        #expect(run.live == ["abandoned cancelz keyEnded", "mail after", "after"], "\(run.live)")
+        // A control with the same two scripts and no request. The run has one more boundary,
+        // the abandonment's own step (`handleAbandoned`); the nil completion left no entry and
+        // took no ordinal, so the mail is the record's only entry, one step after the control's.
+        let control = await MailReplayTests.liveThenReplay { a, on in
+            await a.send(.script([.start(1)]))
+            await a.send(.script([.end(1)]))
+            if on {
+                _ = a.post(MailNote("after", then: [.log("after")]))
+                await a.fixture.reach("wake #1")
+                _ = await a.log
+            }
+        }
+        #expect(control.record.count == 1)
+        let expected = control.record.map { MailRecordKey.before(step: $0.key.step + 1, index: 0) }
+        #expect(run.record.map(\.key) == expected, "\(run.record.map(\.key)) vs control \(control.record.map(\.key))")
         #expect(run.replayed == run.live)
         #expect(run.diverged.isEmpty)
     }
@@ -320,8 +341,12 @@ struct MailboxWorkerCancellationTests {
         #expect(await a.workers == 0, "a gate has no handle")
         await a.send(.script([.end(1)]))
         #expect(!a.fixture.isOpen("woken gate cancelfg"), "the end's step cancelled the gate")
+        let before = await a.log
         a.fixture.open("gate cancelfg")
         #expect(await a.waitForQuiescence(.followUps))
+        // The gate returned to a closed follow-up: stale, so no handler ran for it.
+        let after = await a.log
+        #expect(after == before, "\(before) → \(after)")
         #expect(await a.workers == 0)
     }
 }
