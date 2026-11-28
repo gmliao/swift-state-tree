@@ -1,10 +1,11 @@
 // Tests/SwiftStateTreeTransportTests/DrainsFixtureKeepersTrait.swift
 //
 // `.drainsFixtureKeepers`: after a test, or each test of a suite, shuts down every keeper that a
-// fixture registered during it (`FixtureKeepers.register`), also when the test throws, and fails the test if one of their
-// spool files is still there (#910). A keeper with an attached adapter is a cycle until its drain
-// (#346), so a fixture that never drains keeps its keeper, its recorder and its spool file until
-// the process exits; a full test run left one file per such fixture in the temporary directory.
+// fixture registered during it (`FixtureKeepers.register`), whether the test returns or throws,
+// and fails the test if one of their spool files is still there (#910). A keeper with an attached
+// adapter is a cycle until its drain (#346), so a fixture that never drains keeps its keeper, its
+// recorder and its spool file until the process exits; a full test run left one file per such
+// fixture in the temporary directory.
 
 import Foundation
 import Testing

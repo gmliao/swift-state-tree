@@ -84,9 +84,9 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // The macros' swift-syntax. Package.resolved pins 602.0.0. CI is on Swift 6.4.3, where
-        // 602.0.0 still resolves and builds from source (no prebuilt is used); the upper bound
-        // admits the 603/604 lines of newer toolchains.
+        // The macros' swift-syntax. Package.resolved pins 604.0.0, the line of CI's Swift 6.4.3,
+        // which builds it from source (no prebuilt is used). The range keeps 602 open for packages
+        // that depend on this one.
         .package(url: "https://github.com/apple/swift-syntax.git", "602.0.0"..<"605.0.0"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),

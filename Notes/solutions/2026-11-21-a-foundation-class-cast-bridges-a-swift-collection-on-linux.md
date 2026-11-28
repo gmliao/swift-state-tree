@@ -20,6 +20,7 @@ tags:
   - stack-overflow
   - nesting
 related:
+  - "#936"
   - "#716"
   - "#735"
 ---
@@ -35,7 +36,7 @@ related:
 - **Linux:** swift-corelibs-foundation answers a cast of a Swift `Array` to a Foundation class by bridging the array to `NSArray`, element by element. A nested `[Any]` is bridged all the way down, so the cast recursed through the whole value before it answered "no".
 - **macOS:** the Array-to-NSArray bridge is lazy, so the same cast is O(1).
 
-The recursion sits in Foundation, which is prebuilt. So debug and release crash at the same depth: 384 levels on a 544 KiB thread, 6144 on 8 MiB (#716, S0 diagnostic run s0-716c). Each level bridged the rest of the value again, so the time was quadratic too.
+The recursion sits in Foundation, which is prebuilt. So debug and release crash at the same depth: 384 levels on a 524 KiB thread, 6144 on 8 MiB (#716, S0 diagnostic run s0-716c). Each level bridged the rest of the value again, so the time was quadratic too.
 
 ## Fix
 
@@ -46,3 +47,5 @@ The check became a metatype test, `Swift.type(of: value) is NSNull.Type`, which 
 - In code that receives arbitrary values (`Any`) and may see deep or attacker-shaped data, don't cast a value to a Foundation class (`is NSNull`, `as? NSNumber`, `as? NSString`, and so on). Test the dynamic type through its metatype instead.
 - A cast that fails can still do work proportional to the value: Optional unwrapping in the runtime (#735's unwrap loop) and collection bridging on Linux both do. Treat every failing cast on an `Any` as possibly deep.
 - Depth tests need Linux runs. macOS passing says nothing about bridging, and the Mac never runs overflow cases (`2026-11-21-an-in-process-depth-test-sized-from-linux-overflows-the-mac.md`).
+
+**Correction (#936).** This entry first quoted the pool thread's stack as 544 KiB, the size of its VM region as a crash report names it. `pthread_get_stacksize_np` reports 524 KiB (536,576 bytes) down to the guard page. A VM-region query on a pool thread in #936 shows the 544 KiB region also holding 20 KiB above the stack's top. The measurements here were taken on that thread and stand; only the figure changed.

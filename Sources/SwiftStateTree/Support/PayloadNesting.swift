@@ -6,8 +6,10 @@ import Logging
 /// A parser's own depth limit isn't the pipeline's. Every stage after the parse that walks the
 /// value recurses once per level too: `AnyCodable`'s decode, the payload's re-encode in
 /// `InboundPayloadDecoding`, the payload type's decode, the recorder's conversion. Swift
-/// Concurrency's cooperative threads on Darwin have a 544 KiB stack, and at Foundation's JSON
-/// limit (512 levels) the re-encode overflows it, in debug and in release. So:
+/// Concurrency's cooperative threads on Darwin have 524 KiB of stack (`pthread_get_stacksize_np`,
+/// down to the guard page; a crash report names the 544 KiB VM region, which also holds 20 KiB
+/// above the stack's top, #936), and at Foundation's JSON limit (512 levels) the re-encode
+/// overflows it, in debug and in release. So:
 /// - a client frame that may reach a JSON parser is checked once per decode, before the parse
 ///   (`checkClientJSON`): a frame the router forwards is checked by the router and again by the
 ///   adapter's pipeline. MessagePack from a client unpacks at the same limit;
@@ -18,7 +20,7 @@ import Logging
 ///
 /// Two limits; a test pins both and their relation:
 /// - `clientFrameMaxDepth` (32) bounds what a client sends, in every encoding. Measured on macOS
-///   (Swift 6.3.x, debug, a 544 KiB cooperative-pool stack), the whole client-frame decode chain
+///   (Swift 6.3.x, debug, a 524 KiB cooperative-pool stack), the whole client-frame decode chain
 ///   survives JSON nested 112 deep and overflows at 128, so 32 leaves about 3.5× headroom. The
 ///   deepest real frame is 7 levels: a 4-level payload in 3 levels of frame.
 /// - `serverFrameMaxDepth` (64) is the MessagePack unpacker's default, for frames the server
