@@ -14,6 +14,13 @@ IMAGE_TAG="${DOCKER_DEMO_TAG:-swift-state-tree-demo:e2e}"
 CONTAINER_NAME="demo-e2e-$$"
 PORT=8080
 
+# The Counter scenario's assertConverged step reads the debug state routes, guarded by the admin
+# key, as Tools/CLI/test-e2e-ci.sh sets them. The server's key is DemoServer's demo-admin-key; the
+# routes are off unless the container gets ENABLE_DEBUG_STATE_ROUTES. A convergence mismatch
+# fails the run, as in that script; set E2E_CONVERGENCE_GATING=false for a report-only run.
+export E2E_ADMIN_KEY=${E2E_ADMIN_KEY:-demo-admin-key}
+export E2E_CONVERGENCE_GATING="${E2E_CONVERGENCE_GATING:-true}"
+
 cleanup() {
     echo "Stopping container..."
     docker stop "$CONTAINER_NAME" 2>/dev/null || true
@@ -55,6 +62,7 @@ run_encoding() {
     docker run -d --rm --name "$CONTAINER_NAME" \
         -p ${PORT}:8080 \
         -e TRANSPORT_ENCODING="$encoding" \
+        -e ENABLE_DEBUG_STATE_ROUTES=true \
         "$IMAGE_TAG"
 
     # Wait for server
