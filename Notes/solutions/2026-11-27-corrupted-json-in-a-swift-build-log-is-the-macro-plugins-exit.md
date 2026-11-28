@@ -39,13 +39,13 @@ It wasn't the cause of either. Two sessions read it that way on the same day.
 printf '\0\0\0\0\0\0\0\0' | .build/debug/SwiftStateTreeMacros   # the line, rc 1
 ```
 
-So the host sends such a frame, most likely as a frontend finishes, after its last expansion; the line comes right after one compile task's diagnostics. Which message it is stays open in #937. No file, filelist, output-file map or cache is involved: the line also shows up without any cache.
+The frame is the compiler's termination signal. Since Swift 6.2.3, a frontend ends each macro plugin it loaded by sending a zero-length frame (`sendMessage("")` in `~LoadedExecutablePlugin`, swiftlang/swift a0b9b54944), and then closes the pipes. swift-syntax 603.0.0 and later treat that frame as the end of the connection (7cee8ba40d); 602.0.0 hands the empty payload to its JSON scanner. So the line comes once per frontend that loaded a macro plugin, at that frontend's end, right after its compile task's diagnostics. No file, filelist, output-file map or cache is involved: the line also shows up without any cache.
 
 What actually failed each job:
 - #935 (run 45925312935) had a real compile error, `ReplayServerInputDecodeFailureTests.swift:107:11: error: cannot find 'pthread_getattr_np' in scope`. The `Failed frontend command:` after the line was that file's compile command.
 - #925 (run 45846915801, attempt 1) built (`Build complete!`). It failed in a test step: `the test "A config built with init takes TYPED_LEAF_VALUES" did not run`.
 
-**Fix.** None in the build. The triage rule below.
+**Fix.** The swift-syntax pin moved to 604.0.0, so the plugins exit cleanly on the frame (#937). Until then, the triage rule below. A package that still resolves 602.0.0 prints the line, and the rule still applies to its logs.
 
 **Prevention.**
 - Treat this line as noise. Judge a build by `Build complete!`, the `error:` lines from the compiler (`<file>:<line>:<col>: error:`) and `Failed frontend command:`. Read the command below that last line: it names the file whose compile failed.
