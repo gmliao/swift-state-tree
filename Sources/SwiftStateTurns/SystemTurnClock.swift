@@ -9,9 +9,10 @@
 /// again after each wake and sleeps on for what is left. It sleeps with `Task.sleep(nanoseconds:)`,
 /// never `Task.sleep(for:)`, which can crash in macOS release builds under load.
 ///
-/// It compares instants by their order, never by the sign of their difference: `TurnInstant`'s `+`
-/// and `-` wrap, so a saturated deadline can wrap to an instant that orders as past while
-/// `instant - now` is about +292 years. Only an ordered pair is subtracted.
+/// It compares instants by their order, never by the sign of their difference: a caller can pass
+/// any instant, near either end of the range, and a difference clamped there no longer measures
+/// the gap (`TurnInstant`'s `+` and `-` clamp, #791). Only an ordered pair is subtracted, with
+/// overflow reported, and no single sleep is longer than an hour.
 public struct SystemTurnClock: TurnClock {
     public init() {}
 
