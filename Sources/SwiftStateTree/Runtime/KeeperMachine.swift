@@ -824,16 +824,9 @@ extension KeeperModel: TurnMachine {
         turn.timer(at: Self.freezeDeadline(turn.now, timeout), for: .freezeWait(caller), .freezeTimedOut(generation: generation, caller: caller))
     }
 
-    /// `now + timeout`, saturating at the range's end (`TurnInstant`'s `+` wraps, and
-    /// `Duration`'s components overflow `Int64` nanoseconds for a large timeout).
+    /// `now + timeout`, saturating at the range's end (`TurnInstant`'s `+` saturates, #791).
     static func freezeDeadline(_ now: TurnInstant, _ timeout: Duration) -> TurnInstant {
-        let (seconds, attoseconds) = timeout.components
-        let (scaled, overflow) = seconds.multipliedReportingOverflow(by: 1_000_000_000)
-        guard !overflow else { return TurnInstant(nanoseconds: .max) }
-        let (nanoseconds, overflow2) = scaled.addingReportingOverflow(attoseconds / 1_000_000_000)
-        guard !overflow2 else { return TurnInstant(nanoseconds: .max) }
-        let (deadline, overflow3) = now.nanoseconds.addingReportingOverflow(nanoseconds)
-        return TurnInstant(nanoseconds: overflow3 ? .max : deadline)
+        now + timeout
     }
 
     /// `debugResume` as a step: the generation is released; when it is the one in effect, the
