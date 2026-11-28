@@ -106,6 +106,27 @@ private struct BPFixture {
         _ = try await keeper.handleActionEnvelope(envelope, playerID: player, clientID: client, sessionID: session)
     }
 
+    /// `blockWithCycleInWriter(stamp: blocked)`, then sets `deferred`: the keeper defers a sync
+    /// phase behind the writer's element and starts its writer-drain retry, whose wait registers
+    /// from a task it starts, during either step (#807). Waits for that one registration, so it
+    /// can't be mistaken for a later wait's, and returns the writer's entry count then, which
+    /// stays until the writer drains. It is always 1: `retrySyncOnlyTurnAfterWriterDrain` starts
+    /// at most one retry per sync binding (its `inTurnDrainRetryBinding` guard), so a second
+    /// deferred phase on the same binding adds no wait.
+    func blockWithKeeperDrainRetry(blocked: Int, deferred: Int, writer: OutboundWriter) async throws -> Int {
+        let retryRegistered = TestGate()
+        retryRegistered.open()
+        writer.setOnSyncCycleDrainWaitRegisteredForTesting { Task { await retryRegistered.arrive() } }
+        try await blockWithCycleInWriter(stamp: blocked)
+        try await set(deferred)
+        let registered = await retryRegistered.waitForArrivals(1)
+        writer.setOnSyncCycleDrainWaitRegisteredForTesting(nil)
+        try #require(registered, "the keeper's writer-drain retry never waited for the writer")
+        let entries = writer.syncCycleDrainWaitEntriesForTesting
+        #expect(entries == 1, "only the keeper's retry waits for the writer")
+        return entries
+    }
+
     /// Blocks the transport and runs one cycle whose element then stays in the writer.
     func blockWithCycleInWriter(stamp: Int) async throws {
         transport.block()
@@ -113,6 +134,19 @@ private struct BPFixture {
         await adapter.syncNow()
         #expect(await adapter.outboundBacklog().syncCycleElements == 1, "the cycle's element waits in the writer")
     }
+}
+
+/// Waits for the settle's task to log its end, bounded by `EventLog`'s own timer: an
+/// unstructured task, so the suite's time limit (equal to `testHangBound`) can't cancel it. A
+/// guard that ran as a sibling of the settle under that limit was cancelled with the test and
+/// never released, and a settle wait that ignores cancellation then hung the run (#984's
+/// mutant). Only when the settle never ended: releasing the transport drains the writer, so
+/// such a wait returns and the test fails by name. A release after the settle ended would
+/// drain the writer, and the entry counts checked after it would race that drain (#807).
+private func waitForSettleEnd(_ ended: EventLog, transport: BlockingTransport) async -> Bool {
+    let freezeEnded = await ended.waitFor("ended")
+    if !freezeEnded { transport.release() }
+    return freezeEnded
 }
 
 @Suite("TransportAdapter sync back-pressure", .timeLimit(.minutes(1)))
@@ -252,29 +286,20 @@ struct TransportAdapterSyncBackPressureTests {
         // The settle runs only through the keeper's attached transport (#546 L2d-1).
         await f.keeper.setTransport(f.adapter)
         defer { f.transport.release() }
-        try await f.blockWithCycleInWriter(stamp: 1)
-        try await f.set(2)
+        let writer = await f.adapter.outboundWriter
+        let keeperRetry = try await f.blockWithKeeperDrainRetry(blocked: 1, deferred: 2, writer: writer)
         // The settle's own deadline is what ends the wait; the writer never drains before it.
         await f.adapter.setDebugFreezeSettleDeadline(.milliseconds(100))
 
         let adapter = f.adapter
-        let freeze = Task { try await adapter.debugFreeze() }
-        // When the hang bound runs out first, releasing the transport drains the writer, so a
-        // wait the deadline couldn't end returns and the test fails by name instead of hanging.
-        let outcome = await withTaskGroup(of: Result<DebugFreezeResponse, any Error>?.self) { group in
-            group.addTask { await freeze.result }
-            group.addTask {
-                try? await safeTaskSleep(for: testHangBound)
-                f.transport.release()
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
-        let result = try #require(outcome, "the settle didn't end at its deadline")
-        #expect(throws: DebugFreezeError.settleTimedOut) { try result.get() }
-        #expect(await f.adapter.outboundWriter.syncCycleDrainWaitEntriesForTesting == 0, "the timed-out wait left its waiter")
+        let ended = EventLog()
+        let freeze = Task { defer { ended.append("ended") }; return try await adapter.debugFreeze() }
+        let freezeEnded = await waitForSettleEnd(ended, transport: f.transport)
+        try #require(freezeEnded, "the settle didn't end at its deadline")
+        await #expect(throws: DebugFreezeError.settleTimedOut) { _ = try await freeze.value }
+        // The writer is still blocked, so the keeper's retry still waits: only the settle's
+        // own entry must be gone.
+        #expect(writer.syncCycleDrainWaitEntriesForTesting == keeperRetry, "the timed-out wait left its waiter")
         #expect(await f.adapter.isDebugFrozen() == false, "the timed-out freeze was released")
     }
 
@@ -284,39 +309,30 @@ struct TransportAdapterSyncBackPressureTests {
         // The settle runs only through the keeper's attached transport (#546 L2d-1).
         await f.keeper.setTransport(f.adapter)
         defer { f.transport.release() }
-        try await f.blockWithCycleInWriter(stamp: 1)
-        try await f.set(2)
+        let writer = await f.adapter.outboundWriter
+        let keeperRetry = try await f.blockWithKeeperDrainRetry(blocked: 1, deferred: 2, writer: writer)
         // Far past the hang bound: only the release can end the wait in time.
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         await f.adapter.setDebugFreezeAutoResumeTimeout(.seconds(3600))
         let registered = TestGate()
         registered.open()
-        let writer = await f.adapter.outboundWriter
         writer.setOnSyncCycleDrainWaitRegisteredForTesting { Task { await registered.arrive() } }
         defer { writer.setOnSyncCycleDrainWaitRegisteredForTesting(nil) }
 
         let adapter = f.adapter
-        let freeze = Task { try await adapter.debugFreeze() }
+        let ended = EventLog()
+        let freeze = Task { defer { ended.append("ended") }; return try await adapter.debugFreeze() }
+        // The keeper's retry registered before the hook was set, so this arrival is the settle's.
         try #require(await registered.waitForArrivals(1), "the settle never waited for the writer")
         let token = await f.adapter.debugFreezeState.token
         #expect(await f.adapter.debugResume(freezeToken: token).resumed)
 
-        // When the hang bound runs out first, releasing the transport drains the writer, so a
-        // wait the release couldn't end returns and the test fails by name instead of hanging.
-        let outcome = await withTaskGroup(of: Result<DebugFreezeResponse, any Error>?.self) { group in
-            group.addTask { await freeze.result }
-            group.addTask {
-                try? await safeTaskSleep(for: testHangBound)
-                f.transport.release()
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
-        let result = try #require(outcome, "the released settle kept waiting for the writer")
-        #expect(throws: DebugFreezeError.released) { try result.get() }
-        #expect(writer.syncCycleDrainWaitEntriesForTesting == 0, "the cancelled wait left its waiter")
+        let freezeEnded = await waitForSettleEnd(ended, transport: f.transport)
+        try #require(freezeEnded, "the released settle kept waiting for the writer")
+        await #expect(throws: DebugFreezeError.released) { _ = try await freeze.value }
+        // The writer is still blocked, so the keeper's retry still waits: only the settle's
+        // own entry must be gone.
+        #expect(writer.syncCycleDrainWaitEntriesForTesting == keeperRetry, "the cancelled wait left its waiter")
         #expect(await f.adapter.isDebugFrozen() == false)
     }
 
