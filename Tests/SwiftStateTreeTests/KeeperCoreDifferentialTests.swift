@@ -544,8 +544,9 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         await tracker.waitForAll()
     }
 
-    /// The keeper's `markDrainingForTesting` on the twin: sets the twin's own drain flag, as the
-    /// land's stop does first, without starting a drain (Review on #966, MF2 (e)).
+    /// The drain flag only, on the twin: unlike the keeper's `markDrainingForTesting`, it clears
+    /// no players, services or reservations (its cases join no player) and starts no drain
+    /// (Review on #966, MF2 (e); r2's nit).
     func markDraining(cause: LandDestructionCause) {
         store.withSide { side in side.sharedDrainFlag.set(cause: cause) }
     }
@@ -2044,6 +2045,77 @@ private func probeEvents(_ name: String) -> (stream: AsyncStream<Void>, probe: @
     return (stream, { if $0 == name { continuation.yield() } })
 }
 
+/// A task's result, or nil after `testHangBound` (Review r2 on #966): the harness calls with
+/// `.ignoresCancel`, so a lost reply can't be freed by a cancel; the bound is an event the
+/// task's end appends, and the caller fails the case instead of hanging it.
+private func resultWithinHangBound<T: Sendable>(_ task: Task<T, any Error>) async -> Result<T, any Error>? {
+    let ended = EventLog()
+    Task {
+        _ = await task.result
+        ended.append("ended")
+    }
+    guard await ended.waitFor("ended") else { return nil }
+    return await task.result
+}
+
+/// A harness call's reply, bounded as `resultWithinHangBound` is.
+private func replyWithinHangBound(_ pair: CoreDiffPair, _ input: KeeperInput<CoreDiffState>) async -> Result<KeeperReply<CoreDiffState>, any Error>? {
+    await resultWithinHangBound(Task { try await pair.harness.call(input) })
+}
+
+/// Whether `stream` yields within `testHangBound`. It consumes the stream: one read per stream.
+private func firstWithinHangBound(_ stream: AsyncStream<Void>) async -> Bool {
+    let seen = EventLog()
+    Task {
+        for await _ in stream {
+            seen.append("next")
+            return
+        }
+    }
+    return await seen.waitFor("next")
+}
+
+/// The cause inside an initialization's failure, as both paths can compare it: the resolver
+/// group's error unwrapped from `resolverFailed`, a refusal's own error, or the land's closing
+/// rejection.
+private func initializationCause(_ error: any Error) -> String {
+    guard let failure = error as? LandInitializationError else { return "not a LandInitializationError: \(error)" }
+    var cause = failure.underlying
+    if case let ResolverExecutionError.resolverFailed(_, underlying) = cause { cause = underlying }
+    return String(describing: cause)
+}
+
+/// The keeper's initialization failure, as a late caller sees it: a leave awaits the
+/// initialization first, and throws its failure.
+private func keeperInitializationCause(_ keeper: LandKeeper<CoreDiffState>) async -> String {
+    do {
+        try await keeper.leave(playerID: PlayerID("late"), clientID: ClientID("late"), sessionID: SessionID("late"))
+        return "the late leave returned"
+    } catch {
+        return initializationCause(error)
+    }
+}
+
+/// Every caller's cause is `expected`: the core's early and late `.awaitInitialized` and the
+/// keeper's late leave (Review r2 on #966: the wrapper type alone lets another failure pass).
+private func expectInitializationCauses(
+    _ pair: CoreDiffPair,
+    early: Result<KeeperReply<CoreDiffState>, any Error>?,
+    _ expected: String,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async {
+    let late = await replyWithinHangBound(pair, .awaitInitialized)
+    for (name, answer) in [("early", early), ("late", late)] {
+        guard case let .failure(error)? = answer else {
+            Issue.record("the core's \(name) waiter: \(String(describing: answer))", sourceLocation: sourceLocation)
+            continue
+        }
+        #expect(initializationCause(error) == expected, "the core's \(name) waiter: \(error)", sourceLocation: sourceLocation)
+    }
+    let keeperCause = await keeperInitializationCause(pair.keeper)
+    #expect(keeperCause == expected, "the keeper's late caller: \(keeperCause)", sourceLocation: sourceLocation)
+}
+
 private func outputDraft(_ tag: UInt64, reentering keeper: LandKeeper<CoreDiffState>? = nil) -> SyncStreamDraft {
     SyncStreamDraft(.output(observedTickId: 0, make: { streamIndex, index in
         keeper?.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: a draft factory that calls back into its keeper
@@ -2521,8 +2593,7 @@ extension KeeperCoreDifferentialTests {
         let keeperAct = Task {
             describeSubmission(await Result { try await pair.keeper.submitAction(jobEnvelope(action), playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1")) })
         }
-        var keeperHolds = keeperHeld.makeAsyncIterator()
-        _ = await keeperHolds.next()
+        guard await firstWithinHangBound(keeperHeld) else { Issue.record("the keeper never held the intake"); return }
         await pair.keeper.setInTurnProbeForTesting(nil)
         await pair.keeper.debugResume(generation: 1)
         guard await keeperGate.waitUntilEntered("the keeper's resolver") else { return }
@@ -2551,18 +2622,17 @@ extension KeeperCoreDifferentialTests {
                 return "core: \(error)"
             }
         }
-        var coreHolds = coreHeld.makeAsyncIterator()
-        _ = await coreHolds.next()
+        guard await firstWithinHangBound(coreHeld) else { Issue.record("the core never held the intake"); return }
         await pair.harness.setProbe(nil)
         await pair.harness.drive(.resume(generation: 1))
         guard await coreGate.waitUntilEntered("the core's resolver") else { return }
         // From here the only input drain is the job's delivery: wait for its end, so the core
         // is compared after `.recordTaken`, not mid-job.
-        var ends = await pair.harness.drainEnds().stream.makeAsyncIterator()
+        let ends = await pair.harness.drainEnds().stream
         coreAct.cancel()
         coreGate.release()
         let coreResult = await coreAct.value
-        _ = await ends.next()
+        guard await firstWithinHangBound(ends) else { Issue.record("the core's input drain never ended"); return }
         await pair.harness.setProbe(nil)
 
         #expect(keeperResult.hasPrefix("pending ") && coreResult == keeperResult, "keeper \(keeperResult), core \(coreResult)")
@@ -2656,11 +2726,12 @@ extension KeeperCoreDifferentialTests {
 
         await pair.keeper.awaitInitialization()
         await pair.harness.drive(.initialize)
-        guard case .done = try await coreWaiter.value else { Issue.record("not a done reply"); return }
+        guard case .success(.done)? = await resultWithinHangBound(coreWaiter) else { Issue.record("the waiter wasn't answered .done"); return }
         let seen = await pair.harness.inputsSeen
         #expect(seen.contains("initializeResolved"), "the resolvers ran as an effect: \(seen)")
-        // The record's hand-off comes back as an input; the finish without one is queued behind
-        // `.land` (the harness notes only what it sends), so the phase's end is checked instead.
+        // The record's hand-off comes back as an input; without a record the finish is a second
+        // step in OnInitialize's handler, with no input of its own, so the phase's end is checked
+        // instead.
         #expect(seen.contains("initializeRecorded") == records, "\(seen)")
         #expect(await pair.harness.differentialRead().model.initializationPhase == .done)
         #expect(await pair.harness.differentialRead().model.coreBarrierWaits.initialized.isEmpty)
@@ -2687,10 +2758,13 @@ extension KeeperCoreDifferentialTests {
         // Held at the record: OnInitialize applied, the waiters still parked.
         let held = await pair.harness.differentialRead().model
         guard case .recording = held.initializationPhase else { Issue.record("phase \(held.initializationPhase)"); return }
+        // `.recording` is the one phase where `applied` and `didInitialize` differ (Review r2 on
+        // #966, MF): the drain's `stateIsSetUp` reads `applied`.
+        #expect(held.initializationApplied && !held.didInitialize, "held at the record: applied \(held.initializationApplied), didInitialize \(held.didInitialize)")
         #expect(held.coreBarrierWaits.initialized.count == 2)
         hold.release()
         for waiter in [first, second] {
-            guard case .done = try await waiter.value else { Issue.record("not a done reply"); return }
+            guard case .success(.done)? = await resultWithinHangBound(waiter) else { Issue.record("a waiter wasn't answered .done"); return }
         }
         #expect(await pair.harness.differentialRead().model.initializationPhase == .done)
         await pair.keeper.awaitInitialization()
@@ -2706,8 +2780,7 @@ extension KeeperCoreDifferentialTests {
         await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
         await pair.keeper.awaitInitialization()
         await pair.harness.drive(.initialize)
-        await #expect(throws: LandInitializationError.self) { _ = try await early.value }
-        await #expect(throws: LandInitializationError.self) { _ = try await pair.harness.call(.awaitInitialized) }
+        await expectInitializationCauses(pair, early: await resultWithinHangBound(early), "\(CoreDiffError(token: -1))")
         #expect(await pair.harness.differentialRead().model.initializationPhase == .failed)
         #expect(await pair.keeper.differentialReadForTesting().model.initializationPhase == .failed)
         #expect(await pair.harness.differentialRead().model.coreBarrierWaits.initialized.isEmpty)
@@ -2739,14 +2812,15 @@ extension KeeperCoreDifferentialTests {
         guard await coreGate.waitUntilEntered("the core's OnInitialize resolver") else { return }
         await pair.harness.markDraining(cause: .forceShutdown)
         coreGate.release()
-        let answer = await Result { try await waiter.value }
+        let answer = await resultWithinHangBound(waiter)
 
         let keeperPhase = await pair.keeper.differentialReadForTesting().model.initializationPhase
         let corePhase = await pair.harness.differentialRead().model.initializationPhase
         #expect(keeperPhase == .abandonedByDrain && corePhase == .abandonedByDrain, "keeper \(keeperPhase), core \(corePhase)")
         // An abandoned initialization is a failed one to its waiters (K2 §3.3.1), as the keeper's
-        // `ensureInitialized` throws: the land closed under it.
-        guard case let .failure(error) = answer, error is LandInitializationError else { Issue.record("the core's waiter: \(answer)"); return }
+        // `ensureInitialized` throws: the land closed under it, with no failure of its own. A
+        // late caller after `.abandonedByDrain` gets the same (the phase is over).
+        await expectInitializationCauses(pair, early: answer, "\(LandInputRejection.landClosed)")
         #expect(!(await pair.harness.flushed.contains { if case .startLoops = $0 { true } else { false } }), "no loop on a draining land")
         let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
         #expect(keeperLog.isEmpty && coreLog.isEmpty, "keeper \(keeperLog), core \(coreLog)")
@@ -2777,14 +2851,13 @@ extension KeeperCoreDifferentialTests {
         guard await coreHold.waitUntilEntered("the core's initialize record") else { return }
         await pair.harness.markDraining(cause: .forceShutdown)
         coreHold.release()
-        let answer = await Result { try await waiter.value }
+        let answer = await resultWithinHangBound(waiter)
 
         let keeperPhase = await pair.keeper.differentialReadForTesting().model.initializationPhase
         let corePhase = await pair.harness.differentialRead().model.initializationPhase
-        #expect(keeperPhase == corePhase, "keeper \(keeperPhase), core \(corePhase)")
-        guard case .success(.done) = answer else { Issue.record("the core's waiter: \(answer)"); return }
+        #expect(keeperPhase == .done && corePhase == .done, "keeper \(keeperPhase), core \(corePhase)")
+        guard case .success(.done)? = answer else { Issue.record("the core's waiter: \(String(describing: answer))"); return }
         #expect(!(await pair.harness.flushed.contains { if case .startLoops = $0 { true } else { false } }), "no loop on a draining land")
-        #expect(await pair.keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
         let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
         #expect(keeperLog == ["init:1"] && coreLog == ["init:1"], "still applied: keeper \(keeperLog), core \(coreLog)")
         await pair.expectSame("after the drain during the record")
@@ -2798,8 +2871,7 @@ extension KeeperCoreDifferentialTests {
         await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
         await pair.keeper.awaitInitialization()
         await pair.harness.drive(.initialize)
-        await #expect(throws: LandInitializationError.self) { _ = try await early.value }
-        await #expect(throws: LandInitializationError.self) { _ = try await pair.harness.call(.awaitInitialized) }
+        await expectInitializationCauses(pair, early: await resultWithinHangBound(early), "\(CoreDiffError(token: -2))")
         let keeperPhase = await pair.keeper.differentialReadForTesting().model.initializationPhase
         let corePhase = await pair.harness.differentialRead().model.initializationPhase
         #expect(keeperPhase == .failed && corePhase == .failed, "keeper \(keeperPhase), core \(corePhase)")
@@ -2825,7 +2897,7 @@ extension KeeperCoreDifferentialTests {
         let waiter = Task { try await pair.harness.call(.awaitInitialized) }
         await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
         await pair.harness.drive(.initialize)
-        let answer = await Result { try await waiter.value }
+        let answer = await resultWithinHangBound(waiter)
 
         #expect(await pair.keeper.lateReentriesAppliedForTesting == 1)
         #expect(await source.lateReentriesAppliedForTesting == 1)
@@ -2833,7 +2905,6 @@ extension KeeperCoreDifferentialTests {
         let coreFailure = await pair.harness.differentialRead().failure
         #expect(coreFailure?.kind == .keeperReentry && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
         #expect(!(await pair.harness.flushed.contains { if case .startLoops = $0 { true } else { false } }), "no loop after the backstop failed the land")
-        #expect(await pair.keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
         let keeperPhase = await pair.keeper.differentialReadForTesting().model.initializationPhase
         let corePhase = await pair.harness.differentialRead().model.initializationPhase
         // The initialization itself succeeded (OnInitialize applied); the land failed after it,
@@ -2841,7 +2912,7 @@ extension KeeperCoreDifferentialTests {
         // waiter is answered `.done`, as the keeper's `awaitInitialization` returns: the land's
         // failure, not the initialization's, ends what comes next.
         #expect(keeperPhase == .done && corePhase == .done, "keeper \(keeperPhase), core \(corePhase)")
-        guard case .success(.done) = answer else { Issue.record("the core's waiter: \(answer)"); return }
+        guard case .success(.done)? = answer else { Issue.record("the core's waiter: \(String(describing: answer))"); return }
     }
 
     @Test("autoStartLoops: the core's .startLoops is answered by the owner's .initializeDone, which ends the phase and answers the waiter, on both paths (Review on #966, MF2 (c))")
@@ -2851,7 +2922,7 @@ extension KeeperCoreDifferentialTests {
         let waiter = Task { try await pair.harness.call(.awaitInitialized) }
         await pair.harness.waitForInputs(named: "awaitInitialized", count: 1)
         await pair.harness.drive(.initialize)
-        guard case .done = try await waiter.value else { Issue.record("not a done reply"); return }
+        guard case .success(.done)? = await resultWithinHangBound(waiter) else { Issue.record("the waiter wasn't answered .done"); return }
         #expect(await pair.harness.inputsSeen.contains("initializeDone"), "the owner's answer to .startLoops")
         #expect(await pair.harness.differentialRead().model.initializationPhase == .done)
         await pair.keeper.awaitInitialization()

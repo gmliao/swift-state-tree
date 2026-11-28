@@ -985,6 +985,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// holds one of their awaits.
     struct LifecycleFlagsForTesting: Sendable, Equatable {
         var didInitialize: Bool
+        /// `InitializationPhase.applied`: OnInitialize set the state up. It differs from
+        /// `didInitialize` only in `.recording`, where the drain's `stateIsSetUp` reads it.
+        var initializationApplied: Bool
         var initializationFailed: Bool
         var destroyHandlersStarted: Bool
         var destructionFinished: Bool
@@ -997,6 +1000,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     func lifecycleFlagsForTesting() -> LifecycleFlagsForTesting {
         LifecycleFlagsForTesting(
             didInitialize: model.didInitialize,
+            initializationApplied: model.initializationApplied,
             initializationFailed: model.initializationFailure != nil,
             destroyHandlersStarted: model.destroyHandlersStarted,
             destructionFinished: model.destructionFinished,

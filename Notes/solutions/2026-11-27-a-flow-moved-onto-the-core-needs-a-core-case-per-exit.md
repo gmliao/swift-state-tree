@@ -8,6 +8,7 @@ symptoms:
   - "a differential case passes with the core's answer step removed, because the harness never sends the owner's reply"
   - "a race case run N times compares a finished keeper with a core still mid-job"
   - "a full or closed queue refuses the only input that answers a flow's waiters"
+  - "a stored flag made computed from a phase enum: mutants on the phase where the two differ survive the whole suite"
 root_cause: core_path_covered_by_its_happy_path_only
 resolution_type: design_rule
 severity: high
@@ -43,3 +44,5 @@ The owner's two sends, `.initialize` and `.initializeDone`, kept the default `.n
 - An owner send that is the only way to answer a flow's waiters is `.control`.
 - A doc that names an exception to an assert must make the exception not trap, or say that it traps. Round 1's `markDrainingForTesting` doc called itself "the one exception" to the OnJoin assert, which still trapped in debug. Round 2 makes the hook clear players and services in one turn, as every production drain start does. The only caller inside a turn body gets a flag-only hook, `setDrainFlagInBodyForTesting`, whose doc says why it can't reach that assert.
 - Before writing a twin's expectation from the review's wording, check the keeper's answer. T11's twin was asked to expect "the phase isn't `.done`", but on the keeper the initialization ends `.done` and the land fails after it. The case pins what both paths do.
+- When a stored flag becomes computed from a phase, list the phases where the old and the new value differ, and pin each one with a case that reads the flag there. Round 2 made #952's `initializationApplied` the computed `phase.applied`. It differs from `didInitialize` only in `.recording`, and no case ran a drain to its destroy handlers while the record was held: the keeper's T2b released the record first. So `applied` false for `.recording`, and `initializationApplied = didInitialize`, both survived. Round 3 holds the record until the failure's drain has finished, asserts the destroy handlers ran, and reads `applied && !didInitialize` at the hold on both paths.
+- A wait in a test whose call ignores cancellation is bounded by an event the task's end appends, not by a task group or the suite's time limit: either one waits for the child that never returns.

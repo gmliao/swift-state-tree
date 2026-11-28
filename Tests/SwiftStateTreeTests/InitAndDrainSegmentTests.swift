@@ -321,6 +321,7 @@ struct InitAndDrainSegmentTests {
         #expect(await keeper.currentState().log == ["init:1"])
         let held = await keeper.lifecycleFlagsForTesting()
         #expect(held.didInitialize == false)
+        #expect(held.initializationApplied, "OnInitialize applied before the record")
         #expect(held.tickLoopConfigured == false, "the loops start after the record")
 
         holds.gate.release()
@@ -331,28 +332,42 @@ struct InitAndDrainSegmentTests {
         await keeper.forceShutdown()
     }
 
-    @Test("T2b: a land that fails while its initialization is held at the record configures no loop, and its drain runs the destroy handlers: OnInitialize had applied")
+    @Test("T2b: a land that fails while its initialization is held at the record configures no loop, and its drain, finished while the record is still held, runs the destroy handlers: OnInitialize had applied (Review on #966)")
     func failedAtInitializeRecordStartsNoLoop() async throws {
         let (keeper, holds) = await keeperHeldAtInitializeRecord(tick: true)
         guard let holds else { return }
         defer { holds.release() }
+        // Held at the record: the one phase where `applied` (true) and `didInitialize` (false)
+        // differ, and the drain's `stateIsSetUp` reads `applied`.
+        let held = await keeper.lifecycleFlagsForTesting()
+        #expect(held.initializationApplied && !held.didInitialize, "held at the record: \(held)")
 
         await keeper.failLandForTesting(LandFailure(kind: .syncPlan, detail: "test", position: LandFailurePosition(stage: .syncPhase)))
         #expect(keeper.isDraining)
+        // The failure's staged teardown starts the drain; the test starts none of its own. The
+        // drain doesn't wait for the initialization (#946): it finishes while the record is
+        // still held. `waitUntilDrained` awaits the drain's task, which ignores cancellation:
+        // bound it on an event its end appends, as T12 does.
+        #expect(await withinHangBound { await keeper.waitUntilDrainStartedForTesting() }, "the failure's teardown never started")
+        let drained = EventLog()
+        Task {
+            await keeper.waitUntilDrained()
+            drained.append("drained")
+        }
+        guard await drained.waitFor("drained") else {
+            Issue.record("the drain didn't finish while the initialization was held at the record")
+            return
+        }
+        #expect(await keeper.lifecycleFlagsForTesting().destructionFinished, "the failure's teardown ended")
+        // OnInitialize applied before the record's hold: the state is set up, so the drain ran
+        // the destroy handlers on it (#946's `initializationApplied`, read in `.recording`).
+        let log = await keeper.currentState().log
+        #expect(log.contains { $0.hasPrefix("init:") }, "log \(log)")
+        #expect(log.contains { $0.hasPrefix("finalize:") }, "the drain skipped the destroy handlers of a land held at its record: \(log)")
 
         holds.gate.release()
         await keeper.awaitInitialization()
         #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false, "the drain began during the record: no loop")
-        // The failure's staged teardown starts the drain; the test starts none of its own.
-        #expect(await withinHangBound { await keeper.waitUntilDrainStartedForTesting() }, "the failure's teardown never started")
-        await keeper.waitUntilDrained()
-        #expect(await keeper.lifecycleFlagsForTesting().destructionFinished, "the failure's teardown ended")
-        #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
-        // OnInitialize applied before the record's hold: the state is set up, so the drain ran
-        // the destroy handlers on it (#946's `initializationApplied`, set in the apply's segment).
-        let log = await keeper.currentState().log
-        #expect(log.contains { $0.hasPrefix("init:") }, "log \(log)")
-        #expect(log.contains { $0.hasPrefix("finalize:") }, "the drain skipped the destroy handlers of an initialized land: \(log)")
     }
 
     @Test("T3: OnInitialize's resolver throws (.failLand) after the hold: the initialization fails and the waiting join gets landShuttingDown", arguments: [false, true])

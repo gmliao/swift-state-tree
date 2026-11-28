@@ -870,9 +870,9 @@ extension KeeperModel: TurnMachine {
 
 extension KeeperModel {
     /// The keeper's `performInitialization` loop on the core (K2-2 commit 1a), one request at a
-    /// time: an await becomes an effect whose result is the next input, and the turn of its own
-    /// becomes a queued input. The re-evaluation pair stays the keeper's (#612): a core keeper
-    /// is live.
+    /// time: an await becomes an effect whose result is the next input, and the finish, the
+    /// keeper's turn of its own, is a second step in the same handler (`.finish`), never a
+    /// queued input. The re-evaluation pair stays the keeper's (#612): a core keeper is live.
     mutating func initializeDrive(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, _ request: LandKeeper<State>.InitializeRequest) {
         switch request {
         case .checkReplayHeader, .runReplayBeforeTickZero:
@@ -898,7 +898,9 @@ extension KeeperModel {
             }
         case .startLoops:
             // The loops are the owner's until #762: it configures them, then sends
-            // `.initializeDone`.
+            // `.initializeDone`. `.land` is started before `.initialize` is sent, as for every
+            // other emit on it (`.syncDue`, `freezeStep`).
+            assert(turn.isLive(.land) || !store.assertsOnUnstartedLandKey, "KeeperModel: .startLoops emitted before .land was started")
             turn.emit(.startLoops, for: .land)
         case .done:
             answerInitializationWaits(behavior, store, &turn)
