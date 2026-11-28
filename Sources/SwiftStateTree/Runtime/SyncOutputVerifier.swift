@@ -403,14 +403,16 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             var replayedPatches: [String: [StatePatch]] = [:]
             for playerID in seeded.sorted(by: { SnapshotValue.utf8Less($0.rawValue, $1.rawValue) }) {
                 // Listed as unverified with a verifiable view: the output didn't address the
-                // player (its sessions ended before its clear). Replay checks what the server
-                // produced, so it is neither compared nor staged: its shadow view doesn't advance
-                // on a diff the server didn't make for it. A player unverified for its view's
-                // drops (`unverifiableViews`) was addressed: it is staged and apply-checked below,
-                // and only its hash is skipped. Limit: the record doesn't say which outputs addressed
-                // a player, so a degraded-seed player whose sessions then end is staged and
-                // apply-checked on its leave's output too, which didn't address it. Its clear
-                // follows that output and drops what was staged, so nothing later reads it.
+                // player (its sessions ended before its clear, or sync lag left all of them out,
+                // #572). Replay checks what the server produced, so it is neither compared nor
+                // staged: its shadow view doesn't advance on a diff the server didn't make for it.
+                // A player unverified for its view's drops (`unverifiableViews`) was addressed: it
+                // is staged and apply-checked below, and only its hash is skipped. Limit: the
+                // record doesn't say which outputs addressed a player, so a degraded-seed player
+                // whose sessions then end, or are paused by sync lag, is staged and apply-checked
+                // on those outputs too, which didn't address it. The pause ends in a resync's clear
+                // and the sessions' end in the leave's clear; either clear drops what was staged,
+                // so nothing later reads it.
                 if unverified.contains(playerID.rawValue), !unverifiableViews.contains(playerID),
                    !uncommitted.contains(playerID.rawValue) {
                     perPlayer.unverifiable += 1
