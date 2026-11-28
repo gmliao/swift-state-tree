@@ -248,6 +248,27 @@ On the keeper's path, #958 parks a continuation in `KeyedBarrierWaits<PlayerID>`
 | `cancel(player, id:)` returning false after a release | the hop finds the entry gone (stale); when it finds it, `handleWaitEnded(.withdrawn)` |
 | the keeper's `defer`, which ends the reservation and the arrival token on every exit | `handleWaitEnded` for `.withdrawn`, `.timedOut`, `.answered` and `.ended`, and the waiting step for a refusal: each ends the reservation with `&turn` |
 
+### 4.1 Revision (2026-11-28): the release is level-triggered
+
+The table's `release(player)` from the step that ends the leave is replaced by a rule read at every step's end. `endOfStep` calls `releaseEndedLeaveWaits`, which does `turn.release(where:)` with: release `.leaveEnd(player, generation: g)` when `leavesInFlight[player] != g`. #953's API is unchanged. The reasons:
+- The two steps that end a leave, its own (`endLeaveInFlight`) and the drain's start (`endAllLeavesInFlight`), both end in `endOfStep`. Neither can forget its release, and a new exit gets the release without its own call.
+- The key carries the leave's generation, so a wait is released only when its own leave's marker is gone or replaced.
+
+**Who writes the marker.** "Any other generation" is a leave end only if no write moves the generation without ending the leave. Every write to `leavesInFlight`, in `LandKeeper.swift` (the model's methods, shared by both paths):
+
+| Site | Write | A leave end? |
+|---|---|---|
+| the leave's start (`leaveBegin`, before `.runOnLeaveResolvers`) | `nil → g`, after `assert(leavesInFlight[p] == nil)` | No, but it starts from nil: no wait on the player's earlier generation can still be keyed to a live marker |
+| `endLeaveInFlight` (OnLeave's append, its drop, its resolvers' failure) | `g → nil`, only when the marker is `g` | Yes, its own generation's |
+| `endAllLeavesInFlight` (the drain's start: `failLand`, `completeShutdownTurn`, `shutdownIfIdle`) | all → nil | Yes, every one |
+| the core twin's copy (`coreTwinForTesting`) | the source's value, before the core starts | Not a write in flight |
+
+No write takes `g1 → g2` directly; a new generation only follows a nil. So a key that no longer matches means its leave ended, and the rule's "another generation" is safe.
+
+**The open case for b3.** b3 is the mutant that keys the rule on the player only (`leavesInFlight[p] == nil`). It differs from the rule only when one step ends `g1` and starts `g2` for the same player: the marker reads `g2` at the step's end, and the `g1` wait would stay parked. Whether a step can do that is the question. A tickless batch would need the leave's append and a new leave of the same player, which needs a new entry, so a join applied in between, while the waiting join holds the player's rejoin reservation. The probe: a batch `[leave append of g1, join p, leave p]` with a join parked on `g1`. If it can be built, it is b3's killer. If the reservation refuses the batch's join, the probe output says so, and b3 is equivalent by this table.
+
+**b7's killer.** A rejoin that arrives after the core ended (`wait` refuses with `.ended`) gets `JoinError.landShuttingDown`. The case reads the error's type, not only a failure.
+
 This adopter moves after #958 merges and the barrier lands, in one commit that reruns #958's tests unchanged. The keeper's own path keeps `KeyedBarrierWaits` until K2-3 deletes that path.
 
 ## 5. Order and tests
