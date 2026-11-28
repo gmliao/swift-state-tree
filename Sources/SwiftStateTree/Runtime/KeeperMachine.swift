@@ -1571,6 +1571,9 @@ extension KeeperModel {
                     // The keeper's `awaitLeaveEnd`: a join already cancelled never registers.
                     finishJoin(behavior, store, &turn, .failure(CancellationError()), decided: made, caller: caller)
                 case .refused(_, .ended):
+                    // Unreachable until the core is first ended: only `Turn.endAll()` makes `wait`
+                    // refuse `.ended`, and the keeper's model calls none before commit 4's owner
+                    // teardown. The keeper's answer stays (barrier plan §4.1, b7).
                     finishJoin(behavior, store, &turn, .failure(JoinError.landShuttingDown), decided: made, caller: caller)
                 case .refused(_, .noWaiter), .expired:
                     // Its caller has no waiter (a pre-cancelled `.control`, or answered): no reply,
@@ -1807,6 +1810,10 @@ extension KeeperModel {
         for wait in released {
             switch wait.payload {
             case let .joinAfterLeave(decided, leavingGeneration, syncsInTurn):
+                // Barrier plan §4.1's invariant: no step ends a player's leave and starts a newer
+                // one, since the newer leave needs an entry only this released join can insert.
+                // So a released wait's player has no marker left (b3 is equivalent by it).
+                assert(inFlight[decided.playerID] == nil, "a newer leave of \(decided.playerID.rawValue) began in the step that ended generation \(leavingGeneration)")
                 let cancelledWhileWaiting = wait.cancelled
                 joinDrive(behavior, store, &turn, call: decided.call, caller: wait.caller, syncsInTurn: syncsInTurn, decided: decided) { m, side, outputs in
                     // The keeper's order after the wait: the drain first, then the cancel, then J2c.
@@ -1830,6 +1837,9 @@ extension KeeperModel {
             case .withdrawn, .answered:
                 finishJoin(behavior, store, &turn, .failure(CancellationError()), decided: decided, caller: nil)
             case .ended:
+                // Unreachable until the core is first ended (`Turn.endAll()`, commit 4's owner
+                // teardown): no wait ends `.ended` before then. The keeper's answer stays (barrier
+                // plan §4.1, b6).
                 finishJoin(behavior, store, &turn, .failure(JoinError.landShuttingDown), decided: decided, caller: ended.caller)
             case .timedOut:
                 preconditionFailure("K2-2: a join's leave wait has no timeout")

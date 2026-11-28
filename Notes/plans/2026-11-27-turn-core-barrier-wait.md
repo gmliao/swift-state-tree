@@ -265,19 +265,19 @@ The table's `release(player)` from the step that ends the leave is replaced by a
 
 No write takes `g1 → g2` directly; a new generation only follows a nil. So a key that no longer matches means its leave ended, and the rule's "another generation" is safe.
 
-**b3 is equivalent by this table.** b3 keys the rule on the player only (`leavesInFlight[p] == nil`). It differs from the rule only when one step ends `g1` and starts `g2` for the same player. Then the marker reads `g2` at the step's end, and the `g1` wait stays parked. No step can do that:
+**The invariant, and b3.** No step ends a player's leave `g1` and starts a newer leave `g2` for that player. A leave of `g2` needs an entry of `g2`, and the only join that can insert one is the join waiting on `g1`, released at the end of the step that ended `g1`. `releaseEndedLeaveWaits` pins it: it asserts that a released wait's player has no marker left. b3 is equivalent by this invariant. b3 keys the rule on the player only (`leavesInFlight[p] == nil`). It differs from the rule only when one step ends `g1` and starts `g2` for the same player. Then the marker reads `g2` at the step's end, and the `g1` wait stays parked. No step can do that:
 - A leave of `g2` needs an entry of `g2`, so a join of the player applied after `g1`'s end.
 - A join of the player that steps while `g1` is in flight waits on `g1` (J2b/J2c), or its reservation refuses it. So the only join that can insert the new entry is a waiting one.
 - A waiting join is released at the end of the step that ended `g1` (`endOfStep`), and its J2c inserts the entry there.
 - A leave of the new entry is an input of its own, so it begins in a later step, whose end sees the marker `g2` with no wait on `g1` left.
 
-So no case can tell b3 from the rule, and the run reports it as equivalent.
+So no case can tell b3 from the rule. The mutant table lists it as "equivalent by §4.1's invariant".
 
 **b6 and b7 can't be reached in this commit.** `wait` refuses `.ended`, and a registered wait ends `.ended`, only after `Turn.endAll()`. That is a step's own call, and the keeper's model makes none in K2-2 commit 1b. The owner's teardown (commit 4) is the first to end the core. Until then:
 - the `.refused(_, .ended)` arm in the join's driver (b7) can't run, because a step on an ended core is a completion or control input, and no join reaches `.awaitLeave` then;
 - `handleWaitEnded(.ended)` (b6) can't run either.
 
-Both arms keep the keeper's answer (`landShuttingDown`, as `awaitLeaveEnd` after the drain). Their cases come with the commit that first calls `endAll()`: a rejoin that waits when the core ends, and a join's resolver completion that reaches `.awaitLeave` after it. Both read the error's type.
+Both arms keep the keeper's answer (`landShuttingDown`, as `awaitLeaveEnd` after the drain). Each arm has a comment saying why it's unreachable now. Their cases, named in the K2-2 plan's §13.6, come with the commit that first calls `endAll()`: a rejoin that waits when the core ends, and a join's resolver completion that reaches `.awaitLeave` after it. Both read the error's type.
 
 This adopter moves after #958 merges and the barrier lands, in one commit that reruns #958's tests unchanged. The keeper's own path keeps `KeyedBarrierWaits` until K2-3 deletes that path.
 
