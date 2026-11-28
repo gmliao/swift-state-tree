@@ -149,6 +149,8 @@ enum ModelHoldsLint {
         "tearDownAfterFailedInitialization": "the failed initialization's teardown in the step that failed it: the clears and the drain start as a step",
         "releaseEndedLeaveWaits": "the barrier's leave waits (#953), released at a step's end: each released join's J2c as the join's driver",
         "handleWaitEnded": "a barrier wait that ended without a release: the join's reservation and token end as a step (#953)",
+        "admitStop": "a stop after the initialization: answered at once once the flight returned or the drain finished, else joined, and the first begins it as a step (MF1, MF4)",
+        "endOfStep": "every step's end, an input's and a query's: the held intakes, the failure teardown, the stop's resume, the dropped waits, the job starts and the freeze replies (Review r1 on #969, MF2)",
     ]
     static let sideStoreFramePath = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
 
@@ -1754,7 +1756,7 @@ struct ModelHoldsLintTests {
         // renamed one can't leave a stale exception.
         let frame = Set(report.holders.filter { $0.path == ModelHoldsLint.sideStoreFramePath && !$0.name.contains(" body in ") }.map(\.name))
         #expect(Set(ModelHoldsLint.sideStoreFrame.keys).isSubset(of: frame), "frame members missing: \(Set(ModelHoldsLint.sideStoreFrame.keys).subtracting(frame).sorted())")
-        #expect(ModelHoldsLint.sideStoreFrame.count == 39, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
+        #expect(ModelHoldsLint.sideStoreFrame.count == 41, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
         #expect(report.holders.contains { $0.path == drivers && $0.name == "tickStart" },
                 "holders in \(drivers): \(report.holders.filter { $0.path == drivers }.map(\.name))")
         // Each family of closure holders is found: every member that gives a closure the model

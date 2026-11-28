@@ -544,6 +544,9 @@ enum StopPhase: Equatable, Sendable {
     case recording
     /// The drain runs (or one already running is joined); `.drainFinished` answers the callers.
     case draining
+    /// The stop's flight returned (its drain finished, or it found players and ran none): a
+    /// later stop is answered at once, as the keeper's finished `SingleFlight` returns.
+    case ended
 }
 
 /// The initialization's flow, one case per await between its segments (K2-2 commit 1a). The

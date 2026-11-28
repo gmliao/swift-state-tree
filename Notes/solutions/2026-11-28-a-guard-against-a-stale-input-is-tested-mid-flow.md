@@ -32,9 +32,9 @@ related:
 - the drain flag is set and `.drainStart` is sent, so the drain parks at `.waitingForTick` with the port still attached;
 - then the stale `.syncDue` and `.tickDue` arrive, and the case checks the port trace is empty and the digest unchanged.
 
-The sync guard's mutant now fails 5/5 at the trace check. The tick guard's mutant is equivalent here: `tickStart`'s drain check also stops the stale tick, which the case's comment states.
+The sync guard's mutant now fails 5/5 at the trace check. The tick guard's mutant survives this case, because `tickStart`'s drain check also stops a stale tick on a draining tick land. That doesn't make it equivalent: review found two places where only the epoch stops it. One is an open tick land after `.startLoops` moved the epoch. The other is a draining tickless land, whose tick step never calls `tickStart`. `staleTickDueOnAnOpenLand` covers the first.
 
 **Prevention.**
 - A case for a guard against a stale or late input holds the flow at the point where the input can really arrive. Hold it with a hold point or a gate, while the effect the guard prevents can still happen. Here that effect is a port call, a counter, or a state write.
-- Before naming a case for a guard, remove the guard by hand and run the case. A survivor means the case doesn't test the guard. Either move the case into the flow, or state why the mutant is equivalent (another check stops the input first).
+- Before naming a case for a guard, remove the guard by hand and run the case. A survivor means the case doesn't test the guard. Either move the case into the flow, or state why the mutant is equivalent. Equivalent means another check stops the input in every state where it can arrive, not only in the one the case builds.
 - Related: [Force the interleaving with hold points, not timing](2026-11-05-hold-points-not-timing-in-race-tests.md), and [A flow moved onto the core needs a core case per exit](2026-11-27-a-flow-moved-onto-the-core-needs-a-core-case-per-exit.md).
