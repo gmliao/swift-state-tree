@@ -874,9 +874,11 @@ extension KeeperModel: TurnMachine {
             resumeStopAfterShutdownTurn(behavior, store, &turn)
         } while releaseEndedLeaveWaits(behavior, store, &turn)
         answerDroppedCoreInputWaits(behavior, store, &turn)
-        makeStagedSyncFollowUps(behavior, store, &turn)
+        let closesIntake = makeStagedSyncFollowUps(behavior, store, &turn)
         runCoreJobEffects(store, &turn)
         answerCoreFreezeWaits(&turn)
+        // Tests only: the close comes last, after the step's cancels, requests and freeze replies.
+        if closesIntake { turn.close() }
     }
 
     /// `debugFreeze`'s decision as a step (K2-2 plan, commit 2): a released generation answers
@@ -1260,7 +1262,8 @@ extension KeeperModel {
     /// request under `.land`, and cancels the open writer-drain requests a port attach left
     /// waiting on the old port. A request the core can't make (`.land` not live) is undone: its
     /// slot or binding cleared and its work ended, as an abandonment would.
-    mutating func makeStagedSyncFollowUps(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+    /// Returns the test-only intake close, which `endOfStep` makes last.
+    mutating func makeStagedSyncFollowUps(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) -> Bool {
         let (staged, cancels, closes): ([(UInt64, KeeperCoreSyncFollowUp)], [RequestID], Bool) = store.withSide { side in
             // The test-only close, read in this borrow so it costs a step's end nothing more.
             let closes = side.coreInputReplies.closesIntakeForTesting
@@ -1274,7 +1277,6 @@ extension KeeperModel {
             side.coreInputReplies.stagedSyncFollowUps.removeAll()
             return (ids.compactMap { id in side.coreInputReplies.syncFollowUps[id].map { (id, $0) } }, cancels, closes)
         }
-        if closes { turn.close() }
         for request in cancels { turn.cancel(request) }
         for (id, record) in staged {
             if let request = turn.request(.syncFollowUp(id: id, record.kind, port: record.followUp.port), for: .land) {
@@ -1285,6 +1287,7 @@ extension KeeperModel {
                 store.withSide { side in endSyncFollowUp(&side, id: id) }
             }
         }
+        return closes
     }
 
     /// Ends a follow-up whose request was abandoned or never made: its record leaves, and the

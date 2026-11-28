@@ -1333,6 +1333,24 @@ private func keeperJoin(_ pair: CoreDiffPair, _ player: String, _ client: String
     }
 }
 
+/// Runs `step`, a step that fails the land, with the teardown the failure starts held, then
+/// `read` while it is held, then releases it. Unheld, the harness's `.failureTeardown` task
+/// drives `.drainStart`, and `.drainFinished` can store the released stand-in (or the drain
+/// change other state) before the read (Review r2 on #990, MF).
+private func readHoldingFailureTeardown<R>(
+    _ pair: CoreDiffPair,
+    step: () async -> Void,
+    read: () async throws -> R,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async rethrows -> R? {
+    let hold = WatermarkGate()
+    pair.harness.armedFailureTeardownGate.arm(hold)
+    defer { hold.release() }
+    await step()
+    guard await hold.waitUntilEntered("the failure's teardown", sourceLocation: sourceLocation) else { return nil }
+    return try await read()
+}
+
 private func coreJoin(_ pair: CoreDiffPair, _ player: String, _ client: String, admitThroughTransport: Bool = false) async -> CoreDiffJoinResult {
     let call = KeeperJoinCall(session: session(player), clientID: ClientID(client), sessionID: SessionID(client), services: LandServices(), admitThroughTransport: admitThroughTransport)
     do {
@@ -4283,8 +4301,9 @@ struct KeeperCoreSetTransportTests {
         let source = try #require(pair.source)
         let corePort = CoreDiffTraceTransport(CoreDiffTrace())
         corePort.armWitnessReentry(source)
-        await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
-        let after = await pair.harness.differentialRead()
+        guard let after = await readHoldingFailureTeardown(pair, step: {
+            await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
+        }, read: { await pair.harness.differentialRead() }) else { return }
         #expect(after.failure?.kind == .keeperReentry, "\(String(describing: after.failure))")
         #expect(after.attachedTransport == "-" && !after.attachedSyncsInTurn, "\(after.attachedTransport)")
         #expect(corePort.witnessCount == 1)
@@ -4344,10 +4363,12 @@ struct KeeperCoreAdmissionTests {
         let source = try #require(pair.source)
         corePort.admission = .admitted
         corePort.armAdmissionReentry(source)
-        let core = await coreJoin(pair, "p1", "c1", admitThroughTransport: true)
-        guard case let .failed(error) = core else { Issue.record("the join wasn't refused: \(core)"); return }
+        var core: CoreDiffJoinResult?
+        guard let read = await readHoldingFailureTeardown(pair, step: {
+            core = await coreJoin(pair, "p1", "c1", admitThroughTransport: true)
+        }, read: { await pair.harness.differentialRead() }) else { return }
+        guard case let .failed(error)? = core else { Issue.record("the join wasn't refused: \(String(describing: core))"); return }
         #expect(error.contains("landShuttingDown"), "\(error)")
-        let read = await pair.harness.differentialRead()
         #expect(read.failure?.kind == .keeperReentry, "\(String(describing: read.failure))")
         #expect(read.model.players.isEmpty, "\(read.model.players.keys)")
     }
@@ -4659,9 +4680,11 @@ extension KeeperCoreDifferentialTests {
         }
         await pair.keeper.setTransport(keeperPort)
         #expect(await pair.keeper.differentialReadForTesting().failure == nil, "the keeper's depth-zero attach allows the callback")
-        await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
+        guard let stored = await readHoldingFailureTeardown(pair, step: {
+            await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
+        }, read: { await pair.harness.differentialRead().attachedTransport }) else { return }
+        #expect(stored == "-", "the refused attach stored no port: \(stored)")
         await expectTerminalThenTurnEnd(pair, tracker)
-        #expect(await pair.harness.differentialRead().attachedTransport == "-", "the refused attach stored no port")
     }
 
     @Test("A re-entering joins read in a tickless requestJoinSyncTurn: the refused read ends the turn record once, after the failure's record (Review r1 on #990, should 1)")

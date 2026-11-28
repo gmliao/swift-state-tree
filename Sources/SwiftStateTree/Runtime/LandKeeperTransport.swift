@@ -92,8 +92,9 @@ public protocol LandKeeperTransport: Sendable {
     ///
     /// The answer must not change while the transport stays attached (the adapter's is fixed
     /// by identity). A keeper asks it in its turns, including at each sync follow-up's wake; a
-    /// turn core asks it once, at the attach, and keeps the answer (K2-2 commit 3), so an answer
-    /// that changed would make the two diverge.
+    /// turn core asks it at the attach and keeps the answer for its stored binding (K2-2
+    /// commit 3), so an answer that changed would make the two diverge. A sync turn the caller
+    /// hands a port to (`.syncTurnTicket`, `.syncTurnNow`) still asks that port.
     ///
     /// A live keeper also asks it at the attach (`init(transport:)`, `setTransport(_:)`): `false`
     /// there stops the process, because a live keeper syncs only in its turns (#546 L2d). No

@@ -27,3 +27,5 @@ related:
 **Fix.** Arm a second hold after A's wake entered and before `.syncTurnNow`, so B's wake is held too. Read with both held, then release B and go on as before.
 
 **Prevention.** Before you add a read that a later step could move, list every worker or wake that can change that value, and hold each of them at the read. A value only one step can change can be read right after that step, because `drive` steps on the actor before it returns. A mutant that dies on a racy read doesn't prove the read is sound: check the read against the correct code's interleavings too.
+
+A failing step is a worker source too. The failure starts a teardown in its own task, which drives the drain, and the drain's end replaces the port with the released stand-in. A snapshot of the attached port read right after a step that failed the land therefore raced it (r2 on #990, in two tests). Hold the teardown the failure starts (the harness's `armedFailureTeardownGate`), wait until it enters, read, then release it.
