@@ -1,5 +1,7 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
+Revision 12 (2026-11-28): Review's GO on rev 11, with one should: the evidence that 4d-1's two new refusals can't fire for today's adapter. Also Main's correction: 4d-5's E2E gate covers all four configurations, not three.
+
 Revision 11 (2026-11-28): Review's NOT GO on rev 10 §15 (1 MF, 2 shoulds). One production cutover, in a named commit (4d-5): until then `KeeperOwner` and the facade are test-only and unwired, so no land has two state owners. 4d gets a per-entry table (entry, step-only check, replay branch). 4c's test hooks are named with their cost, and they live in one registry.
 
 Revision 10 (2026-11-28): §15, commit 4's facade as sub-commits and two PRs (Main, 2026-11-28). 4c goes code-first.
@@ -699,7 +701,7 @@ When `isStepping` is true, the facade's `setTransport` increments `reentryViolat
   - 4d-2: the joins and the leaves, with §14.1's adapter case. The adapter's supersede records its clear on a live keeper.
   - 4d-3: the actions and the server inputs, with the `.serverInput` facade contract.
   - 4d-4: freeze and debug, shutdown and drain, the initialization and the barriers.
-  - **4d-5, the cutover (rev 11, Review's MF).** Until this commit, `KeeperOwner` and the facade are built and tested but unwired: a live `LandKeeper` keeps its own path for every entry, and only tests construct the facade. Routing some entries to the core while others stay on the actor would give a land two state owners. 4d-5 makes the switch in one commit: a live keeper is built as `.live(LiveLandTurns)` and every entry forwards. It is gated by the differential, the full suite, and the E2E on all three encodings plus the reevaluation E2E (0 mismatch), run on CI or off the Mac. Its mutants each route one entry back to the actor's path. Each PR before it says so in its body: "This PR doesn't change production behavior".
+  - **4d-5, the cutover (rev 11, Review's MF).** Until this commit, `KeeperOwner` and the facade are built and tested but unwired: a live `LandKeeper` keeps its own path for every entry, and only tests construct the facade. Routing some entries to the core while others stay on the actor would give a land two state owners. 4d-5 makes the switch in one commit: a live keeper is built as `.live(LiveLandTurns)` and every entry forwards. It is gated by the differential, the full suite, and the E2E in all four configurations (`json`, `opcodeJsonArray`, `messagepack`, and #979's opcode configuration; rev 12 corrects rev 11's "three") plus the reevaluation E2E (0 mismatch), run on CI or off the Mac. Its mutants each route one entry back to the actor's path. Each PR before it says so in its body: "This PR doesn't change production behavior".
   - The facade lint goes live with the file that declares `KeeperOwner`.
   - **The per-entry table (rev 11, Review's should 1).** Each 4d commit adds rows for the entries it forwards, and a review checks the table against the code. A lint marker is optional. 4d-1's rows, read at the commit-4 branch after #990:
 
@@ -712,6 +714,10 @@ When `isStepping` is true, the facade's `setTransport` increments `reentryViolat
     | `requestJoinSyncTurn` | none: it reads `hasJoinsAwaitingSync`, then sends | `isStepping`, else the refusal (the read is a port call during the step) | the replay owner's path |
 
     `syncTurnTicket` and `requestJoinSyncTurn` have no guard on the keeper today. On the facade they get one, because a call from inside a step reaches the core during the step. A case pins each one's refusal, and the keeper's twin answers by its own path. That is a stated contract change, as commit 3's were.
+
+    **Why the change can't fire for today's adapter (rev 12).** Every production caller awaits these entries from a Task or an async function, never synchronously inside a port callback. So `isStepping` is false at each call, and the new refusal never fires for the adapter as it is. Read at the commit-4 branch after #990, in `TransportAdapter.swift`:
+    - `syncTurnTicket`: `startDelayedFollowUpSync` (~3269) calls it inside `startBackgroundSync`'s Task, and `runSyncLagTimerSync` (~3572), an `async` function, awaits it.
+    - `requestJoinSyncTurn`: `performJoinQueued` (~2366, `async throws`) and `debugResumeInTurn` (~6551, `async`) await it.
 - **4e, the drivers.** The loop Tasks send `.tickDue` and `.syncDue`. A stale tick's epoch is the keeper's existing loop generation; 4e names the field after reading the loop code at its base.
 - **4f, the sentinel** moves into `KeeperBehavior` as its one reference field (K2 §4.2 (a)), and the behavior lint lists it.
 - **4g, the census** gets its `live.` group. `coreTwinForTesting` and the differential read are rewritten against the facade.
