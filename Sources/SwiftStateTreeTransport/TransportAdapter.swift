@@ -3357,6 +3357,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         plan.syncLag.resyncPlayers = resyncPlayers
         plan.digest?.resyncPlayers = resyncPlayers
+        if plan.digest != nil, kept.count != recipients.count {
+            // A player none of whose sessions is kept gets nothing from this plan (#572).
+            let keptPlayers = Set(kept.map(\.playerID))
+            plan.digest?.withheldPlayers = Set(recipients.map(\.playerID)).subtracting(keptPlayers)
+        }
         planResyncPlayers = resyncPlayers
         // The events this plan consumes for a session it leaves out are lost to that session:
         // counted (its targeted ones and its share of the broadcast ones).
@@ -3947,14 +3952,18 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
                     patches = scopes
                 }
-                // Replay checks what this output produced: a player with a view it doesn't address,
-                // because the player's sessions ended before its clear (the leave's own turn), is
-                // listed as unverified, as one whose view isn't verifiable is.
+                // Replay checks what this output produced: a player with a view it doesn't address
+                // is listed as unverified, as one whose view isn't verifiable is. It isn't
+                // addressed when its sessions ended before its clear (the leave's own turn), or
+                // when sync lag left out every one of them (#572; the pause ends in a resync's
+                // clear and seed, or in the leave's clear).
                 let recipients = Set(digest.recipients)
                 let departed = syncStreamViewPlayers.filter {
                     !recipients.contains($0) && digest.seeds[$0] == nil && membershipCoordinator.sessionIDs(for: $0).isEmpty
                 }
-                let unverified = digest.recipients.filter { syncStreamUnverifiedPlayers.contains($0) } + Array(departed)
+                let withheld = digest.withheldPlayers.filter { syncStreamViewPlayers.contains($0) && digest.seeds[$0] == nil }
+                let unverified = digest.recipients.filter { syncStreamUnverifiedPlayers.contains($0) }
+                    + Array(departed.union(withheld))
                 perPlayerUnverified = unverified.isEmpty ? nil : SyncStreamCanonical.sortedIDs(unverified)
                 perPlayerUncommitted = digest.uncommitted.isEmpty ? nil : SyncStreamCanonical.sortedIDs(Array(digest.uncommitted))
             }

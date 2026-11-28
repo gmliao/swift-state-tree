@@ -207,6 +207,10 @@ struct SyncOutputDigestInput {
     /// Players this plan resyncs in place (#332). Their seeds follow a clear in the stream, as
     /// a reconnect's do: the verifier drops the view it had for them before the output.
     var resyncPlayers: Set<PlayerID> = []
+    /// Players every session of which sync lag left out of this plan (pending, newly or still,
+    /// or a close due), #572: the plan has no per-player entry for them, so the output lists them
+    /// in `perPlayerUnverified` and replay doesn't compare or stage them there.
+    var withheldPlayers: Set<PlayerID> = []
     /// Opcode 107: the events the plan consumed, in emit order; nil in the other encodings or
     /// when one of them has no canonical form.
     var events: [CanonicalSyncEvent]?
