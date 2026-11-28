@@ -2439,8 +2439,7 @@ extension KeeperCoreDifferentialTests {
     }
 
     // TODO(1b), the cases plan §13 lists, each held with hold points (they need a build to
-    // settle the harness gates): tickLandFreezeWaitsForTheRecord (§13.1),
-    // staleTickDueAfterDrainStart (§13.1), ticklessRecordInFlightAtDrainStart (§13.2.1),
+    // settle the harness gates): staleTickDueAfterDrainStart (§13.1), ticklessRecordInFlightAtDrainStart (§13.2.1),
     // shutdownDropsQueuedLeave512 (P11-1), shutdownWhileFrozenDropsHeldIntakes (P11-2), K2-1b's
     // drain hold cases one per await, and teardownWaitsForTheFailingTurn on the core path.
 
@@ -2469,13 +2468,18 @@ extension KeeperCoreDifferentialTests {
         #expect(await pair.harness.differentialRead().model.ticksInFlight == 1)
         let keeperFreeze = Task { await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(30)) }
         let coreFreeze = Task { try await pair.harness.call(.freeze(generation: 1, timeout: .seconds(30))) }
-        // TODO(1b): pin "not answered before the release" with a hold, not a read race.
+        // Not answered before the release, by events, not a read race: the keeper's caller
+        // registered as waiting for the work, and the core's `.freeze` stepped and left its
+        // caller parked behind the held tick.
+        #expect(await pair.keeper.waitUntilFreezeWaitsForTesting(), "the keeper's freeze answered without waiting for the held tick")
+        await pair.harness.waitForInputs(named: "freeze", count: 1)
+        let parked = await pair.harness.differentialRead().model.coreBarrierWaits.freeze[1]?.count
+        #expect(parked == 1, "the core's freeze answered without waiting for the held tick: \(String(describing: parked))")
         keeperHold.release()
         coreHold.release()
-        #expect(await keeperFreeze.value)
-        let answer = try await coreFreeze.value
-        guard case .frozen(true) = answer else { Issue.record("the core's freeze: \(answer)"); return }
-        await keeperTick.value
+        #expect(await valueWithinHangBound(keeperFreeze) == true)
+        guard case .success(.frozen(true))? = await resultWithinHangBound(coreFreeze) else { Issue.record("the core's freeze wasn't answered true"); return }
+        guard await valueWithinHangBound(keeperTick) != nil else { Issue.record("the keeper's tick never ended"); return }
         await pair.expectSame("after the record")
     }
 
