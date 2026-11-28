@@ -30,8 +30,11 @@ struct KeeperCoreBarrierWaits: Sendable, Equatable {
     var freeze: [UInt64: [InputID]] = [:]
     /// Callers waiting for the initialization (its closed case is answered in commit 1).
     var initialized: [InputID] = []
+    /// The drain's callers (a `.shutdown`, and a second one that joins it): answered by
+    /// `.drainFinished`'s step (K2-2 commit 1b).
+    var drained: [InputID] = []
 
-    var isEmpty: Bool { freeze.isEmpty && initialized.isEmpty }
+    var isEmpty: Bool { freeze.isEmpty && initialized.isEmpty && drained.isEmpty }
 }
 
 /// Who an entry speaks for: the three identities every player entry takes.
@@ -64,11 +67,13 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// A tick is due. `syncsInTurn`: the driver's read of whether the attached transport runs
     /// the sync phase in turn (the keeper's `syncsInTurn`), made outside the step as `runTick`
     /// makes it outside its body; K2-2's binding token carries it.
-    case tickDue(fold: PendingFold?, foldStart: ContinuousClock.Instant?, syncsInTurn: Bool)
+    /// `epoch`: the `loopEpoch` the owner's loop Task captured (plan §13.1); one that isn't
+    /// current is a no-op. Nil: a driver without loops (the tests' `drive`), never stale.
+    case tickDue(fold: PendingFold?, foldStart: ContinuousClock.Instant?, syncsInTurn: Bool, epoch: UInt64? = nil)
     /// The sync loop is due, with the driver's reads made outside the step, as `runSync` makes
     /// them: `now`, the tick loop's next deadline (nil without a tick loop), whether a fold is
     /// already pending (the driver holds `pendingFold`), and `syncsInTurn` (see `.tickDue`).
-    case syncDue(now: ContinuousClock.Instant, tickDeadline: ContinuousClock.Instant?, foldPending: Bool, syncsInTurn: Bool)
+    case syncDue(now: ContinuousClock.Instant, tickDeadline: ContinuousClock.Instant?, foldPending: Bool, syncsInTurn: Bool, epoch: UInt64? = nil)
     case freeze(generation: UInt64, timeout: Duration)
     case resume(generation: UInt64)
     case shutdown
@@ -107,7 +112,18 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     case initializeRecorded
     /// The owner configured its loops (`.startLoops`): the two flags it read.
     case initializeDone(tickLoopConfigured: Bool, syncLoopConfigured: Bool)
-    case destroyHandlerResolved(index: Int, Result<[String: HeldResolverOutput], any Error>)
+    /// The destroy drain (K2-2 commit 1b). `.drainStart`: the owner held the drain's start and
+    /// cancelled its loops (M7); the step runs `drainBegin`. A destroy handler's resolvers
+    /// returned, with the step `nextDestroyStep` built (closures, a context: never the model's).
+    case drainStart
+    case destroyHandlerResolved(LandKeeper<State>.DestroyHandlerStep, Result<LandContext, any Error>)
+    /// AfterFinalize returned (its outputs dropped, #893).
+    case afterFinalizeReturned
+    /// A tick land's tick record was taken by the recorder: the tick's in-flight work ends here,
+    /// not in the tick's step (the tick-record hold, plan §13.1).
+    case tickRecordTaken(tickId: Int64)
+    /// The stop's shutdown turn record was taken (plan §13.3).
+    case shutdownRecorded
     /// A tickless input turn's record was taken by the recorder: its callers resume with the
     /// results the effect carried (K2-2 plan, item 15).
     /// `endsTickWork`: the drain was a tick's, whose in-flight work ends with it.
@@ -115,6 +131,7 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// An input drain a flow's wait scheduled (the keeper's `scheduleInputDrain` task), queued
     /// behind `.land`.
     case inputDrainDue
+    /// `onLandDestroyed` returned (`.notifyTransport`'s run).
     case drainFinished
     /// The owner starts `.land` at initialization, which a step's outputs for it need (K2-1: the
     /// test harness's start; K2-2: the core's initialization).
@@ -134,12 +151,11 @@ enum KeeperInputRoutes {
         .freeze, .resume, .awaitInitialized, .freezeTimedOut,
         .syncStreamDraft,
         .initialize, .initializeResolved, .initializeRecorded, .initializeDone,
+        .shutdown, .drainStart, .destroyHandlerResolved, .afterFinalizeReturned, .drainFinished,
+        .tickRecordTaken, .shutdownRecorded,
     ]
-    static let deferred: [KeeperInputRoute: String] = [
-        .shutdown: "K2-2 commit 1b: it ends in the destroy drain (plan §11.1)",
-        .destroyHandlerResolved: "K2-2 commit 1b: the destroy drain on the core (plan §11.2)",
-        .drainFinished: "K2-2 commit 1b: the destroy drain on the core (plan §11.2)",
-    ]
+    /// Empty since K2-2 commit 1b: every input is routed.
+    static let deferred: [KeeperInputRoute: String] = [:]
 }
 
 /// Each `KeeperQuery` case by name, as `KeeperInputRoute` is for the inputs.
@@ -170,7 +186,7 @@ extension KeeperQuery {
 /// Each `KeeperInput` case by name: `route` is exhaustive, so a new case needs a route here, and
 /// the census checks that every route is routed or deferred.
 enum KeeperInputRoute: String, CaseIterable, Sendable {
-    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut
+    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut, drainStart, afterFinalizeReturned, tickRecordTaken, shutdownRecorded
 }
 
 extension KeeperInput {
@@ -203,6 +219,10 @@ extension KeeperInput {
         case .drainFinished: .drainFinished
         case .startLand: .startLand
         case .freezeTimedOut: .freezeTimedOut
+        case .drainStart: .drainStart
+        case .afterFinalizeReturned: .afterFinalizeReturned
+        case .tickRecordTaken: .tickRecordTaken
+        case .shutdownRecorded: .shutdownRecorded
         }
     }
 
@@ -331,9 +351,6 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
     /// wait continues the join (J2c), so it waits for #953's barrier, whose payload release
     /// hands the join back (its plan's §5, the first adopter).
     case joinAwaitingLeaveInFlight
-    /// A tick land's freeze: it answers from the work count, and the core doesn't yet hold the
-    /// tick's count across its record's submission, as the keeper does (Review on #948).
-    case tickLandFreeze
 
     /// The message the refusal carries and `refusals` records.
     var message: String {
@@ -341,7 +358,6 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
         case .joinSyncingInTurn: "a join syncing in the turn needs the binding token (K2-2)"
         case .ticklessLandWithTransport: "a tickless land with a transport needs the binding token (K2-2)"
         case .joinAwaitingLeaveInFlight: "a join waiting for a leave in flight needs the core's barrier wait (#953)"
-        case .tickLandFreeze: "a tick land's freeze needs the tick record's hold (K2-2 commit 1)"
         }
     }
 
@@ -350,7 +366,6 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
         switch self {
         case .joinSyncingInTurn, .ticklessLandWithTransport: "K2-2 commit 3: the binding token"
         case .joinAwaitingLeaveInFlight: "K2-2 commit 4's precondition: #953's barrier wait, its first adopter, before the cut-over"
-        case .tickLandFreeze: "K2-2 commit 1b: the tick record's hold"
         }
     }
 }
@@ -406,7 +421,20 @@ enum KeeperEffect<State: StateNodeProtocol>: Sendable {
     /// The initialize record's submission, awaited off the core: `perform` returns
     /// `.initializeRecorded`.
     case initializeRecord(submission: RecorderSubmission?)
-    case destroyHandler(index: Int)
+    /// A destroy handler's resolvers (`.runDestroyResolvers`): `perform` runs them without a
+    /// deadline and returns `.destroyHandlerResolved` with the step (M8).
+    case destroyResolvers(LandKeeper<State>.DestroyHandlerStep)
+    /// AfterFinalize (`.runAfterFinalize`), in the scope its step opened with the side's drop
+    /// counter (M9): `perform` runs the handler, closes the scope, returns `.afterFinalizeReturned`.
+    case afterFinalize(LandKeeper<State>.AfterFinalizeStep, scoped: LandContext, scope: StepScope)
+    /// `onLandDestroyed` on the port the step read, `transport ?? boundSyncRequester` (M10):
+    /// `perform` returns `.drainFinished`.
+    case notifyTransport(port: (any LandKeeperTransport)?)
+    /// A tick land's tick record, awaited off the core (the tick-record hold): `perform` returns
+    /// `.tickRecordTaken`.
+    case awaitTickRecord(submission: RecorderSubmission?, tickId: Int64)
+    /// The stop's shutdown turn record: `perform` returns `.shutdownRecorded`.
+    case shutdownRecord(submission: RecorderSubmission?)
     /// A tickless input turn's record submission, awaited off the core; its applied inputs and
     /// their results come back in `.recordTaken` (K2-2 plan, item 15). The results are plain: a
     /// failure is its ID, owned meanwhile by the model's `inFlightRecordResults`.
@@ -418,8 +446,9 @@ enum KeeperEffect<State: StateNodeProtocol>: Sendable {
 enum KeeperOutput: Sendable {
     case record(ReevaluationTickRecord, endsTurn: Bool)
     /// The initialization's `.startLoops`: the owner configures its loops, then sends
-    /// `.initializeDone` with the two flags (K2-2 commit 1a).
-    case startLoops
+    /// `.initializeDone` with the two flags (K2-2 commit 1a). `epoch`: the `loopEpoch` its loop
+    /// Tasks capture (K2-2 commit 1b, M5).
+    case startLoops(epoch: UInt64)
     case bindTransport
     case services(PlayerID, Epoch, LandServices?)
     /// A sync folded into the tick due next (`.syncDue`): the driver keeps it, as the keeper's
@@ -428,6 +457,14 @@ enum KeeperOutput: Sendable {
     /// A freeze drops the fold the driver keeps (the keeper's `pendingFold = nil`, #232): the
     /// next sync iteration folds again.
     case dropFold
+    /// The drain finished (M10): the owner sets the released stand-in, then `setTransport(nil)`.
+    case detachTransport
+    /// The drain's flag is set (M7): the owner holds `.drainStart`, cancels its loops, then
+    /// sends `.drainStart`.
+    case drainStarting
+    /// A land failure's teardown (M7, the keeper's `runFailureTeardown`): the owner holds
+    /// `.landFailedTeardown`, calls `landDidFail` on the port, then starts the drain.
+    case failureTeardown(LandFailure, port: (any LandKeeperTransport)?)
 }
 
 /// Each `sendAndWait` entry's answer, and its failure as any error a caller gets today: a join
@@ -458,7 +495,7 @@ extension KeeperModel: TurnMachine {
     /// depends on the input alone, as `TurnMachine.inputPolicy` requires.
     func inputPolicy(for input: KeeperInput<State>) -> InputPolicy<KeeperKey> {
         switch input {
-        case .resume, .shutdown, .drainFinished, .initialize, .initializeDone: .control
+        case .resume, .shutdown, .drainStart, .drainFinished, .initialize, .initializeDone: .control
         default: .normal(waitsFor: nil, belongsTo: nil)
         }
     }
@@ -472,11 +509,13 @@ extension KeeperModel: TurnMachine {
             return
         }
         switch input {
-        case let .tickDue(fold, foldStart, syncsInTurn):
+        case let .tickDue(fold, foldStart, syncsInTurn, epoch):
+            // A tick from a loop the drain or a restart replaced: no step, no work (M5).
+            if let epoch, epoch != loopEpoch { break }
             if behavior.isTickless {
                 ticklessTickStep(behavior, store, &turn)
             } else {
-                tickDueStep(behavior, store, fold: fold, foldStart: foldStart, syncsInTurn: syncsInTurn)
+                tickDueStep(behavior, store, &turn, fold: fold, foldStart: foldStart, syncsInTurn: syncsInTurn)
             }
         case let .recordTaken(applied, results, endsTickWork):
             // The keeper's drain after `submitTurnRecord`'s await: the callers resume (the
@@ -526,7 +565,8 @@ extension KeeperModel: TurnMachine {
                 }
                 leaveDrive(behavior, store, &turn, request, continuation)
             }
-        case let .syncDue(now, tickDeadline, foldPending, syncsInTurn):
+        case let .syncDue(now, tickDeadline, foldPending, syncsInTurn, epoch):
+            if let epoch, epoch != loopEpoch { break }
             if let fold = syncDueStep(behavior, store, now: now, tickDeadline: tickDeadline, foldPending: foldPending, syncsInTurn: syncsInTurn) {
                 // `.land` is started by the owner at initialization (K2-1: the test harness's
                 // init; K2-2: the core's init), never by a step. An emit before that is a bug:
@@ -565,8 +605,12 @@ extension KeeperModel: TurnMachine {
             if let caller = turn.input { turn.reply(to: caller, .success(.done)) }
         // The initialization's flow (K2-2 commit 1a). Each step switches over every phase: the
         // one its request left behind runs, and every other is named. Only this flow's own
-        // effects and queue send these inputs, so another phase is a broken flow, not a race:
-        // no drain or failure moves the phase from outside the flow until commit 1b.
+        // effects and queue send these inputs, so another phase is a broken flow, not a race.
+        // Since commit 1b a drain can start during the flow (a land failure during OnInitialize's
+        // resolvers): the phase stays `.resolving`, and `initializeResolved`'s body ends the
+        // flow itself (`initializeEndedByDrain`, `.abandonedByDrain`, #952). A stop waits for the
+        // flow's end (`stopAwaitsInitialization`), as `forceShutdown` waits in
+        // `ensureInitialized`.
         case .initialize:
             // The keeper's `performInitialization`, its first segment.
             switch initializationPhase {
@@ -601,6 +645,7 @@ extension KeeperModel: TurnMachine {
                     m.initializeDone(behavior, &side, &outputs, tickLoopConfigured: tickLoopConfigured, syncLoopConfigured: syncLoopConfigured)
                 }
                 answerInitializationWaits(behavior, store, &turn)
+                beginStopAfterInitialization(behavior, store, &turn)
             case .notStarted, .replaying, .resolving, .recording, .finishing, .done, .failed, .abandonedByDrain:
                 preconditionFailure("the owner's loops were configured in phase \(initializationPhase)")
             }
@@ -628,12 +673,82 @@ extension KeeperModel: TurnMachine {
             let caller = turn.input
             let outcome = step(behavior, store) { m, side, _ in m.awaitActionResultBody(behavior, &side, sequence, caller: caller) }
             if let outcome, let caller { turn.reply(to: caller, .success(.input(outcome))) }
+        // The destroy drain (K2-2 commit 1b, plan §13.2). Each result step switches over every
+        // drain phase: only the drain's own effects send these inputs.
+        case .drainStart:
+            switch drainPhase {
+            case .notStarted:
+                // The owner held `.drainStart` and cancelled its loops (M7). No tick or sync
+                // from before this step starts after it (`loopEpoch`).
+                loopEpoch &+= 1
+                let request = step(behavior, store) { m, side, outputs in m.drainBegin(behavior, &side, &outputs) }
+                drainDrive(behavior, store, &turn, request)
+            case .waitingForTick, .destroyResolving, .afterFinalize, .notifyingTransport, .finished:
+                preconditionFailure("the drain starts once: .drainStart in phase \(drainPhase)")
+            }
+        case let .destroyHandlerResolved(destroyStep, result):
+            switch drainPhase {
+            case let .destroyResolving(kind) where kind == destroyStep.kind.rawValue:
+                let request = step(behavior, store) { m, side, outputs in
+                    m.destroyHandlerResolved(behavior, &side, &outputs, destroyStep, result)
+                }
+                drainDrive(behavior, store, &turn, request)
+            case .notStarted, .waitingForTick, .destroyResolving, .afterFinalize, .notifyingTransport, .finished:
+                preconditionFailure("a destroy handler's resolvers ended in phase \(drainPhase) (kind \(destroyStep.kind.rawValue))")
+            }
+        case .afterFinalizeReturned:
+            switch drainPhase {
+            case .afterFinalize:
+                let request = step(behavior, store) { m, side, outputs in m.drainAfterFinalize(behavior, &side, &outputs) }
+                drainDrive(behavior, store, &turn, request)
+            case .notStarted, .waitingForTick, .destroyResolving, .notifyingTransport, .finished:
+                preconditionFailure("AfterFinalize returned in phase \(drainPhase)")
+            }
+        case .drainFinished:
+            switch drainPhase {
+            case .notifyingTransport:
+                step(behavior, store) { m, side, outputs in m.drainFinished(behavior, &side, &outputs) }
+                drainPhase = .finished
+                // The owner's two calls follow this step, in order (M10): the released stand-in,
+                // then `setTransport(nil)`.
+                turn.emit(.detachTransport, for: .land)
+                let waiting = coreBarrierWaits.drained
+                coreBarrierWaits.drained.removeAll()
+                for caller in waiting { turn.reply(to: caller, .success(.done)) }
+            case .notStarted, .waitingForTick, .destroyResolving, .afterFinalize, .finished:
+                preconditionFailure("onLandDestroyed returned in phase \(drainPhase)")
+            }
+        case let .tickRecordTaken(tickId):
+            // The tick-record hold (plan §13.1): the tick's in-flight work ends here.
+            _ = tickId
+            endTick(behavior, store, &turn)
+        case .shutdown:
+            // The keeper's `forceShutdown` and `runForceShutdown` (plan §11.1). One flight: a
+            // later caller waits for the drain, as on the keeper's `SingleFlight`.
+            if let caller = turn.input { coreBarrierWaits.drained.append(caller) }
+            guard stopPhase == .notStarted, !stopAwaitsInitialization else { break }
+            // `forceShutdown`'s `ensureInitialized`: the stop begins once the initialization
+            // ended, done or failed.
+            guard didInitialize else {
+                stopAwaitsInitialization = true
+                break
+            }
+            stopBegin(behavior, store, &turn)
+        case .shutdownRecorded:
+            switch stopPhase {
+            case .recording:
+                stopStartsDrain(behavior, store, &turn)
+            case .notStarted, .waitingForTick, .awaitingShutdownTurn, .draining:
+                preconditionFailure("the shutdown record was taken in phase \(stopPhase)")
+            }
         default:
             // `KeeperInputRoutes.deferred` names where each of these is routed.
             preconditionFailure("K2-1: \(input.routeName) is routed in \(KeeperInputRoutes.deferred[input.route] ?? "an unnamed PR")")
         }
         // The barrier's held intakes, when this step thawed or drained the land.
         releaseCoreHeldIntakes(behavior, store, &turn)
+        resumeStopAfterShutdownTurn(behavior, store, &turn)
+        startFailureTeardownIfNeeded(behavior, store, &turn)
         // A drop of the pending inputs in this step failed the core's waits on them.
         answerDroppedCoreInputWaits(behavior, store, &turn)
         runCoreJobEffects(store, &turn)
@@ -730,6 +845,23 @@ extension KeeperModel: TurnMachine {
             turn.end(.freezeWait(caller))
         }
         return kick
+    }
+
+    /// The keeper's `endDebugFreezeForShutdown` (plan §11.1, arm 2): as `resumeStep`, except
+    /// that the server inputs held while frozen stay out of the queue, for the drain to drop.
+    /// The held intakes go on at the handler's end (`releaseCoreHeldIntakes`), behind the
+    /// shutdown item this step appends on a tickless land (P11-2's batch order).
+    mutating func endDebugFreezeForShutdown(_ turn: inout Turn<KeeperModel<State>>) {
+        guard let generation = debugActiveGeneration else { return }
+        debugReleasedGeneration = max(debugReleasedGeneration, generation)
+        debugActiveGeneration = nil
+        debugFrozen = false
+        let waits = coreBarrierWaits.freeze
+        coreBarrierWaits.freeze.removeAll()
+        for caller in waits.values.joined() {
+            turn.reply(to: caller, .success(.frozen(false)))
+            turn.end(.freezeWait(caller))
+        }
     }
 
     /// The freeze callers whose wait a step ended: the in-flight work is 0 with their generation
@@ -897,13 +1029,43 @@ extension KeeperModel {
                 preconditionFailure("the initialization's finish in phase \(initializationPhase)")
             }
         case .startLoops:
-            // The loops are the owner's until #762: it configures them, then sends
-            // `.initializeDone`. `.land` is started before `.initialize` is sent, as for every
-            // other emit on it (`.syncDue`, `freezeStep`).
+            // The loops are the owner's until #762: it configures them with this epoch (their
+            // Tasks carry it on every `.tickDue` and `.syncDue`), then sends `.initializeDone`.
+            // `.land` is started before `.initialize` is sent, as for every other emit on it
+            // (`.syncDue`, `freezeStep`).
             assert(turn.isLive(.land) || !store.assertsOnUnstartedLandKey, "KeeperModel: .startLoops emitted before .land was started")
-            turn.emit(.startLoops, for: .land)
+            loopEpoch &+= 1
+            turn.emit(.startLoops(epoch: loopEpoch), for: .land)
         case .done:
             answerInitializationWaits(behavior, store, &turn)
+            // A failed initialization tears down in this step, as the keeper's staged task does
+            // (`initializeFail`'s stage finds no keeper on the core).
+            if initializationPhase == .failed { tearDownAfterFailedInitialization(behavior, store, &turn) }
+            beginStopAfterInitialization(behavior, store, &turn)
+        }
+    }
+
+    /// Maps one of the drain's requests (#944's `DrainRequest`) onto the core (plan §13.2), and
+    /// sets the phase it leaves.
+    mutating func drainDrive(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, _ request: LandKeeper<State>.DrainRequest) {
+        switch request {
+        case .waitForTick:
+            // `.tickRecordTaken` resumes the drain once no tick is in flight.
+            drainPhase = .waitingForTick
+        case let .runDestroyResolvers(destroyStep):
+            drainPhase = .destroyResolving(kind: destroyStep.kind.rawValue)
+            turn.run(.destroyResolvers(destroyStep))
+        case let .runAfterFinalize(finalizeStep):
+            drainPhase = .afterFinalize
+            // The scope opens here, with the side's drop counter (M9); the effect closes it.
+            let (scoped, scope) = store.withSide { side in
+                side.openStepScope(finalizeStep.ctx, random: finalizeStep.random, droppingInto: side.sharedDestroyHandlerOutputsDropped)
+            }
+            turn.run(.afterFinalize(finalizeStep, scoped: scoped, scope: scope))
+        case .notifyTransport:
+            drainPhase = .notifyingTransport
+            let port = store.withSide { side in side.attachedTransport ?? side.sharedBoundRequester.port }
+            turn.run(.notifyTransport(port: port))
         }
     }
 
@@ -924,6 +1086,15 @@ extension KeeperModel {
         guard let id = initializationFailure else { return .success(.done) }
         if let error = store.withSide({ side in side.failures[id] }) { return .failure(error) }
         return .failure(noteFailureMiss(behavior, id, path: .initialization, sequence: nil))
+    }
+
+    /// A stop that arrived during the initialization begins at its end, after the waiters
+    /// (`answerInitializationWaits`) and, on a failure, after the teardown's drain start, which
+    /// it then joins.
+    mutating func beginStopAfterInitialization(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        guard stopAwaitsInitialization else { return }
+        stopAwaitsInitialization = false
+        stopBegin(behavior, store, &turn)
     }
 
     /// `acceptsSyncTurn`'s first guard, read before a sync query's frame: a live land, not
@@ -950,11 +1121,6 @@ extension KeeperModel {
         }
         // `.startLand` starts the core's key and reads no binding.
         if case .startLand = input { return nil }
-        // A tick land's freeze answers from the work count, and the core doesn't yet hold the
-        // tick's count across its record's submission, as the keeper does (Review on #948).
-        if case .freeze = input, !behavior.isTickless {
-            return .tickLandFreeze
-        }
         if behavior.isTickless, hasTransport {
             return .ticklessLandWithTransport
         }
@@ -1016,27 +1182,178 @@ extension KeeperModel {
     /// A tick land's `.tickDue`: the driver's live tick (`runTick`) with the same segments, and
     /// the record's submission flushed in the step, where the keeper awaits it (plan §4.4: the
     /// recorder's serial sink keeps the order).
-    mutating func tickDueStep(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, fold: PendingFold?, foldStart: ContinuousClock.Instant?, syncsInTurn: Bool) {
+    mutating func tickDueStep(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, fold: PendingFold?, foldStart: ContinuousClock.Instant?, syncsInTurn: Bool) {
         guard let handler = behavior.definition.lifetimeHandlers.tickHandler else {
             preconditionFailure("K2-1: a tickless land's tick is routed with the input drain")
         }
         guard tickAdmit() == .admitted else { return }
         store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = syncsInTurn }
         defer { store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = nil } }
-        // Declared first, so it runs last, as in `runTick`.
-        defer { store.withSide { side in debugEndWork(&side) } }
-        guard let tickId = store.withSide({ side in tickStart(side) }) else { return }
-        // No drain waits on a core's ticks in K2-1; K2-2 makes the wait a reply.
-        defer { _ = tickEnd() }
+        guard let tickId = store.withSide({ side in tickStart(side) }) else {
+            store.withSide { side in debugEndWork(&side) }
+            return
+        }
         // `runTick` fires it right before the turn; `tickTurnBody` fires only "turn-end".
         store.withSide { side in side.probe?("turn-begin") }
         let output = step(behavior, store) { m, side, outputs in
             m.tickTurnBody(behavior, &side, &outputs, handler: handler, tickId: tickId,
                            transport: syncsInTurn ? side.attachedTransport : nil, fold: fold, foldStart: foldStart)
         }
-        step(behavior, store) { m, _, outputs in
+        let (_, submission) = stepSubmitting(behavior, store) { m, _, outputs in
             m.stageRecorderSubmission(behavior, output.record, endsTurn: behavior.isTickless, outputs: &outputs)
         }
+        // The tick-record hold (K2-2 commit 1b, plan §13.1): as `runTick` holds `ticksInFlight`
+        // and the work count across `submitTurnRecord`'s await, a tick with a submission ends in
+        // `.tickRecordTaken`'s step. Without one it ends here, in this step, as before.
+        if let submission {
+            turn.run(.awaitTickRecord(submission: submission, tickId: tickId))
+        } else {
+            endTick(behavior, store, &turn)
+        }
+    }
+
+    /// A tick land's tick ends: its in-flight count, then its work (`runTick`'s two `defer`s, in
+    /// their order), then the waits that read either: the drain's `.waitForTick` and the freeze.
+    mutating func endTick(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        let idle = tickEnd()
+        store.withSide { side in debugEndWork(&side) }
+        if idle, drainPhase == .waitingForTick {
+            let request = step(behavior, store) { m, side, outputs in m.drainAfterTicks(behavior, &side, &outputs) }
+            drainDrive(behavior, store, &turn, request)
+        }
+        if idle, stopPhase == .waitingForTick {
+            stopAfterTicks(behavior, store, &turn)
+        }
+    }
+
+    /// `runForceShutdown`'s first segment (plan §11.1, arms 1 and 2).
+    mutating func stopBegin(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        let draining = store.withSide { side in side.isDraining }
+        // Arm 1: no turn when the drain has started, the initialization failed (#104), or in
+        // re-evaluation. The players are cleared and the drain runs or is joined.
+        guard drainPhase == .notStarted, !draining, initializationFailure == nil, behavior.config.mode == .live else {
+            step(behavior, store) { m, side, _ in
+                m.players.removeAll()
+                side.playerServices.removeAll()
+                m.rejoinReservations.removeAll()
+                m.dropPendingInputs(behavior, &side, reason: "forceShutdown")
+            }
+            stopStartsDrain(behavior, store, &turn)
+            return
+        }
+        // Arm 2: the freeze ends; its held intakes re-enter behind the shutdown, at this step's
+        // end (`releaseCoreHeldIntakes`), and the server inputs held while frozen stay out of
+        // the queue for the drain to drop.
+        endDebugFreezeForShutdown(&turn)
+        if behavior.definition.lifetimeHandlers.tickHandler != nil {
+            shutdownRequested = true
+            store.withSide { side in side.probe?("shutdown-stop-gate") }
+            if ticksInFlight > 0 {
+                stopPhase = .waitingForTick
+            } else {
+                stopAfterTicks(behavior, store, &turn)
+            }
+        } else {
+            step(behavior, store) { m, side, _ in
+                let sequence = m.sequence.take()
+                m.pendingItems.append(.shutdown(PendingShutdownItem(sequence: sequence, resolvedAtTick: m.lastCommittedTickId)))
+                side.probe?("shutdown-queued")
+            }
+            // The input turn that applies the item resumes the stop (`resumeStopAfterShutdownTurn`
+            // at the handler's end), or a drain that dropped the item, which the stop joins.
+            stopPhase = .awaitingShutdownTurn
+            if scheduleInputDrain() { _ = turn.queue(.inputDrainDue, behind: .land) }
+        }
+    }
+
+    /// A tickless land's stop, at the end of any step: the shutdown item's input turn applied
+    /// (`completeShutdownTurn` set `shutdownTurnApplied`), or a drain that started dropped it.
+    /// The keeper's `shutdownTurnWaiters`, as model state read after each step instead of a
+    /// continuation. TODO(1b): the facade's `.shutdownTurnApplied` hold goes before this.
+    mutating func resumeStopAfterShutdownTurn(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        guard stopPhase == .awaitingShutdownTurn, shutdownTurnApplied || drainPhase != .notStarted else { return }
+        stopStartsDrain(behavior, store, &turn)
+    }
+
+    /// A tick land's stop once no tick is in flight: the shutdown turn between ticks, unless a
+    /// drain started during the wait, which is joined instead.
+    mutating func stopAfterTicks(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        let draining = store.withSide { side in side.isDraining }
+        guard drainPhase == .notStarted, !draining else {
+            stopStartsDrain(behavior, store, &turn)
+            return
+        }
+        let record = step(behavior, store) { m, side, outputs in m.shutdownTurnBetweenTicksBody(behavior, &side, &outputs) }
+        guard let record else {
+            stopStartsDrain(behavior, store, &turn)
+            return
+        }
+        let (_, submission) = stepSubmitting(behavior, store) { m, _, outputs in
+            m.stageRecorderSubmission(behavior, record, endsTurn: false, outputs: &outputs)
+        }
+        if let submission {
+            stopPhase = .recording
+            turn.run(.shutdownRecord(submission: submission))
+        } else {
+            stopStartsDrain(behavior, store, &turn)
+        }
+    }
+
+    /// `shutdownIfIdle(cause: .forceShutdown)` on the core: joins a started drain, or, on an
+    /// empty land, sets the drain flag in this step, releases the held inputs, ends the leaves in
+    /// flight and the action jobs, and asks the owner to start the drain (M7). Callers wait in
+    /// `coreBarrierWaits.drained`.
+    mutating func stopStartsDrain(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        stopPhase = .draining
+        startDrainIfIdle(behavior, store, &turn, cause: .forceShutdown)
+    }
+
+    /// The failed initialization's teardown (`tearDownAfterFailedInitialization`), in the step
+    /// that failed it, on the core (plan §13.2): the players are cleared, the pending inputs
+    /// dropped, and the drain starts.
+    mutating func tearDownAfterFailedInitialization(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        step(behavior, store) { m, side, _ in
+            m.players.removeAll()
+            side.playerServices.removeAll()
+            m.rejoinReservations.removeAll()
+            m.dropPendingInputs(behavior, &side, reason: "initialization failed")
+        }
+        startDrainIfIdle(behavior, store, &turn, cause: .initializationFailed)
+    }
+
+    /// `shutdownIfIdle(cause:)` on the core.
+    mutating func startDrainIfIdle(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, cause: LandDestructionCause) {
+        // A drain in progress is joined: its `.drainFinished` answers the callers. Keyed on the
+        // drain's request, as the keeper's on `drainTask`, not on `isDraining`: the shutdown turn
+        // (`completeShutdownTurn`) sets the flag before any drain runs.
+        guard !drainRequested else { return }
+        guard players.isEmpty else {
+            // As the keeper: `shutdownIfIdle` returns without a drain, and so does the stop.
+            let waiting = coreBarrierWaits.drained
+            coreBarrierWaits.drained.removeAll()
+            for caller in waiting { turn.reply(to: caller, .success(.done)) }
+            return
+        }
+        step(behavior, store) { m, side, _ in
+            side.sharedDrainFlag.set(cause: cause)
+            m.releaseHeldInputsForDrain(behavior, &side)
+            m.endAllLeavesInFlight(&side)
+            m.cancelAllActionJobs(behavior, &side)
+        }
+        // The owner holds `.drainStart`, cancels its loops, then sends `.drainStart` (M7).
+        drainRequested = true
+        turn.emit(.drainStarting, for: .land)
+    }
+
+    /// A land failure's teardown on the core (the keeper's `runFailureTeardown`, which
+    /// `failLand` stages through `keeperReference`, empty on the core): at the end of the step
+    /// that failed the land, the owner tells the port (`landDidFail`), then starts the drain
+    /// (M7). A failed initialization's teardown is `tearDownAfterFailedInitialization`.
+    mutating func startFailureTeardownIfNeeded(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        guard !drainRequested, initializationFailure == nil else { return }
+        guard let (failure, port) = store.withSide({ side in side.failure.map { ($0, side.attachedTransport ?? side.sharedBoundRequester.port) } }) else { return }
+        drainRequested = true
+        turn.emit(.failureTeardown(failure, port: port), for: .land)
     }
 
     /// `.syncDue`: the driver's `runSync` with the same segments. Returns the fold the driver keeps

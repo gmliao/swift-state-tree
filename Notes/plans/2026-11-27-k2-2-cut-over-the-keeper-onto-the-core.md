@@ -409,3 +409,129 @@ K2-2a merged as #948 without commit 1 (§3). Commit 1a routes the initialization
 - `actionJobCallerCancel` waits for the resolver at its gate before the cancel.
 - `firstSignal`'s doc.
 
+
+## 13. Commit 1b's plan (2026-11-27, drafted on #966's head 5fce0d13)
+
+1b takes what §12 left: the tick-record hold (M12, with M5's `loopEpoch`), the destroy drain (M7–M10), and the stop (§11.1). The order inside the PR: first the hold, then the drain, then the stop. The drain needs the hold for `.waitForTick`, and the stop needs both.
+
+### 13.1 The tick-record hold (M12, M5)
+
+Today on the core, a tick land's tick ends its work in the step that runs it:
+- `tickDueStep`'s `defer`s call `tickEnd` and `debugEndWork`;
+- its record goes out as a `KeeperOutput.record` for the driver's flush.
+
+The keeper's tick instead holds `ticksInFlight` and the work count across `submitTurnRecord`'s await. The freeze and the drain read both.
+
+1b makes the tick's record an effect, in the shape of the tickless batch's `.awaitRecordTaken`:
+- **The effect:** `.awaitTickRecord(submission:tickId:)`. Its `perform` awaits the submission and returns a new input, `.tickRecordTaken(tickId:)`.
+- **The result step** calls `tickEnd` and `debugEndWork`, then answers the waits that read the count, in that order:
+  - the freeze's work wait;
+  - the drain's `.waitForTick` (§13.2);
+  - the stop's tick barrier (§13.3).
+- **Without a recorder,** the step that ran the tick also ends it, as today. No effect, so there's no extra ordinal.
+- **The stale `.tickDue`:** `loopEpoch` (M5) is a model field. `initializeFinish`'s step bumps it, as rev 5 planned, and so does the drain start. The owner's tick and sync Tasks capture it, and `.tickDue` and `.syncDue` carry it. A step whose epoch is not current folds into a no-op that takes no work count. That keeps a tick due before a drain from starting after the drain's `drainBegin`.
+- **What it lifts:** `KeeperCoreRefusal.tickLandFreeze` is deleted, together with its census row and its `liftedIn`.
+- **New differential cases:**
+  - `tickLandFreezeWaitsForTheRecord`: a freeze arrives while the tick is held at `.turnRecord`, and is answered only after the record is taken, on both paths;
+  - `staleTickDueAfterDrainStart`: a `.tickDue` with the old epoch is a no-op.
+
+### 13.2 The destroy drain (M7–M10)
+
+Each `DrainRequest` maps as follows:
+
+| `DrainRequest` (K2-1b) | On the core | Result input | Notes |
+|---|---|---|---|
+| the start (`holds.at(.drainStart)`, cancel the loops, `drainBegin`) | an owner call (M7): the facade's hold, then the loop Tasks cancelled, then `.drainStart` (new, `.control`) | `.drainStart` | the step bumps `loopEpoch` (§13.1), then calls `drainBegin` |
+| `.waitForTick` | model state: `drainWaitsForTick = true` | none: `.tickRecordTaken`'s step calls `drainAfterTicks` once `ticksInFlight == 0` | a tick land only: a tickless batch never counts in `ticksInFlight` (§13.2.1) |
+| `.runDestroyResolvers(step)` | effect `.destroyResolvers(step)`: the step (closures, context, generator) rides the effect, never the model (M8) | `.destroyHandlerResolved(step, result)` | replaces K2-2a's placeholder `.destroyHandler(index:)` |
+| `.runAfterFinalize(step)` | effect `.afterFinalize(step, dropCounter:)`: `perform` opens the step scope with the side's counter (M9), runs the handler and closes the scope | `.afterFinalizeReturned` (new) | its outputs are dropped, as on the keeper (#893) |
+| `.notifyTransport` | effect `.notifyTransport(port:)`, where the port is `transport ?? boundSyncRequester`, read in the step (M10) | `.drainFinished` | then two owner calls, in order: the released stand-in, then `setTransport(nil)` |
+
+#### 13.2.1 The tickless batch and `ticksInFlight` (settled 2026-11-27, read at 5fce0d13)
+
+**It never counts.** The only increment is `tickStart` (`Sources/SwiftStateTree/Runtime/KeeperModel+Drivers.swift:44`–`46`). It has two callers:
+- **The keeper's `runTick`** (`LandKeeper.swift:3648`). A live tickless land returns before that line, at `LandKeeper.swift:3621`–`3627` (`scheduleInputDrain`, then `runInputDrain`).
+- **The core's `tickDueStep`** (`KeeperMachine.swift:1016`). The core's tickless path, `ticklessTickStep` (`KeeperMachine.swift:1063`–`1070`), goes to `inputDrainStep` without it.
+
+So on a tickless land `drainBegin` never returns `.waitForTick`, even while a batch's record is in flight:
+- on the keeper, `runInputDrain`'s `await submitTurnRecord` (`LandKeeper.swift:4652`);
+- on the core, `.awaitRecordTaken`.
+
+The drain doesn't wait for that record on either path.
+
+**What follows for the code.** On the core, a batch's `.recordTaken` can step after `.drainStart`. Its step resumes the batch's callers, as the keeper's loop does after its await. Then `nextInputTurnBatch` is empty, because the drain dropped the pending inputs. So `.recordTaken` needs no drain arm. A differential case pins it: `ticklessRecordInFlightAtDrainStart`, with the record held by the recorder, the stop sent, then the record released. On both paths the batch's callers get their results, and the drain finishes.
+
+Only re-evaluation tickless lands go through `tickStart`, and that path is `legacyOnly` (#612).
+
+The drain's callers (the stop, `shutdownIfIdle`'s joiners) wait in `coreBarrierWaits.drained`. `.drainFinished`'s step answers them.
+
+The initialization's teardown: today on the core, `initializeFail` stages it through `keeperReference`, which is empty there (§12). 1b makes it a drain start in the same step (the failed-initialization arm of §11.1's guard), so `teardownWaitsForTheFailingTurn`'s scenario runs on the core path end to end (K2 §16 item 13).
+
+**Phases.** The drain gets one enum, as the initialization did (§12's rule): `DrainPhase`, with the cases `.notStarted`, `.waitingForTick`, `.destroyResolving(kind)`, `.afterFinalize`, `.notifyingTransport` and `.finished`. Each result step switches over all of them: the phase its request left runs, and every other phase is a `preconditionFailure`. Now a drain can move the initialization's phase from outside its flow (`.abandonedByDrain`), so the initialization's result steps check that arm too: a `.initializeResolved` after a drain start goes through `initializeEndedByDrain`, as on the keeper (#952).
+
+### 13.3 The stop (§11.1)
+
+As §11.1's table, with these choices:
+- **`.shutdown`** is routed (`.control`, `sendAndWait`). A second `.shutdown` waits in `coreBarrierWaits.drained`, the SingleFlight's join.
+- **The tick land's barrier** is `stopWaitsForTick`, answered by `.tickRecordTaken`'s step (§13.1). The shutdown body then runs in that step; its record is an effect, with `.shutdownRecorded` (new) as its result.
+- **The tickless shutdown item** waits through `KeeperCoreInputWait.shutdown(caller)`, as §11.1 says.
+- **Hold points** (`.shutdownTurnApplied`, `.forceShutdownReturn`) are owner holds on the facade. In 1b's harness they are gates at the effect.
+- **#512** keeps today's behavior: the queued leave is dropped.
+
+Differential cases, each held with hold points:
+- P11-1 as `shutdownDropsQueuedLeave512` (§11.1);
+- P11-2 as `shutdownWhileFrozenDropsHeldIntakes`;
+- K2-1b's drain hold cases, one per await;
+- `teardownWaitsForTheFailingTurn` on the core path.
+
+### 13.4 Census and routes
+
+These move from `deferred` to `routed`: `.shutdown`, `.destroyHandlerResolved` and `.drainFinished`.
+
+These are added as routed:
+- `.drainStart`;
+- `.afterFinalizeReturned`;
+- `.tickRecordTaken`;
+- `.shutdownRecorded`.
+
+After 1b, `KeeperInputRoutes.deferred` is empty. The census asserts that.
+
+### 13.5 Probes
+
+**P1b-1** (needs the slot, so it runs 2026-11-28 before the draft PR goes up). The question: on the core twin, does the owner's `.drainStart` call keep `drainAfterIdleCheck`'s order?
+
+Throwaway test, hold points only:
+1. A tick land with p1 joined.
+2. Hold a tick at `.turnRecord`.
+3. Start a stop, held at `.drainStart`.
+4. While the stop is held, record whether the tick and sync Tasks are still set, and send one `.tickDue` with the current epoch.
+5. Release the hold, then release the tick's record.
+
+**Expected output, on both paths.** If the actual output differs, this plan is revised before the code:
+```
+P1b1 events=["probe turn-begin", "probe turn-end", "hold turnRecord", "hold drainStart", "probe drain-waits-for-tick", "probe input-drain-end"?]
+P1b1 at drainStart hold: tickTask=set syncTask=set
+P1b1 after release: tickTask=nil syncTask=nil
+P1b1 tickDue during hold: no "turn-begin" (tickStart refused: isDraining)
+P1b1 drain: drainAfterTicks after the record, then finished
+```
+- The hold comes before the loops are cancelled, and the cancel comes before `drainBegin`. That is `drainAfterIdleCheck`'s order (`LandKeeper.swift:4855`–`4864`).
+- `isDraining` is already set at the hold, because `shutdownIfIdle` sets the flag before it calls `drainAfterIdleCheck`. So a `.tickDue` during the hold starts no tick on either path, and no `loopEpoch` check is needed for that case. `loopEpoch` still guards a `.tickDue` that was sent before the epoch bump and steps after the drain finishes.
+- `"probe input-drain-end"?` marks an event that may or may not appear. The tick land has no input drain, so if it appears, that is a finding for this plan.
+
+No other probe is needed: every other row ports a body that #944 already segmented, unchanged.
+
+### 13.6 Written on 2026-11-27 (unbuilt), and what the code found
+
+Everything in §13.1–§13.4 is written, except the cases listed under "Left" below. The code found these points, and they now govern:
+- **The drain's join keys on its request, not on `isDraining`.** The tickless shutdown turn (`completeShutdownTurn`, `LandKeeper.swift:6997`) sets the drain flag before any drain runs. The keeper's `shutdownIfIdle` keys on `drainTask`, so on the core `startDrainIfIdle` keys on `drainRequested`. That field is set when the step asks the owner for the start, and is never cleared, as `drainTask` isn't.
+- **A land failure's teardown runs on the core too.** `failLand` stages `runFailureTeardown` through `keeperReference` (`LandKeeper.swift:6845`), and that reference is empty on the core. So at the end of the failing step, the core emits `.failureTeardown(failure, port:)`. The owner calls `landDidFail`, then sends `.drainStart`. A failed initialization tears down in the step that failed it (`tearDownAfterFailedInitialization`), as §13.2 says.
+- **A stop waits for the initialization's end** (`stopAwaitsInitialization`), as `forceShutdown` waits in `ensureInitialized`. With that, no `.shutdown` steps during the flow. A failure's drain during OnInitialize's resolvers still ends the flow inside `initializeResolved` and `initializeApply` (`.abandonedByDrain`, #952, `LandKeeper.swift:8270`, `:8337`). The initialization's result steps need no new arm.
+- **The tickless stop's wait is model state, not a core wait.** `resumeStopAfterShutdownTurn` runs at the end of every step: once `shutdownTurnApplied` is set, or a drain has started, the stop goes on. No `KeeperCoreInputWait.shutdown` case is needed.
+- **`loopEpoch`.** It is an optional `epoch` on `.tickDue` and `.syncDue`; nil (the tests' `drive`) is never stale. `.startLoops(epoch:)` carries the value to the owner. A stale `.syncDue` matters most, because `syncDueStep` doesn't read `isDraining`.
+- **The differential's stated asymmetries** gain `drainPhase`, `stopPhase`, `stopAwaitsInitialization`, `loopEpoch` and `drainRequested`. Each is a model field that only the core's flows use.
+
+**Left** (2026-11-28, after P1b-1 and the first build):
+- the facade's `.shutdownTurnApplied` and `.forceShutdownReturn` holds (commit 4); in the harness, gates;
+- the cases `ticklessRecordInFlightAtDrainStart`, `shutdownDropsQueuedLeave512` (P11-1), `shutdownWhileFrozenDropsHeldIntakes` (P11-2), K2-1b's drain hold cases and `teardownWaitsForTheFailingTurn` on the core path;
+- in `tickLandFreezeWaitsForTheRecord`, a hold that pins "not answered before the record".

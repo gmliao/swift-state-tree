@@ -1978,7 +1978,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The drain's requests (#700 K2-1b): each segment returns the await it needs.
-    fileprivate enum DrainRequest {
+    enum DrainRequest: Sendable {
         case waitForTick
         case runDestroyResolvers(DestroyHandlerStep)
         case runAfterFinalize(AfterFinalizeStep)
@@ -1987,7 +1987,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The destroy handlers in their order; the drain runs those the land declares.
-    fileprivate enum DestroyHandlerKind: Int {
+    enum DestroyHandlerKind: Int, Sendable {
         case onDestroyWhenEmpty
         case onFinalize
         case afterFinalize
@@ -2003,7 +2003,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// A destroy handler (OnDestroyWhenEmpty, OnFinalize) whose resolvers run: built in the
     /// segment the handler's turn follows, from the State it will see.
-    fileprivate struct DestroyHandlerStep {
+    struct DestroyHandlerStep: Sendable {
         let kind: DestroyHandlerKind
         let ctx: LandContext
         let resolvers: [any AnyResolverExecutor]
@@ -2014,7 +2014,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// AfterFinalize, with the snapshot it gets.
-    fileprivate struct AfterFinalizeStep {
+    struct AfterFinalizeStep: Sendable {
         let snapshot: State
         let ctx: LandContext
         let random: DeterministicRngService
@@ -5060,10 +5060,10 @@ extension KeeperModel {
     typealias JoinDecided = LandKeeper<State>.JoinDecided
     typealias JoinRequest = LandKeeper<State>.JoinRequest
     typealias InitializeRequest = LandKeeper<State>.InitializeRequest
-    fileprivate typealias DrainRequest = LandKeeper<State>.DrainRequest
-    fileprivate typealias DestroyHandlerKind = LandKeeper<State>.DestroyHandlerKind
-    fileprivate typealias DestroyHandlerStep = LandKeeper<State>.DestroyHandlerStep
-    fileprivate typealias AfterFinalizeStep = LandKeeper<State>.AfterFinalizeStep
+    typealias DrainRequest = LandKeeper<State>.DrainRequest
+    typealias DestroyHandlerKind = LandKeeper<State>.DestroyHandlerKind
+    typealias DestroyHandlerStep = LandKeeper<State>.DestroyHandlerStep
+    typealias AfterFinalizeStep = LandKeeper<State>.AfterFinalizeStep
     typealias InitializeResolving = LandKeeper<State>.InitializeResolving
     typealias LeaveCapture = LandKeeper<State>.LeaveCapture
     typealias LeaveRequest = LandKeeper<State>.LeaveRequest
@@ -8010,7 +8010,7 @@ extension KeeperModel {
     // MARK: Drain segments (#700 K2-1b)
 
     /// D1: no destroy timer from now on; then the tick in flight, if any.
-    fileprivate mutating func drainBegin(
+    mutating func drainBegin(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs
@@ -8032,7 +8032,7 @@ extension KeeperModel {
     /// (#946: the drain began during its resolvers), or a re-evaluation keeper (#826:
     /// the record holds no destroy or finalize event to verify them against, and their resolvers
     /// and AfterFinalize could reach outside services).
-    fileprivate mutating func drainAfterTicks(
+    mutating func drainAfterTicks(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs
@@ -8123,7 +8123,7 @@ extension KeeperModel {
 
     /// D3: a destroy handler's resolvers ended. A failure is logged and skips the handler; the
     /// drain goes on.
-    fileprivate mutating func destroyHandlerResolved(
+    mutating func destroyHandlerResolved(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -8144,7 +8144,7 @@ extension KeeperModel {
     }
 
     /// D4: AfterFinalize returned.
-    fileprivate mutating func drainAfterFinalize(
+    mutating func drainAfterFinalize(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs
@@ -8156,7 +8156,7 @@ extension KeeperModel {
     /// D5: `onLandDestroyed` returned. The destruction is finished (a later `setTransport`
     /// attaches the released stand-in), and the bound requester is dropped (#546 L2a). Ends
     /// #522's exception: this bookkeeping is a turn's.
-    fileprivate mutating func drainFinished(
+    mutating func drainFinished(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs
