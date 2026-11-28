@@ -39,7 +39,7 @@ public enum CanonicalMessagePack {
     /// further, not after the tree is built (#802). Records nest a few levels; the limit also
     /// leaves room for the `Codable` types that recurse over the value. `AnyCodable` takes
     /// direct paths for that reason: through its own `Codable`, 128 levels took more than a
-    /// 544 KiB thread's stack in a debug build.
+    /// 524 KiB pool thread's stack in a debug build.
     public static let maxDepth = 128
 
     /// What the canonical encoders' `userInfo` holds: a marker that `AnyCodable.encode(to:)` reads
@@ -560,8 +560,8 @@ private struct CanonicalNodeEncoder: Encoder {
 
     /// `AnyCodable.encode(to:)`, written into `slot` directly (#802). The generic path goes through
     /// `AnyCodable`'s single-value container and `Array` / `Dictionary`'s own `encode(to:)`, about
-    /// 4 KB of stack per level in a debug build: a tree at the depth limit overflows a 544 KiB
-    /// thread. This takes the same cases in the same order (`AnyCodableShape`) and writes the same
+    /// 4 KB of stack per level in a debug build: a tree at the depth limit overflows a 524 KiB
+    /// pool thread. This takes the same cases in the same order (`AnyCodableShape`) and writes the same
     /// nodes at the same coding paths, with the same key types (`Int` positions as
     /// `CanonicalCodingKey`, as the unkeyed container names them; dictionary keys as `String`'s own
     /// `codingKey`, as `Dictionary.encode(to:)` names them), so the bytes and the errors are the

@@ -525,7 +525,7 @@ struct ServerInputTests {
 
     /// Run on an 8 MiB thread: without the encoder's bound, the 1000 levels would recurse to the
     /// bottom (fitting 8 MiB, so a regression fails here instead of crashing) before the writer
-    /// refused the tree; on a 544 KiB pool thread they would overflow it.
+    /// refused the tree; on a 524 KiB pool thread they would overflow it.
     @available(macOS 15.0, *)
     @Test("A server input nested far past the record's depth is refused on the way down, never encoded to its bottom (#802)")
     func deepRecursiveInputIsRefusedOnTheWayDown() async throws {
