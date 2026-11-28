@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 // #572: a player whose session sync lag pauses (`resyncPending`) gets no frame while paused, and
