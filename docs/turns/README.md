@@ -252,7 +252,7 @@ API: `start` (true when it superseded), `generation(of:)`, `Generation`.
 
 ### Request
 
-A *request* is an effect that a key's current generation owns. It has an ID, and it finishes in one of two ways. Its result arrives while it is open: the result steps in `handle`. Or it closes first, and it is *abandoned*: `handleAbandoned` runs with the reason (the deadline passed, the key ended, or it was cancelled). A result that arrives after that goes to `handleLateResult`, so a hung database load that finally returns changes nothing.
+A *request* is an effect that a key's current generation owns. It has an ID, and it finishes in one of two ways. Its result arrives while it is open: the result steps in `handle`. Or it closes first, and it is *abandoned*: `handleAbandoned` runs with the reason (the deadline passed, the key ended, or it was cancelled). A result that arrives after that goes to `handleLateResult`, so a hung database load that finally returns changes nothing. The abandonment also cancels the request's worker, as a task group cancels its child tasks: `perform` should check `Task.isCancelled` (or use cancellable awaits) and return soon, or the actor stays alive until the work ends. Work started with `run` is untracked and never cancelled.
 
 ```swift
 let hold = Hold.untilRequestCloses(Key.store, deadline: loadDeadline)
