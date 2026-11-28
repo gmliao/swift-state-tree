@@ -1,5 +1,7 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
+Revision 10 (2026-11-28): §15, commit 4's facade as sub-commits and two PRs (Main, 2026-11-28). 4c goes code-first.
+
 Revision 9 (2026-11-28): §14.2 item 2 as built (commit 4b). The attached gate's copy has one write point instead of four: `KeeperTurnSide.attachedTransport`'s `didSet`, plus the init's seed, which `didSet` doesn't cover. So no writer can miss it; rev 7 listed four writers and relied on each one. The writers rev 7 listed all assign the property. The side is replaced whole in three places, and each builds a fresh side through the one init: the keeper's init, the core twin, and the store taking a new side. Every other copy of a side is a `let`, which can't write. The debug check at the step's end and the census row stay.
 
 Revision 8 (2026-11-28): §14.1 item 6, the new requirement gets a forwarding default (Main and Review, 2026-11-28). 35 of the 37 conformers use `admitJoiningSession`'s default and admit nothing, and a wrong use is loud: a conformer that records its clear through the keeper during the step fails the land with `.keeperReentry`.
@@ -678,3 +680,31 @@ When `isStepping` is true, the facade's `setTransport` increments `reentryViolat
 - **P-B1 (run 2026-11-28 on the Mac, on #990's head with a throwaway port hook, then reverted).** A port's witness, called through `callOut` from a core `.setTransport` step, reads `harness.assumeIsolated { $0.core.isStepping }`, and the case then reads it between steps. Output: `P-B1: isStepping in the witness: true; between steps: false` (`✔ Test run with 1 test in 1 suite passed after 0.010 seconds.`). So a nonisolated adopter entry reached from inside a step can tell that it is inside one, with no borrow.
 - **P-A1 (by reading, no run).** A marker's position is `syncReadPosition(behavior, side)`, read from the model at record time (`recordSyncStream`). The admission is a port call, which can't change the model except by a re-entry that ends the land. The clear's position inside the call and right after it is therefore the same. The ported supersede case's replay verification (§14.1) checks this end to end, so a separate run would only repeat it.
 - **P-A2 (a trap: run 2026-11-28 off the Mac, on #990's head `8b5c42e0`).** A port's witness, called through `callOut` from a core `.setTransport` step, calls `store.withSide { _ in }` on the harness's side store, which is what `recordsSyncStream` on a facade would do. Result: the exit test passed. The child exited with a failure by SIGILL: `.signal(SIGILL)` matched, and `.signal(SIGTRAP)` did not. The runner captured no child output, so the message text isn't quoted. Which check stopped it was settled by reading. `withSide` has three: `owner == nil` ("used before bind"), `preconditionIsolated` ("off its core's executor") and `!borrowed` ("a nested borrow", `KeeperSideStore.swift:61`). The store was bound, because the step had just borrowed it. The callback ran on the owner's executor, because P-B1's identical setup and call site read `assumeIsolated` there without a trap. That leaves the nested borrow. So passing `recordsSyncStream` in (§14.1) stays necessary: a facade that asks the keeper during the step stops the process.
+
+## 15. Commit 4's facade: sub-commits and PRs (2026-11-28, read at the commit-4 branch after 4b)
+
+**Starting point.** `LandKeeper.swift` is 8988 lines, with 62 public and package entries outside the test hooks. #762 is open, so the tick and sync loops stay Tasks that send (§3, commit 4). `KeeperOwner` and `LiveLandTurns` don't exist yet.
+
+**What already exists.** The differential's `KeeperCoreHarness` is `LiveLandTurns` in all but name. It is a `TurnActor` over `TurnCore<KeeperModel<State>>`, and its `unownedExecutor` is the owner keeper's. The adapter's `unownedExecutor` is `keeper.unownedExecutor`, so the three share one executor. Its `perform`, `flush` and `handleLateResult` already do the owner's work: the failure teardown, `.drainStart`, the record hand-off, the sync follow-ups, `landDidFail` and `onLandDestroyed`. So the cut-over promotes that logic into Sources instead of writing a new actor.
+
+**Sub-commits.** Each builds green, and the differential stays green throughout.
+- **4a, the admission in the step (§14.1), built.**
+- **4b, the attached gate's copy (§14.2, rev 9), built.**
+- **4c, `LiveLandTurns`.** The harness's production logic moves to `Sources/SwiftStateTree/Runtime/LiveLandTurns.swift`, unwired. The harness keeps only its test gates, as hooks on the moved actor. This is a move, and the differential rerunning against it is its proof, so it needs no probe.
+- **4d, `KeeperOwner` and the facade.** One entry group per commit:
+  - 4d-1: the attach and the sync queries (`setTransport`, `syncTurnNow`, `syncTurnTicket`, `settle`, `requestJoinSyncTurn`), with §14.2's sender refusal. That refusal reads `isStepping`, then the gate from the two boxes, then bumps the counter and sets the sentinel's failure.
+  - 4d-2: the joins and the leaves, with §14.1's adapter case. The adapter's supersede records its clear on a live keeper.
+  - 4d-3: the actions and the server inputs, with the `.serverInput` facade contract.
+  - 4d-4: freeze and debug, shutdown and drain, the initialization and the barriers.
+  - The facade lint goes live with the file that declares `KeeperOwner`.
+- **4e, the drivers.** The loop Tasks send `.tickDue` and `.syncDue`. A stale tick's epoch is the keeper's existing loop generation; 4e names the field after reading the loop code at its base.
+- **4f, the sentinel** moves into `KeeperBehavior` as its one reference field (K2 §4.2 (a)), and the behavior lint lists it.
+- **4g, the census** gets its `live.` group. `coreTwinForTesting` and the differential read are rewritten against the facade.
+- **The replay owner** keeps today's bodies until #612. Every step-only check 4d adds needs a replay branch; the reevaluation E2E (0 mismatch) catches a missing one.
+
+**PRs (Main, 2026-11-28).**
+- **PR 1** is 4a, 4b, 4c and 4d-1. It opens once #990 merges.
+- **PR 2** is 4d-2 onward. It is cut after PR 1 merges, so the PRs aren't stacked.
+- Each PR body lists its mutants.
+
+**Probes.** None for 4c: it is a move, and the differential's existing cases are its check. 4d-1's sender refusal rests on P-B1 (`isStepping` read from a port callback during a step, §14.4).
