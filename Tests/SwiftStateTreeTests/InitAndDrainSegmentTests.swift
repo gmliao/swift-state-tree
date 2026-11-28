@@ -806,4 +806,46 @@ struct InitAndDrainSegmentTests {
         #expect(done.hasBoundRequester == false)
         #expect(port.destroyedCount == 1)
     }
+
+    /// T5–T8 on the core (#700 K2-2 commit 1b): the twin shares the land ID, so the same gates hold
+    /// its drain's effects. A tick land: the core refuses a tickless land with a transport until
+    /// the binding token (K2-2). T8's late attach is the facade's (commit 4); here the hold
+    /// pins that the notification is in flight and the destruction not yet finished.
+    @Test("T5–T8 on the core: the drain held at each of its awaits (OnDestroyWhenEmpty's and OnFinalize's resolvers, AfterFinalize, onLandDestroyed) shows the same state as the keeper's, then finishes", arguments: ["dwe", "fin", "after", "destroyed"])
+    func drainHeldAtEachAwaitOnTheCore(phase: String) async throws {
+        let (landID, gate) = segmentLandID(phase)
+        defer { gate.release() }
+        let transport = SegmentTransport(gate: phase == "destroyed" ? gate : nil)
+        let source = makeSegmentKeeper(tick: true, landID: landID)
+        await source.awaitInitialization()
+        let harness = KeeperCoreHarness(await source.coreTwinForTesting(transport: transport))
+        await harness.start()
+        let stop = Task { try await harness.call(.shutdown) }
+        guard await gate.waitUntilEntered("the core's drain at \(phase)") else { return }
+
+        let held = await harness.differentialRead().model
+        #expect(held.destroyHandlersStarted && held.pendingItems.isEmpty && !held.destructionFinished, "\(phase)")
+        switch phase {
+        case "dwe":
+            guard case .destroyResolving = held.drainPhase else { Issue.record("\(held.drainPhase)"); return }
+            #expect(held.state.log == ["init:1"] && held.state.value == 0, "the state before the handler: \(held.state.log)")
+        case "fin":
+            guard case .destroyResolving = held.drainPhase else { Issue.record("\(held.drainPhase)"); return }
+            #expect(held.state.log == ["init:1", "destroyWhenEmpty"] && held.state.value == 7, "\(held.state.log)")
+        case "after":
+            #expect(held.drainPhase == .afterFinalize)
+            #expect(held.state.log == ["init:1", "destroyWhenEmpty", "finalize:7"])
+            #expect(transport.destroyedCount == 0, "the port hears of the destruction after AfterFinalize")
+        default:
+            #expect(held.drainPhase == .notifyingTransport)
+            #expect(transport.destroyedCount == 1)
+        }
+
+        gate.release()
+        guard case .done? = try? await stop.value else { Issue.record("the core's stop wasn't answered .done"); return }
+        let done = await harness.differentialRead().model
+        #expect(done.drainPhase == .finished && done.destructionFinished)
+        #expect(done.state.log == ["init:1", "destroyWhenEmpty", "finalize:7"], "OnFinalize's resolver read OnDestroyWhenEmpty's write: \(done.state.log)")
+        #expect(transport.destroyedCount == 1)
+    }
 }

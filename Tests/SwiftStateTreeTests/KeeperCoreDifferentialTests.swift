@@ -2670,10 +2670,6 @@ extension KeeperCoreDifferentialTests {
         await pair.expectSame("after the stop")
     }
 
-    // TODO(1b), the cases plan §13 lists, each held with hold points (they need a build to
-    // settle the harness gates): K2-1b's
-    // drain hold cases one per await, and teardownWaitsForTheFailingTurn on the core path.
-
     @Test("A tick land's freeze steps on the core since the tick-record hold (K2-2 commit 1b): an idle land freezes at once")
     func tickLandFreezeSteps() async throws {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "freeze-tick")

@@ -548,6 +548,12 @@ Everything in §13.1–§13.4 is written, except the cases listed under "Left" b
   - The sync guard's mutant is killed 5/5 by hand.
   - The tick guard's mutant is equivalent here: `tickStart` refuses on a draining land.
 
-**Left:**
-- K2-1b's drain hold cases on the core path, one per await;
-- `teardownWaitsForTheFailingTurn` on the core path.
+- **K2-1b's drain hold cases on the core** (`drainHeldAtEachAwaitOnTheCore`, InitAndDrainSegmentTests): T5–T8's four awaits, OnDestroyWhenEmpty's and OnFinalize's resolvers, AfterFinalize and `onLandDestroyed`. The twin shares the land ID, so the same gates hold its effects.
+  - It uses the tick segment land, because the core refuses a tickless land with a transport until the binding token.
+  - T4's await, the tick wait, is held on the core by `staleTickDueAfterDrainStart` and `tickLandFreezeWaitsForTheRecord`.
+  - T8's late attach during `onLandDestroyed` is the facade's (commit 4).
+- **`teardownWaitsForTheFailingTurn` on the core** needs no case of its own:
+  - The core emits `.failureTeardown` at the end of the failing step (`startFailureTeardownIfNeeded`), and outputs flush only after a step. So the teardown can't start inside the turn, which is what the keeper's case guards against: a call-out's flush running a staged teardown.
+  - The three `failed: true` trace cases pin the order on the core: `landDidFail`, then `onLandDestroyed`, after every port call of the failing step.
+
+Nothing in §13 is left for 1b.
