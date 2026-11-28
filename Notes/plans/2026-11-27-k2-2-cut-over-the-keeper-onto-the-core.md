@@ -1,5 +1,7 @@
 # K2-2: cut the keeper over onto the turn core (#700)
 
+Revision 6 (2026-11-28): §14, commit 4's two gates from #990's review: the join's admission in the step (the drafts come back with the answer) and the sender-side refusal (the facade reads `TurnCore.isStepping`). Plan only; Review reads it after the #987 and #990 verdicts.
+
 Revision 5 (2026-11-27): Review's GO on rev 4 with four shoulds. The services table's home while unwired (commit 3). K22-Q5's in-flight table moves to the model. The loop epoch's bump step and the stale `.tickDue`'s fold (Q3 note). §3.2's follow-up row follows #938's round-3 contract. K22-Q5 and K22-Q6 are answered (§6). Revision 4 (2026-11-27): item 15's two design points (K22-Q5, K22-Q6), found while drafting commit 0; §4 item 15's row. Revision 3 (2026-11-27): Review's NOT GO on rev 2. Commit 1 maps every K2-1b request to its core effect, result input or owner call (§3.1, with #942's boundary table as Review corrected it). Every #938 refusal is mapped to the commit that lifts it, and commit 4's precondition includes "no refusal reachable" (§3.2). Commit 0's box table lives on the harness until commit 4. Item 16 lists its tests. Item 15 goes in commit 0. The parent's §6 is amended (§8). The [#938] points are refreshed at #938's round-3 head fbc27f72. Revision 2: P-K22-3's Linux output quoted (§7). Revision 1: P-K22-1 run, P-K22-2 settled by reading the code; two PRs (K22-Q4); commits 0, 2 and 3 independent of commit 1. Revision 0 was the prep draft. It is based on K2-1's shape in #938 (head 25ec1efb), which is still in review. Each point that depends on Review's verdict on #938 is marked **[#938]**. The parent plan is `Notes/plans/2026-11-25-k2-cut-over-onto-the-turn-core.md` (here "K2 §n"), whose §6 defines K2-2 and K2-3 as one PR, and whose §16 items 14–18 are left open for K2-2.
 
 ## 1. Goal
@@ -604,3 +606,57 @@ Nothing in §13 is left for 1b.
 - `wait`'s `.refused(_, .ended)` (b7): a join whose resolver completion reaches `.awaitLeave` after the core ended gets `landShuttingDown`, with no wait registered.
 
 **Also for commit 4:** a case for a drain that finishes during a tick stop's `.recording` (the empty-room timer, since `completeShutdownTurn` doesn't cancel it): the drain's end leaves the stop's callers, and `.shutdownRecorded` reaches `stopStartsDrain`, which answers them (`answerStopCallers`' guard, Review r3 on #969). The case holds the shutdown record, lets the timer's drain finish, checks the callers still wait and the stop is `.recording`, then releases the record.
+
+## 14. Commit 4's two gates (2026-11-28, from #990's review)
+
+Review on #990 (K2-2 commit 3, code first) moved two items to commit 4, the commit where the core becomes the adapter's keeper. Each blocks commit 4 until its case passes. Read at #990's head `8b5c42e0`; line numbers are approximate.
+
+### 14.1 The join's admission in the step
+
+**What breaks.** The core admits in its join's step (`admitJoiningBody`), calling `port.admitJoiningSession` through `callOut`. The adapter's chain runs `admitJoiningSessionIsolated` → `admitJoining` → `applySessionPerPlayerPolicy` → `supersedeSessions` → `recordSyncStreamClear(playerID)`, which makes two keeper calls:
+- `keeperRecordsSyncStream()`: `keeper.assumeIsolated { $0.recordsSyncStream }`. On the facade that reads side state (`syncsInTurn`), and during the step that read is a nested borrow, which traps (`KeeperSideStore.withSide`'s precondition). It is not a refusal.
+- `submitSyncStream([draft], outsideTurn: false)`: a re-entry. `noteReentry` closes the gate, `callOut` answers `.refused`, the join ends `landShuttingDown` after the adapter already superseded the old session, and the land fails `.keeperReentry`.
+
+The keeper admits at depth zero, where both calls are allowed. `SyncStreamLeaveReplayTests.supersedingJoinWithOnJoinRecordsItsClear` pins that.
+
+**Design: the drafts come back with the answer.** This is the in-turn sync phase's pattern: its drafts return with `InTurnSyncOutput` (`inTurnSyncStreamDrafts`), and nothing is submitted from inside the turn.
+1. A new `LandKeeperTransport` requirement, `admitJoiningSessionInStep(playerID:clientID:sessionID:joinSequence:recordsSyncStream:)`, returns `InStepJoinAdmission { admission: JoinAdmission; syncStreamDrafts: [SyncStreamDraft] }`. The caller passes `recordsSyncStream`, so the adapter reads no keeper state in the step. The adapter runs `admitJoining` with a draft sink threaded to `supersedeSessions`, a parameter rather than a field, so no state outlives the call. Its `recordSyncStreamClear` appends to the sink instead of calling the keeper, and still clears `syncStreamUnverifiedPlayers` and `syncStreamViewPlayers`. The leave path's outside-turn clear (`outsideTurn: true`) is unchanged.
+2. `admitJoiningBody` calls it through `callOut`. It passes `recordsSyncStream` as the keeper's own expression, read from the stored binding: `mode == .live && reevaluationRecorder != nil && side.storedSyncsInTurn`.
+   - On `.refused`, it ends the tickless turn record and returns nil, as now.
+   - On `.answered`, it records the drafts in the body with `recordSyncStream(…, outsideTurn: false)`. A draft factory that re-enters ends the land there: the `reentryViolations` check before and after, then `applyReentryFailure`, as `submitSyncStream`'s body does. It checks for re-entry again before `joinAfterAdmission`.
+3. **Order.** The keeper records the clear inside the admission call. The core records it right after `callOut` returns, still before `joinAfterAdmission` and its seed. A marker's position comes from `syncReadPosition(behavior, side)`, a function of the model, and a port call can't change the model except by a re-entry, which ends the land. So both paths record the clear at the same position, before the seed.
+4. The keeper's depth-zero path keeps `admitJoiningSession` until K2-3 deletes it. The adapter conforms to both. The new requirement is additive (Public API: a new protocol requirement, conformed by `TransportAdapter`).
+
+**Cases (the gate).**
+- `supersedingJoinWithOnJoinRecordsItsClear` ported to the core, tick and tickless: no refusal, no failure, the clear before the new session's seed, and a replay that verifies.
+- A draft factory that re-enters, recorded in the admission's step: `.keeperReentry`, and on a tickless land the record `["terminal", "endTurn"]`.
+- `recordsSyncStream: false` (no recorder): no drafts and nothing recorded, with the same admission.
+
+### 14.2 The sender-side refusal
+
+**What breaks.** The keeper's `setTransport` refuses a call made while a turn body runs (`sentinel.bodyDepth == 0`, else `noteReentry(through: "setTransport")`): it closes the current gate (`transport ?? boundSyncRequester`), stores the failure and changes nothing. In commit 4 the facade sends `.setTransport`. A callback made during a core step goes wrong either way:
+- a facade that just sends queues the attach behind the step, so the paths diverge;
+- a facade that reads `attachedTransport` through `withSide` to find the gate traps on the nested borrow.
+
+**Design.** The refusal needs three things, none of them borrowed from the side:
+1. **Whether a step is running: `TurnCore.isStepping`.** It already exists (package, `IsSteppingTests`). Its doc names this use: an adopter's synchronous entry reads it on the shared executor to refuse a call made from inside a step. So this is no core gap, and nothing needs to mirror a depth. The sentinel's `bodyDepth` stays what it is: the keeper frame's nesting count, which the frame sets on both paths. The facade reads the core's fact instead of a copy.
+2. **The current gate:** a reference kept in step with the binding, `sentinel.currentGate`. It is written in `setTransportBody` (the attached port), in `bindSyncRequester` (the requester, when no port is attached) and at `.drainFinished` (the stand-in). Only steps write it, so it isn't stale when read during one.
+3. **The failure:** posted to the side's `sharedTransportFailure` (`LandFailureMailbox`, nonisolated, no await), which the next step boundary reads, as #732's mailbox works now.
+
+When `isStepping` is true, the facade's `setTransport` counts the violation, posts `.keeperReentry` ("setTransport was called while a turn body ran"), closes `currentGate` unless the sentinel already closed it (the same identity skip as `noteReentry`), and sends nothing. The other entries the keeper guards with `bodyDepth` get the same treatment in the facade: `submitSyncStream`, `syncTurnNow`, `requestJoinSyncTurn`, `submitLandFailure`.
+
+**Cases (the gate).**
+- A callback into `setTransport` during a port call in a core step closes the current gate once. No `.setTransport` steps (the count is read right after the step), and the land fails `.keeperReentry` at the next boundary.
+- The same callback with no port attached but a requester bound: the requester's gate is closed.
+- The keeper's path as the twin: the `bodyDepth` refusal, with the same outputs.
+
+### 14.3 Questions
+
+- Q1 (answered, Main 2026-11-28): a new requirement, not a change to `admitJoiningSession`'s shape. It is additive, and the depth-zero path stays as it is until K2-3.
+- Q2 (answered by P-B1): the step fact comes from the core (`TurnCore.isStepping`), which has the read already. No sentinel mirror.
+
+### 14.4 Probes
+
+- **P-B1 (run 2026-11-28 on the Mac, on #990's head with a throwaway port hook, then reverted).** A port's witness, called through `callOut` from a core `.setTransport` step, reads `harness.assumeIsolated { $0.core.isStepping }`, and the case then reads it between steps. Output: `P-B1: isStepping in the witness: true; between steps: false` (`✔ Test run with 1 test in 1 suite passed after 0.010 seconds.`). So a nonisolated adopter entry reached from inside a step can tell that it is inside one, with no borrow.
+- **P-A1 (by reading, no run).** A marker's position is `syncReadPosition(behavior, side)`, read from the model at record time (`recordSyncStream`). The admission is a port call, which can't change the model except by a re-entry that ends the land. The clear's position inside the call and right after it is therefore the same. The ported supersede case's replay verification (§14.1) checks this end to end, so a separate run would only repeat it.
+- **P-A2 (a trap: off the Mac, dispatched separately).** It reads the side from a port callback during a core step, which is what `recordsSyncStream` on a facade would do. The expected result is that the child process exits on `KeeperSideStore: a nested borrow`. This justifies passing `recordsSyncStream` in, rather than having the adapter ask the keeper. The result gets quoted here when it comes back.
