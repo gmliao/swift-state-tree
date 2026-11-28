@@ -866,7 +866,8 @@ final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
             keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the report's re-entry the sentinel refuses
         }
     }
-    /// Joins wait for a sync while set (K2-2 commit 3b's `requestJoinSyncTurn` cases).
+    /// Joins wait for a sync while set (K2-2 commit 3b's `requestJoinSyncTurn` cases); the next
+    /// sync phase completes them and clears it.
     var joinsAwaiting = false
     var hasJoinsAwaitingSync: Bool { trace.append("hasJoinsAwaitingSync"); return followUp == .joinsAwaiting || joinsAwaiting }
     func waitForWriterDrainForInTurnSync() async { trace.append("waitForWriterDrain") }
@@ -875,6 +876,7 @@ final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
     func noteInTurnJoinSyncTick() { trace.append("noteInTurnJoinSyncTick") }
     func runSyncPhaseInTurn<S: StateNodeProtocol>(state: S, events: [InTurnServerEvent], includeSync: Bool, recording: InTurnSyncRecording?) -> InTurnSyncOutput {
         let described = events.map { "#\($0.sequence.map(String.init) ?? "-") \($0.event) to \($0.target)" }
+        joinsAwaiting = false
         trace.append("runSyncPhaseInTurn includeSync=\(includeSync) recording=\(recording.map { "\($0)" } ?? "-") events=\(described)")
         if let keeper = lock.withLock({ () -> LandKeeper<CoreDiffState>? in defer { reentryKeeper = nil }; return reentryKeeper }) {
             trace.append("re-enter submitSyncStream")
@@ -4227,7 +4229,8 @@ struct KeeperCoreSetTransportTests {
 @Suite("The core's in-turn admission and join-sync turn (#700 K2-2 commit 3b)", .timeLimit(.minutes(1)))
 struct KeeperCoreAdmissionTests {
     private func attachedPair(_ name: String, autoStartLoops: Bool = false) async -> (pair: CoreDiffPair, keeperPort: CoreDiffTraceTransport, corePort: CoreDiffTraceTransport) {
-        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), name, autoStartLoops: autoStartLoops)
+        var pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), name, autoStartLoops: autoStartLoops)
+        pair.transports = true
         let keeperPort = CoreDiffTraceTransport(CoreDiffTrace()), corePort = CoreDiffTraceTransport(CoreDiffTrace())
         await pair.keeper.setTransport(keeperPort)
         await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
@@ -4296,7 +4299,9 @@ struct KeeperCoreAdmissionTests {
         #expect(keeperTurns == 1 && coreTurns == 1, "turns: keeper \(keeperTurns), core \(coreTurns)")
         // With loops on, the keeper's own ticks also read the port: compared without loops only.
         if !periodic { #expect(keeperPort.trace.all == corePort.trace.all, "keeper \(keeperPort.trace.all), core \(corePort.trace.all)") }
-        #expect(corePort.trace.all.filter { $0 == "hasJoinsAwaitingSync" }.count == (periodic ? 2 : 1), "\(corePort.trace.all)")
+        // The reads before the phase: the joins, then (periodic) `periodicJoinSyncAllowed`'s.
+        let beforePhase = corePort.trace.all.prefix { !$0.hasPrefix("runSyncPhaseInTurn") }
+        #expect(beforePhase.count == (periodic ? 2 : 1) && beforePhase.allSatisfy { $0 == "hasJoinsAwaitingSync" }, "\(corePort.trace.all)")
         // Draining: a no-op, answered.
         await pair.harness.markDraining(cause: .forceShutdown)
         corePort.trace.clear()

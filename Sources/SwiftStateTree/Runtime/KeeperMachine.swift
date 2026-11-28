@@ -1159,6 +1159,19 @@ extension KeeperModel {
     /// land in this step) and stops the process on a refusal, as the keeper's attach does. Then
     /// it stores the port and its answer, the fold flag and, for a port, `noteTransportBound`'s
     /// writes: a bound requester is let go and the binding rebinds. A detach doesn't rebind.
+    /// The join's admission in a step frame (K2-2 commit 3b): `.notAdmitted` unless the stored
+    /// binding says the attached port syncs in the turn; nil when the port's call was refused
+    /// (a re-entry ended the land in it).
+    mutating func admitJoiningBody(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, _ outputs: inout TurnOutputs, _ made: KeeperJoinDecided, joinSequence: Int64?) -> JoinAdmission? {
+        guard side.storedSyncsInTurn, let port = side.attachedTransport else { return .notAdmitted }
+        switch callOut(behavior, &side, &outputs, { _, _ in
+            port.admitJoiningSession(playerID: made.playerID, clientID: made.call.clientID, sessionID: made.call.sessionID, joinSequence: joinSequence)
+        }) {
+        case let .answered(admission): return admission
+        case .refused: return nil
+        }
+    }
+
     /// `LandKeeper.requestJoinSyncTurn` in a step frame, in the method's order: the drain guard,
     /// then whether joins wait (the binding, then the port's `hasJoinsAwaitingSync`), then, with
     /// periodic sync, `periodicJoinSyncAllowed` (which reads the joins again, for the keeper's
@@ -1669,13 +1682,7 @@ extension KeeperModel {
                 // change, plan §3.6), and the join ends `landShuttingDown`, its reservation and
                 // arrival token with it (`finishJoin`).
                 let admitted: JoinAdmission? = step(behavior, store) { m, side, outputs in
-                    guard side.storedSyncsInTurn, let port = side.attachedTransport else { return .notAdmitted }
-                    switch m.callOut(behavior, &side, &outputs, { _, _ in
-                        port.admitJoiningSession(playerID: made.playerID, clientID: made.call.clientID, sessionID: made.call.sessionID, joinSequence: joinSequence)
-                    }) {
-                    case let .answered(admission): return admission
-                    case .refused: return nil
-                    }
+                    m.admitJoiningBody(behavior, &side, &outputs, made, joinSequence: joinSequence)
                 }
                 guard let admission = admitted else {
                     finishJoin(behavior, store, &turn, .failure(JoinError.landShuttingDown), decided: made, caller: caller)
@@ -1923,7 +1930,7 @@ extension KeeperModel {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
         switch ended.payload {
-        case let .joinAfterLeave(decided, _, _):
+        case let .joinAfterLeave(decided, _):
             switch why {
             case .withdrawn, .answered:
                 finishJoin(behavior, store, &turn, .failure(CancellationError()), decided: decided, caller: nil)
