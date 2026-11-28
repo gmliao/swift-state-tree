@@ -2,7 +2,7 @@
 # Requires: Docker, Node.js, npm. Run from repo root.
 # Build DemoServer Docker image, run container, and execute E2E tests against it.
 # Usage: ./docker/test-e2e-docker.sh [encoding]
-#   encoding: json|jsonOpcode|messagepack (default: runs all three)
+#   encoding: json|jsonOpcode|opcode|messagepack (default: runs all four)
 
 set -e
 
@@ -41,6 +41,7 @@ run_encoding() {
     case "$encoding" in
         json) test_cmd="npm run test:e2e:jsonObject" ;;
         jsonOpcode) test_cmd="npm run test:e2e:opcodeJsonArray" ;;
+        opcode) test_cmd="npm run test:e2e:opcode" ;;
         messagepack) test_cmd="npm run test:e2e:messagepack" ;;
         *) echo "Unknown encoding: $encoding"; return 1 ;;
     esac
@@ -89,7 +90,7 @@ if [ -n "$1" ]; then
     run_encoding "$1"
 else
     failed=0
-    for enc in json jsonOpcode messagepack; do
+    for enc in json jsonOpcode opcode messagepack; do
         if ! run_encoding "$enc"; then
             failed=1
         fi

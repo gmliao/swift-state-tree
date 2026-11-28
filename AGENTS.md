@@ -6,7 +6,7 @@
 - **Run E2E Tests**: When user says "執行 e2e 測試" or "run e2e tests":
  1. **Option 1 - Use test script (recommended)**: `cd Tools/CLI && ./test-e2e-ci.sh`
     - Automatically handles server startup/shutdown
-    - Tests all three encoding modes sequentially
+    - Tests all four encoding modes sequentially
     - Shows server logs on failure
  2. **Option 2 - Manual steps**:
     - Start server: `cd Examples/Demo && swift run DemoServer` (background)
@@ -236,9 +236,10 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
   
   **Important Notes**:
   - AI must ensure all tests pass before submitting PRs.
-  - **Encoding Modes**: Tests run in all three encoding modes (`jsonObject`, `opcodeJsonArray`, `messagepack`). DemoServer automatically switches encoding based on `TRANSPORT_ENCODING` environment variable:
+  - **Encoding Modes**: Tests run in all four encoding modes (`json`, `jsonOpcode`, `opcode`, `messagepack`). DemoServer automatically switches encoding based on `TRANSPORT_ENCODING` environment variable:
     - `TRANSPORT_ENCODING=json` → JSON messages + JSON object state updates
     - `TRANSPORT_ENCODING=jsonOpcode` → JSON messages + opcode JSON array state updates
+    - `TRANSPORT_ENCODING=opcode` → opcode JSON array messages with positional payloads (payload compression) + opcode JSON array state updates
     - `TRANSPORT_ENCODING=messagepack` → MessagePack binary encoding for both messages and state updates
   - When running tests manually, ensure the server is started with the matching encoding mode.
   - Each test uses unique land instance ID to ensure clean state.

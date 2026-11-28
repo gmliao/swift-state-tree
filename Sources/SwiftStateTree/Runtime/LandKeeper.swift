@@ -2267,6 +2267,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         precondition(!model.inputDrainScheduled, "coreTwinForTesting: an input drain is still scheduled; wait for the keeper's work first")
         // The model's slots would be copied without the side's failure table and job tasks.
         precondition(model.actionSlots.isEmpty && model.actionJobs.isEmpty, "coreTwinForTesting: the source holds action jobs or slots")
+        // A leave in flight would be copied as a marker whose OnLeave completion only the source
+        // sees, so a twin's rejoin would wait for it until the drain (Review on #983).
+        precondition(model.leavesInFlight.isEmpty, "coreTwinForTesting: the source has a leave in flight")
         // The twin shares the source's mailbox and sentinel (Review round 2 on #938): it starts
         // from an empty mailbox, and one source closes at most one twin's gate, so a second twin
         // with a transport can't replace the first one's gate unseen.
@@ -5924,6 +5927,8 @@ extension KeeperModel {
         guard leavesInFlight[playerID] == generation else { return }
         leavesInFlight[playerID] = nil
         side.leaveEnds.release(playerID)
+        // Tests: the leave's end, in its step, before a waiting join is released.
+        side.probe?("leave-ended")
     }
 
     /// The drain's start ends every leave in flight (#943), once the drain flag is set: the
@@ -5934,6 +5939,8 @@ extension KeeperModel {
     mutating func endAllLeavesInFlight(_ side: inout KeeperTurnSide) {
         leavesInFlight.removeAll()
         side.leaveEnds.releaseAll()
+        // Tests: the drain's end of the leaves, in its step, before a waiting join is released.
+        side.probe?("leaves-ended-for-drain")
     }
 
     /// Ends one attempt's reservation; idempotent, and it leaves the player's other attempts' ones.

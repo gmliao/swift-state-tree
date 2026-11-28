@@ -198,6 +198,51 @@ jobs:
         fi
         sleep 2 # Give port time to release
 
+    # Test opcode encoding (#543): opcode JSON messages with payload compression on, the only
+    # leg that runs the opcode JSON message encoder's positional path (#541).
+    - name: Start DemoServer (opcode)
+      working-directory: Examples/Demo
+      env:
+        TRANSPORT_ENCODING: opcode
+      run: |
+        swift run DemoServer > /tmp/demoserver-opcode.log 2>&1 &
+        echo $! > /tmp/demoserver-opcode.pid
+        echo "DemoServer started with PID $(cat /tmp/demoserver-opcode.pid) using encoding: opcode"
+
+    - name: Wait for DemoServer (opcode)
+      run: |
+        echo "Waiting for DemoServer (opcode) to start..."
+        timeout=30
+        elapsed=0
+        while [ $elapsed -lt $timeout ]; do
+          if curl -s http://localhost:8080/schema > /dev/null 2>&1; then
+            echo "✅ DemoServer (opcode) is ready!"
+            exit 0
+          fi
+          echo "Waiting... ($elapsed/$timeout seconds)"
+          sleep 2
+          elapsed=$((elapsed + 2))
+        done
+        echo "❌ DemoServer (opcode) failed to start within $timeout seconds"
+        cat /tmp/demoserver-opcode.log
+        exit 1
+
+    - name: Run E2E tests (opcode)
+      timeout-minutes: 10
+      working-directory: Tools/CLI
+      env:
+        TRANSPORT_ENCODING: opcode
+      run: npm run test:e2e:opcode
+
+    - name: Stop DemoServer (opcode)
+      if: always()
+      run: |
+        if [ -f /tmp/demoserver-opcode.pid ]; then
+          kill $(cat /tmp/demoserver-opcode.pid) || true
+          wait $(cat /tmp/demoserver-opcode.pid) 2>/dev/null || true
+        fi
+        sleep 2 # Give port time to release
+
     # Test messagepack encoding
     - name: Start DemoServer (messagepack)
       working-directory: Examples/Demo
@@ -313,7 +358,7 @@ jobs:
       if: matrix.row_addressing == 'on'
       shell: bash
       env:
-        E2E_ENCODINGS: json jsonOpcode messagepack
+        E2E_ENCODINGS: json jsonOpcode opcode messagepack
         # Its own log directory: the logs the check reads are this step's runs only.
         E2E_TMP_DIR: /tmp/e2e-main
       run: |
@@ -334,7 +379,7 @@ jobs:
       shell: bash
       env:
         ROW_ADDRESSING: "false"
-        E2E_ENCODINGS: ${{ inputs.full_matrix && 'json jsonOpcode messagepack' || 'jsonOpcode messagepack' }}
+        E2E_ENCODINGS: ${{ inputs.full_matrix && 'json jsonOpcode opcode messagepack' || 'jsonOpcode opcode messagepack' }}
         E2E_TMP_DIR: /tmp/e2e-rows-off
       run: |
         set -o pipefail
