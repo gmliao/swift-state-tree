@@ -87,8 +87,14 @@ public protocol LandKeeperTransport: Sendable {
     /// Whether `keeper` may call `runSyncPhaseInTurn` from inside its own actor turn.
     ///
     /// `true` only when this transport is attached to that keeper (identity) and runs on its
-    /// serial executor. A keeper asks this once per turn; a transport attached to another keeper
-    /// answers `false`, so no keeper ever reaches an `assumeIsolated` that would trap.
+    /// serial executor. A transport attached to another keeper answers `false`, so no keeper ever
+    /// reaches an `assumeIsolated` that would trap.
+    ///
+    /// The answer must not change while the transport stays attached (the adapter's is fixed
+    /// by identity). A keeper asks it in its turns, including at each sync follow-up's wake; a
+    /// turn core asks it at the attach and keeps the answer for its stored binding (K2-2
+    /// commit 3), so an answer that changed would make the two diverge. A sync turn the caller
+    /// hands a port to (`.syncTurnTicket`, `.syncTurnNow`) still asks that port.
     ///
     /// A live keeper also asks it at the attach (`init(transport:)`, `setTransport(_:)`): `false`
     /// there stops the process, because a live keeper syncs only in its turns (#546 L2d). No
@@ -146,7 +152,9 @@ public protocol LandKeeperTransport: Sendable {
     /// deferred by back-pressure (`.deferredBackPressure`), and retries as soon as it returns.
     /// No default (#546 L2d-3): one that returned at once would make a transport that defers
     /// retry its sync-only turn again and again until its writer drains. A transport that never
-    /// defers may return at once.
+    /// defers may return at once. It returns on a cancel too: a turn core cancels the wait of a
+    /// retry it abandoned. Today that is a port attach, which rebinds (K2-2 commit 3); the land's
+    /// end cancels it once the core is ended (`Turn.endAll`, commit 4).
     func waitForWriterDrainForInTurnSync() async
 
     /// Whether the transport records in-turn sync folds (`noteInTurnSyncFold`): true only while

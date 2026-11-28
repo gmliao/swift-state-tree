@@ -2263,6 +2263,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             transportFailure: pendingTransportFailure,
             transport: twinTransport
         )
+        // The twin's stored binding, as `.setTransport`'s step would store it: the witness for
+        // this keeper, the core's owner (K2-2 commit 3a).
+        side.attachedSyncsInTurn = twinTransport?.runsSyncPhaseInTurn(of: self) ?? false
         // The players' services live on the side, beside the entries the model copy carries.
         side.playerServices = turnSide.playerServices
         // The source's test holds, so a staged start on the core reaches the same hold points.
@@ -4288,12 +4291,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await recorderSubmissions.waitForAll()
     }
 
+    private var testDrainWaiterIDForTesting = UInt64.max
+
     /// Tests only: waits until no tickless input task is in flight (`debugBeginWork`, counted
     /// before the call that started it returned), then until its recorder submissions are in.
     func waitForInFlightWorkForTesting() async {
         while model.debugInFlightWork > 0 {
-            model.debugNextWaiterID &+= 1
-            let waiterID = model.debugNextWaiterID
+            // Its own ID space, counting down from the top: a test's wait leaves the model's
+            // `debugNextWaiterID` alone, so the differential cases' digests don't depend on
+            // whether the work was still in flight when the case waited (K2-2 commit 3).
+            let waiterID = testDrainWaiterIDForTesting
+            testDrainWaiterIDForTesting &-= 1
             await withCheckedContinuation { continuation in
                 turnSide.debugDrainWaiters[waiterID] = continuation
             }
@@ -5170,7 +5178,7 @@ extension KeeperModel {
             return .accepted(sequence: sequence)
         }
         pendingItems.append(item)
-        kickServerInputTurn(behavior, side, &outputs, upTo: sequence)
+        kickServerInputTurn(behavior, &side, &outputs, upTo: sequence)
         return .accepted(sequence: sequence)
     }
 
@@ -5458,14 +5466,16 @@ extension KeeperModel {
             if actions.slotWaiters[sequence] != nil { violations.append("slot \(sequence) has a keeper waiter and a core wait") }
         }
         for refusal in coreReplies.refusals { violations.append("core side: refused \(refusal)") }
-        // A sync follow-up that slipped past the refusal (Review round 2 on #938): its work count
-        // or its pending turn on a core's side has nothing that runs or ends it.
-        if coreReplies.onCore,
-           requestedSyncWork > 0 || side.pendingSyncTurnAfterTurn != nil || joinSyncTurnBinding != nil || inTurnDrainRetryBinding != nil {
-            violations.append("core side: requested sync work \(requestedSyncWork), pending follow-up \(side.pendingSyncTurnAfterTurn != nil), join-sync binding \(joinSyncTurnBinding != nil), drain-retry binding \(inTurnDrainRetryBinding != nil)")
-        }
-        if !coreReplies.onCore, coreReplies.carriedSyncsInTurn != nil {
-            violations.append("a carried syncsInTurn on the keeper's side")
+        // A core's sync work is owned by its follow-ups (K2-2 commit 3c): the slot by its
+        // wakes, each binding retry by its own record. Work or a slot with no follow-up has
+        // nothing that runs or ends it.
+        if coreReplies.onCore {
+            let records = coreReplies.syncFollowUps.values
+            let wakes = records.filter { $0.kind == .afterTurn }.count
+            let owned = records.filter { $0.kind != .afterTurn }.count + (side.pendingSyncTurnAfterTurn != nil ? 1 : 0)
+            if requestedSyncWork != owned || (side.pendingSyncTurnAfterTurn != nil && wakes == 0) {
+                violations.append("core side: requested sync work \(requestedSyncWork), owned \(owned), pending follow-up \(side.pendingSyncTurnAfterTurn != nil), wakes \(wakes)")
+            }
         }
         return violations
     }
@@ -7182,10 +7192,6 @@ extension KeeperModel {
         transport: any LandKeeperTransport,
         reason: SyncTurnReason
     ) {
-        // On a core (#700 K2-1, Review round 2 on #938): the follow-up's start would go through
-        // the keeper reference, which a core's side doesn't have. The follow-up is dropped after
-        // its completed phase and reported (`refusesSyncFollowUpOnCore`); K2-2 routes it.
-        if refusesSyncFollowUpOnCore(&side, "requestSyncTurnAfterThisTurn") { return }
         requestedSyncTurnsForTesting[reason, default: 0] += 1
         if let pending = side.pendingSyncTurnAfterTurn {
             if pending.binding != syncBinding.current {
@@ -7195,6 +7201,8 @@ extension KeeperModel {
         }
         side.pendingSyncTurnAfterTurn = SyncTurnFollowUp(port: transport, binding: syncBinding.current)
         beginRequestedSyncWork()
+        // On a core (K2-2 commit 3c) a request wakes the slot (`stageCoreSyncFollowUp`).
+        if stageCoreSyncFollowUp(&side, .afterTurn, SyncTurnFollowUp(port: transport, binding: syncBinding.current)) { return }
         // The follow-up's start is staged (D14); its slot and work count are set inline.
         let keeperReference = side.keeperReference
         outputs.stage { [weak keeperReference] in
@@ -7212,11 +7220,11 @@ extension KeeperModel {
         _ outputs: inout TurnOutputs,
         transport: any LandKeeperTransport
     ) {
-        if refusesSyncFollowUpOnCore(&side, "retrySyncOnlyTurnAfterWriterDrain") { return }
         guard inTurnDrainRetryBinding != syncBinding.current else { return }
         inTurnDrainRetryBinding = syncBinding.current
         beginRequestedSyncWork()
         let followUp = SyncTurnFollowUp(port: transport, binding: syncBinding.current)
+        if stageCoreSyncFollowUp(&side, .writerDrain, followUp) { return }
         // The retry's start is staged (D14); its binding and work count are set inline.
         let keeperReference = side.keeperReference
         outputs.stage { [weak keeperReference] in
@@ -7230,16 +7238,15 @@ extension KeeperModel {
         }
     }
 
-    /// Whether `side` is a core's, whose sync follow-ups K2-1 doesn't route. This drops the
-    /// follow-up after a completed phase; it doesn't refuse the input: by the time it runs, the
-    /// step applied its inputs, sent its events to the port and applied the sync result. Only
-    /// the follow-up's own work is skipped (its work count, binding, pending turn and staged
-    /// start), and the drop is recorded by name. A core that holds a recorded refusal is not
-    /// valid for further steps (the differential asserts no core violations). K2-2 must route
-    /// the follow-ups, not refuse them (K2 plan §18, item 19).
-    mutating func refusesSyncFollowUpOnCore(_ side: inout KeeperTurnSide, _ site: String) -> Bool {
+    /// On a core (K2-2 commit 3c): stages `followUp`'s request, which `endOfStep` makes, and
+    /// returns true; the keeper's side returns false and stages its Task. The slot or binding
+    /// and the work count are set by the caller, inline, on both sides.
+    mutating func stageCoreSyncFollowUp(_ side: inout KeeperTurnSide, _ kind: KeeperSyncFollowUpKind, _ followUp: SyncTurnFollowUp) -> Bool {
         guard side.coreInputReplies.onCore else { return false }
-        side.coreInputReplies.refusals.append("\(site): a sync follow-up's start needs the keeper (K2-2: the binding token)")
+        let id = side.coreInputReplies.nextSyncFollowUpID
+        side.coreInputReplies.nextSyncFollowUpID += 1
+        side.coreInputReplies.syncFollowUps[id] = KeeperCoreSyncFollowUp(kind: kind, followUp: followUp)
+        side.coreInputReplies.stagedSyncFollowUps.append(id)
         return true
     }
 
@@ -7251,12 +7258,12 @@ extension KeeperModel {
         after delay: Duration,
         transport port: any LandKeeperTransport
     ) {
-        if refusesSyncFollowUpOnCore(&side, "scheduleJoinSyncTurn") { return }
         guard joinSyncTurnBinding != syncBinding.current else { return }
         joinSyncTurnBinding = syncBinding.current
         joinSyncTurnsScheduledForTesting += 1
         beginRequestedSyncWork()
         let followUp = SyncTurnFollowUp(port: port, binding: syncBinding.current)
+        if stageCoreSyncFollowUp(&side, .joinSync(delay: delay), followUp) { return }
         // The join sync turn's start is staged (D14); its binding and work count are set inline.
         let keeperReference = side.keeperReference
         outputs.stage { [weak keeperReference] in
@@ -8926,12 +8933,18 @@ extension KeeperModel {
     /// staged start (D14), through the side's keeper reference.
     mutating func kickServerInputTurn(
         _ behavior: KeeperBehavior<State>,
-        _ side: KeeperTurnSide,
+        _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         upTo sequence: Int64
     ) {
         guard behavior.isTickless else { return }
         debugBeginWork()
+        // On a core the `.serverInput` step registers the kick's wait (K2-2 plan §3.2).
+        if side.coreInputReplies.onCore {
+            assert(side.coreInputReplies.serverInputKick == nil, "one kick per server input step")
+            side.coreInputReplies.serverInputKick = sequence
+            return
+        }
         let keeper = side.keeperReference.keeper as? LandKeeper<State>
         outputs.stage { [weak keeper] in keeper?.startServerInputKick(upTo: sequence) }
     }

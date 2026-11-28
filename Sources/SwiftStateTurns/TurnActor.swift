@@ -24,8 +24,11 @@ public protocol TurnActor: Actor {
     /// returns (an `.untilWorkerReturns` hold ends when the worker's completion runs). Its late
     /// result goes to `handleLateResult`. Work that ignores the cancellation runs to its end and
     /// keeps the actor until then. Work that must finish goes through `run`, which is never
-    /// cancelled. With a mailbox, a cancelled `perform` returns nil: a replay gets its
-    /// completions from `perform` again, and nil is the same whenever the cancel landed.
+    /// cancelled. With a mailbox, a replay gets its completions from `perform` again, so the
+    /// adopter's contract is that a cancelled `perform` returns nil. That keeps a replay's
+    /// completion the same only when the cancel lands before the worker's last safe point: one
+    /// past it returns its real input, and a nil that retires an `.untilWorkerReturns` hold still
+    /// takes an ordinal.
     @concurrent nonisolated func perform(_ effect: M.Effect) async -> M.Input?
     /// The synchronous sink of a step's outputs, called between steps.
     func flush(_ outputs: consuming [M.Output])

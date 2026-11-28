@@ -94,6 +94,7 @@ enum KeeperCensus {
             "actor.recorderSubmissions": .outside(.recorder),
             "actor.releasedTransport": .outside(.bindingToken),
             "actor.requestedSyncWorkWaitersForTesting": .replaced(by: "K2"),
+            "actor.testDrainWaiterIDForTesting": .replaced(by: "K2"),
             "actor.syncClockForTesting": .testHook,
             "actor.syncTask": .replaced(by: "K2"),
             "actor.tickClockForTesting": .testHook,
@@ -149,6 +150,8 @@ enum KeeperCensus {
             "turnSide.sharedDrainFlag": .outside(.drainFlag),
             "turnSide.sharedTransportFailure": .replaced(by: "K4"),
             "turnSide.attachedTransport": .outside(.bindingToken),
+            "turnSide.attachedSyncsInTurn": .outside(.bindingToken),
+            "turnSide.releasedStandIn": .outside(.bindingToken),
             "turnSide.sharedBoundRequester": .outside(.bindingToken),
             "turnSide.keeperReference": .replaced(by: "K2"),
             "turnSide.destroyTicket": .replaced(by: "K7"),
@@ -323,6 +326,8 @@ extension KeeperCensus {
         "turnSide.lastDestroyTicketForTesting": "goes with the slot: the core timer's own test read",
         "turnSide.playerServices": "in-step side writes (K2-2 plan §9): the join's insert, the leave's remove and the two removeAll sites move with the slot in commit 4; the teardown's and the no-turn shutdown's go in commit 1",
         "turnSide.attachedTransport": "the binding token on the inputs that need the port",
+        "turnSide.attachedSyncsInTurn": "the binding token: the stored witness answer, set by .setTransport's step (K2-2 commit 3a)",
+        "turnSide.releasedStandIn": "the binding token: the released stand-in .drainFinished's step makes and a later .setTransport attaches",
         "turnSide.sharedBoundRequester": "the binding token",
         "turnSide.drainStartedWaitersForTesting": "test waiters on replies",
         "turnSide.failureWaitersForTesting": "test waiters on replies",
@@ -465,7 +470,7 @@ struct KeeperCensusTests {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
         #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")
         #expect(routed.union(deferred) == Set(KeeperInputRoute.allCases), "neither: \(Set(KeeperInputRoute.allCases).subtracting(routed.union(deferred)).map(\.rawValue).sorted())")
-        #expect(routed.count == 30 && deferred.isEmpty, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
+        #expect(routed.count == 34 && deferred.isEmpty, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
         #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
         let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
         #expect(queries.isDisjoint(with: deferredQueries))

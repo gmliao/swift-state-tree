@@ -72,9 +72,13 @@ extension TransportAdapter: LandKeeperTransport, LandKeeperSettlePort {
         profilerCounters?.incrementSyncJoinTicks()
     }
 
+    /// Returns on a cancel too: a core abandons the retry that waits here when a port attach
+    /// rebinds (K2-2 commit 3c; the land's end once the core is ended, commit 4) and cancels
+    /// its worker, and the writer's wait honours that. So does the test override's loop, which
+    /// also ends once the writer is finished.
     public func waitForWriterDrainForInTurnSync() async {
         await outboundWriter.waitForSyncCycleDrain()
-        while writerBackPressureForcedForTesting() {
+        while !Task.isCancelled, !outboundWriter.isFinished, writerBackPressureForcedForTesting() {
             try? await safeTaskSleep(for: .milliseconds(1))
         }
     }
