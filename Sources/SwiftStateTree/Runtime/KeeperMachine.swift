@@ -33,8 +33,12 @@ struct KeeperCoreBarrierWaits: Sendable, Equatable {
     /// The drain's callers (a `.shutdown`, and a second one that joins it): answered by
     /// `.drainFinished`'s step (K2-2 commit 1b).
     var drained: [InputID] = []
+    /// Stops that arrived before the initialization ended (`forceShutdown`'s `ensureInitialized`):
+    /// admitted at its end, never answered by a drain that ends before it (Review r1 on #969,
+    /// MF4: a land failure's drain during OnInitialize's resolvers).
+    var stopsAwaitingInitialization: [InputID] = []
 
-    var isEmpty: Bool { freeze.isEmpty && initialized.isEmpty && drained.isEmpty }
+    var isEmpty: Bool { freeze.isEmpty && initialized.isEmpty && drained.isEmpty && stopsAwaitingInitialization.isEmpty }
 }
 
 /// Who an entry speaks for: the three identities every player entry takes.
@@ -712,44 +716,49 @@ extension KeeperModel: TurnMachine {
                 // The owner's two calls follow this step, in order (M10): the released stand-in,
                 // then `setTransport(nil)`.
                 turn.emit(.detachTransport, for: .land)
-                let waiting = coreBarrierWaits.drained
-                coreBarrierWaits.drained.removeAll()
-                for caller in waiting { turn.reply(to: caller, .success(.done)) }
+                answerStopCallers(&turn)
             case .notStarted, .waitingForTick, .destroyResolving, .afterFinalize, .finished:
                 preconditionFailure("onLandDestroyed returned in phase \(drainPhase)")
             }
         case let .tickRecordTaken(tickId):
-            // The tick-record hold (plan §13.1): the tick's in-flight work ends here.
-            _ = tickId
+            // The tick-record hold (plan §13.1): the tick's in-flight work ends here, once.
+            precondition(ticksInFlight > 0, "the record of tick \(tickId) was taken with no tick in flight")
             endTick(behavior, store, &turn)
         case .shutdown:
-            // The keeper's `forceShutdown` and `runForceShutdown` (plan §11.1). One flight: a
-            // later caller waits for the drain, as on the keeper's `SingleFlight`.
-            if let caller = turn.input { coreBarrierWaits.drained.append(caller) }
-            guard stopPhase == .notStarted, !stopAwaitsInitialization else { break }
-            // `forceShutdown`'s `ensureInitialized`: the stop begins once the initialization
-            // ended, done or failed.
+            // The keeper's `forceShutdown`: `ensureInitialized` first, so a stop before the
+            // initialization ended, done or failed, waits for it, whatever drain runs meanwhile.
             guard didInitialize else {
+                if let caller = turn.input { coreBarrierWaits.stopsAwaitingInitialization.append(caller) }
                 stopAwaitsInitialization = true
                 break
             }
-            stopBegin(behavior, store, &turn)
+            admitStop(behavior, store, &turn, caller: turn.input)
         case .shutdownRecorded:
             switch stopPhase {
             case .recording:
                 stopStartsDrain(behavior, store, &turn)
-            case .notStarted, .waitingForTick, .awaitingShutdownTurn, .draining:
+            case .notStarted, .waitingForTick, .awaitingShutdownTurn, .draining, .ended:
                 preconditionFailure("the shutdown record was taken in phase \(stopPhase)")
             }
         default:
             // `KeeperInputRoutes.deferred` names where each of these is routed.
             preconditionFailure("K2-1: \(input.routeName) is routed in \(KeeperInputRoutes.deferred[input.route] ?? "an unnamed PR")")
         }
-        // The barrier's held intakes, when this step thawed or drained the land.
+        endOfStep(behavior, store, &turn)
+    }
+
+    /// What every step does at its end, an input's (`handle`) and a query's (`answer`) alike
+    /// (Review r1 on #969, MF2: a query step can fail the land too).
+    /// - The barrier's held intakes, when this step thawed or drained the land.
+    /// - A land failure's teardown, before the stop goes on: the keeper's `failLand` installs the
+    ///   failure's drain in the failing segment, so a stop resumed by the same step joins it
+    ///   (MF3: a tickless `[join, shutdown]` batch whose join fails the land).
+    /// - The tickless stop, once its shutdown turn applied or a drain dropped it.
+    /// - The core's waits on inputs this step dropped, the job starts, and the freeze replies.
+    mutating func endOfStep(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
         releaseCoreHeldIntakes(behavior, store, &turn)
-        resumeStopAfterShutdownTurn(behavior, store, &turn)
         startFailureTeardownIfNeeded(behavior, store, &turn)
-        // A drop of the pending inputs in this step failed the core's waits on them.
+        resumeStopAfterShutdownTurn(behavior, store, &turn)
         answerDroppedCoreInputWaits(behavior, store, &turn)
         runCoreJobEffects(store, &turn)
         answerCoreFreezeWaits(&turn)
@@ -905,15 +914,10 @@ extension KeeperModel: TurnMachine {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
         let answer = answerQuery(behavior, store, query)
-        // A query step can fail the land (a refused `callOut` → `failLand` → the pending inputs'
-        // drop), which fails the core's waits on them: answered here, as `handle` does. K2-1's
-        // two routed queries are a tick land's, which has no input-turn waits, so none is
-        // reachable yet; K2-2's tickless intakes are.
-        releaseCoreHeldIntakes(behavior, store, &turn)
-        answerDroppedCoreInputWaits(behavior, store, &turn)
-        // A tick land's job intake is this query's (`.admitAction`): its start runs here.
-        runCoreJobEffects(store, &turn)
-        answerCoreFreezeWaits(&turn)
+        // A query step can fail the land (a refused `callOut` → `failLand`): its teardown, the
+        // drop's failed waits and the rest of a step's end run here, as `handle`'s. A tick land's
+        // job intake is this query's (`.admitAction`): its start runs here too.
+        endOfStep(behavior, store, &turn)
         return answer
     }
 
@@ -1094,6 +1098,24 @@ extension KeeperModel {
     mutating func beginStopAfterInitialization(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
         guard stopAwaitsInitialization else { return }
         stopAwaitsInitialization = false
+        let waiting = coreBarrierWaits.stopsAwaitingInitialization
+        coreBarrierWaits.stopsAwaitingInitialization.removeAll()
+        for caller in waiting { admitStop(behavior, store, &turn, caller: caller) }
+        if waiting.isEmpty { admitStop(behavior, store, &turn, caller: nil) }
+    }
+
+    /// A stop after `ensureInitialized` (`forceShutdown`'s flight): a stop whose flight already
+    /// returned, or one after the drain finished, is answered at once, as the keeper's finished
+    /// `SingleFlight` and `drainTask` return (Review r1 on #969, MF1, a late joiner after
+    /// completion). Otherwise the caller waits for the drain, and the first one begins the stop.
+    mutating func admitStop(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, caller: InputID?) {
+        if stopPhase == .ended || drainPhase == .finished {
+            if stopPhase == .draining { stopPhase = .ended }
+            if let caller { turn.reply(to: caller, .success(.done)) }
+            return
+        }
+        if let caller { coreBarrierWaits.drained.append(caller) }
+        guard stopPhase == .notStarted else { return }
         stopBegin(behavior, store, &turn)
     }
 
@@ -1217,6 +1239,9 @@ extension KeeperModel {
     mutating func endTick(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
         let idle = tickEnd()
         store.withSide { side in debugEndWork(&side) }
+        // Plan §13.1's order: the freeze's work wait is answered at the count's zero, before the
+        // drain or the stop goes on in this step (Review r1 on #969).
+        answerCoreFreezeWaits(&turn)
         if idle, drainPhase == .waitingForTick {
             let request = step(behavior, store) { m, side, outputs in m.drainAfterTicks(behavior, &side, &outputs) }
             drainDrive(behavior, store, &turn, request)
@@ -1327,12 +1352,14 @@ extension KeeperModel {
         // A drain in progress is joined: its `.drainFinished` answers the callers. Keyed on the
         // drain's request, as the keeper's on `drainTask`, not on `isDraining`: the shutdown turn
         // (`completeShutdownTurn`) sets the flag before any drain runs.
-        guard !drainRequested else { return }
+        guard !drainRequested else {
+            // A drain that already finished answers its joiners now (MF1).
+            if drainPhase == .finished { answerStopCallers(&turn) }
+            return
+        }
         guard players.isEmpty else {
             // As the keeper: `shutdownIfIdle` returns without a drain, and so does the stop.
-            let waiting = coreBarrierWaits.drained
-            coreBarrierWaits.drained.removeAll()
-            for caller in waiting { turn.reply(to: caller, .success(.done)) }
+            answerStopCallers(&turn)
             return
         }
         step(behavior, store) { m, side, _ in
@@ -1344,6 +1371,15 @@ extension KeeperModel {
         // The owner holds `.drainStart`, cancels its loops, then sends `.drainStart` (M7).
         drainRequested = true
         turn.emit(.drainStarting, for: .land)
+    }
+
+    /// The drain's callers are answered; a stop that was draining has returned (`.ended`), so a
+    /// later one is answered at once.
+    mutating func answerStopCallers(_ turn: inout Turn<KeeperModel<State>>) {
+        if stopPhase == .draining { stopPhase = .ended }
+        let waiting = coreBarrierWaits.drained
+        coreBarrierWaits.drained.removeAll()
+        for caller in waiting { turn.reply(to: caller, .success(.done)) }
     }
 
     /// A land failure's teardown on the core (the keeper's `runFailureTeardown`, which

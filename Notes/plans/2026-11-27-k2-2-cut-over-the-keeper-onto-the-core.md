@@ -524,6 +524,25 @@ P1b1 drain: drainAfterTicks after the record, then finished
 - `isDraining` is already set at the hold, because `shutdownIfIdle` sets the flag before it calls `drainAfterIdleCheck`. So a `.tickDue` during the hold starts no tick on either path, and no `loopEpoch` check is needed for that case. `loopEpoch` still guards a `.tickDue` that was sent before the epoch bump and steps after the drain finishes.
 - `"probe input-drain-end"?` marks an event that may or may not appear. The tick land has no input drain, so if it appears, that is a finding for this plan.
 
+**Run on 2026-11-28 (r2 of #969): the scenario as written can't happen.** On a tick land the stop waits for the tick in flight before it asks for the drain start, so step 3's drain-start hold is never reached while step 2's record is held (review round 1 on #969). The probe ran in the order that can happen: the tick held at its record, the stop sent, the record released, then the drain-start hold. It ran without p1, because the stop's turn clears the players anyway. The actual output, as printed:
+```
+P1b1 keeper reached drainStart with the tick held: false
+P1b1 keeper events so far=["probe turn-begin", "probe turn-end", "hold turnRecord", "probe force-shutdown-joined", "probe shutdown-stop-gate"]
+P1b1 keeper at drainStart hold: tickTask=set syncTask=set isDraining=true
+P1b1 keeper tick during hold ran: false
+P1b1 keeper after: tickTask=nil syncTask=nil
+P1b1 keeper events=["probe turn-begin", "probe turn-end", "hold turnRecord", "probe force-shutdown-joined", "probe shutdown-stop-gate", "hold drainStart"]
+P1b1 core after .shutdown with the tick held: stopPhase=waitingForTick drainPhase=notStarted drainRequested=false
+P1b1 core at drainStart hold (true): stopPhase=draining drainPhase=notStarted epoch=0 ticksInFlight=0
+P1b1 core tickDue(current epoch) during hold ran: false
+P1b1 core after: drainPhase=finished stopPhase=ended epoch=1 inputs=["startLand", "tickDue", "shutdown", "tickRecordTaken", "shutdownRecorded", "tickDue", "drainStart", "destroyHandlerResolved", "destroyHandlerResolved", "afterFinalizeReturned", "drainFinished"]
+```
+What it shows:
+- On both paths the drain-start hold comes after the tick's record is taken. The stop waits for the tick (`waitingForTick`), not the drain (`drain-waits-for-tick` doesn't fire). The drain's own tick wait is reached only when a drain starts with a tick in flight, which a failure's drain does (`staleTickDueAfterDrainStart`, `freezeAndDrainWaitOnOneTick`).
+- At the hold, the keeper's loops are still set and the flag is already up. They are cancelled after the hold, which is `drainAfterIdleCheck`'s order. On the core the epoch is still the old one at the hold, because the bump is in `.drainStart`'s step.
+- A `.tickDue` with the current epoch during the hold runs no tick on either path. The drain flag stops it, not the epoch.
+- No `input-drain-end` appeared.
+
 No other probe is needed: every other row ports a body that #944 already segmented, unchanged.
 
 ### 13.6 Written on 2026-11-27 (unbuilt), and what the code found
@@ -557,3 +576,12 @@ Everything in §13.1–§13.4 is written, except the cases listed under "Left" b
   - The three `failed: true` trace cases pin the order on the core: `landDidFail`, then `onLandDestroyed`, after every port call of the failing step.
 
 Nothing in §13 is left for 1b.
+
+**Review round 1 on #969 (2026-11-28), and what changed:**
+- **Every step ends the same way.** `handle` and `answer` both end in `endOfStep`: the held intakes, the failure teardown, the stop's resume, the dropped waits, the job starts, then the freeze replies. A land failure in a query step (`.settle`, `.syncTurnNow`) now tears the land down (`queryStepFailureTearsDown`). The failure teardown comes before the stop's resume. That is the keeper's order, because `failLand` stages the teardown in the failing segment.
+- **A stop after its flight returned is answered at once.** `StopPhase.ended` and `admitStop` keep the keeper's `SingleFlight`: a stop during the flight joins it, and a stop after the drain finished, or after a stop that found players, gets `.done` at once (`secondStopJoins`, `queryStepFailureTearsDown`). The lesson is in `Notes/solutions/2026-11-28-a-flight-that-has-finished-still-answers-late-callers.md`.
+- **A stop before the initialization's end waits apart** (`stopsAwaitingInitialization`), so a drain that finishes during OnInitialize's resolvers doesn't answer it. `beginStopAfterInitialization` moves it through `admitStop` (`stopDuringTheInitializationWaitsForIt`, for `.done`, `.failed` and `.abandonedByDrain`).
+- **`endTick` answers the freeze first**, then the drain and the stop go on, as §13.1 says (`freezeAndDrainWaitOnOneTick`). On the core, the order inside one step can't be seen from outside, because replies go out after the step. The case pins that both waits end.
+- **New cases:** `drainOvertakesQueuedShutdown` (m8), `stopAnswersAWaitingFreeze`, `failedInitializationDrainFinishes`, `boundRequesterHearsTheDestruction` (T8b), `staleTickDueOnAnOpenLand` (m2), and `throwingDestroyResolverOnTheCore`. The harness records `.detachTransport`, and `stopOnIdleLand` asserts one detach. T5–T8's AfterFinalize makes a sync request after its hold, which the drop counter must count (m12).
+- **Bounded waits.** The harness's `waitForInputs` is bounded by an event log. The stop cases read the parked list or the phase right after the step that should move it, so a mutant fails at that read (m4–m7, m11's never-begins reading) instead of at the suite's time limit.
+- **Left for commit 3:** MF3's case, a tickless `[join, shutdown]` batch whose join report is refused (`shutdownBatchThatFailsTheLand`, disabled). The core refuses a tickless land with a transport until the binding token (`ticklessLandWithTransport`). Without a transport, the batch's report calls no port, so the case can't be reached yet. The fix it tests, the failure teardown before the stop's resume in `endOfStep`, is in.

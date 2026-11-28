@@ -335,6 +335,10 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     /// The owner's `.landFailedTeardown` hold (the keeper's `runFailureTeardown`): when armed,
     /// the next failure teardown waits at it before the port hears of the failure.
     nonisolated let armedFailureTeardownGate = CoreDiffArmedGate()
+    /// "drain finished" once per flushed `.detachTransport`: the event after `.drainFinished`'s
+    /// step, so a case waits for that step itself, not for the port's `onLandDestroyed`, which
+    /// the notify effect calls before the step (Review r1 on #969).
+    nonisolated let drainFinishes = EventLog()
     /// The last `.initializeResolvers` effect's request, kept as it starts (a stale resolution's
     /// case builds its input from it).
     nonisolated let initializeResolvingSeen = CoreDiffLatest<LandKeeper<State>.InitializeResolving>()
@@ -444,13 +448,12 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
 
     private func note(_ input: KeeperInput<State>) { noteSeen(input.routeName) }
     private func noteResult(_ name: String) { noteSeen(name) }
-    private var inputWaiters: [(name: String, count: Int, resume: CheckedContinuation<Void, Never>)] = []
+    /// The same names as events, so `waitForInputs` is bounded (Review r1 on #969: a mutant
+    /// that loses an input fails the case at the hang bound, not at the suite's time limit).
+    private nonisolated let seenEvents = EventLog()
     private func noteSeen(_ name: String) {
         inputsSeen.append(name)
-        let seen = inputsSeen.filter { $0 == name }.count
-        let ready = inputWaiters.filter { $0.name == name && $0.count <= seen }
-        inputWaiters.removeAll { $0.name == name && $0.count <= seen }
-        for waiter in ready { waiter.resume.resume() }
+        seenEvents.append(name)
     }
 
     @concurrent nonisolated func perform(_ effect: KeeperEffect<State>) async -> KeeperInput<State>? {
@@ -553,10 +556,13 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     func flush(_ outputs: consuming [KeeperOutput]) {
         let outputs = Array(outputs)
         flushed.append(contentsOf: outputs)
+        for case .detachTransport in outputs { drainFinishes.append("drain finished") }
         // The owner's `.startLoops` (K2-2 commit 1a): the twin has no loops to configure, so it
-        // answers `.initializeDone` at once, behind this flush (Review on #966, MF2 (c)).
+        // answers `.initializeDone` at once, behind this flush (Review on #966, MF2 (c)). It
+        // stands in for loops configured, so a tick land's finish check holds; the case drives
+        // `.tickDue` itself.
         if outputs.contains(where: { if case .startLoops = $0 { true } else { false } }) {
-            let done = KeeperInput<State>.initializeDone(tickLoopConfigured: false, syncLoopConfigured: false)
+            let done = KeeperInput<State>.initializeDone(tickLoopConfigured: true, syncLoopConfigured: true)
             note(done)
             send(done)
         }
@@ -602,9 +608,9 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
 
     /// Returns once `count` inputs named `name` were sent: an event, resumed by the note (a call
     /// notes its input, then steps it, in one segment of this actor).
-    func waitForInputs(named name: String, count: Int) async {
-        guard inputsSeen.filter({ $0 == name }).count < count else { return }
-        await withCheckedContinuation { inputWaiters.append((name, count, $0)) }
+    func waitForInputs(named name: String, count: Int, sourceLocation: SourceLocation = #_sourceLocation) async {
+        let reached = await seenEvents.waitFor { $0.filter { $0 == name }.count >= count }
+        if !reached { Issue.record("\(count) × \(name) never arrived: \(inputsSeen)", sourceLocation: sourceLocation) }
     }
 
     /// The twin's own recorder queue (tests that hold a submission ahead of the core's record).
@@ -621,6 +627,17 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     /// The drain flag only, on the twin: unlike the keeper's `markDrainingForTesting`, it clears
     /// no players, services or reservations (its cases join no player) and starts no drain
     /// (Review on #966, MF2 (e); r2's nit).
+    /// The twin's own drop counter for the destroy handlers' outputs (`openStepScope`'s
+    /// `droppingInto:`, #893), read from its side.
+    /// Whether the twin's side holds a bound sync requester (`bindSyncRequester`, T8b's port).
+    func hasBoundRequester() -> Bool {
+        store.withSide { side in side.sharedBoundRequester.port != nil }
+    }
+
+    func destroyHandlerOutputsDropped() -> Int {
+        store.withSide { side in side.sharedDestroyHandlerOutputsDropped.count }
+    }
+
     func markDraining(cause: LandDestructionCause) {
         store.withSide { side in side.sharedDrainFlag.set(cause: cause) }
     }
@@ -713,7 +730,12 @@ final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async { trace.append("sendEvent \(event) to \(target)") }
     func syncNowFromTransport() async { trace.append("syncNow") }
     func syncBroadcastOnlyFromTransport() async { trace.append("syncBroadcastOnly") }
-    func onLandDestroyed() async { trace.append("onLandDestroyed") }
+    /// Holds the port's `onLandDestroyed` once armed (a case reads the land mid-notify).
+    let destroyedHold = CoreDiffArmedGate()
+    func onLandDestroyed() async {
+        await destroyedHold.take()?.enterAndWait()
+        trace.append("onLandDestroyed")
+    }
     func landDidFail(_ failure: LandFailure) async { trace.append("landDidFail \(failure.kind) \(failure.detail)") }
     func closeOutputs(for failure: LandFailure) { trace.append("closeOutputs \(failure.kind) \(failure.detail)") }
     /// What the in-turn witness answers (a refusing port answers false for every owner).
@@ -738,7 +760,17 @@ final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
         return .notAdmitted
     }
     func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool { trace.append("refusesResolvedJoin \(playerID) \(sessionID)"); return false }
-    func noteJoinInputsConsumed(_ results: [JoinInputResult]) { trace.append("noteJoinInputsConsumed \(results)") }
+    private weak var reportReentryKeeper: LandKeeper<CoreDiffState>?
+    /// The next join report re-enters `keeper`: `reportJoinsInTurn`'s `callOut` refuses it and
+    /// fails the land in the batch (Review r1 on #969, MF3).
+    func armReportReentry(_ keeper: LandKeeper<CoreDiffState>) { lock.withLock { reportReentryKeeper = keeper } }
+    func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
+        trace.append("noteJoinInputsConsumed \(results)")
+        if let keeper = lock.withLock({ () -> LandKeeper<CoreDiffState>? in defer { reportReentryKeeper = nil }; return reportReentryKeeper }) {
+            trace.append("re-enter submitSyncStream from the report")
+            keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the report's re-entry the sentinel refuses
+        }
+    }
     var hasJoinsAwaitingSync: Bool { trace.append("hasJoinsAwaitingSync"); return followUp == .joinsAwaiting }
     func waitForWriterDrainForInTurnSync() async { trace.append("waitForWriterDrain") }
     var recordsInTurnSyncFolds: Bool { false }
@@ -923,7 +955,7 @@ private struct CoreDiffPair {
                      pathHolds: (@Sendable (String, LandKeeperHoldPoint) async -> Void)? = nil,
                      keeperRecordGate: CoreDiffArmedGate? = nil, clock: CoreDiffClock? = nil,
                      initializes: Bool = true, records: Bool = false, autoStartLoops: Bool = false,
-                     before: (@Sendable (String) -> Void)? = nil) async -> CoreDiffPair {
+                     before: (@Sendable (String) -> Void)? = nil, coreTransport: CoreDiffTraceTransport? = nil) async -> CoreDiffPair {
         let landID = "core-diff:\(name):\(UUID().uuidString)"
         // Set before either keeper exists: a gate or failure mark the initialization reads.
         before?(landID)
@@ -959,7 +991,7 @@ private struct CoreDiffPair {
         await twinSource.setActionTableAuditForTesting(true)
         // `initializes` false: neither keeper has initialized; the case runs the keeper's
         // (`awaitInitialization`) and the core's (`.initialize`) itself (K2-2 commit 1a).
-        let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting(initialized: initializes), clock: clock)
+        let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting(transport: coreTransport, initialized: initializes), clock: clock)
         await harness.start()
         // The destroy-timer cases read the last ticket after a cancel, on both paths.
         await direct.keepLastDestroyTicketForTesting()
@@ -2406,14 +2438,39 @@ extension KeeperCoreDifferentialTests {
     func stopOnIdleLand(tick: Bool) async throws {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "stop-idle-\(tick)")
         await pair.keeper.forceShutdown()
-        let answer = try await pair.harness.call(.shutdown)
-        guard case .done = answer else { Issue.record("the stop's answer: \(answer)"); return }
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
+            Issue.record("the core's stop wasn't answered .done"); return
+        }
+        // One detach at `.drainFinished`, before the stop's reply (the owner's M10 calls).
+        let detaches = await pair.harness.flushed.filter { if case .detachTransport = $0 { true } else { false } }.count
+        #expect(detaches == 1, "detaches: \(detaches)")
         let core = await pair.harness.differentialRead().model
         #expect(core.drainPhase == .finished)
-        #expect(core.stopPhase == .draining)
+        #expect(core.stopPhase == .ended, "the stop's flight returned")
         #expect(core.destructionFinished)
         #expect(await pair.keeper.differentialReadForTesting().model.destructionFinished)
         await pair.expectSame("after the stop")
+    }
+
+    @Test("A freeze and a drain both waiting on one held tick record: the tick's end answers the freeze true at the work count's zero, then the drain goes on and finishes, in that one step (plan §13.1; Review r1 on #969). The order inside the step can't be seen from outside on the core: the reply goes out after the step")
+    func freezeAndDrainWaitOnOneTick() async throws {
+        let pair = try await TracePair.make("freeze-drain-tick")
+        let coreHold = WatermarkGate()
+        defer { coreHold.release() }
+        pair.harness.armedRecordGate.arm(coreHold)
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+        guard await coreHold.waitUntilEntered("the core's tick record") else { return }
+        let freeze = Task { try await pair.harness.call(.freeze(generation: 1, timeout: .seconds(3600))) }
+        await pair.harness.waitForInputs(named: "freeze", count: 1)
+        await pair.harness.markDraining(cause: .forceShutdown)
+        await pair.harness.drive(.drainStart)
+        let waiting = await pair.harness.differentialRead().model
+        #expect(waiting.drainPhase == .waitingForTick && waiting.coreBarrierWaits.freeze[1]?.count == 1, "\(waiting.drainPhase), \(waiting.coreBarrierWaits)")
+        coreHold.release()
+        guard case .success(.frozen(true))? = await resultWithinHangBound(freeze) else { Issue.record("the freeze wasn't answered true"); return }
+        guard await pair.harness.drainFinishes.waitFor("drain finished") else { Issue.record("the drain never finished"); return }
+        let after = await pair.harness.differentialRead().model
+        #expect(after.coreBarrierWaits.freeze.isEmpty && after.ticksInFlight == 0 && after.drainPhase == .finished)
     }
 
     @Test("A tick or sync from before the drain's epoch bump is a no-op on the core, delivered mid-drain (the drain waits for a tick held at its record, the port still attached): no step, no call to the port, the model unchanged (M5, plan §13.1)")
@@ -2446,18 +2503,260 @@ extension KeeperCoreDifferentialTests {
         #expect(after == before, "differ in \(after.differingFields(from: before))")
 
         coreHold.release()
-        guard await pair.coreTrace.waitFor("onLandDestroyed") else { Issue.record("the core's drain never ended: \(pair.coreTrace.all)"); return }
+        // `.drainFinished`'s step itself, not the port's call before it (Review r1 on #969).
+        guard await pair.harness.drainFinishes.waitFor("drain finished") else { Issue.record("the core's drain never ended: \(pair.coreTrace.all)"); return }
         #expect(await pair.harness.differentialRead().model.drainPhase == .finished)
     }
 
-    @Test("A second stop joins the first and is answered with it (the keeper's SingleFlight), on the core (K2-2 commit 1b)")
+    /// A tickless pair with a recorder, `p1` joined on the core only, and an action whose batch is
+    /// held at its record: work in flight, and the input drain busy, so a `.shutdown` queues its
+    /// item behind it.
+    private func heldTicklessBatch(_ name: String, coreTransport: CoreDiffTraceTransport? = nil) async -> (CoreDiffPair, WatermarkGate, Task<CoreDiffActionResult, Never>)? {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), name, records: true, coreTransport: coreTransport)
+        let first = await coreJoin(pair, "p1", "c1")
+        guard case .joined(allowed: true, _) = first else { Issue.record("the core's join: \(first)"); return nil }
+        let hold = WatermarkGate()
+        pair.harness.armedRecordGate.arm(hold)
+        let action = Task { await coreTicklessAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
+        guard await hold.waitUntilEntered("the action's batch record") else { hold.release(); return nil }
+        return (pair, hold, action)
+    }
+
+    @Test("A land failure in a query step tears the land down on the core (Review r1 on #969, MF2): a .syncTurnNow whose sync phase re-enters fails the land, the port hears landDidFail, then onLandDestroyed, and the drain finishes; a first stop after it is answered at once (MF1 (b)), the same on both paths")
+    func queryStepFailureTearsDown() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "query-fail")
+        let source = try #require(pair.source)
+        let keeperTrace = CoreDiffTrace(), coreTrace = CoreDiffTrace()
+        let keeperPort = CoreDiffTraceTransport(keeperTrace), corePort = CoreDiffTraceTransport(coreTrace)
+        keeperPort.armReentry(pair.keeper)
+        corePort.armReentry(source)
+        _ = await pair.keeper.syncTurnNow(via: keeperPort, reason: .syncNow)
+        _ = await pair.harness.syncTurnNow(via: corePort, reason: .syncNow)
+        guard await keeperTrace.waitFor("onLandDestroyed") else { Issue.record("the keeper's teardown never ended: \(keeperTrace.all)"); return }
+        guard await coreTrace.waitFor("onLandDestroyed") else { Issue.record("the core's teardown never reached the port: \(coreTrace.all)"); return }
+        guard await pair.harness.drainFinishes.waitFor("drain finished") else { Issue.record("the core's drain never finished"); return }
+        let teardown: (String) -> Bool = { $0.hasPrefix("landDidFail") || $0 == "onLandDestroyed" }
+        #expect(keeperTrace.all.filter(teardown) == coreTrace.all.filter(teardown), "keeper \(keeperTrace.all), core \(coreTrace.all)")
+        #expect(coreTrace.all.filter(teardown).count == 2, "\(coreTrace.all)")
+
+        // MF1 (b): the failure's drain has finished; a first stop joins it and returns at once.
+        await pair.keeper.forceShutdown()
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
+            Issue.record("the stop after the failure's drain wasn't answered"); return
+        }
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.drained.isEmpty)
+    }
+
+    @Test("A tickless [join, shutdown] batch whose join report is refused emits the failure's teardown, not an ordinary drain start (Review r1 on #969, MF3): the teardown runs before the stop goes on, which then joins it",
+          .disabled("unreachable until K2-2 commit 3: the core refuses a tickless land with a transport (ticklessLandWithTransport), and without one the batch's join report calls no port"))
+    func shutdownBatchThatFailsTheLand() async throws {
+        let trace = CoreDiffTrace()
+        let port = CoreDiffTraceTransport(trace)
+        guard let (pair, hold, action) = await heldTicklessBatch("batch-fails", coreTransport: port) else { return }
+        defer { hold.release() }
+        let source = try #require(pair.source)
+        // The batch's join report re-enters: `failLand` runs in the batch, before its
+        // `completeShutdownTurn`.
+        port.armReportReentry(source)
+        let joined = Task { await coreJoin(pair, "p2", "c2") }
+        await pair.harness.waitForInputs(named: "join", count: 2)
+        let stop = Task { try await pair.harness.call(.shutdown) }
+        await pair.harness.waitForInputs(named: "shutdown", count: 1)
+        #expect(await pair.harness.differentialRead().model.pendingItems.count == 2, "the join and the shutdown wait for one batch")
+        hold.release()
+        _ = await valueWithinHangBound(action)
+        _ = await valueWithinHangBound(joined)
+        guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the stop wasn't answered .done"); return }
+        #expect(trace.all.contains("re-enter submitSyncStream from the report"), "\(trace.all)")
+        let flushed = await pair.harness.flushed
+        let teardowns = flushed.filter { if case .failureTeardown = $0 { true } else { false } }.count
+        let starts = flushed.filter { if case .drainStarting = $0 { true } else { false } }.count
+        #expect(teardowns == 1 && starts == 0, "the failure's teardown, not a stop's drain start: teardowns \(teardowns), starts \(starts)")
+        // As the keeper's `runFailureTeardown`: the port hears of the failure, then of the end, once.
+        let teardown = trace.all.filter { $0.hasPrefix("landDidFail") || $0 == "onLandDestroyed" }
+        #expect(teardown.count == 2 && teardown.first?.hasPrefix("landDidFail") == true && teardown.last == "onLandDestroyed", "\(trace.all)")
+        #expect(await pair.harness.differentialRead().failure?.kind == .keeperReentry)
+    }
+
+    @Test("A drain that overtakes a queued tickless shutdown moves the stop on (Review r1 on #969, MF5, m8): the shutdown item is dropped, never applied, and the stop drains with the failure's drain and returns")
+    func drainOvertakesQueuedShutdown() async throws {
+        guard let (pair, hold, action) = await heldTicklessBatch("overtake") else { return }
+        defer { hold.release() }
+        let source = try #require(pair.source)
+        let stop = Task { try await pair.harness.call(.shutdown) }
+        await pair.harness.waitForInputs(named: "shutdown", count: 1)
+        let queued = await pair.harness.differentialRead().model
+        #expect(queued.stopPhase == .awaitingShutdownTurn && queued.pendingItems.count == 1, "\(queued.stopPhase), \(queued.pendingItems.count)")
+        // A failure outside the batch: a sync-only turn whose sync phase re-enters. Its port is
+        // the bound requester, so the drain's notify (T8b) reaches it and is held there.
+        let trace = CoreDiffTrace()
+        let port = CoreDiffTraceTransport(trace)
+        let notifyHold = WatermarkGate()
+        defer { notifyHold.release() }
+        port.destroyedHold.arm(notifyHold)
+        port.armReentry(source)
+        _ = await pair.harness.syncTurnNow(via: port, reason: .syncNow)
+        guard await notifyHold.waitUntilEntered("the drain's onLandDestroyed") else { return }
+        let mid = await pair.harness.differentialRead().model
+        #expect(!mid.shutdownTurnApplied, "the drain dropped the shutdown item before its turn")
+        #expect(mid.stopPhase == .draining, "the stop moved on with the drain before its end: \(mid.stopPhase)")
+        #expect(mid.pendingItems.isEmpty && mid.coreBarrierWaits.drained.count == 1, "\(mid.pendingItems.count), \(mid.coreBarrierWaits)")
+        notifyHold.release()
+        guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the stop wasn't answered .done"); return }
+        let after = await pair.harness.differentialRead().model
+        #expect(after.stopPhase == .ended && after.drainPhase == .finished && !after.shutdownTurnApplied, "\(after.stopPhase), \(after.drainPhase)")
+        // The earlier batch's caller gets its result once its record is released.
+        hold.release()
+        guard let result = await valueWithinHangBound(action) else { Issue.record("the held batch's action wasn't answered"); return }
+        // Applied before its record was held: the failure came after, so it keeps its result.
+        #expect(result == .completed(2), "\(result)")
+    }
+
+    @Test("A freeze still waiting for held work when the stop arrives is answered false by the stop's end of the freeze, and its table and timer are emptied (Review r1 on #969: endDebugFreezeForShutdown's waiters)")
+    func stopAnswersAWaitingFreeze() async throws {
+        guard let (pair, hold, action) = await heldTicklessBatch("stop-freeze") else { return }
+        defer { hold.release() }
+        let freeze = Task { try await pair.harness.call(.freeze(generation: 1, timeout: .seconds(3600))) }
+        await pair.harness.waitForInputs(named: "freeze", count: 1)
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.freeze[1]?.count == 1, "the freeze waits for the held batch")
+        let stop = Task { try await pair.harness.call(.shutdown) }
+        guard case .success(.frozen(false))? = await resultWithinHangBound(freeze) else { Issue.record("the waiting freeze wasn't answered false"); return }
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.freeze.isEmpty)
+        hold.release()
+        _ = await valueWithinHangBound(action)
+        guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the stop wasn't answered .done"); return }
+        #expect(await pair.harness.differentialRead().coreWaitsLeft == 0, "no core timer is left")
+    }
+
+    enum InitializationEnd: String, CaseIterable, Sendable { case done, failed, abandonedByDrain }
+
+    @Test("A stop that arrives during the initialization waits for its end, however it ends (Review r1 on #969, MF4, m11): parked apart from the drain's callers, so a drain that finishes first doesn't answer it, and answered once the initialization ended", arguments: InitializationEnd.allCases)
+    func stopDuringTheInitializationWaitsForIt(_ end: InitializationEnd) async throws {
+        let shape = end == .failed
+            ? CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, initializeRefuses: true)
+            : CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let pair = await CoreDiffPair.make(shape, "stop-init-\(end.rawValue)", initializes: false)
+        let gate = WatermarkGate()
+        defer { gate.release() }
+        defer { CoreDiffInitGates.set(pair.landID, nil) }
+        // A failing initialization has no resolver to hold: the stop comes before `.initialize`.
+        if end != .failed {
+            CoreDiffInitGates.set(pair.landID, gate)
+            await pair.harness.drive(.initialize)
+            guard await gate.waitUntilEntered("OnInitialize's resolver") else { return }
+        }
+        let stop = Task { try await pair.harness.call(.shutdown) }
+        await pair.harness.waitForInputs(named: "shutdown", count: 1)
+        let parked = await pair.harness.differentialRead().model
+        #expect(parked.coreBarrierWaits.stopsAwaitingInitialization.count == 1 && parked.coreBarrierWaits.drained.isEmpty, "\(parked.coreBarrierWaits)")
+        switch end {
+        case .done:
+            gate.release()
+        case .failed:
+            await pair.harness.drive(.initialize)
+        case .abandonedByDrain:
+            // A drain started and finished during the resolvers, as a land failure's teardown
+            // sends it; the initializer is still held after it.
+            await pair.harness.markDraining(cause: .forceShutdown)
+            await pair.harness.drive(.drainStart)
+            guard await pair.harness.drainFinishes.waitFor("drain finished") else { Issue.record("the drain never finished"); return }
+            let held = await pair.harness.differentialRead().model
+            #expect(held.coreBarrierWaits.stopsAwaitingInitialization.count == 1 && held.coreBarrierWaits.drained.isEmpty,
+                    "the stop waits for the initialization, not the drain: \(held.coreBarrierWaits)")
+            #expect(!held.didInitialize, "the initializer is still held")
+            gate.release()
+        }
+        // The initialization's last step begins the parked stop: read right after it, so a stop
+        // left parked fails here, not at the hang bound (m11's never-begins reading).
+        await pair.harness.waitForInputs(named: end == .failed ? "initialize" : "initializeResolved", count: 1)
+        let begun = await pair.harness.differentialRead().model
+        // A drain that already finished answers it at once (`admitStop`), with no stop of its own.
+        #expect(begun.coreBarrierWaits.stopsAwaitingInitialization.isEmpty, "the stop is still parked: \(begun.coreBarrierWaits)")
+        #expect(end == .abandonedByDrain || begun.stopPhase != .notStarted, "the stop wasn't begun: \(begun.stopPhase)")
+        guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the stop wasn't answered after the initialization"); return }
+        let after = await pair.harness.differentialRead().model
+        let expectedPhase: InitializationPhase = switch end {
+        case .done: .done
+        case .failed: .failed
+        case .abandonedByDrain: .abandonedByDrain
+        }
+        #expect(after.initializationPhase == expectedPhase, "\(after.initializationPhase)")
+        #expect(after.coreBarrierWaits.isEmpty && after.drainPhase == .finished, "\(after.coreBarrierWaits), \(after.drainPhase)")
+    }
+
+    @Test("A failed initialization's drain runs to its end on the core: no destroy handler, the drain finished, and a stop after it answered at once (Review r1 on #969)")
+    func failedInitializationDrainFinishes() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, initializeRefuses: true)
+        let pair = await CoreDiffPair.make(shape, "init-fail-drain", initializes: false)
+        await pair.harness.drive(.initialize)
+        guard await pair.harness.drainFinishes.waitFor("drain finished") else { Issue.record("the failed initialization's drain never finished"); return }
+        let model = await pair.harness.differentialRead().model
+        #expect(model.drainPhase == .finished && model.destructionFinished, "\(model.drainPhase)")
+        // `drainAfterTicks` skips the handlers on a failed initialization (#104): no destroy
+        // resolver or AfterFinalize effect came back.
+        let seen = await pair.harness.inputsSeen
+        #expect(!seen.contains("destroyHandlerResolved") && !seen.contains("afterFinalizeReturned"), "\(seen)")
+        #expect(await pair.harness.destroyHandlerOutputsDropped() == 0)
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
+            Issue.record("the stop after the drain wasn't answered"); return
+        }
+    }
+
+    @Test("T8b on the core: a land with no transport tells its bound requester that it was destroyed, and the requester is cleared after (Review r1 on #969)")
+    func boundRequesterHearsTheDestruction() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "t8b")
+        let trace = CoreDiffTrace()
+        let port = CoreDiffTraceTransport(trace)
+        _ = await pair.harness.syncTurnNow(via: port, reason: .syncNow)
+        #expect(await pair.harness.hasBoundRequester(), "the sync-only turn bound its port")
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
+            Issue.record("the stop wasn't answered"); return
+        }
+        #expect(trace.all.filter { $0 == "onLandDestroyed" }.count == 1, "\(trace.all)")
+        #expect(await !pair.harness.hasBoundRequester(), "cleared at the drain's end")
+    }
+
+    @Test("A stale-epoch .tickDue on an open tick land after the initialization's .startLoops is a no-op; the current epoch's runs (Review r1 on #969, m2)")
+    func staleTickDueOnAnOpenLand() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "stale-open", initializes: false, autoStartLoops: true)
+        await pair.harness.drive(.initialize)
+        await pair.harness.waitForInputs(named: "initializeDone", count: 1)
+        let current = await pair.harness.differentialRead().model.loopEpoch
+        #expect(current > 0, "the initialization's finish bumped the epoch")
+        let before = await pair.harness.differentialRead().model.state.log
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true, epoch: current &- 1))
+        #expect(await pair.harness.differentialRead().model.state.log == before, "a stale tick ran")
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true, epoch: current))
+        #expect(await pair.harness.differentialRead().model.state.log == before + ["tick"])
+    }
+
+    @Test("A second stop joins the first and is answered with it (the keeper's SingleFlight), and a third after the drain finished is answered at once, on the core (K2-2 commit 1b; Review r1 on #969, MF1 (a))")
     func secondStopJoins() async throws {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "stop-twice")
-        async let first = pair.harness.call(.shutdown)
-        async let second = pair.harness.call(.shutdown)
-        let answers = try await [first, second]
-        #expect(answers.allSatisfy { if case .done = $0 { true } else { false } }, "\(answers)")
+        let hold = WatermarkGate()
+        defer { hold.release() }
+        pair.harness.armedDrainStartGate.arm(hold)
+        let first = Task { try await pair.harness.call(.shutdown) }
+        guard await hold.waitUntilEntered("the drain's start") else { return }
+        let second = Task { try await pair.harness.call(.shutdown) }
+        await pair.harness.waitForInputs(named: "shutdown", count: 2)
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.drained.count == 2, "both stops wait for the one drain")
+        hold.release()
+        // `.drainFinished`'s step answers both: read right after it, so a lost answer fails
+        // here, not at the hang bound (mutant m6 at db097c23).
+        guard await pair.harness.drainFinishes.waitFor("drain finished") else { Issue.record("the drain never finished"); return }
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.drained.isEmpty, "the drain's end left its callers waiting")
+        for (name, stop) in [("first", first), ("second", second)] {
+            guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the \(name) stop wasn't answered .done"); return }
+        }
         #expect(await pair.harness.differentialRead().model.drainPhase == .finished)
+        // A late stop: the flight has returned, so it is answered at once, not parked.
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
+            Issue.record("the stop after the drain wasn't answered"); return
+        }
+        let after = await pair.harness.differentialRead().model
+        #expect(after.coreBarrierWaits.drained.isEmpty && after.stopPhase == .ended, "\(after.coreBarrierWaits), \(after.stopPhase)")
+        #expect(await pair.harness.flushed.filter { if case .drainStarting = $0 { true } else { false } }.count == 1, "one drain")
     }
 
     @Test("The shutdown turn, held before the drain starts: the players cleared, nothing queued, the drain flag set and no destroy handler run, the same on both paths; then both drains end (the keeper's .shutdownTurnApplied, the core's drain-start gate, K2-2 commit 1b)")
@@ -2553,6 +2852,10 @@ extension KeeperCoreDifferentialTests {
 
         keeperHold.release()
         coreHold.release()
+        // The tick's end moves the stop on in its own step: read right after it, so a stop left
+        // waiting fails here, not at the hang bound (mutant m5 at db097c23).
+        await pair.harness.waitForInputs(named: "tickRecordTaken", count: 1)
+        #expect(await pair.harness.differentialRead().model.stopPhase != .waitingForTick, "the tick's end didn't move the stop on")
         guard let keeperLeft = await valueWithinHangBound(keeperLeaveTask), let coreLeft = await valueWithinHangBound(coreLeaveTask) else {
             Issue.record("a leave never returned"); return
         }
@@ -2607,6 +2910,11 @@ extension KeeperCoreDifferentialTests {
         }
         #expect(keeperJoin == coreJoin, "keeper \(keeperJoin), core \(coreJoin)")
         guard case .joined(allowed: true, _) = coreJoin else { Issue.record("the held batch's caller: \(coreJoin)"); return }
+        // The shutdown turn sets the drain flag before any drain runs; the stop must still ask
+        // for one. Read right after the turn's record (the second `.recordTaken`), so a stop that took the flag for a drain
+        // fails here, not at the hang bound (mutant m7 at db097c23).
+        await pair.harness.waitForInputs(named: "recordTaken", count: 2)
+        #expect(await pair.harness.differentialRead().model.drainRequested, "the shutdown turn's flag was taken for a drain in progress")
         guard await valueWithinHangBound(keeperStop) != nil else { Issue.record("the keeper's stop never returned"); return }
         guard case .success(.done)? = await resultWithinHangBound(coreStop) else { Issue.record("the core's stop wasn't answered .done"); return }
         #expect(await pair.harness.differentialRead().model.drainPhase == .finished)
