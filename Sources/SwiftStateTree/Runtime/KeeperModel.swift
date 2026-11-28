@@ -211,6 +211,20 @@ struct KeeperModel<State: StateNodeProtocol> {
     /// `.awaitInitialized` whose barrier was closed, answered by the step that opens it. Empty on
     /// the keeper's path, whose callers wait on continuations on the side.
     var coreBarrierWaits: KeeperCoreBarrierWaits = KeeperCoreBarrierWaits()
+    /// The destroy drain's phase on the core (K2-2 commit 1b); the keeper's path leaves it.
+    var drainPhase: DrainPhase = .notStarted
+    /// The stop's phase on the core (K2-2 commit 1b); the keeper's path leaves it.
+    var stopPhase: StopPhase = .notStarted
+    /// A `.shutdown` arrived before the initialization ended: the stop begins at its end.
+    var stopAwaitsInitialization: Bool = false
+    /// The drain's start was asked of the owner (`.drainStarting` or `.failureTeardown`): every
+    /// later start joins it (the keeper's `drainTask`, set before its task's first await, and
+    /// never cleared).
+    var drainRequested: Bool = false
+    /// The loops' epoch (M5): bumped by the initialization's finish and by the drain start. The
+    /// owner's loop Tasks capture it, and a `.tickDue` or `.syncDue` from an older one is a
+    /// no-op (plan §13.1).
+    var loopEpoch: UInt64 = 0
     /// Tests: requests that passed `requestJoinSyncTurn`'s own guards (counted before
     /// `runSyncOnlyTurn`, whose guards may still skip the phase).
     var joinSyncRequestTurnsForTesting: Int = 0
@@ -501,6 +515,39 @@ struct KeeperSequenceCounter: Sendable, Equatable {
 /// A turn machine is `Sendable` (`TurnMachine`); its conformance has to be declared beside the
 /// model (#700 K2-1). Every stored field is plain data.
 extension KeeperModel: Sendable {}
+
+@PlainData
+/// The destroy drain's phase on the core (K2-2 commit 1b, the one-phase rule of plan §12). Each
+/// drain result step switches over every case: the one its request left runs.
+enum DrainPhase: Equatable, Sendable {
+    case notStarted
+    /// `.waitForTick`: the tick in flight's `.tickRecordTaken` resumes the drain.
+    case waitingForTick
+    /// A destroy handler's resolvers run (its `DestroyHandlerKind.rawValue`).
+    case destroyResolving(kind: Int)
+    case afterFinalize
+    /// `onLandDestroyed` runs.
+    case notifyingTransport
+    case finished
+}
+
+/// The stop's phase on the core (K2-2 commit 1b, plan §11.1, §13.3).
+@PlainData
+enum StopPhase: Equatable, Sendable {
+    case notStarted
+    /// A tick land: `shutdownRequested` is set; `endTick` resumes the stop once no tick is in
+    /// flight.
+    case waitingForTick
+    /// A tickless land: the shutdown item is queued; its input turn's step resumes the stop.
+    case awaitingShutdownTurn
+    /// A tick land's shutdown turn record is with the recorder.
+    case recording
+    /// The drain runs (or one already running is joined); `.drainFinished` answers the callers.
+    case draining
+    /// The stop's flight returned (its drain finished, or it found players and ran none): a
+    /// later stop is answered at once, as the keeper's finished `SingleFlight` returns.
+    case ended
+}
 
 /// The initialization's flow, one case per await between its segments (K2-2 commit 1a). The
 /// legacy re-evaluation path (#612) is a phase of its own, which a core never enters.
