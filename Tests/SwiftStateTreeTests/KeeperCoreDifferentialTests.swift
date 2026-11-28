@@ -2738,6 +2738,8 @@ extension KeeperCoreDifferentialTests {
         #expect(Model.freezeDeadline(TurnInstant(nanoseconds: 5), .seconds(1)) == TurnInstant(nanoseconds: 1_000_000_005))
         #expect(Model.freezeDeadline(TurnInstant(nanoseconds: 0), .seconds(Int64.max)) == TurnInstant(nanoseconds: .max))
         #expect(Model.freezeDeadline(TurnInstant(nanoseconds: .max - 10), .seconds(1)) == TurnInstant(nanoseconds: .max))
+        // A timeout past Int64 seconds: `Duration` holds it, and the deadline still saturates.
+        #expect(Model.freezeDeadline(TurnInstant(nanoseconds: 0), .seconds(Int64.max) + .seconds(1)) == TurnInstant(nanoseconds: .max))
     }
 
     @Test("A stop on an idle land, tick and tickless: the same model, the drain finished, and the caller answered after it, on both paths (K2-2 commit 1b)", arguments: [true, false])
