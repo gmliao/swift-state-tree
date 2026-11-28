@@ -606,6 +606,34 @@ struct TransportAdapterDebugFreezeTests {
         await shutdown.value
     }
 
+    @Test("A shutdown while the settle's drain waits for in-flight work ends the freeze as closed, not timed out (#730)")
+    func shutdownDuringTheDrainAnswersClosed() async throws {
+        let f = try await Fixture()
+        // The action's turn waits at its record, so its work stays in flight and the drain waits.
+        let record = TestGate()
+        defer { record.open() }
+        await f.keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>.at(.turnRecord) { await record.arrive() })
+        let update = Task { try await f.update(headline: "held", score: 1) }
+        try #require(await record.waitForArrivals(1), "the action's record wasn't held")
+
+        let adapter = f.adapter
+        let ended = EventLog()
+        let freeze = Task { defer { ended.append("ended") }; return try await adapter.debugFreeze() }
+        try #require(await f.keeper.waitUntilFreezeRegistrationsForTesting(1), "the settle's drain didn't wait")
+        // The settle has no deadline here (the fixture's), so a timeout can't be the cause.
+        let keeper = f.keeper
+        let shutdown = Task { await keeper.forceShutdown() }
+        let freezeEnded = await ended.waitFor("ended")
+        if !freezeEnded { record.open() }
+        try #require(freezeEnded, "the shutdown didn't end the settle's drain")
+        await #expect(throws: LandInputRejection.landClosed) { _ = try await freeze.value }
+
+        record.open()
+        _ = try? await update.value
+        await shutdown.value
+        await f.keeper.installHolds(nil)
+    }
+
     @Test("Freezing an empty land keeps its dirty flags for the next real sync")
     func emptyLandKeepsDirtyFlags() async throws {
         let f = try await Fixture()

@@ -112,3 +112,10 @@ struct KeeperDifferentialRead<State: StateNodeProtocol>: Sendable {
         pendingSyncTurnAfterTurn = side.pendingSyncTurnAfterTurn.map { "\($0)" } ?? "-"
     }
 }
+
+extension KeeperSideStore {
+    /// The land's failure and drain flag, for a freeze answer's closed-first rule (#730).
+    var debugDrainLandEnd: DebugDrainLandEnd {
+        withSide { side in DebugDrainLandEnd(failure: side.failure, draining: side.isDraining) }
+    }
+}

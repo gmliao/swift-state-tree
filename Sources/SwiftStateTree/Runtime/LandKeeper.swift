@@ -1646,12 +1646,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// was already released does not freeze again, so a late call cannot re-pause the land.
     ///
     /// - Returns: `true` once tick bodies and tickless input processing that were already running
-    ///   (including their resolvers) have finished; `false` when `timeout` passes first or the
-    ///   generation is released meanwhile. The land stays frozen until
+    ///   (including their resolvers) have finished; `false` when `timeout` passes first, the
+    ///   generation is released meanwhile, or the land failed, is draining or was shut down
+    ///   (#730: even if the work finished; `debugDrain` says which). The land stays frozen until
     ///   `debugResume(generation:)` either way. Debug tooling only; the transport layer owns
     ///   reference counting.
     public func debugFreeze(generation: UInt64, timeout: Duration) async -> Bool {
-        guard generation > model.debugReleasedGeneration else { return false }
+        await debugDrain(generation: generation, timeout: timeout) == .drained
+    }
+
+    /// `debugFreeze(generation:timeout:)` with how the drain ended (#730): `.drained` where that
+    /// returns true; otherwise `.timedOut`, `.released`, or `.closed` when the land failed, is
+    /// draining, or a forced shutdown ended this freeze (closed comes first,
+    /// `KeeperModel.debugDrainOutcome`).
+    package func debugDrain(generation: UInt64, timeout: Duration) async -> DebugDrainOutcome {
+        guard generation > model.debugReleasedGeneration else { return debugDrainAnswer(.released, generation) }
         model.debugFrozen = true
         model.debugActiveGeneration = generation
         // A pending fold's tick turn doesn't run while frozen; reported after the resume, the
@@ -1661,7 +1670,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let deadline = ContinuousClock.now + timeout
         while model.debugInFlightWork > 0, model.debugActiveGeneration == generation {
             let remaining = deadline - ContinuousClock.now
-            guard remaining > .zero else { return false }
+            guard remaining > .zero else { return debugDrainAnswer(.timedOut, generation) }
             model.debugNextWaiterID &+= 1
             let waiterID = model.debugNextWaiterID
             let timer = Task { [weak self] in
@@ -1678,7 +1687,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             timer.cancel()
         }
-        return model.debugActiveGeneration == generation && model.debugInFlightWork == 0
+        // The loop ends with the generation replaced or released, or with the work at 0.
+        return debugDrainAnswer(model.debugActiveGeneration == generation ? .drained : .released, generation)
+    }
+
+    /// The drain's answer, read in the answering segment: the shared closed-first rule.
+    private func debugDrainAnswer(_ base: DebugDrainOutcome, _ generation: UInt64) -> DebugDrainOutcome {
+        model.debugDrainOutcome(base, generation: generation, failure: failure, draining: isDraining)
     }
 
     /// Release the freeze of `generation`: held tickless inputs continue and ticks start again.
@@ -2819,6 +2834,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func endDebugFreezeForShutdown() {
         guard let generation = model.debugActiveGeneration else { return }
         model.debugReleasedGeneration = max(model.debugReleasedGeneration, generation)
+        // Its drain waiters wake before the drain flag is set: this tells them the land is closing.
+        model.debugShutdownGeneration = generation
         model.debugActiveGeneration = nil
         model.debugFrozen = false
         let held = turnSide.debugHeldInputs

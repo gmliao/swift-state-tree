@@ -190,6 +190,7 @@ enum KeeperCensus {
             "model.debugInFlightWork": .model,
             "model.debugNextWaiterID": .model,
             "model.debugReleasedGeneration": .model,
+            "model.debugShutdownGeneration": .model,
             "model.destroyHandlersStarted": .model,
             "model.destructionFinished": .model,
             "model.initializationPhase": .model,

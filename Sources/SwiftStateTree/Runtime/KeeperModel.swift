@@ -207,6 +207,9 @@ struct KeeperModel<State: StateNodeProtocol> {
     var debugActiveGeneration: UInt64?
     /// Highest generation released by `debugResume(generation:)`; such a generation cannot freeze again.
     var debugReleasedGeneration: UInt64 = 0
+    /// The generation a forced shutdown ended (`endDebugFreezeForShutdown`), if any: its drain
+    /// callers answer `.closed`, as the land is going away, not `.released` (#730).
+    var debugShutdownGeneration: UInt64?
     /// The core's barrier waits (K2-2 plan, commit 2): callers of `.freeze` and
     /// `.awaitInitialized` whose barrier was closed, answered by the step that opens it. Empty on
     /// the keeper's path, whose callers wait on continuations on the side.
@@ -590,5 +593,35 @@ enum InitializationPhase: Equatable, Sendable {
         case .recording, .finishing, .startingLoops, .done: true
         case .notStarted, .replaying, .resolving, .failed, .abandonedByDrain: false
         }
+    }
+}
+
+/// How a debug freeze's drain ended (#730): what `LandKeeper.debugDrain(generation:timeout:)`
+/// returns and the core's `.freeze` reply carries.
+package enum DebugDrainOutcome: Sendable, Equatable {
+    /// The in-flight work finished with the caller's generation in effect.
+    case drained
+    /// The caller's deadline passed with work still in flight.
+    case timedOut
+    /// The caller's generation is no longer the freeze in effect (resumed or replaced).
+    case released
+    /// The land failed (its failure), is draining, or a forced shutdown ended this freeze (nil).
+    case closed(LandFailure?)
+}
+
+/// The land's end as a drain's answer reads it (#730): its failure and its drain flag. On the
+/// core, read from the side store by the step frame and passed in, as no model step reaches it.
+struct DebugDrainLandEnd: Sendable {
+    let failure: LandFailure?
+    let draining: Bool
+}
+
+extension KeeperModel {
+    /// The answer to a drain caller of `generation` whose wait ended as `base`, on both paths:
+    /// closed comes first, so a land that ends while a drain waits names that, not a timeout or
+    /// a release. `failure` and `draining` are the land's, read in the answering segment.
+    func debugDrainOutcome(_ base: DebugDrainOutcome, generation: UInt64, failure: LandFailure?, draining: Bool) -> DebugDrainOutcome {
+        if failure != nil || draining || debugShutdownGeneration == generation { return .closed(failure) }
+        return base
     }
 }

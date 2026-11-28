@@ -6329,9 +6329,15 @@ extension TransportAdapter {
         ticket: Ticket<DebugFreezeKey>
     ) async throws -> DebugFreezeState<State>.Settled {
         let deadline = ContinuousClock.now + debugFreezeState.settleDeadline
-        let drained = await keeper.debugFreeze(generation: generation, timeout: debugFreezeState.settleDeadline)
+        let drain = await keeper.debugDrain(generation: generation, timeout: debugFreezeState.settleDeadline)
         guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
-        guard drained else { throw DebugFreezeError.settleTimedOut }
+        switch drain {
+        case .drained: break
+        case .timedOut: throw DebugFreezeError.settleTimedOut
+        case .released: throw DebugFreezeError.released
+        // A land that ended while the drain waited names that, not a timeout (#730).
+        case .closed(let failure): throw failure ?? LandInputRejection.landClosed
+        }
         let fence = LandKeeper<State>.SettleFence(generation: generation, deadline: deadline)
         var found: DebugFreezeState<State>.Settled?
         while found == nil {
