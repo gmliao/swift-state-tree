@@ -1269,7 +1269,8 @@ extension KeeperModel {
     /// A tickless land's stop, at the end of any step: the shutdown item's input turn applied
     /// (`completeShutdownTurn` set `shutdownTurnApplied`), or a drain that started dropped it.
     /// The keeper's `shutdownTurnWaiters`, as model state read after each step instead of a
-    /// continuation. TODO(1b): the facade's `.shutdownTurnApplied` hold goes before this.
+    /// continuation. The keeper's `.shutdownTurnApplied` window is the owner's held drain start
+    /// here (the harness's `armedDrainStartGate`); the facade's own hold is commit 4's.
     mutating func resumeStopAfterShutdownTurn(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
         guard stopPhase == .awaitingShutdownTurn, shutdownTurnApplied || drainPhase != .notStarted else { return }
         stopStartsDrain(behavior, store, &turn)

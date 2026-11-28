@@ -2438,9 +2438,120 @@ extension KeeperCoreDifferentialTests {
         #expect(await pair.harness.differentialRead().model.drainPhase == .finished)
     }
 
+    @Test("The shutdown turn, held before the drain starts: the players cleared, nothing queued, the drain flag set and no destroy handler run, the same on both paths; then both drains end (the keeper's .shutdownTurnApplied, the core's drain-start gate, K2-2 commit 1b)")
+    func shutdownTurnHeldBeforeTheDrain() async throws {
+        let keeperHold = WatermarkGate(), coreHold = WatermarkGate()
+        defer {
+            keeperHold.release()
+            coreHold.release()
+        }
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "stop-turn-held", pathHolds: { path, point in
+            if path == "keeper", point == .shutdownTurnApplied { await keeperHold.enterAndWait() }
+        })
+        _ = await bothJoin(pair, "p1", "c1")
+        await pair.expectSame("after the join")
+
+        let keeperStop = Task { await pair.keeper.forceShutdown() }
+        guard await keeperHold.waitUntilEntered("the keeper's shutdown turn") else { return }
+        // The core's stop runs the shutdown turn and asks the owner for the drain's start in one
+        // step: the owner's start, held, is the core's side of the keeper's hold.
+        pair.harness.armedDrainStartGate.arm(coreHold)
+        let coreStop = Task { try await pair.harness.call(.shutdown) }
+        guard await coreHold.waitUntilEntered("the core's drain start") else { return }
+        var (keeperHeld, coreHeld) = await pair.digests()
+        // The stop's caller waits on the core in `coreBarrierWaits.drained`, answered by
+        // `.drainFinished`; the keeper's waits in its SingleFlight, off the model. Checked here,
+        // then compared apart.
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.drained.count == 1, "the core's stop caller waits for the drain")
+        keeperHeld.otherModelFields["coreBarrierWaits"] = nil
+        coreHeld.otherModelFields["coreBarrierWaits"] = nil
+        #expect(keeperHeld == coreHeld, "differ in \(keeperHeld.differingFields(from: coreHeld))\n keeper \(keeperHeld)\n core   \(coreHeld)")
+        #expect(coreHeld.players.isEmpty && coreHeld.pendingSequences.isEmpty && coreHeld.isDraining, "\(coreHeld)")
+        let heldLog = coreHeld.log
+        #expect(!(await pair.harness.differentialRead().model.destroyHandlersStarted), "the destroy runs after the turn")
+
+        keeperHold.release()
+        coreHold.release()
+        guard await valueWithinHangBound(keeperStop) != nil else { Issue.record("the keeper's stop never returned"); return }
+        guard case .success(.done)? = await resultWithinHangBound(coreStop) else { Issue.record("the core's stop wasn't answered .done"); return }
+        let (keeperDone, coreDone) = await pair.digests()
+        #expect(keeperDone.log == coreDone.log, "keeper \(keeperDone.log), core \(coreDone.log)")
+        #expect(coreDone.log.count >= heldLog.count, "\(heldLog) → \(coreDone.log)")
+        #expect(await pair.harness.differentialRead().model.drainPhase == .finished)
+        #expect(await pair.harness.differentialRead().model.destructionFinished)
+    }
+
+    @Test("#512 as today (P11-1): on a tick land, a leave queued while the stop waits for the tick held at its record is dropped by the shutdown turn: no OnLeave, its caller returns, and the shutdown frame holds only \"shutdown\", on both paths (#512's fix flips this)")
+    func shutdownDropsQueuedLeave512() async throws {
+        let keeperRecord = CoreDiffArmedGate()
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "stop-512", keeperRecordGate: keeperRecord, records: true)
+        let source = try #require(pair.source)
+        _ = await bothJoin(pair, "p1", "c1")
+        _ = await bothJoin(pair, "p2", "c2")
+        await pair.expectSame("after the joins")
+        let keeperHold = WatermarkGate(), coreHold = WatermarkGate()
+        defer {
+            keeperHold.release()
+            coreHold.release()
+        }
+
+        // The keeper: a tick held at its record, the stop at its gate, then the leave, appended.
+        keeperRecord.arm(keeperHold)
+        let keeperTick = Task { await pair.keeper.stepTickOnce() }
+        guard await keeperHold.waitUntilEntered("the keeper's tick record") else { return }
+        let (keeperGate, keeperProbe) = probeEvents("shutdown-stop-gate")
+        await pair.keeper.setInTurnProbeForTesting(keeperProbe)
+        let keeperStop = Task { await pair.keeper.forceShutdown() }
+        guard await firstWithinHangBound(keeperGate) else { Issue.record("the keeper's stop never reached its gate"); return }
+        await pair.keeper.setInTurnProbeForTesting(nil)
+        // The leave's append is the segment that resumes after its `.leave` hold; the resumed
+        // hook's task runs once that segment ends, at the leave's wait for its turn.
+        let appended = EventLog()
+        await pair.keeper.installResumedHoldsForTesting { point, actor in
+            guard point == .leave else { return }
+            Task {
+                actor?.assertIsolated("the event's task runs on the keeper")
+                appended.append("leave appended")
+            }
+        }
+        let keeperLeaveTask = Task { await keeperLeave(pair, "p1", "c1") }
+        guard await appended.waitFor("leave appended") else { Issue.record("the keeper's leave never appended"); return }
+        await pair.keeper.installResumedHoldsForTesting(nil)
+        #expect(await pair.keeper.pendingItemSequencesForTesting().count == 1, "the leave is queued behind the stop")
+
+        // The core: the same, the leave stepped while its stop waits for the held tick.
+        pair.harness.armedRecordGate.arm(coreHold)
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+        guard await coreHold.waitUntilEntered("the core's tick record") else { return }
+        let coreStop = Task { try await pair.harness.call(.shutdown) }
+        await pair.harness.waitForInputs(named: "shutdown", count: 1)
+        let coreLeaveTask = Task { await coreLeave(pair, "p1", "c1") }
+        await pair.harness.waitForInputs(named: "leave", count: 1)
+        #expect(await pair.harness.differentialRead().model.pendingItems.count == 1, "the leave is queued behind the stop")
+
+        keeperHold.release()
+        coreHold.release()
+        guard let keeperLeft = await valueWithinHangBound(keeperLeaveTask), let coreLeft = await valueWithinHangBound(coreLeaveTask) else {
+            Issue.record("a leave never returned"); return
+        }
+        #expect(keeperLeft == "done" && coreLeft == "done", "keeper \(keeperLeft), core \(coreLeft)")
+        guard await valueWithinHangBound(keeperStop) != nil, await valueWithinHangBound(keeperTick) != nil else { Issue.record("the keeper's stop or tick never ended"); return }
+        guard case .success(.done)? = await resultWithinHangBound(coreStop) else { Issue.record("the core's stop wasn't answered .done"); return }
+
+        let (keeperDone, coreDone) = await pair.digests()
+        #expect(keeperDone.log == coreDone.log, "keeper \(keeperDone.log), core \(coreDone.log)")
+        #expect(!coreDone.log.contains { $0.hasPrefix("leave:") }, "#512 as today: no OnLeave for the dropped leave: \(coreDone.log)")
+        func lastLifecycle(_ keeper: LandKeeper<CoreDiffState>) async throws -> [String] {
+            let recorder = try #require(await keeper.getReevaluationRecorder())
+            return await recorder.getAllFrames().last?.lifecycleEvents.map(\.kind) ?? []
+        }
+        let (keeperLast, coreLast) = (try await lastLifecycle(pair.keeper), try await lastLifecycle(source))
+        #expect(keeperLast == ["shutdown"] && coreLast == ["shutdown"], "the shutdown frame: keeper \(keeperLast), core \(coreLast)")
+    }
+
     // TODO(1b), the cases plan §13 lists, each held with hold points (they need a build to
     // settle the harness gates): staleTickDueAfterDrainStart (§13.1), ticklessRecordInFlightAtDrainStart (§13.2.1),
-    // shutdownDropsQueuedLeave512 (P11-1), shutdownWhileFrozenDropsHeldIntakes (P11-2), K2-1b's
+    // shutdownWhileFrozenDropsHeldIntakes (P11-2), K2-1b's
     // drain hold cases one per await, and teardownWaitsForTheFailingTurn on the core path.
 
     @Test("A tick land's freeze steps on the core since the tick-record hold (K2-2 commit 1b): an idle land freezes at once")
