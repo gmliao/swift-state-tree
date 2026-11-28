@@ -402,4 +402,17 @@ struct LandKeeperDebugFreezeTests {
         await keeper.debugResume(generation: 2)
         #expect(await keeper.isDebugFrozen() == false)
     }
+
+    @Test("The freeze-registration watcher's bound: with no caller registering, it answers false instead of hanging (Review on #966)")
+    func freezeRegistrationWatcherExpires() async {
+        let keeper = LandKeeper<DebugFreezeKeeperState>(
+            definition: makeTicklessDefinition(),
+            initialState: DebugFreezeKeeperState()
+        )
+        await keeper.awaitInitialization()
+        // No freeze caller exists, so only the bound can end this wait: the false path.
+        #expect(await keeper.waitUntilFreezeRegistrationsForTesting(1, within: .milliseconds(20)) == false)
+        // A count already reached still answers true at once after an expiry.
+        #expect(await keeper.waitUntilFreezeRegistrationsForTesting(0, within: .milliseconds(20)))
+    }
 }

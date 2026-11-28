@@ -93,10 +93,12 @@ struct KeeperDifferentialRead<State: StateNodeProtocol>: Sendable {
         violations = model.actionTableViolations(side)
         serviceGenerations = side.playerServices.mapValues(\.generation.rawValue)
         // Every core table a step can leave a caller or an effect in: the input-turn waits, the
-        // dropped ones, the job slots' waits and ready replies, the job lane, the held intakes.
+        // dropped ones, the job slots' waits and ready replies, the job lane, the held intakes,
+        // and the model's barrier waits (the freeze's and the initialization's: Review on #966).
         let replies = side.coreInputReplies
         coreWaitsLeft = replies.waits.count + replies.dropped.count + replies.slots.waits.count + replies.slots.ready.count
             + replies.jobStarts.count + replies.jobReleases.count + replies.heldWhileFrozen.count
+            + model.coreBarrierWaits.freeze.values.reduce(0) { $0 + $1.count } + model.coreBarrierWaits.initialized.count
         holdsDestroyTicket = side.destroyTicket != nil
         lastDestroyTicket = side.lastDestroyTicketForTesting
         failure = side.failure

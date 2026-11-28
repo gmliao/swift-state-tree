@@ -134,6 +134,9 @@ enum ModelHoldsLint {
         "holdAtFreezeBarrier": "the freeze's barrier in an intake's step: the held intake goes on the side",
         "releaseCoreHeldIntakes": "the barrier's release: the held intakes taken off the side and stepped again",
         "acceptsSyncTurnState": "a sync query's land check before its frame: reads the side's failure and drain flag, outside any body",
+        "initializeDrive": "the initialization's driver loop: each request as an effect, a step, an owner output, or the waiters' answer",
+        "answerInitializationWaits": "the initialization's end: its waiters answered, outside any body, after the step that ended it",
+        "initializationAnswer": "a waiter's answer once the initialization ended: reads the side's failure by the model's ID, outside any body",
     ]
     static let sideStoreFramePath = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
 
@@ -1739,7 +1742,7 @@ struct ModelHoldsLintTests {
         // renamed one can't leave a stale exception.
         let frame = Set(report.holders.filter { $0.path == ModelHoldsLint.sideStoreFramePath && !$0.name.contains(" body in ") }.map(\.name))
         #expect(Set(ModelHoldsLint.sideStoreFrame.keys).isSubset(of: frame), "frame members missing: \(Set(ModelHoldsLint.sideStoreFrame.keys).subtracting(frame).sorted())")
-        #expect(ModelHoldsLint.sideStoreFrame.count == 24, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
+        #expect(ModelHoldsLint.sideStoreFrame.count == 27, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
         #expect(report.holders.contains { $0.path == drivers && $0.name == "tickStart" },
                 "holders in \(drivers): \(report.holders.filter { $0.path == drivers }.map(\.name))")
         // Each family of closure holders is found: every member that gives a closure the model

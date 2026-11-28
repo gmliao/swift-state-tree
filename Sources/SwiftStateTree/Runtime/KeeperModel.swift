@@ -165,11 +165,17 @@ struct KeeperModel<State: StateNodeProtocol> {
     var destructionFinished: Bool = false
     /// `transport?.recordsInTurnSyncFolds`, read when the transport is attached.
     var transportRecordsFolds: Bool = false
-    var didInitialize: Bool = false
-    /// OnInitialize's body has applied (#946), set in its segment: the drain runs the destroy
-    /// handlers only then (or on a land without OnInitialize). `didInitialize` is set later,
-    /// after the record wait and the loops' start.
-    var initializationApplied: Bool = false
+    /// Where the initialization is: one phase per step of its flow, each set by the segment
+    /// that enters it, on the keeper's path and the core's alike (K2-2 commit 1a). A result step
+    /// on the core switches over every phase, so a result that finds the flow elsewhere is a
+    /// named case, not a missed exit.
+    var initializationPhase: InitializationPhase = .notStarted
+    /// The initialization is over: done, failed, or ended by a drain.
+    var didInitialize: Bool { initializationPhase.isOver }
+    /// OnInitialize's body has applied (#946): the drain runs the destroy handlers only then (or
+    /// on a land without OnInitialize). True from the record wait on, before `didInitialize`.
+    /// #952's flag, now read from the phase (K2-2 plan §12).
+    var initializationApplied: Bool { initializationPhase.applied }
     /// The next tick turn includes the sync phase: set when the sync loop fires within
     /// `coincidentSyncWindow` of the next tick (the coincident-sync rule).
     var inTurnSyncDue: Bool = false
@@ -495,3 +501,47 @@ struct KeeperSequenceCounter: Sendable, Equatable {
 /// A turn machine is `Sendable` (`TurnMachine`); its conformance has to be declared beside the
 /// model (#700 K2-1). Every stored field is plain data.
 extension KeeperModel: Sendable {}
+
+/// The initialization's flow, one case per await between its segments (K2-2 commit 1a). The
+/// legacy re-evaluation path (#612) is a phase of its own, which a core never enters.
+@PlainData
+enum InitializationPhase: Equatable, Sendable {
+    /// `initializeBegin` hasn't run.
+    case notStarted
+    /// A re-evaluation keeper's replay of the initialization (the keeper's own path, #612).
+    case replaying
+    /// OnInitialize's resolvers run as an await (an effect on the core); its sequence number
+    /// is taken.
+    case resolving(sequence: Int64)
+    /// OnInitialize applied; its record is with the recorder. No sequence: only the flow's own
+    /// record effect answers it, and no step would read one (Review on #966).
+    case recording
+    /// OnInitialize applied (or the land has none); the finish runs in a step of its own.
+    case finishing
+    /// The owner configures the loops, then the initialization is done.
+    case startingLoops
+    /// Done: the land is open.
+    case done
+    /// Failed: the failure is held (`initializationFailure`) and the teardown staged.
+    case failed
+    /// A drain began before OnInitialize applied (during its resolvers): OnInitialize is
+    /// dropped and the failure held, with no teardown of its own (#952).
+    case abandonedByDrain
+
+    var isOver: Bool {
+        switch self {
+        case .done, .failed, .abandonedByDrain: true
+        case .notStarted, .replaying, .resolving, .recording, .finishing, .startingLoops: false
+        }
+    }
+
+    /// OnInitialize's body has applied: every phase after `.resolving` on the live path. A land
+    /// without OnInitialize goes from `.notStarted` to `.finishing`, and its drain reads the
+    /// definition instead (`drainAfterTicks`).
+    var applied: Bool {
+        switch self {
+        case .recording, .finishing, .startingLoops, .done: true
+        case .notStarted, .replaying, .resolving, .failed, .abandonedByDrain: false
+        }
+    }
+}
