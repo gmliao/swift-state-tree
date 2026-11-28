@@ -9,6 +9,7 @@
 // with a row: stricter than the plan's table, on purpose; the keeper has none, and a new one
 // should be placed by hand. A property-wrapped field's label is `_x`, and its row names it so.
 
+import Foundation
 import SwiftStateTurns
 import Testing
 @testable import SwiftStateTree
@@ -70,6 +71,7 @@ enum KeeperCensus {
             "actor.forceShutdownFlight": .replaced(by: "K7"),
             "actor.freezeWaitWatchersForTesting": .replaced(by: "K2"),
             "actor.freezeRegistrationsForTesting": .replaced(by: "K2"),
+            "actor.nextFreezeWatcherForTesting": .replaced(by: "K2"),
             "actor.holds": .testHook,
             "actor.inTurnYieldForTesting": .testHook,
             "actor.reentryGateForTesting": .testHook,
@@ -189,8 +191,7 @@ enum KeeperCensus {
             "model.debugReleasedGeneration": .model,
             "model.destroyHandlersStarted": .model,
             "model.destructionFinished": .model,
-            "model.didInitialize": .model,
-            "model.initializationApplied": .model,
+            "model.initializationPhase": .model,
             "model.entryGenerations": .model,
             "model.failureIDs": .model,
             "model.sequence": .model,
@@ -429,12 +430,34 @@ struct KeeperCensusTests {
         #expect(named.subtracting(sideFields).isEmpty, "not a side field: \(named.subtracting(sideFields).sorted())")
     }
 
+    @Test("LandKeeperTesting.defersInitialization is test-only: no source sets it, and its one read is the keeper's init (K2-2 commit 1a)")
+    func defersInitializationIsTestOnly() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources")
+        var uses: [String] = []
+        let files = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)
+        while let file = files?.nextObject() as? URL {
+            guard file.pathExtension == "swift" else { continue }
+            let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: false)
+            for (index, line) in lines.enumerated() where line.contains("defersInitialization") {
+                let code = line.range(of: "//").map { String(line[..<$0.lowerBound]) } ?? String(line)
+                guard code.contains("defersInitialization") else { continue }
+                uses.append("\(file.lastPathComponent):\(index + 1): \(code.trimmingCharacters(in: .whitespaces))")
+            }
+        }
+        // The declaration and the init's read; a `$defersInitialization.withValue` in Sources
+        // would let a production path skip its eager initialization.
+        #expect(uses.count == 2, "\(uses)")
+        #expect(!uses.contains { $0.contains("$defersInitialization") }, "\(uses)")
+        #expect(uses.contains { $0.contains("if LandKeeperTesting.defersInitialization { return }") }, "\(uses)")
+    }
+
     @Test("The machine's inputs and queries split into the routed set (K2-1, K2-2a) and the deferred ones, each named, and together every case (#700)")
     func inputRoutesSplitTheCases() {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
         #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")
         #expect(routed.union(deferred) == Set(KeeperInputRoute.allCases), "neither: \(Set(KeeperInputRoute.allCases).subtracting(routed.union(deferred)).map(\.rawValue).sorted())")
-        #expect(routed.count == 19 && deferred.count == 4, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
+        #expect(routed.count == 23 && deferred.count == 3, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
         #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
         let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
         #expect(queries.isDisjoint(with: deferredQueries))

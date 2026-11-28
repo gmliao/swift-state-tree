@@ -47,20 +47,40 @@ class ResolveTests(unittest.TestCase):
             wireform.resolve("49fde351", None, path_index=True, field_merge=True)
 
     def test_a_squashed_branch_commit_resolves_through_its_merge(self):
-        # Not in history itself; its squash merge predates both knobs. Short or full SHA.
+        # Its squash merge predates both knobs; whether this checkout reaches the commit itself or
+        # not (the next tests cover each case on its own). Short or full SHA.
         for sha in ("b8e798b", "b8e798b10679717aa"):
             with self.subTest(sha):
                 self.assertEqual(wireform.resolve(sha, "messagepack-pathhash"),
                                  wireform.WireForm("messagepack-pathhash", False, False, False))
         self.assertIsNone(wireform.squashed_merge("b8e798"))  # too short to match
 
-    def test_every_squashed_entry_is_unreachable_and_its_merge_predates_both_knobs(self):
+    def test_every_squashed_entry_agrees_with_its_merge_and_predates_both_knobs(self):
+        # The key is reachable when a ref outside main keeps it (the artifact branch) and unknown
+        # in a checkout without one; both pass. Reachable, its real ancestry must match the map's.
         for branch, merge in wireform.SQUASHED.items():
             with self.subTest(branch):
-                # Reachable, the map would override real ancestry.
-                self.assertIsNone(wireform.contains(branch, wireform.KNOBS["pathIndex"]), f"{branch} is in history")
                 for knob in wireform.KNOBS.values():
                     self.assertIs(wireform.contains(merge, knob), False, f"{merge} unknown or contains {knob}")
+                    real = wireform.contains(branch, knob)
+                    if real is not None:
+                        self.assertIs(real, wireform.contains(merge, knob), f"{branch} disagrees with {merge} on {knob}")
+
+    def test_the_squash_map_decides_only_an_unknown_commit(self):
+        sha = next(iter(wireform.SQUASHED))
+        merge = wireform.SQUASHED[sha]
+        real = wireform.contains
+        # Unknown to the repository (a checkout without the artifact branch): the merge decides.
+        unknown = lambda commit, knob, repo=wireform.REPO: None if commit == sha else real(commit, knob, repo)
+        with unittest.mock.patch.object(wireform, "contains", side_effect=unknown) as spy:
+            self.assertEqual(wireform.resolve(sha, "json"), wireform.WireForm("json", False, False, False))
+            self.assertIn(merge, {c.args[0] for c in spy.call_args_list})
+        # Reachable: its own ancestry decides, even against the map.
+        reached = lambda commit, knob, repo=wireform.REPO: commit == sha and knob == wireform.KNOBS["pathIndex"]
+        with unittest.mock.patch.object(wireform, "contains", side_effect=reached) as spy:
+            with self.assertRaisesRegex(wireform.MissingWireForm, "pathIndex not recorded although"):
+                wireform.resolve(sha, "json")
+            self.assertNotIn(merge, {c.args[0] for c in spy.call_args_list})
 
     def test_features_decide_the_knobs(self):
         self.assertEqual(wireform.resolve("49fde351", "messagepack", features=["pathIndex", "fieldMerge"]),

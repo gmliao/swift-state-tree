@@ -263,6 +263,14 @@ private final class SegmentHolds: @unchecked Sendable {
     }
 }
 
+/// The flags a test read last, set from any task.
+private final class SegmentLatestFlags: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: LandKeeper<SegmentState>.LifecycleFlagsForTesting?
+    func set(_ value: LandKeeper<SegmentState>.LifecycleFlagsForTesting) { lock.withLock { latest = value } }
+    var value: LandKeeper<SegmentState>.LifecycleFlagsForTesting? { lock.withLock { latest } }
+}
+
 private let segP1 = PlayerID("p1")
 private let segC1 = ClientID("c1")
 private let segS1 = SessionID("s1")
@@ -321,6 +329,7 @@ struct InitAndDrainSegmentTests {
         #expect(await keeper.currentState().log == ["init:1"])
         let held = await keeper.lifecycleFlagsForTesting()
         #expect(held.didInitialize == false)
+        #expect(held.initializationApplied, "OnInitialize applied before the record")
         #expect(held.tickLoopConfigured == false, "the loops start after the record")
 
         holds.gate.release()
@@ -331,28 +340,93 @@ struct InitAndDrainSegmentTests {
         await keeper.forceShutdown()
     }
 
-    @Test("T2b: a land that fails while its initialization is held at the record configures no loop, and its drain runs the destroy handlers: OnInitialize had applied")
+    @Test("T2b: a land that fails while its initialization is held at the record configures no loop, and its drain, finished while the record is still held, runs the destroy handlers: OnInitialize had applied (Review on #966)")
     func failedAtInitializeRecordStartsNoLoop() async throws {
         let (keeper, holds) = await keeperHeldAtInitializeRecord(tick: true)
         guard let holds else { return }
         defer { holds.release() }
+        // Held at the record: `applied` is true and `didInitialize` false (so in `.finishing` and
+        // `.startingLoops`), and the drain's `stateIsSetUp` reads `applied`.
+        let held = await keeper.lifecycleFlagsForTesting()
+        #expect(held.initializationApplied && !held.didInitialize, "held at the record: \(held)")
 
         await keeper.failLandForTesting(LandFailure(kind: .syncPlan, detail: "test", position: LandFailurePosition(stage: .syncPhase)))
         #expect(keeper.isDraining)
+        // The failure's staged teardown starts the drain; the test starts none of its own. The
+        // drain doesn't wait for the initialization (#946): it finishes while the record is
+        // still held. `waitUntilDrained` awaits the drain's task, which ignores cancellation:
+        // bound it on an event its end appends, as T12 does.
+        #expect(await withinHangBound { await keeper.waitUntilDrainStartedForTesting() }, "the failure's teardown never started")
+        let drained = EventLog()
+        Task {
+            await keeper.waitUntilDrained()
+            drained.append("drained")
+        }
+        guard await drained.waitFor("drained") else {
+            Issue.record("the drain didn't finish while the initialization was held at the record")
+            return
+        }
+        #expect(await keeper.lifecycleFlagsForTesting().destructionFinished, "the failure's teardown ended")
+        // OnInitialize applied before the record's hold: the state is set up, so the drain ran
+        // the destroy handlers on it (#946's `initializationApplied`, read in `.recording`).
+        let log = await keeper.currentState().log
+        #expect(log.contains { $0.hasPrefix("init:") }, "log \(log)")
+        #expect(log.contains { $0.hasPrefix("finalize:") }, "the drain skipped the destroy handlers of a land held at its record: \(log)")
 
         holds.gate.release()
         await keeper.awaitInitialization()
         #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false, "the drain began during the record: no loop")
-        // The failure's staged teardown starts the drain; the test starts none of its own.
-        #expect(await withinHangBound { await keeper.waitUntilDrainStartedForTesting() }, "the failure's teardown never started")
-        await keeper.waitUntilDrained()
-        #expect(await keeper.lifecycleFlagsForTesting().destructionFinished, "the failure's teardown ended")
-        #expect(await keeper.lifecycleFlagsForTesting().tickLoopConfigured == false)
-        // OnInitialize applied before the record's hold: the state is set up, so the drain ran
-        // the destroy handlers on it (#946's `initializationApplied`, set in the apply's segment).
-        let log = await keeper.currentState().log
-        #expect(log.contains { $0.hasPrefix("init:") }, "log \(log)")
-        #expect(log.contains { $0.hasPrefix("finalize:") }, "the drain skipped the destroy handlers of an initialized land: \(log)")
+    }
+
+    @Test("T2c: the initialization waits for the recorder to take its record: with a submission held ahead of it in the recorder's queue, the segment that resumes after the record's hold ends with the initialization still at the record, and it ends only after the queue moves (966 mutant (a), Review r3 should 1)")
+    func initializationWaitsForTheRecorder() async throws {
+        let (landID, resolverGate) = segmentLandID("init")
+        defer { resolverGate.release() }
+        let keeper = makeSegmentKeeper(tick: false, landID: landID, recording: true, autoStartLoops: true)
+        guard await resolverGate.waitUntilEntered("OnInitialize's resolver") else { return }
+        // The recorder's queue applies in submit order (a FIFO): a held submission ahead of the
+        // initialization's record keeps the record from being taken.
+        let queueHold = WatermarkGate()
+        defer { queueHold.release() }
+        let log = EventLog()
+        await keeper.recorderSubmissionsForTesting.submit(label: "held") {
+            await queueHold.enterAndWait()
+            log.append("queue moved")
+        }
+        // The read is forced after the segment that resumes at the record's hold: the resumed
+        // hook runs in that segment, and the task it starts on the keeper runs only once the
+        // segment ends, at the keeper's next suspension. The keeper suspends there on the
+        // record's hand-off; a keeper that doesn't await it runs the initialization to its end
+        // first.
+        let afterSegment = SegmentLatestFlags()
+        await keeper.installResumedHoldsForTesting { point, actor in
+            guard point == .turnRecord else { return }
+            Task {
+                // Captures the isolated parameter, so the task starts on the keeper's executor.
+                actor?.assertIsolated("the read's task runs on the keeper")
+                afterSegment.set(await keeper.lifecycleFlagsForTesting())
+                log.append("read")
+            }
+        }
+        let initialized = Task {
+            await keeper.awaitInitialization()
+            log.append("initialized")
+        }
+        resolverGate.release()
+        guard await log.waitFor("read") else { Issue.record("the read after the record's hold never ran"); return }
+        let held = try #require(afterSegment.value)
+        #expect(held.initializationApplied && !held.didInitialize, "after the segment that resumed at the record's hold: \(held)")
+        #expect(log.events == ["read"], "the initialization ended before the recorder took its record: \(log.events)")
+
+        queueHold.release()
+        guard await valueWithinHangBound(initialized) != nil else {
+            Issue.record("the initialization didn't end after the recorder's queue moved")
+            return
+        }
+        #expect(log.events == ["read", "queue moved", "initialized"], "\(log.events)")
+        #expect(await keeper.lifecycleFlagsForTesting().didInitialize)
+        await keeper.installResumedHoldsForTesting(nil)
+        await keeper.forceShutdown()
     }
 
     @Test("T3: OnInitialize's resolver throws (.failLand) after the hold: the initialization fails and the waiting join gets landShuttingDown", arguments: [false, true])

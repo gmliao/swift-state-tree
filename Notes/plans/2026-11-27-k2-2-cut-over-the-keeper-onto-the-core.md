@@ -30,6 +30,8 @@ K2-3, in the same PR, deletes the paths K2-2 made unreachable on live keepers an
 
 Two PRs (K22-Q4, Main's lean, 2026-11-27): **K2-2a**, commits 0–3, still unwired, so the differential grows with them and the PR builds green on its own, as K2-1 did; **K2-2b**, commits 4–6, the cut-over, reviewable on its own. One commit per step, each building green.
 
+**As merged (2026-11-27, §12):** K2-2a is #948, commits 0, 2 and 3. Commit 1 follows as two PRs of its own, both before K2-2b: **1a**, the initialization; **1b**, the destroy drain, the stop and the tick-record hold (§11.1), after #953.
+
 **Commit 1 is blocked on K2-1b**, which waits on the maintainer (#117). Commits 0, 2 and 3 don't depend on it: none of them routes the initialization, the destroy drain or anything that ends in them. Where a commit-2 flow ends in one of those (the stop's drain, an initialization barrier still closed), that part is commit 1's, named below. K2-2a can merge without commit 1; K2-2b needs it, since the wiring needs the routed subset total.
 
 **0. The action jobs on the core** (K2 §16 item 17). The job lane's four keeper-only parts move together:
@@ -350,3 +352,65 @@ What it shows:
 | M9 | `runAfterFinalize` runs in `openStepScope(…, droppingInto: destroyHandlerOutputsDropped)` | "an effect … in its scope" | the effect carries the scope's counter from the side |
 | M10 | `.notifyTransport`: the port is `transport ?? boundSyncRequester`; after `drainFinished`, `releasedTransport = …` and then `setTransport(nil)` | `setTransport(nil)` only | the port effect takes the bound requester as a fallback. Two owner calls follow the step, in that order |
 | M12 | — | §3.2 | commit 1 lifts none of #938's refusals. It lifts #948's tick-land `.freeze` refusal, through the tick-record hold that `.waitForTick` and the stop's barrier also need, so the hold is built once. The tickless `.admitServerInput` precondition stays with K2-2b (§10) |
+
+## 12. Commit 1a as built (2026-11-27, its own PR after #948)
+
+K2-2a merged as #948 without commit 1 (§3). Commit 1a routes the initialization; 1b takes the rest of §11.
+
+**One phase per flow.** The initialization's state is one enum, `InitializationPhase`, in the model: `.notStarted`, `.replaying` (the keeper's legacy re-evaluation path, #612), `.resolving(sequence:)`, `.recording(sequence:)`, `.finishing`, `.startingLoops`, `.done`, `.failed`, `.abandonedByDrain` (#952: a drain began during OnInitialize's resolvers, so OnInitialize is dropped). It replaces the `didInitialize` flag, which is now computed (`isOver`: `.done`, `.failed` or `.abandonedByDrain`).
+- Each segment sets the phase it enters, in the shared bodies, so the keeper's path and the core's write the same field and the differential compares it.
+- Each result step on the core (`.initialize`, `.initializeResolved`, `.initializeRecorded`, `.initializeDone`, and the finish, which round 1 made a second step in the same handler instead of the `.initializeFinish` input) switches over all nine phases. The phase its request left runs; every other phase is named in a `preconditionFailure`. Only the flow's own effects and queue send those inputs, and until 1b no drain or failure moves the phase from outside the flow, so another phase is a broken flow, not a race.
+- The rule is the maintainer's, for every multi-step flow moved onto the core, after #952 r1's two must-fixes: one exit of three checked, and a teardown keyed on a still-racing outcome.
+- **#952's `initializationApplied` flag is part of `InitializationPhase`** (folded in when 1a was rebased onto #952): it is computed, `phase.applied`, true for the phases after `.resolving` on the live path (`.recording`, `.finishing`, `.startingLoops`, `.done`). #952's `initializeEndedByDrain` sets `.abandonedByDrain`. #954 is the later flow version, where each link of the chain is an effect plus a result input and the helper does the ticket and phase check. 1a's hand-written version is the baseline for that swap.
+
+**What 1a routes.** §3.1 and §11.2's M1–M4 and M6, as written there. The re-evaluation pair (M3) is a `preconditionFailure` on the core (#612). The test switch `LandKeeperTesting.defersInitialization` is `package`, and a census case checks that no source in the package sets it.
+
+**Left for 1b.**
+- M5's `loopEpoch` goes with the tick-record hold, since the epoch guards the stale `.tickDue` that the tick routing reads.
+- M7–M10 and M12: the drain, the stop and the tick-land `.freeze` refusal.
+- `initializeFail` stages its teardown through `keeperReference`, which is empty on the core twin, so no teardown runs on the core in 1a. That's 1b's drain.
+
+**Round 1 on #966 (Review's NOT GO at 5fce0d13), answered.**
+- **The owner's two sends are `.control`:** `.initialize` and `.initializeDone`, as #948 made `.resume`. A full or closed queue never refuses the only input that answers the initialization's waiters.
+- **The finish steps directly**, in the handler that ran OnInitialize's step, with the same phase check. `.initializeFinish` is gone as an input: queued behind `.land`, it let queued inputs step between OnInitialize and the finish, which the keeper never does, and its `_ =` dropped a refusal. M1's reason for a separate step holds: the step that returned `.finish` has ended, so its late backstop has run (T11).
+- **A failure is thrown to the waiters** (K2 §3.3.1). `answerInitializationWaits` and a late `.awaitInitialized` reply `.failure(error)`, where the error is the side's error for `initializationFailure` (the keeper's `failure(for:path:sequence:)`). The facade's `awaitInitialization` drops it with `try?`, as the keeper's does.
+- **`markDrainingForTesting`** sets the flag without the clears, unlike every production drain start. Its doc and the OnJoin assert name it as the one exception. `drainStartClearsWhileOnJoinIsHeld` pins the clears for `failLand` and the forced stop, before OnJoin's release.
+- **`.recording`** carries no sequence: no step read it. `InitializeResolving` is plain `Sendable`. `coreWaitsLeft` counts the model's barrier waits.
+- **Core twins:** `initializationHeldRecordTwoWaiters` (a), `initializationFailureAnswersTheWaiters` (b, the resolver's throw), `initializationStartsLoops` (c: the twin answers `.startLoops` with `.initializeDone`). Still to come: (b)'s `validate` refusal, (d) T11's late re-entry, and (e) a drain during the resolvers and during the record.
+- **`parkedCallerCancelRacesResume`** is replaced by `parkedCallerResumedThenCancelled`, the resume-first order, forced. The job is held at its resolver while the caller is cancelled, and the comparison waits for the core's `input-drain-end`. The cancel-first order stays `parkedCallerCancelledBeforeResume`.
+
+**Round 2 on #966.**
+- **The seam, built from what exists:** `CoreDiffInitGates` holds and fails the resolvers. `armedRecordGate` holds the record on the core, and the pair's `keeperRecordGate` holds it on the keeper. The harness's `markDraining(cause:)` sets the twin's drain flag only (`store.withSide`); its cases join no player, so the keeper's clears have nothing to clear. T11's twin reuses `CoreDiffHandlerReentry`, fired from OnInitialize's body. `CoreDiffShape.initializeRefuses` is the two-stage OnInitialize whose `validate` throws.
+- **New twins:**
+  - `initializationValidateRefuses`, (b)'s validate: `.failed`, nothing applied, no loop, and both waiters get the failure.
+  - `initializationLateReentry`, (d): one late re-entry per path, `keeperReentry` on both, no loop. The initialization itself ends `.done` on both paths, and the waiter is answered `.done`; the land fails after it.
+  - `initializationDrainDuringResolvers`, (e): `.abandonedByDrain`, nothing applied, no loop, and the waiter gets `LandInitializationError` (the closed land).
+  - `initializationDrainDuringRecord`, (e): still applied, no loop.
+- **`markDrainingForTesting`** now clears `players`, the services and the rejoin reservations in one turn, as every drain start does. The OnJoin assert has no exception left. The in-body re-entry case in `KeeperTurnSkeletonTests` uses `setDrainFlagInBodyForTesting`.
+- **Expected survivors until 1b:**
+  - Mutant (h), `.initializeDone` left `.normal`: no 1a case fills or closes the queue while the owner's answer is in flight.
+  - The flag-swap half of mutant (c): with no tick or sync interval in the init shape, no loop is configured, so `initializeDone`'s two flags reach only asserts on a land with no loops.
+
+  1b's stop and drain cases cover both: a closed queue at `.initializeDone`, and a tick land's init.
+
+**Round 3 on #966 (Review's NOT GO at fdeca5d9).**
+- **`applied` in `.recording` is pinned.** `applied` (true) and `didInitialize` (false) differ in `.recording`, `.finishing` and `.startingLoops`, where the drain's `stateIsSetUp` reads `applied`. They also differ the other way in `.failed` and `.abandonedByDrain`, where `initializationFailure` guards the drain first. `.recording` is the one the keeper awaits in. `.startingLoops` is awaited on the core, so 1b's drain case pins `applied` there.
+  - The keeper's T2b now lets the failure's drain finish while the record is held, bounded by an event as T12 is. It asserts that the destroy handlers ran on the set-up state, and only then releases the record.
+  - T2 and the core's `initializationHeldRecordTwoWaiters` read `initializationApplied && !didInitialize` at the hold (`LifecycleFlagsForTesting.initializationApplied` is new).
+  - Two mutants are killed: `applied` false for `.recording`, and `initializationApplied = didInitialize`.
+- **Every new waiter read is bounded** by an event the task's end appends (`resultWithinHangBound`). The harness calls with `.ignoresCancel`, so a cancel can't free a lost reply. The held-probe and drain-end reads in `parkedCallerResumedThenCancelled` are bounded the same way.
+- **The failures' causes are asserted**, for the core's early and late caller and for the keeper's late leave: `CoreDiffError(token: -1)` for the resolver's throw, `token: -2` for the validate refusal, and `LandInputRejection.landClosed` for the drain during the resolvers. The last case now has a late `.awaitInitialized` after `.abandonedByDrain`.
+- **The record's hand-off, on both paths** (cloud mutant (a); Review r3 should 1). The recorder's queue is a FIFO, so a held submission ahead of the initialization's record keeps the record from being taken. The harness's `armedRecordGate` holds the effect, not the recorder; this case holds the recorder.
+  - **The keeper (T2c):** a read is forced right after the segment that resumes at `.turnRecord`, through the new resumed hook (below). It expects `applied && !didInitialize` and no "initialized" event; once the queue moves, the order is queue moved → initialized.
+  - **The core (`initializationWaitsForTheRecorderOnTheCore`):** the harness notes each record effect as it starts its wait, "awaiting the hand-off" or "no submission". The case expects the first and a phase still `.recording` while the queue is held.
+  - **Mutants, run by hand 20× each:** stage the record without awaiting `taken()` (cloud (a)), killed 20/20. Delete the `taken()` await in `submitTurnRecord`, killed 20/20. `.initializeRecord(submission: nil)` on the core, killed 20/20.
+- **The resumed hook** (`HoldPoints.installResumed`, `LandKeeper.installResumedHoldsForTesting`, package, test-only). It is a synchronous hook that `at` calls on the caller's executor right after the async hook returns. A task it starts there (capturing the `isolated` parameter) runs once that segment ends, at the caller's next suspension. A read from the async hook's own task can't be ordered after that segment: the hook is nonisolated, and its return enqueues the caller's resumption from another thread. With nothing installed, `at` is unchanged: one `nil` check more, no suspension.
+- **Cloud mutant (f), the sequence check in `.initializeResolved`.** Review calls it equivalent in 1a: one initialization, one resolver effect. It stays as a check that a broken flow traps, and `staleInitializeResolutionStops` (an exit test) sends a resolution of another sequence while the core is in `.resolving` and expects the trap. The sequence stays in `.resolving`, since the check reads it.
+- **Nits:** stale "queued behind `.land`" comments, `== .done` on both paths in the record-drain twin, the keeper-side `tickLoopConfigured` checks in the tickless twins dropped (the core's `.startLoops` checks are the real ones), the harness's `markDraining` doc, and the `.land` liveness assert before `.startLoops`.
+
+**Round 4's leftovers on #948, carried here.**
+- A cancel concurrent with the resume: `parkedCallerCancelRacesResume`, 8 runs. Either outcome, consistent on each path, and nothing left waiting.
+- The registration watcher is bounded: it returns false after `within:`.
+- `actionJobCallerCancel` waits for the resolver at its gate before the cancel.
+- `firstSignal`'s doc.
+

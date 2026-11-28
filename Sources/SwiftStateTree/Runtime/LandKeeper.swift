@@ -730,6 +730,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         holds.install(hook)
         turnSide.holdPoints.install(hook)
     }
+
+    /// Tests: `HoldPoints.installResumed` on the keeper's own hold points (not the side's).
+    func installResumedHoldsForTesting(_ hook: (@Sendable (LandKeeperHoldPoint, isolated (any Actor)?) -> Void)?) {
+        holds.installResumed(hook)
+    }
     private var initializationTask: Task<Void, Never>?
 
     /// Throws the initialization's failure, if it failed. Every caller gets the same value: the
@@ -985,6 +990,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// holds one of their awaits.
     struct LifecycleFlagsForTesting: Sendable, Equatable {
         var didInitialize: Bool
+        /// `InitializationPhase.applied`: OnInitialize set the state up. It differs from
+        /// `didInitialize` in `.recording`, `.finishing` and `.startingLoops` (applied, not
+        /// over), where the drain's `stateIsSetUp` reads it, and in `.failed` and
+        /// `.abandonedByDrain` (over, not applied), where `initializationFailure` guards the
+        /// drain first.
+        var initializationApplied: Bool
         var initializationFailed: Bool
         var destroyHandlersStarted: Bool
         var destructionFinished: Bool
@@ -997,6 +1008,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     func lifecycleFlagsForTesting() -> LifecycleFlagsForTesting {
         LifecycleFlagsForTesting(
             didInitialize: model.didInitialize,
+            initializationApplied: model.initializationApplied,
             initializationFailed: model.initializationFailure != nil,
             destroyHandlersStarted: model.destroyHandlersStarted,
             destructionFinished: model.destructionFinished,
@@ -1273,6 +1285,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // - OnInitialize runs when Land is created
         // - Tick/sync loops start automatically when configured
         // A failed initialization (#104) tears the land down itself; its callers get the error.
+        // Tests that copy a model before its initialization defer it (`LandKeeperTesting`).
+        if LandKeeperTesting.defersInitialization { return }
         Task { [weak self] in
             guard let self else { return }
             try? await self.ensureInitialized()
@@ -1658,9 +1672,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 turnSide.debugDrainWaiters[waiterID] = continuation
                 freezeRegistrationsForTesting += 1
                 let registered = freezeRegistrationsForTesting
-                let ready = freezeWaitWatchersForTesting.filter { $0.count <= registered }
-                freezeWaitWatchersForTesting.removeAll { $0.count <= registered }
-                ready.forEach { $0.continuation.resume() }
+                let ready = freezeWaitWatchersForTesting.filter { $0.value.count <= registered }
+                ready.keys.forEach { freezeWaitWatchersForTesting[$0] = nil }
+                ready.values.forEach { $0.continuation.resume(returning: true) }
             }
             timer.cancel()
         }
@@ -2016,7 +2030,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The initialization's requests (#700 K2-1b): each segment returns the await it needs.
-    fileprivate enum InitializeRequest {
+    enum InitializeRequest {
         /// `initializeFinish`, in a turn of its own after OnInitialize's.
         case finish
         /// Re-evaluation: the record's header checks (the legacy replay path, until #612).
@@ -2031,7 +2045,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// A live OnInitialize whose resolvers run: what `initializeBegin` built for it.
-    fileprivate struct InitializeResolving {
+    struct InitializeResolving: Sendable {
         let handler: InitializeHandler<State>
         let ctx: LandContext
         let sequence: Int64
@@ -2202,11 +2216,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// model's transport fields set as the keeper's `init` sets them; its port calls that need a
     /// keeper find none. Waits for the initialization first: a waiter of the eager
     /// initialization task returns before that task's starter sets `didInitialize` (#934).
-    func coreTwinForTesting(transport twinTransport: (any LandKeeperTransport)? = nil) async -> (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>) {
+    /// `initialized`: false copies a keeper built under `LandKeeperTesting.defersInitialization`,
+    /// before its initialization, so the core runs it (K2-2 commit 1a).
+    func coreTwinForTesting(transport twinTransport: (any LandKeeperTransport)? = nil, initialized: Bool = true) async -> (model: KeeperModel<State>, behavior: KeeperBehavior<State>, store: KeeperSideStore, owner: LandKeeper<State>) {
         precondition(behavior.config.mode == .live, "coreTwinForTesting: a live keeper")
         precondition(transport == nil, "coreTwinForTesting: the source keeper has no transport (attach one to the twin instead); land \(behavior.config.actualLandID ?? definition.id) has \(transport.map { String(describing: type(of: $0)) } ?? "-")")
-        if let task = initializationTask { await task.value }
-        precondition(model.didInitialize || initializationTask != nil, "coreTwinForTesting: an initialized keeper")
+        if initialized {
+            if let task = initializationTask { await task.value }
+            precondition(model.didInitialize || initializationTask != nil, "coreTwinForTesting: an initialized keeper")
+        } else {
+            precondition(!model.didInitialize && initializationTask == nil, "coreTwinForTesting: a keeper whose initialization was deferred and never started")
+        }
         precondition(model.initializationFailure == nil, "coreTwinForTesting: the initialization failed")
         // A drain still scheduled would be copied as scheduled, and the core would never run one.
         precondition(!model.inputDrainScheduled, "coreTwinForTesting: an input drain is still scheduled; wait for the keeper's work first")
@@ -2218,7 +2238,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         precondition(pendingTransportFailure.failure == nil, "coreTwinForTesting: the source's mailbox holds a failure")
         precondition(twinTransport == nil || reentryGateForTesting == nil, "coreTwinForTesting: one twin with a transport per source")
         var model = model
-        model.didInitialize = true
+        model.initializationPhase = initialized ? .done : .notStarted
         model.hasHeldTransport = twinTransport != nil
         model.transportRecordsFolds = twinTransport?.recordsInTurnSyncFolds ?? false
         var side = KeeperTurnSide(
@@ -2496,27 +2516,45 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Test hook: whether the land is frozen.
-    /// Test hook, observation only: returns once a freeze is waiting for in-flight work (it
-    /// registered its waiter, in the same segment that checked the work).
-    /// Returns once a freeze caller waits (or has waited: the count is of registrations).
-    package func waitUntilFreezeWaitsForTesting() async {
-        await waitUntilFreezeRegistrationsForTesting(1)
+    /// Test hook, observation only: returns once a freeze caller waits for in-flight work, or
+    /// has waited (the count is of registrations; it registered its waiter in the same segment
+    /// that checked the work). False if none registered within `bound`.
+    @discardableResult
+    package func waitUntilFreezeWaitsForTesting(within bound: Duration = .seconds(30)) async -> Bool {
+        await waitUntilFreezeRegistrationsForTesting(1, within: bound)
     }
 
-    /// Returns once `count` freeze callers have registered as waiting, ever: a monotonic count
-    /// of registration events, so a caller that registered and timed out before this was
+    /// Returns true once `count` freeze callers have registered as waiting, ever: a monotonic
+    /// count of registration events, so a caller that registered and timed out before this was
     /// called still counts (#948 round 3: a watcher counts events, it doesn't read state).
-    package func waitUntilFreezeRegistrationsForTesting(_ count: Int) async {
-        guard freezeRegistrationsForTesting < count else { return }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            freezeWaitWatchersForTesting.append((count, continuation))
+    /// False once `bound` passes first: a caller that never registers (it answered without
+    /// waiting) fails the case instead of hanging it (Review r4 on #948). The bound orders
+    /// nothing; it only ends a wait that correct code never reaches.
+    @discardableResult
+    package func waitUntilFreezeRegistrationsForTesting(_ count: Int, within bound: Duration = .seconds(30)) async -> Bool {
+        guard freezeRegistrationsForTesting < count else { return true }
+        nextFreezeWatcherForTesting += 1
+        let id = nextFreezeWatcherForTesting
+        let timer = Task { [weak self] in
+            try? await safeTaskSleep(for: bound)
+            await self?.expireFreezeWatcherForTesting(id)
         }
+        defer { timer.cancel() }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            freezeWaitWatchersForTesting[id] = (count, continuation)
+        }
+    }
+
+    private func expireFreezeWatcherForTesting(_ id: Int) {
+        freezeWaitWatchersForTesting.removeValue(forKey: id)?.continuation.resume(returning: false)
     }
 
     /// How many freeze callers have registered as waiting (tests).
     private var freezeRegistrationsForTesting = 0
-    /// Callers of `waitUntilFreezeRegistrationsForTesting` waiting for a registration count.
-    private var freezeWaitWatchersForTesting: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var nextFreezeWatcherForTesting = 0
+    /// Callers of `waitUntilFreezeRegistrationsForTesting` waiting for a registration count,
+    /// by watcher.
+    private var freezeWaitWatchersForTesting: [Int: (count: Int, continuation: CheckedContinuation<Bool, Never>)] = [:]
 
     package func debugIsFrozenForTesting() -> Bool {
         model.debugFrozen
@@ -4187,8 +4225,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Tests: marks the land draining with `cause`, as the land's stop does first, without
-    /// starting the drain.
+    /// starting the drain. In one turn, as every production drain start does, it also clears
+    /// `players`, the player services and the rejoin reservations, so no test reaches a state
+    /// production can't (Review on #966: the OnJoin append's drain branch asserts the clears).
     package func markDrainingForTesting(cause: LandDestructionCause) {
+        withTurn { m, side, _ in
+            side.sharedDrainFlag.set(cause: cause)
+            m.players.removeAll()
+            side.playerServices.removeAll()
+            m.rejoinReservations.removeAll()
+        }
+    }
+
+    /// Tests: only the drain flag, from inside a turn body, where `markDrainingForTesting`'s own
+    /// turn would nest: a transport's re-entry during a sync phase (`KeeperTurnSkeletonTests`).
+    /// No join's OnJoin resolvers run across it, so it never reaches the OnJoin append's drain
+    /// branch, whose assert expects the clears.
+    package func setDrainFlagInBodyForTesting(cause: LandDestructionCause) {
         drainFlag.set(cause: cause)
     }
 
@@ -5014,12 +5067,12 @@ extension KeeperModel {
     typealias FailurePath = LandKeeper<State>.FailurePath
     typealias JoinDecided = LandKeeper<State>.JoinDecided
     typealias JoinRequest = LandKeeper<State>.JoinRequest
-    fileprivate typealias InitializeRequest = LandKeeper<State>.InitializeRequest
+    typealias InitializeRequest = LandKeeper<State>.InitializeRequest
     fileprivate typealias DrainRequest = LandKeeper<State>.DrainRequest
     fileprivate typealias DestroyHandlerKind = LandKeeper<State>.DestroyHandlerKind
     fileprivate typealias DestroyHandlerStep = LandKeeper<State>.DestroyHandlerStep
     fileprivate typealias AfterFinalizeStep = LandKeeper<State>.AfterFinalizeStep
-    fileprivate typealias InitializeResolving = LandKeeper<State>.InitializeResolving
+    typealias InitializeResolving = LandKeeper<State>.InitializeResolving
     typealias LeaveCapture = LandKeeper<State>.LeaveCapture
     typealias LeaveRequest = LandKeeper<State>.LeaveRequest
     typealias OnJoinCapture = LandKeeper<State>.OnJoinCapture
@@ -6560,13 +6613,14 @@ extension KeeperModel {
     ) throws {
         // Same synchronous segment as the append: a drain that started during the resolvers
         // must not get an OnJoin input after it took the pending inputs. The entry this join
-        // inserted goes too (if it is still this join's), so `players` doesn't keep a player
-        // that never joined.
+        // inserted is already gone: every drain start clears `players` and the player services
+        // first (the shutdown turn, `failLand`, `shutdownIfIdle` on an empty land, the failed
+        // initialization's teardown).
         guard !side.isDraining else {
-            if players[capture.playerID]?.generation == capture.entryGeneration {
-                players.removeValue(forKey: capture.playerID)
-                side.removePlayerServices(of: capture.playerID, generation: capture.entryGeneration)
-            }
+            // Every drain start clears players in the segment that sets the flag, the test hook
+            // `markDrainingForTesting` included.
+            assert(players[capture.playerID]?.generation != capture.entryGeneration,
+                   "a drain start clears players before a resolved join's append runs")
             // Actions submitted for this entry during the resolvers can't be delivered, as after
             // a leave (their tickets name the entry).
             cancelActionJobs(behavior, &side, &outputs, ofEntryGeneration: capture.entryGeneration)
@@ -8124,7 +8178,7 @@ extension KeeperModel {
 
     /// I1: the registration checks, then the replay header, OnInitialize's resolvers, or
     /// OnInitialize itself in this segment when it has none.
-    fileprivate mutating func initializeBegin(
+    mutating func initializeBegin(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs
@@ -8171,6 +8225,7 @@ extension KeeperModel {
             return initializeFail(behavior, &side, &outputs, error)
         }
         if behavior.config.mode == .reevaluation {
+            initializationPhase = .replaying
             if let source = side.replay?.reevaluationSource { return .checkReplayHeader(source) }
             return .runReplayBeforeTickZero
         }
@@ -8178,6 +8233,7 @@ extension KeeperModel {
         // as a lifecycle event under tick 0 so replay can apply it deterministically before the
         // first tick handler runs.
         guard behavior.config.mode == .live, let handler = definition.lifetimeHandlers.onInitialize else {
+            initializationPhase = .finishing
             return initializeFinish(behavior, &side, &outputs)
         }
         let taken = sequence.take()
@@ -8191,6 +8247,7 @@ extension KeeperModel {
         // (#769). A closure that built none has no group to run.
         if let declaration = definition.lifetimeHandlers.onInitializeResolvers,
            case let executors = declaration.build(state, ValidateContext(ctx)), !executors.isEmpty {
+            initializationPhase = .resolving(sequence: taken)
             return .runResolvers(InitializeResolving(
                 handler: handler,
                 ctx: ctx,
@@ -8227,7 +8284,7 @@ extension KeeperModel {
     /// `initializationTaskCancelled`: the initialization's task was cancelled, which the
     /// shutdown exemption of `.failLand` reads. No current path cancels that task, so the case
     /// is defensive; a draining land ends here first, by the guard below (#946).
-    fileprivate mutating func initializeResolved(
+    mutating func initializeResolved(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -8328,11 +8385,15 @@ extension KeeperModel {
             output = initialized
         }
         // OnInitialize has applied: the drain's handlers may run from here, also during the
-        // record wait, before `didInitialize` (#946).
-        initializationApplied = true
+        // record wait, before `didInitialize` (#946). The phase set next says so
+        // (`InitializationPhase.applied`).
         // Without a record, the guard runs in a turn of its own: this turn's late re-entry
         // backstop (`withTurn`'s defer) can fail the land after the body (#944).
-        guard behavior.reevaluationRecorder != nil else { return .finish }
+        guard behavior.reevaluationRecorder != nil else {
+            initializationPhase = .finishing
+            return .finish
+        }
+        initializationPhase = .recording
         let recorded = ReevaluationRecordedLifecycleEvent(
             kind: LandKeeper<State>.LifecycleKind.initialize.rawValue,
             sequence: taken,
@@ -8360,18 +8421,19 @@ extension KeeperModel {
     }
 
     /// I3: after the record's await.
-    fileprivate mutating func initializeRecorded(
+    mutating func initializeRecorded(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs
     ) -> InitializeRequest {
-        initializeFinish(behavior, &side, &outputs)
+        initializationPhase = .finishing
+        return initializeFinish(behavior, &side, &outputs)
     }
 
     /// Then the tick and sync loops, if configured. Not on a land that is ending: a refusal in
     /// initialization's turn failed it, or a drain began during the record's await, and the
     /// drain has stopped (or will not see) the loops.
-    fileprivate mutating func initializeFinish(
+    mutating func initializeFinish(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs
@@ -8380,6 +8442,7 @@ extension KeeperModel {
             initializeDone(behavior, &side, &outputs, tickLoopConfigured: false, syncLoopConfigured: false)
             return .done
         }
+        initializationPhase = .startingLoops
         return .startLoops
     }
 
@@ -8388,7 +8451,7 @@ extension KeeperModel {
     /// so a waiter that resumes before the starter sees it (#934). The two flags say whether
     /// the tick and sync loops are configured (`tickLoopConfiguredAt`, `syncTask`: actor
     /// fields).
-    fileprivate mutating func initializeDone(
+    mutating func initializeDone(
         _ behavior: KeeperBehavior<State>,
         _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
@@ -8404,7 +8467,7 @@ extension KeeperModel {
         if handlers.syncInterval != nil || handlers.tickInterval != nil {
             assert(startsNoLoop || syncLoopConfigured, "didInitialize before the sync loop was configured")
         }
-        didInitialize = true
+        initializationPhase = .done
     }
 
     /// The land began draining during OnInitialize's resolvers (#946): OnInitialize doesn't run,
@@ -8423,7 +8486,7 @@ extension KeeperModel {
         let failure = recordFailure(&side, LandInitializationError(underlying: underlying))
         initializationFailure = failure
         checkActionTables(behavior, side, #function)
-        didInitialize = true
+        initializationPhase = .abandonedByDrain
         return .done
     }
 
@@ -8442,7 +8505,7 @@ extension KeeperModel {
         let failure = recordFailure(&side, LandInitializationError(underlying: error))
         initializationFailure = failure
         checkActionTables(behavior, side, #function)
-        didInitialize = true
+        initializationPhase = .failed
         let keeperReference = side.keeperReference
         outputs.stage { [weak keeperReference] in
             guard let keeper = keeperReference?.keeper as? LandKeeper<State> else { return }
@@ -8893,4 +8956,13 @@ final class KeeperOutputCollector: @unchecked Sendable {
 struct SyncTurnFollowUp {
     let port: any LandKeeperTransport
     let binding: SyncTurnTicket
+}
+
+/// Test switches read when a keeper is built (not in a step). Test-only: `package`, so no
+/// module outside this package can set it, and `KeeperCensusTests.defersInitializationIsTestOnly`
+/// checks that no source in the package sets it either (its only writers are tests).
+package enum LandKeeperTesting {
+    /// A keeper built under this skips its eager initialization: the first entry that awaits it
+    /// starts it, and a core twin copied before then runs it on the core (K2-2 commit 1a).
+    @TaskLocal package static var defersInitialization = false
 }
