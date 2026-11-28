@@ -297,6 +297,11 @@ private func coreDiffDefinition(_ shape: CoreDiffShape) -> LandDefinition<CoreDi
         if shape.initializeRefuses {
             Lifetime {
                 OnInitialize(validate: { _, _ in throw CoreDiffError(token: -2) }, apply: { state, _ in state.log.append("init:applied") })
+                // Destroy handlers a failed initialization's drain must skip (#104), so a case
+                // can see that they didn't run (Review r2 on #969).
+                DestroyWhenEmpty(after: .seconds(3600)) { state, _ in state.log.append("destroyWhenEmpty") }
+                OnFinalize { state, _ in state.log.append("finalize") }
+                AfterFinalize { _, _ in }
             }
         } else if shape.onInitialize {
             Lifetime {
@@ -381,6 +386,8 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     /// will, K2-2), unless `startsLand` is false.
     func start(startsLand: Bool = true) {
         store.bind(to: self)
+        let stepped = steppedEvents
+        store.withSide { side in side.onInputSteppedForTesting = { stepped.append($0) } }
         guard startsLand else { return }
         note(.startLand)
         send(.startLand)
@@ -465,12 +472,13 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
 
     private func note(_ input: KeeperInput<State>) { noteSeen(input.routeName) }
     private func noteResult(_ name: String) { noteSeen(name) }
-    /// The same names as events, so `waitForInputs` is bounded (Review r1 on #969: a mutant
-    /// that loses an input fails the case at the hang bound, not at the suite's time limit).
-    private nonisolated let seenEvents = EventLog()
+    /// The names of the inputs whose step has ended (`onInputSteppedForTesting`, at `handle`'s
+    /// end), so `waitForInputs` waits for the step itself. A name in `inputsSeen` is noted before
+    /// the step: `call` notes before it sends, and `perform` before it returns the effect's input
+    /// (Review r2 on #969, MF2). Bounded: a lost input fails at the hang bound.
+    private nonisolated let steppedEvents = EventLog()
     private func noteSeen(_ name: String) {
         inputsSeen.append(name)
-        seenEvents.append(name)
     }
 
     @concurrent nonisolated func perform(_ effect: KeeperEffect<State>) async -> KeeperInput<State>? {
@@ -625,9 +633,13 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
 
     /// Returns once `count` inputs named `name` were sent: an event, resumed by the note (a call
     /// notes its input, then steps it, in one segment of this actor).
-    func waitForInputs(named name: String, count: Int, sourceLocation: SourceLocation = #_sourceLocation) async {
-        let reached = await seenEvents.waitFor { $0.filter { $0 == name }.count >= count }
-        if !reached { Issue.record("\(count) × \(name) never arrived: \(inputsSeen)", sourceLocation: sourceLocation) }
+    /// Waits until `count` inputs named `name` have stepped. False, with an issue, at the hang
+    /// bound: a case that needs the step guards on it and stops.
+    @discardableResult
+    func waitForInputs(named name: String, count: Int, sourceLocation: SourceLocation = #_sourceLocation) async -> Bool {
+        let reached = await steppedEvents.waitFor { $0.filter { $0 == name }.count >= count }
+        if !reached { Issue.record("\(count) × \(name) never stepped: seen \(inputsSeen), stepped \(steppedEvents.events)", sourceLocation: sourceLocation) }
+        return reached
     }
 
     /// The twin's own recorder queue (tests that hold a submission ahead of the core's record).
@@ -641,20 +653,24 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         await tracker.waitForAll()
     }
 
-    /// The drain flag only, on the twin: unlike the keeper's `markDrainingForTesting`, it clears
-    /// no players, services or reservations (its cases join no player) and starts no drain
-    /// (Review on #966, MF2 (e); r2's nit).
-    /// The twin's own drop counter for the destroy handlers' outputs (`openStepScope`'s
-    /// `droppingInto:`, #893), read from its side.
     /// Whether the twin's side holds a bound sync requester (`bindSyncRequester`, T8b's port).
     func hasBoundRequester() -> Bool {
         store.withSide { side in side.sharedBoundRequester.port != nil }
     }
 
+    /// The twin's own drop counter for the destroy handlers' outputs (`openStepScope`'s
+    /// `droppingInto:`, #893), read from its side.
     func destroyHandlerOutputsDropped() -> Int {
         store.withSide { side in side.sharedDestroyHandlerOutputsDropped.count }
     }
 
+    /// The core's armed deadlines (its one timer's live entries), so a case checks that a
+    /// timer it expects gone is gone, not only that its waiter is.
+    var liveDeadlines: Int { core.liveDeadlinesForTesting }
+
+    /// The drain flag only, on the twin: unlike the keeper's `markDrainingForTesting`, it clears
+    /// no players, services or reservations (its cases join no player) and starts no drain
+    /// (Review on #966, MF2 (e); r2's nit).
     func markDraining(cause: LandDestructionCause) {
         store.withSide { side in side.sharedDrainFlag.set(cause: cause) }
     }
@@ -2638,7 +2654,7 @@ extension KeeperCoreDifferentialTests {
     /// item behind it.
     private func heldTicklessBatch(_ name: String, coreTransport: CoreDiffTraceTransport? = nil) async -> (CoreDiffPair, WatermarkGate, Task<CoreDiffActionResult, Never>)? {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), name, records: true, coreTransport: coreTransport)
-        let first = await coreJoin(pair, "p1", "c1")
+        guard let first = await valueWithinHangBound(Task { await coreJoin(pair, "p1", "c1") }) else { Issue.record("the core's join never returned"); return nil }
         guard case .joined(allowed: true, _) = first else { Issue.record("the core's join: \(first)"); return nil }
         let hold = WatermarkGate()
         pair.harness.armedRecordGate.arm(hold)
@@ -2750,17 +2766,20 @@ extension KeeperCoreDifferentialTests {
         hold.release()
         _ = await valueWithinHangBound(action)
         guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the stop wasn't answered .done"); return }
-        #expect(await pair.harness.differentialRead().coreWaitsLeft == 0, "no core timer is left")
+        #expect(await pair.harness.differentialRead().coreWaitsLeft == 0, "no core wait is left")
+        #expect(await pair.harness.liveDeadlines == 0, "the freeze's timer was ended with its wait")
     }
 
-    enum InitializationEnd: String, CaseIterable, Sendable { case done, failed, abandonedByDrain }
+    /// `doneStartingLoops`: `.done` through the owner's `.initializeDone` (autoStartLoops), the
+    /// other call site of `beginStopAfterInitialization` (Review r2 on #969).
+    enum InitializationEnd: String, CaseIterable, Sendable { case done, doneStartingLoops, failed, abandonedByDrain }
 
     @Test("A stop that arrives during the initialization waits for its end, however it ends (Review r1 on #969, MF4, m11): parked apart from the drain's callers, so a drain that finishes first doesn't answer it, and answered once the initialization ended", arguments: InitializationEnd.allCases)
     func stopDuringTheInitializationWaitsForIt(_ end: InitializationEnd) async throws {
         let shape = end == .failed
             ? CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, initializeRefuses: true)
             : CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
-        let pair = await CoreDiffPair.make(shape, "stop-init-\(end.rawValue)", initializes: false)
+        let pair = await CoreDiffPair.make(shape, "stop-init-\(end.rawValue)", initializes: false, autoStartLoops: end == .doneStartingLoops)
         let gate = WatermarkGate()
         defer { gate.release() }
         defer { CoreDiffInitGates.set(pair.landID, nil) }
@@ -2775,7 +2794,7 @@ extension KeeperCoreDifferentialTests {
         let parked = await pair.harness.differentialRead().model
         #expect(parked.coreBarrierWaits.stopsAwaitingInitialization.count == 1 && parked.coreBarrierWaits.drained.isEmpty, "\(parked.coreBarrierWaits)")
         switch end {
-        case .done:
+        case .done, .doneStartingLoops:
             gate.release()
         case .failed:
             await pair.harness.drive(.initialize)
@@ -2793,7 +2812,12 @@ extension KeeperCoreDifferentialTests {
         }
         // The initialization's last step begins the parked stop: read right after it, so a stop
         // left parked fails here, not at the hang bound (m11's never-begins reading).
-        await pair.harness.waitForInputs(named: end == .failed ? "initialize" : "initializeResolved", count: 1)
+        let lastStep = switch end {
+        case .failed: "initialize"
+        case .doneStartingLoops: "initializeDone"
+        case .done, .abandonedByDrain: "initializeResolved"
+        }
+        guard await pair.harness.waitForInputs(named: lastStep, count: 1) else { return }
         let begun = await pair.harness.differentialRead().model
         // A drain that already finished answers it at once (`admitStop`), with no stop of its own.
         #expect(begun.coreBarrierWaits.stopsAwaitingInitialization.isEmpty, "the stop is still parked: \(begun.coreBarrierWaits)")
@@ -2801,7 +2825,7 @@ extension KeeperCoreDifferentialTests {
         guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the stop wasn't answered after the initialization"); return }
         let after = await pair.harness.differentialRead().model
         let expectedPhase: InitializationPhase = switch end {
-        case .done: .done
+        case .done, .doneStartingLoops: .done
         case .failed: .failed
         case .abandonedByDrain: .abandonedByDrain
         }
@@ -2821,6 +2845,7 @@ extension KeeperCoreDifferentialTests {
         // resolver or AfterFinalize effect came back.
         let seen = await pair.harness.inputsSeen
         #expect(!seen.contains("destroyHandlerResolved") && !seen.contains("afterFinalizeReturned"), "\(seen)")
+        #expect(!model.state.log.contains("destroyWhenEmpty") && !model.state.log.contains("finalize"), "a destroy handler ran: \(model.state.log)")
         #expect(await pair.harness.destroyHandlerOutputsDropped() == 0)
         guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
             Issue.record("the stop after the drain wasn't answered"); return
@@ -2875,8 +2900,12 @@ extension KeeperCoreDifferentialTests {
             guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the \(name) stop wasn't answered .done"); return }
         }
         #expect(await pair.harness.differentialRead().model.drainPhase == .finished)
-        // A late stop: the flight has returned, so it is answered at once, not parked.
-        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
+        // A late stop: the flight has returned, so it is answered at once, not parked. Read
+        // right after its step, so a parked stop fails here, not at the hang bound.
+        let third = Task { try await pair.harness.call(.shutdown) }
+        guard await pair.harness.waitForInputs(named: "shutdown", count: 3) else { return }
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.drained.isEmpty, "the late stop was parked")
+        guard case .success(.done)? = await resultWithinHangBound(third) else {
             Issue.record("the stop after the drain wasn't answered"); return
         }
         let after = await pair.harness.differentialRead().model
@@ -3747,6 +3776,55 @@ extension KeeperCoreDifferentialTests {
         #expect(!(await pair.harness.flushed.contains { if case .startLoops = $0 { true } else { false } }), "no loop after a refusal")
         let (keeperLog, coreLog) = (await pair.digests().keeper.log, await pair.digests().core.log)
         #expect(keeperLog.isEmpty && coreLog.isEmpty, "keeper \(keeperLog), core \(coreLog)")
+    }
+
+    @Test("A stop parked during the initialization, whose OnInitialize fails the land by its late re-entry, joins the failure's teardown: one .failureTeardown, no ordinary drain start, the same failure on both paths (Review r2 on #969, MF1: the failure takes precedence wherever a drain is claimed)")
+    func parkedStopJoinsTheInitializationsFailure() async throws {
+        let shape = CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false, onInitialize: true)
+        let pair = await CoreDiffPair.make(shape, "init-reentry-stop", initializes: false)
+        let source = try #require(pair.source)
+        defer { CoreDiffHandlerReentry.clear(pair.landID) }
+        defer { CoreDiffInitGates.set(pair.landID, nil) }
+        // The keeper first (the hook is one-shot, keyed by the land ID both share): its stop
+        // waits in `ensureInitialized`, then joins the drain `failLand` staged.
+        CoreDiffHandlerReentry.register(pair.landID) { [keeper = pair.keeper] in
+            keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: OnInitialize's re-entry the sentinel refuses
+        }
+        let keeperGate = WatermarkGate()
+        defer { keeperGate.release() }
+        CoreDiffInitGates.set(pair.landID, keeperGate)
+        let keeperInit = Task { await pair.keeper.awaitInitialization() }
+        guard await keeperGate.waitUntilEntered("the keeper's OnInitialize resolver") else { return }
+        let keeperStop = Task { await pair.keeper.forceShutdown() }
+        keeperGate.release()
+        guard await valueWithinHangBound(keeperInit) != nil, await valueWithinHangBound(keeperStop) != nil else { Issue.record("the keeper's stop never returned"); return }
+
+        let coreGate = WatermarkGate()
+        defer { coreGate.release() }
+        CoreDiffInitGates.set(pair.landID, coreGate)
+        await pair.harness.drive(.initialize)
+        guard await coreGate.waitUntilEntered("the core's OnInitialize resolver") else { return }
+        let stop = Task { try await pair.harness.call(.shutdown) }
+        guard await pair.harness.waitForInputs(named: "shutdown", count: 1) else { return }
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.stopsAwaitingInitialization.count == 1)
+        CoreDiffHandlerReentry.register(pair.landID) { [source] in
+            source.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: OnInitialize's re-entry the sentinel refuses
+        }
+        coreGate.release()
+        guard case .success(.done)? = await resultWithinHangBound(stop) else { Issue.record("the core's stop wasn't answered .done"); return }
+        let flushed = await pair.harness.flushed
+        let teardowns = flushed.filter { if case .failureTeardown = $0 { true } else { false } }.count
+        let starts = flushed.filter { if case .drainStarting = $0 { true } else { false } }.count
+        #expect(teardowns == 1 && starts == 0, "the stop claimed an ordinary drain: teardowns \(teardowns), starts \(starts)")
+        // No port on this tickless shape (a tickless land with a transport is refused until
+        // commit 3), so `landDidFail` is read as the teardown's output before the drain's end.
+        let teardownAt = flushed.firstIndex { if case .failureTeardown = $0 { true } else { false } }
+        let detachAt = flushed.firstIndex { if case .detachTransport = $0 { true } else { false } }
+        #expect(teardownAt != nil && detachAt != nil && teardownAt! < detachAt!, "\(flushed.map { "\($0)".prefix(30) })")
+        let keeperFailure = await pair.keeper.differentialReadForTesting().failure
+        let coreFailure = await pair.harness.differentialRead().failure
+        #expect(coreFailure?.kind == .keeperReentry && keeperFailure == coreFailure, "keeper \(String(describing: keeperFailure)), core \(String(describing: coreFailure))")
+        #expect(await pair.harness.differentialRead().model.coreBarrierWaits.isEmpty)
     }
 
     @Test("OnInitialize's late re-entry (the keeper's T11): the backstop fails the land in OnInitialize's step, so the finish starts no loop; the initialization itself ended .done, on both paths (Review on #966, MF2 (d))")

@@ -519,6 +519,7 @@ extension KeeperModel: TurnMachine {
         if let kind = coreRefusal(behavior, hasTransport: store.withSide({ side in side.attachedTransport != nil }), input) {
             store.withSide { side in side.coreInputReplies.refusals.append("\(input.routeName): \(kind.message)") }
             if let caller = turn.input { turn.reply(to: caller, .failure(KeeperCoreRefusal(kind: kind))) }
+            store.withSide { side in side.onInputSteppedForTesting?(input.routeName) }
             return
         }
         switch input {
@@ -692,8 +693,11 @@ extension KeeperModel: TurnMachine {
             switch drainPhase {
             case .notStarted:
                 // The owner held `.drainStart` and cancelled its loops (M7). No tick or sync
-                // from before this step starts after it (`loopEpoch`).
+                // from before this step starts after it (`loopEpoch`). A started drain is a
+                // requested one, whoever sent the start, so a later claimer joins it
+                // (`startDrainIfIdle` keys on the request, as the keeper on `drainTask`).
                 loopEpoch &+= 1
+                drainRequested = true
                 let request = step(behavior, store) { m, side, outputs in m.drainBegin(behavior, &side, &outputs) }
                 drainDrive(behavior, store, &turn, request)
             case .waitingForTick, .destroyResolving, .afterFinalize, .notifyingTransport, .finished:
@@ -754,6 +758,7 @@ extension KeeperModel: TurnMachine {
             preconditionFailure("K2-1: \(input.routeName) is routed in \(KeeperInputRoutes.deferred[input.route] ?? "an unnamed PR")")
         }
         endOfStep(behavior, store, &turn)
+        store.withSide { side in side.onInputSteppedForTesting?(input.routeName) }
     }
 
     /// What every step does at its end, an input's (`handle`) and a query's (`answer`) alike
@@ -1115,13 +1120,15 @@ extension KeeperModel {
         if waiting.isEmpty { admitStop(behavior, store, &turn, caller: nil) }
     }
 
-    /// A stop after `ensureInitialized` (`forceShutdown`'s flight): a stop whose flight already
-    /// returned, or one after the drain finished, is answered at once, as the keeper's finished
-    /// `SingleFlight` and `drainTask` return (Review r1 on #969, MF1, a late joiner after
-    /// completion). Otherwise the caller waits for the drain, and the first one begins the stop.
+    /// A stop after `ensureInitialized` (`forceShutdown`'s flight). A stop whose flight returned
+    /// (`.ended`) is answered at once, as the keeper's finished `SingleFlight` returns (Review r1
+    /// on #969, MF1, a late joiner after completion). Any other stop waits in `drained`: a stop
+    /// in progress is joined, even when a drain that overtook it has finished (the keeper's
+    /// second caller awaits the first's flight, which awaits its record; Review r2), and the
+    /// first stop begins, whose arm 1 joins a drain already finished and is answered in the
+    /// same step (`startDrainIfIdle`).
     mutating func admitStop(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, caller: InputID?) {
-        if stopPhase == .ended || drainPhase == .finished {
-            if stopPhase == .draining { stopPhase = .ended }
+        if stopPhase == .ended {
             if let caller { turn.reply(to: caller, .success(.done)) }
             return
         }
@@ -1368,6 +1375,12 @@ extension KeeperModel {
             if drainPhase == .finished { answerStopCallers(&turn) }
             return
         }
+        // A stored land failure takes precedence over an ordinary drain, whoever claims one (a
+        // stop admitted in the step that failed the land, such as OnInitialize's late re-entry):
+        // the failure's teardown is the drain, and this caller joins it, as the keeper's stop
+        // joins the drain `failLand` staged in the failing segment (Review r2 on #969, MF1).
+        startFailureTeardownIfNeeded(behavior, store, &turn)
+        guard !drainRequested else { return }
         guard players.isEmpty else {
             // As the keeper: `shutdownIfIdle` returns without a drain, and so does the stop.
             answerStopCallers(&turn)
@@ -1385,8 +1398,16 @@ extension KeeperModel {
     }
 
     /// The drain's callers are answered; a stop that was draining has returned (`.ended`), so a
-    /// later one is answered at once.
+    /// later one is answered at once. A stop still before its drain (waiting for the tick, for
+    /// its shutdown turn, or for its record) is never here: a drain is claimed only by the stop
+    /// itself, by a failed initialization (which ends before any stop begins), or by a land
+    /// failure's teardown, and a failure can't be stored once the shutdown turn set the flag
+    /// (`setFailed` keeps the first cause). A failure before that moves the stop to `.draining`
+    /// in the failing step (`resumeStopAfterShutdownTurn`, `stopAfterTicks`), before the drain's
+    /// end can come back. The keeper's `forceShutdown` awaits its record first, so an early
+    /// answer here would differ from it (Review r2 on #969).
     mutating func answerStopCallers(_ turn: inout Turn<KeeperModel<State>>) {
+        assert(stopPhase == .notStarted || stopPhase == .draining || stopPhase == .ended, "the drain's callers answered with the stop in \(stopPhase)")
         if stopPhase == .draining { stopPhase = .ended }
         let waiting = coreBarrierWaits.drained
         coreBarrierWaits.drained.removeAll()

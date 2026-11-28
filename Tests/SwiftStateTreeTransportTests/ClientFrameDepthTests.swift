@@ -7,7 +7,7 @@
 //   the cooperative pool. One limit bounds the depth in every encoding
 //   (`PayloadNesting.clientFrameMaxDepth`, 32): JSON is refused past it before it is parsed,
 //   MessagePack by its unpacker, given the same limit. Foundation's own JSON limit (512) isn't the
-//   bound: on Darwin's 544 KiB pool stacks the payload's re-encode overflows there (#362). Up to
+//   bound: on Darwin's 524 KiB pool stacks the payload's re-encode overflows there (#362). Up to
 //   the limit every decoder must produce the message and its payload stage must succeed, so the
 //   recursive stages after the parse ran at that depth. Past it, up to and beyond Foundation's
 //   limit, every decoder must refuse with the nesting error. A stack overflow ends the process.
@@ -200,7 +200,7 @@ struct ClientFrameDepthTests {
 
     /// Runs `body` on a thread of its own with an 8 MiB stack and waits for it. Foundation's own
     /// parse of a 512-level frame recurses about 940 frames deep on Darwin, which overflows a
-    /// cooperative-pool thread's 544 KiB stack and would kill the test bundle.
+    /// cooperative-pool thread's 524 KiB stack and would kill the test bundle.
     static func onLargeStack(_ body: @escaping @Sendable () -> Bool) -> Bool {
         final class Box: @unchecked Sendable {
             var value = false

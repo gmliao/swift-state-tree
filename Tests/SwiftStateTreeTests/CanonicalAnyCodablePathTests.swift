@@ -7,7 +7,7 @@
 //   bytes and values as those (checked here against them, case by case), at a fraction of the
 //   stack.
 // Everything that recurses deep runs on a Foundation thread with an 8 MiB stack: the generic
-// path at the limit doesn't fit Darwin's 544 KiB cooperative-pool thread in a debug build, and a
+// path at the limit doesn't fit Darwin's 524 KiB cooperative-pool thread in a debug build, and a
 // regression must fail a test, not crash the test process.
 //
 // The suite uses the codec's debug-only hooks (`stackProbeForTesting`,
@@ -557,7 +557,7 @@ struct CanonicalAnyCodablePathTests {
     ///
     /// Measured on macOS, Swift 6.4, debug, `maxDepth` (128) nested maps (2026-11-26):
     /// - the generic `AnyCodable` paths: encode 652 KB, decode 584 KB, each more than a whole
-    ///   544 KiB Darwin pool thread;
+    ///   524 KiB Darwin pool thread;
     /// - the direct paths: encode 194 KB (about 1.5 KB per level), decode 322 KB, most of it the
     ///   reader (about 2.5 KB per level), which both paths share. The equivalent-key check
     ///   (#805) added 6 KB to the decode (316 KB before it); it runs out of line so that the
@@ -575,7 +575,7 @@ struct CanonicalAnyCodablePathTests {
     ///    frame only calls);
     /// 3. raise a budget only when it is re-derived from the smallest stack the codec runs on.
     ///
-    /// Budgets: encode 256 KiB, decode 320 KiB, leaving at least 224 KiB of a 544 KiB thread to the
+    /// Budgets: encode 256 KiB, decode 320 KiB, leaving at least 204 KiB of a 524 KiB thread to the
     /// frames above. Release builds take far less.
     /// The same chain with an `AnyCodable` at every level, as a tree built from `AnyCodable`
     /// values holds them.
