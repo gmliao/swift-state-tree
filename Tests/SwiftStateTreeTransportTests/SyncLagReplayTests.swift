@@ -74,6 +74,8 @@ private func recordSyncLagCase(_ lagCase: SyncLagReplayCase, path: String) async
     let clock = SyncLagManualClock()
     await adapter.setSyncLagClockForTesting { clock.now }
     await adapter.setSyncLagTimerIntervalForTesting(.seconds(3600))
+    // Per-player hashes in each output: the kept player's entry shows it was addressed.
+    await adapter.setSyncStreamDetail([.perPlayerHashes])
     await keeper.awaitInitialization()
     await keeper.setTransport(adapter)
     await recorder.setMetadata(ReevaluationRecordMetadata(
@@ -128,6 +130,8 @@ private func recordSyncLagCase(_ lagCase: SyncLagReplayCase, path: String) async
         await ack(1)
     }
     try await act(2, 7)
+    // p1's own per-player change in a round that leaves p2 out: p1 is addressed and hashed there.
+    try await act(1, 3)
     try await act(2, 8)
     switch lagCase {
     case .control:
@@ -184,6 +188,13 @@ struct SyncLagReplayTests {
         } else {
             #expect(unaddressed.count >= 2, "\(lists)")
             #expect(unaddressed.allSatisfy { $0.perPlayerUnverified == ["p2"] }, "\(lists)")
+        }
+        // p1, kept in the same rounds, is addressed in every one: it has a hash there whenever its
+        // update has patches, and p2 never does while left out.
+        let hashes = "\(record.outputs.map { "\($0.streamIndex): \($0.perPlayerHashes.map { Array($0.keys).sorted() } ?? [])" })"
+        #expect(unaddressed.allSatisfy { $0.perPlayerHashes?["p2"] == nil }, "\(hashes)")
+        if lagCase != .control {
+            #expect(unaddressed.contains { $0.perPlayerHashes?["p1"] != nil }, "\(hashes)")
         }
 
         let result = try await ReevaluationEngine.run(

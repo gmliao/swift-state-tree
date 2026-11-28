@@ -3959,10 +3959,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 // clear and seed, or in the leave's clear).
                 let recipients = Set(digest.recipients)
                 let departed = syncStreamViewPlayers.filter {
-                    !recipients.contains($0) && digest.seeds[$0] == nil
-                        && (membershipCoordinator.sessionIDs(for: $0).isEmpty || digest.withheldPlayers.contains($0))
+                    !recipients.contains($0) && digest.seeds[$0] == nil && membershipCoordinator.sessionIDs(for: $0).isEmpty
                 }
-                let unverified = digest.recipients.filter { syncStreamUnverifiedPlayers.contains($0) } + Array(departed)
+                let withheld = digest.withheldPlayers.filter { syncStreamViewPlayers.contains($0) && digest.seeds[$0] == nil }
+                let unverified = digest.recipients.filter { syncStreamUnverifiedPlayers.contains($0) }
+                    + Array(departed.union(withheld))
                 perPlayerUnverified = unverified.isEmpty ? nil : SyncStreamCanonical.sortedIDs(unverified)
                 perPlayerUncommitted = digest.uncommitted.isEmpty ? nil : SyncStreamCanonical.sortedIDs(Array(digest.uncommitted))
             }
