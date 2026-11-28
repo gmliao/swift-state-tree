@@ -19,6 +19,7 @@ tags:
   - mutants
 related:
   - "#535"
+  - "#974"
   - "Notes/solutions/2026-11-05-hold-points-not-timing-in-race-tests.md"
 ---
 
@@ -43,3 +44,4 @@ The guard (`bounded` in `GracefulShutdownTests.swift`) runs the body and the tim
 - A hang guard must not await the work it guards. Don't build it on `withTaskGroup`, `async let` or `Task.value` of the guarded work. Race unstructured tasks into a single continuation instead.
 - When the guard fires, end the test there. Skip any cleanup that would touch the hung instance.
 - Check a deadlock mutant by its recorded issue, not by the run's exit code. A timeout with no recorded issue means the guard itself hung.
+- A `.timeLimit` doesn't bound a wait on an unstructured task's value. It cancels the test's task, and `await task.value` doesn't end until that task ends, which cancellation doesn't force. Have the task append an event when it ends, and bound the wait on that event (`EventLog.waitFor`) before reading the value (#974: a join under `timeout: .zero` whose resume never came ran past 200 s under a 1-minute limit).

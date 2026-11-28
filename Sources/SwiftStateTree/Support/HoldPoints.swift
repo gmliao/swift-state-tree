@@ -5,8 +5,9 @@
 
 import Foundation
 
-/// One optional hook per instance, called at named points. A no-op (one `nil` check, no
-/// suspension, no executor hop) unless a test installs it.
+/// Two optional hooks per instance, called at named points: the async hold hook, then the
+/// resumed hook on the caller's executor (`installResumed`). A no-op (two `nil` checks, no
+/// suspension, no executor hop) unless a test installs one.
 ///
 /// In the owning type:
 /// ```swift
