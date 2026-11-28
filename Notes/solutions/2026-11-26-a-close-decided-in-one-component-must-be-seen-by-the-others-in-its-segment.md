@@ -6,6 +6,7 @@ problem_type: bug_class
 component: session-close
 symptoms:
   - "a client is closed with another code (1008) than the one the server decided (1000), and the error sent before the decided close is lost"
+  - "two paths answer one waiter differently (released vs closed, drained vs closed) when a stop and a freeze overlap"
   - "the client gets a run of refusals (JOIN_SESSION_NOT_CONNECTED) after a failure that already ended its session"
 root_cause: second_close_decider_did_not_see_the_first_decision
 resolution_type: established_pattern
@@ -17,6 +18,7 @@ tags:
   - router
 related:
   - "#912"
+  - "#987"
   - "2026-11-18-a-server-close-goes-around-the-send-queue"
   - "2026-11-26-a-precedence-test-must-stage-a-pair-production-can-produce"
 ---
@@ -39,3 +41,5 @@ In the segment that ends the attempt, the router also puts the session in `refus
 
 - When a component decides a session's close, list every other component that can decide one for the same session: a budget, a timer, a supersede, a land failure. In the segment of the decision, each of them must be able to see it, through a flag or a phase that its own close path reads.
 - A test holds the first close's frames (a held send), then drives the second decider past its threshold, and expects the first close's code alone.
+- Record the decision at the level of the event, not of one class of party it affects. #987 first recorded a forced shutdown as "the freeze generation the stop ended", so only that generation's drain waiters answered closed. Two cases fell outside: a freeze that arrived in the stop's window before the drain flag was set, and an older generation still parked when the stop ended the active one. Both answered drained or released, and the keeper and the core differed. The fix keys the answer on the stop's own commitment (`shutdownRequested`, set first in the stop's segment on tick and tickless lands). Every waiter answered after that sees it, whichever generation it holds and whenever it arrived.
+- A deadline that fires for a party the event has since superseded must answer the way the woken party's own re-check does. The keeper's woken drain waiter checks its generation before its deadline, so it answers released, and the core's timer arm must also answer released. A test holds the timer after it fires (a hold point before it wakes the waiter) and registers the newer party, so the order isn't left to timing.

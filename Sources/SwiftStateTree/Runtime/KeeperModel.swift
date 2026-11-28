@@ -183,8 +183,9 @@ struct KeeperModel<State: StateNodeProtocol> {
     var inputDrainScheduled: Bool = false
     /// A join-only sync phase was deferred by back-pressure; cleared when a sync phase commits.
     var joinSyncWaitsForCommit: Bool = false
-    /// Set by a tick land's forced shutdown before it waits for the tick in flight: `runTick`
-    /// starts no tick from then on (#382).
+    /// Set by a forced shutdown's turn arm, tick and tickless lands alike, in its first segment
+    /// and before it ends a freeze: a tick land starts no tick from then on (#382), and every drain
+    /// caller answered from then on answers `.closed` (#730, `debugDrainOutcome`).
     var shutdownRequested: Bool = false
     /// Whether a transport was ever attached: from the init's `transport:` argument or
     /// `setTransport`. A keeper that never had one accepts sync requests from the first adapter
@@ -207,9 +208,6 @@ struct KeeperModel<State: StateNodeProtocol> {
     var debugActiveGeneration: UInt64?
     /// Highest generation released by `debugResume(generation:)`; such a generation cannot freeze again.
     var debugReleasedGeneration: UInt64 = 0
-    /// The generation a forced shutdown ended (`endDebugFreezeForShutdown`), if any: its drain
-    /// callers answer `.closed`, as the land is going away, not `.released` (#730).
-    var debugShutdownGeneration: UInt64?
     /// The core's barrier waits (K2-2 plan, commit 2): callers of `.freeze` and
     /// `.awaitInitialized` whose barrier was closed, answered by the step that opens it. Empty on
     /// the keeper's path, whose callers wait on continuations on the side.
@@ -605,7 +603,8 @@ package enum DebugDrainOutcome: Sendable, Equatable {
     case timedOut
     /// The caller's generation is no longer the freeze in effect (resumed or replaced).
     case released
-    /// The land failed (its failure), is draining, or a forced shutdown ended this freeze (nil).
+    /// The land failed (its failure), is draining, or a forced shutdown has committed to stop it
+    /// (nil).
     case closed(LandFailure?)
 }
 
@@ -617,11 +616,17 @@ struct DebugDrainLandEnd: Sendable {
 }
 
 extension KeeperModel {
-    /// The answer to a drain caller of `generation` whose wait ended as `base`, on both paths:
-    /// closed comes first, so a land that ends while a drain waits names that, not a timeout or
-    /// a release. `failure` and `draining` are the land's, read in the answering segment.
-    func debugDrainOutcome(_ base: DebugDrainOutcome, generation: UInt64, failure: LandFailure?, draining: Bool) -> DebugDrainOutcome {
-        if failure != nil || draining || debugShutdownGeneration == generation { return .closed(failure) }
+    /// The answer to a drain caller whose wait ended as `base`, on both paths: closed comes
+    /// first, so a land that ends while a drain waits names that, not a timeout or a release.
+    /// `failure` and `draining` are the land's, read in the answering segment. The stop is keyed
+    /// by its commitment (`shutdownRequested`), not by the generation it ended, so a freeze that
+    /// arrives in the stop's window before the drain flag, and a superseded generation parked
+    /// when the stop ends the active one, answer closed on both paths (Review on #987, MF2).
+    ///
+    /// A failure or a drain flag doesn't wake a parked caller: it is answered when its work ends,
+    /// its generation is released, or its deadline passes, and the answer is then `.closed`.
+    func debugDrainOutcome(_ base: DebugDrainOutcome, failure: LandFailure?, draining: Bool) -> DebugDrainOutcome {
+        if failure != nil || draining || shutdownRequested { return .closed(failure) }
         return base
     }
 }

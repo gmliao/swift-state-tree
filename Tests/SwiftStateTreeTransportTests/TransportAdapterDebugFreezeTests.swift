@@ -634,6 +634,32 @@ struct TransportAdapterDebugFreezeTests {
         await f.keeper.installHolds(nil)
     }
 
+    @Test("A land failure while the settle's drain waits for in-flight work ends the freeze with that failure, not landClosed or a timeout, once the work ends (#730, Review on #987)")
+    func failureDuringTheDrainThrowsIt() async throws {
+        let f = try await Fixture()
+        // The action's turn waits at its record, so its work stays in flight and the drain waits.
+        let record = TestGate()
+        defer { record.open() }
+        await f.keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>.at(.turnRecord) { await record.arrive() })
+        let update = Task { try await f.update(headline: "held", score: 1) }
+        try #require(await record.waitForArrivals(1), "the action's record wasn't held")
+
+        let adapter = f.adapter
+        let ended = EventLog()
+        let freeze = Task { defer { ended.append("ended") }; return try await adapter.debugFreeze() }
+        try #require(await f.keeper.waitUntilFreezeRegistrationsForTesting(1), "the settle's drain didn't wait")
+        let failure = LandFailure(kind: .syncPlan, detail: "the drain's failure", position: LandFailurePosition(stage: .syncPhase))
+        await f.keeper.failLandForTesting(failure)
+        // The failure wakes no parked drain: the work's end answers it.
+        record.open()
+        let freezeEnded = await ended.waitFor("ended")
+        try #require(freezeEnded, "the settle's drain wasn't answered after the work ended")
+        await #expect(throws: failure) { _ = try await freeze.value }
+
+        _ = try? await update.value
+        await f.keeper.installHolds(nil)
+    }
+
     @Test("Freezing an empty land keeps its dirty flags for the next real sync")
     func emptyLandKeepsDirtyFlags() async throws {
         let f = try await Fixture()

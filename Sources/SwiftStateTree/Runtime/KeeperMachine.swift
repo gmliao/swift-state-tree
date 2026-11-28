@@ -596,10 +596,13 @@ extension KeeperModel: TurnMachine {
             freezeStep(&turn, generation: generation, timeout: timeout, assertsOnUnstartedLandKey: store.assertsOnUnstartedLandKey, landEnd: store.debugDrainLandEnd)
         case let .freezeTimedOut(generation, caller):
             // Only this caller's wait ends; the generation's other callers keep their own deadline.
+            // A newer freeze replaced the generation: released, as the keeper's woken waiter
+            // leaves its loop on the generation check before its deadline check (Review on #987, MF1).
             if var waits = coreBarrierWaits.freeze[generation], let index = waits.firstIndex(of: caller) {
                 waits.remove(at: index)
                 coreBarrierWaits.freeze[generation] = waits.isEmpty ? nil : waits
-                turn.reply(to: caller, .success(.frozen(drainOutcome(.timedOut, generation, store.debugDrainLandEnd))))
+                let base: DebugDrainOutcome = debugActiveGeneration == generation ? .timedOut : .released
+                turn.reply(to: caller, .success(.frozen(drainOutcome(base, store.debugDrainLandEnd))))
             }
             turn.end(.freezeWait(caller))
         case let .resume(generation):
@@ -766,13 +769,15 @@ extension KeeperModel: TurnMachine {
         resumeStopAfterShutdownTurn(behavior, store, &turn)
         answerDroppedCoreInputWaits(behavior, store, &turn)
         runCoreJobEffects(store, &turn)
-        answerCoreFreezeWaits(&turn, landEnd: store.debugDrainLandEnd)
+        // The side is read only when a freeze caller is parked: this runs after every step.
+        if !coreBarrierWaits.freeze.isEmpty { answerCoreFreezeWaits(&turn, landEnd: store.debugDrainLandEnd) }
     }
 
-    /// `debugFreeze`'s decision as a step (K2-2 plan, commit 2): a released generation answers
-    /// false; otherwise the land freezes, the driver's fold drops, and the caller gets true at
-    /// once when no work is in flight, or waits for the step that ends the last of it
-    /// (`answerCoreFreezeWaits`), its timeout (`.freezeTimedOut`) or the resume. The
+    /// `debugDrain`'s decision as a step (K2-2 plan, commit 2): a released generation answers
+    /// `.released`; otherwise the land freezes, the driver's fold drops, and the caller gets
+    /// `.drained` at once when no work is in flight, or waits for the step that ends the last of
+    /// it (`answerCoreFreezeWaits`), its timeout (`.freezeTimedOut`) or the resume. Each answer
+    /// goes through the closed-first rule (`drainOutcome`). The
     /// generation's re-check after each await (#129) is gone: the step reads it.
     mutating func freezeStep(
         _ turn: inout Turn<KeeperModel<State>>,
@@ -783,7 +788,7 @@ extension KeeperModel: TurnMachine {
     ) {
         let caller = turn.input
         guard generation > debugReleasedGeneration else {
-            if let caller { turn.reply(to: caller, .success(.frozen(drainOutcome(.released, generation, landEnd)))) }
+            if let caller { turn.reply(to: caller, .success(.frozen(drainOutcome(.released, landEnd)))) }
             return
         }
         debugFrozen = true
@@ -792,13 +797,13 @@ extension KeeperModel: TurnMachine {
         assert(turn.isLive(.land) || !assertsOnUnstartedLandKey, "KeeperModel: a fold drop emitted before .land was started")
         turn.emit(.dropFold, for: .land)
         guard debugInFlightWork > 0 else {
-            if let caller { turn.reply(to: caller, .success(.frozen(drainOutcome(.drained, generation, landEnd)))) }
+            if let caller { turn.reply(to: caller, .success(.frozen(drainOutcome(.drained, landEnd)))) }
             return
         }
         guard let caller else { return }
         // An expired budget with work in flight: `debugFreeze` returns false without waiting.
         guard timeout > .zero else {
-            turn.reply(to: caller, .success(.frozen(drainOutcome(.timedOut, generation, landEnd))))
+            turn.reply(to: caller, .success(.frozen(drainOutcome(.timedOut, landEnd))))
             return
         }
         coreBarrierWaits.freeze[generation, default: []].append(caller)
@@ -824,7 +829,7 @@ extension KeeperModel: TurnMachine {
     /// `debugResume` as a step: the generation is released; when it is the one in effect, the
     /// land thaws, its held server inputs are appended (a tickless land's drain is scheduled, as
     /// the keeper's kick does), and the barrier's waiters are answered: the held intakes go on,
-    /// and the freeze's callers get false.
+    /// and the freeze's callers get `.released` (or `.closed`).
     /// Returns the sequence the resume's kick waits on, which the caller registers.
     @discardableResult
     mutating func resumeStep(
@@ -865,10 +870,9 @@ extension KeeperModel: TurnMachine {
     mutating func endDebugFreezeForShutdown(_ turn: inout Turn<KeeperModel<State>>, landEnd: DebugDrainLandEnd) {
         guard let generation = debugActiveGeneration else { return }
         debugReleasedGeneration = max(debugReleasedGeneration, generation)
-        debugShutdownGeneration = generation
         debugActiveGeneration = nil
         debugFrozen = false
-        // The waiters of the ended generation answer closed (the rule reads the recorded one).
+        // Every parked waiter answers closed: the stop set `shutdownRequested` before this.
         answerAllCoreFreezeWaits(&turn, landEnd, .released)
     }
 
@@ -877,7 +881,7 @@ extension KeeperModel: TurnMachine {
         let waits = coreBarrierWaits.freeze
         coreBarrierWaits.freeze.removeAll()
         for (generation, callers) in waits.sorted(by: { $0.key < $1.key }) {
-            let outcome = drainOutcome(base, generation, landEnd)
+            let outcome = drainOutcome(base, landEnd)
             for caller in callers {
                 turn.reply(to: caller, .success(.frozen(outcome)))
                 turn.end(.freezeWait(caller))
@@ -887,21 +891,22 @@ extension KeeperModel: TurnMachine {
 
     /// The keeper's closed-first rule (`KeeperModel.debugDrainOutcome`), with the land's end the
     /// step frame read from the side (`KeeperSideStore.debugDrainLandEnd`).
-    func drainOutcome(_ base: DebugDrainOutcome, _ generation: UInt64, _ landEnd: DebugDrainLandEnd) -> DebugDrainOutcome {
-        debugDrainOutcome(base, generation: generation, failure: landEnd.failure, draining: landEnd.draining)
+    func drainOutcome(_ base: DebugDrainOutcome, _ landEnd: DebugDrainLandEnd) -> DebugDrainOutcome {
+        debugDrainOutcome(base, failure: landEnd.failure, draining: landEnd.draining)
     }
 
     /// The freeze callers whose wait a step ended: the in-flight work is 0 with their generation
     /// still in effect (the keeper's `debugEndWork` resumes its drain waiters at the same point).
     /// When the work reaches 0, `debugEndWork` wakes every drain waiter, and each re-checks:
-    /// the generation in effect returns true, a stale one false (Review on #948: a stale
-    /// generation's caller is answered here, not at its timeout).
+    /// the generation in effect answers `.drained`, a stale one `.released` (Review on #948: a
+    /// stale generation's caller is answered here, not at its timeout), both through the
+    /// closed-first rule.
     mutating func answerCoreFreezeWaits(_ turn: inout Turn<KeeperModel<State>>, landEnd: DebugDrainLandEnd) {
         guard debugInFlightWork == 0, !coreBarrierWaits.freeze.isEmpty else { return }
         let waits = coreBarrierWaits.freeze
         coreBarrierWaits.freeze.removeAll()
         for (generation, callers) in waits.sorted(by: { $0.key < $1.key }) {
-            let outcome = drainOutcome(generation == debugActiveGeneration ? .drained : .released, generation, landEnd)
+            let outcome = drainOutcome(generation == debugActiveGeneration ? .drained : .released, landEnd)
             for caller in callers {
                 turn.reply(to: caller, .success(.frozen(outcome)))
                 turn.end(.freezeWait(caller))
@@ -1260,8 +1265,9 @@ extension KeeperModel {
         let idle = tickEnd()
         store.withSide { side in debugEndWork(&side) }
         // Plan §13.1's order: the freeze's work wait is answered at the count's zero, before the
-        // drain or the stop goes on in this step (Review r1 on #969).
-        answerCoreFreezeWaits(&turn, landEnd: store.debugDrainLandEnd)
+        // drain or the stop goes on in this step (Review r1 on #969). The side is read only when
+        // a freeze caller is parked.
+        if !coreBarrierWaits.freeze.isEmpty { answerCoreFreezeWaits(&turn, landEnd: store.debugDrainLandEnd) }
         if idle, drainPhase == .waitingForTick {
             let request = step(behavior, store) { m, side, outputs in m.drainAfterTicks(behavior, &side, &outputs) }
             drainDrive(behavior, store, &turn, request)
@@ -1286,12 +1292,14 @@ extension KeeperModel {
             stopStartsDrain(behavior, store, &turn)
             return
         }
-        // Arm 2: the freeze ends; its held intakes re-enter behind the shutdown, at this step's
-        // end (`releaseCoreHeldIntakes`), and the server inputs held while frozen stay out of
-        // the queue for the drain to drop.
+        // Arm 2: the stop commits first, tick and tickless lands alike (`shutdownRequested`: no
+        // tick starts, and every drain caller answered from here on answers closed, #730). Then
+        // the freeze ends; its held intakes re-enter behind the shutdown, at this step's end
+        // (`releaseCoreHeldIntakes`), and the server inputs held while frozen stay out of the
+        // queue for the drain to drop.
+        shutdownRequested = true
         endDebugFreezeForShutdown(&turn, landEnd: store.debugDrainLandEnd)
         if behavior.definition.lifetimeHandlers.tickHandler != nil {
-            shutdownRequested = true
             store.withSide { side in side.probe?("shutdown-stop-gate") }
             if ticksInFlight > 0 {
                 stopPhase = .waitingForTick
