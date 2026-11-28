@@ -551,10 +551,15 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
 
-    @Test("Tickless land: a join that becomes ready during a debug freeze flips after the resume")
+    @Test(
+        "Tickless land: a join that becomes ready during a debug freeze flips after the resume",
+        .timeLimit(.minutes(1))
+    )
     func joinReadyDuringFreezeFlipsAfterResume() async throws {
         let fixture = await makeFixture(tick: false)
-        await fixture.adapter.setJoinFlipLimitsForTesting(timeout: .seconds(3), budget: nil)
+        // No flip timeout: the join waits out the freeze, which may outlast any wall-clock
+        // bound on a stalled runner. The time limit bounds a join that never flips.
+        await fixture.adapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
         let gate = TestGate()
         await fixture.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
         let s1 = SessionID("s1")
