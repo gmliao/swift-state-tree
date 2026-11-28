@@ -162,6 +162,10 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// A sync follow-up's request came back (K2-2 commit 3c): `id` names the follow-up its
     /// effect carried, since a request's result can't name its `RequestID` (rev 3's MF5).
     case syncFollowUpDue(id: UInt64)
+    /// A tickless land's server input (K2-2 plan §3.2): the intake as a `.normal` call, since a
+    /// query can't queue the drain its kick needs. Replies `.serverInput` with the outcome. A
+    /// tick land keeps the `.admitServerInput` query.
+    case serverInput(any ServerInputPayload)
     /// The owner starts `.land` at initialization, which a step's outputs for it need (K2-1: the
     /// test harness's start; K2-2: the core's initialization).
     case startLand
@@ -182,6 +186,7 @@ enum KeeperInputRoutes {
         .initialize, .initializeResolved, .initializeRecorded, .initializeDone,
         .shutdown, .drainStart, .destroyHandlerResolved, .afterFinalizeReturned, .drainFinished,
         .tickRecordTaken, .shutdownRecorded, .setTransport, .requestJoinSyncTurn, .syncFollowUpDue,
+        .serverInput,
     ]
     /// Empty since K2-2 commit 1b: every input is routed.
     static let deferred: [KeeperInputRoute: String] = [:]
@@ -192,8 +197,8 @@ enum KeeperQueryRoute: String, CaseIterable, Sendable {
     case admitAction, admitClientEvent, admitServerInput, syncTurnNow, syncTurnTicket, settle
 }
 
-/// The queries K2-1 answers, and where each other one is routed. A tickless land's
-/// `.admitServerInput` is refused on the core too (a precondition: its kick needs the keeper).
+/// The queries K2-1 answers, and where each other one is routed. A tickless land's server input
+/// is the `.serverInput` input instead (K2-2 plan §3.2): `.admitServerInput` traps on one.
 enum KeeperQueryRoutes {
     static let routed: Set<KeeperQueryRoute> = [.admitAction, .admitServerInput, .admitClientEvent, .syncTurnNow, .syncTurnTicket, .settle]
     static let deferred: [KeeperQueryRoute: String] = [:]
@@ -215,7 +220,7 @@ extension KeeperQuery {
 /// Each `KeeperInput` case by name: `route` is exhaustive, so a new case needs a route here, and
 /// the census checks that every route is routed or deferred.
 enum KeeperInputRoute: String, CaseIterable, Sendable {
-    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut, drainStart, afterFinalizeReturned, tickRecordTaken, shutdownRecorded, setTransport, requestJoinSyncTurn, syncFollowUpDue
+    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut, drainStart, afterFinalizeReturned, tickRecordTaken, shutdownRecorded, setTransport, requestJoinSyncTurn, syncFollowUpDue, serverInput
 }
 
 extension KeeperInput {
@@ -255,6 +260,7 @@ extension KeeperInput {
         case .setTransport: .setTransport
         case .requestJoinSyncTurn: .requestJoinSyncTurn
         case .syncFollowUpDue: .syncFollowUpDue
+        case .serverInput: .serverInput
         }
     }
 
@@ -335,6 +341,9 @@ struct KeeperCoreInputReplies: Sendable {
     /// stays empty: its driver awaits `inputTurnWaiters` instead.
     var onCore = false
     var waits: [Int64: KeeperCoreInputWait] = [:]
+    /// The sequence a tickless server input's kick began work for (K2-2 plan §3.2): set by
+    /// `kickServerInputTurn` in the `.serverInput` step, which registers its wait and clears it.
+    var serverInputKick: Int64?
     var dropped: [KeeperCoreInputWait] = []
     /// A core's job starts and releases a step made, which the step's end runs as effects
     /// (`runCoreJobEffects`), and its slot waits (K2-2 plan, commit 0). Empty on the keeper's
@@ -523,6 +532,8 @@ enum KeeperReply<State: StateNodeProtocol>: Sendable {
     /// `.freeze`'s answer: whether the in-flight work finished with its generation in effect.
     case frozen(Bool)
     case done
+    /// A tickless server input's outcome (`.serverInput`).
+    case serverInput(ServerInputOutcome)
 }
 
 extension KeeperModel: TurnMachine {
@@ -587,6 +598,13 @@ extension KeeperModel: TurnMachine {
             step(behavior, store) { m, side, outputs in m.setTransportBody(behavior, &side, &outputs, port, owner: owner) }
         case let .syncFollowUpDue(id):
             step(behavior, store) { m, side, outputs in m.syncFollowUpDueBody(behavior, &side, &outputs, id: id) }
+        case let .serverInput(input):
+            precondition(behavior.isTickless, "a tick land's server input is the .admitServerInput query")
+            let drainWasScheduled = inputDrainScheduled
+            let outcome = step(behavior, store) { m, side, outputs in m.serverInputBody(behavior, &side, &outputs, input) }
+            // The kick's drain, as `.actionResolved` queues it: on a core the kick only sets the flag.
+            if !drainWasScheduled, inputDrainScheduled { turn.queue(.inputDrainDue, behind: .land) }
+            if let caller = turn.input { turn.reply(to: caller, .success(.serverInput(outcome))) }
         case .requestJoinSyncTurn:
             step(behavior, store) { m, side, outputs in m.requestJoinSyncTurnBody(behavior, &side, &outputs) }
             if let caller = turn.input { turn.reply(to: caller, .success(.done)) }
@@ -1026,13 +1044,9 @@ extension KeeperModel: TurnMachine {
                 return submission
             })
         case let .admitServerInput(input):
-            // A tickless land's intake kicks its input turn through the keeper
-            // (`kickServerInputTurn` stages `startServerInputKick`, and begins a work count the
-            // kick ends), which a core's side has no keeper for. K2-2 routes it with the core's
-            // drain (plan §16 item 19).
-            // A precondition, not a named `KeeperCoreRefusal`: the query's answer
-            // (`ServerInputOutcome`) can refuse, but `ServerInputRefusal` has no K2-1 reason.
-            precondition(!behavior.isTickless, "K2-1: a tickless land's server input is routed in K2-2")
+            // A tickless land's intake is the `.serverInput` input (K2-2 plan §3.2): its kick
+            // queues the drain, which a query can't.
+            precondition(!behavior.isTickless, "a tickless land's server input is the .serverInput input")
             // The driver's segment S1 (`submitServerInputErased`): the check, the sequence and
             // the append in one body.
             return .serverInput(step(behavior, store) { m, side, outputs in m.serverInputIntake(behavior, &side, &outputs, input) })
@@ -1248,6 +1262,8 @@ extension KeeperModel {
             if let request = turn.request(.syncFollowUp(id: id, record.kind, port: record.followUp.port), for: .land) {
                 store.withSide { side in side.coreInputReplies.syncFollowUps[id]?.request = request }
             } else {
+                // Unreachable until the core is first ended: `request` is nil only once `.land`
+                // isn't live, and nothing ends it before commit 4's `endAll`.
                 store.withSide { side in endSyncFollowUp(&side, id: id) }
             }
         }
@@ -1279,6 +1295,20 @@ extension KeeperModel {
 
     /// A follow-up's wake, in a step frame: the keeper's runner for its kind
     /// (`runPendingSyncTurnAfterTurn`, `runRetriedSyncOnlyTurn`, `runJoinSyncTurn`).
+    /// The `.serverInput` step (K2-2 plan §3.2): the intake's segment S1 as it is, then the kick's
+    /// wait. The kick began the work count (`kickServerInputTurn`); the wait ends it in the input
+    /// turn that applies the sequence, as the resume's kick does. An input held by a freeze
+    /// kicks nothing here, and the resume kicks it, so the work begins once per input.
+    mutating func serverInputBody(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, _ outputs: inout TurnOutputs, _ input: any ServerInputPayload) -> ServerInputOutcome {
+        let outcome = serverInputIntake(behavior, &side, &outputs, input)
+        if let kick = side.coreInputReplies.serverInputKick {
+            side.coreInputReplies.serverInputKick = nil
+            side.coreInputReplies.waits[kick] = .serverInputKick
+            scheduleInputDrain(side, &outputs)
+        }
+        return outcome
+    }
+
     mutating func syncFollowUpDueBody(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, _ outputs: inout TurnOutputs, id: UInt64) {
         guard let record = side.coreInputReplies.syncFollowUps.removeValue(forKey: id) else { return }
         switch record.kind {

@@ -4291,12 +4291,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await recorderSubmissions.waitForAll()
     }
 
+    private var testDrainWaiterIDForTesting = UInt64.max
+
     /// Tests only: waits until no tickless input task is in flight (`debugBeginWork`, counted
     /// before the call that started it returned), then until its recorder submissions are in.
     func waitForInFlightWorkForTesting() async {
         while model.debugInFlightWork > 0 {
-            model.debugNextWaiterID &+= 1
-            let waiterID = model.debugNextWaiterID
+            // Its own ID space, counting down from the top: a test's wait leaves the model's
+            // `debugNextWaiterID` alone, so the differential cases' digests don't depend on
+            // whether the work was still in flight when the case waited (K2-2 commit 3).
+            let waiterID = testDrainWaiterIDForTesting
+            testDrainWaiterIDForTesting &-= 1
             await withCheckedContinuation { continuation in
                 turnSide.debugDrainWaiters[waiterID] = continuation
             }
@@ -5173,7 +5178,7 @@ extension KeeperModel {
             return .accepted(sequence: sequence)
         }
         pendingItems.append(item)
-        kickServerInputTurn(behavior, side, &outputs, upTo: sequence)
+        kickServerInputTurn(behavior, &side, &outputs, upTo: sequence)
         return .accepted(sequence: sequence)
     }
 
@@ -8928,12 +8933,18 @@ extension KeeperModel {
     /// staged start (D14), through the side's keeper reference.
     mutating func kickServerInputTurn(
         _ behavior: KeeperBehavior<State>,
-        _ side: KeeperTurnSide,
+        _ side: inout KeeperTurnSide,
         _ outputs: inout TurnOutputs,
         upTo sequence: Int64
     ) {
         guard behavior.isTickless else { return }
         debugBeginWork()
+        // On a core the `.serverInput` step registers the kick's wait (K2-2 plan §3.2).
+        if side.coreInputReplies.onCore {
+            assert(side.coreInputReplies.serverInputKick == nil, "one kick per server input step")
+            side.coreInputReplies.serverInputKick = sequence
+            return
+        }
         let keeper = side.keeperReference.keeper as? LandKeeper<State>
         outputs.stage { [weak keeper] in keeper?.startServerInputKick(upTo: sequence) }
     }

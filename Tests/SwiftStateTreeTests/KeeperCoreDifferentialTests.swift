@@ -62,6 +62,12 @@ struct CoreDiffServerInput: ServerInputPayload {
     let n: Int
 }
 
+/// A server input no handler declares (K2-2 commit 3, §3.2's refusal case).
+@Payload
+struct CoreDiffUndeclaredServerInput: ServerInputPayload {
+    let n: Int
+}
+
 /// The core's clock in the freeze cases: `now` moves only by `advance`, and a sleep returns once
 /// `now` reaches its instant, so a freeze's timeout fires when the case says (the keeper's path
 /// keeps its own clock: its timeouts are a short one against a held work, or one that can't fire).
@@ -4435,5 +4441,69 @@ extension KeeperCoreDifferentialTests {
         #expect(keeper == core && core == .joined(allowed: true, admitted: true), "keeper \(keeper), core \(core)")
         await pair.expectSame("after the admitted tickless join")
         #expect(await pair.harness.differentialRead().violations.isEmpty)
+    }
+}
+
+/// K2-2 plan §3.2: a tickless land's server input on the core, the `.serverInput` input, against
+/// the keeper's `submitServerInput`.
+extension KeeperCoreDifferentialTests {
+    private func coreServerInput(_ pair: CoreDiffPair, _ input: any ServerInputPayload) async -> ServerInputOutcome? {
+        guard case let .success(.serverInput(outcome))? = await resultWithinHangBound(Task { try await pair.harness.call(.serverInput(input)) }) else {
+            Issue.record("the core's server input wasn't answered"); return nil
+        }
+        return outcome
+    }
+
+    @Test("A tickless server input steps on the core as on the keeper: the same sequence, applied in an input turn its kick queued, and the kick's work ended by that turn (§3.2)")
+    func ticklessServerInput() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "server-input")
+        let keeper = await pair.keeper.submitServerInput(CoreDiffServerInput(n: 9))
+        await pair.keeper.waitForInFlightWorkForTesting()
+        await pair.keeper.waitForInputDrainIdleForTesting()
+        guard let core = await coreServerInput(pair, CoreDiffServerInput(n: 9)) else { return }
+        #expect(keeper == core && { if case .accepted = core { true } else { false } }(), "keeper \(keeper), core \(core)")
+        // The turn's record taken answers the kick's wait (`.recordTaken`).
+        guard await pair.harness.waitForInputs(named: "recordTaken", count: 1) else { return }
+        let read = await pair.harness.differentialRead()
+        #expect(read.model.state.log.contains("input:9"), "\(read.model.state.log)")
+        #expect(read.model.debugInFlightWork == 0 && read.coreWaitsLeft == 0, "work \(read.model.debugInFlightWork), waits \(read.coreWaitsLeft)")
+        #expect(read.violations.isEmpty, "\(read.violations)")
+        await pair.expectSame("after the server input's turn")
+    }
+
+    @Test("A refused tickless server input (an undeclared type) is answered the same on both paths, and begins no work and queues no drain (§3.2)")
+    func ticklessServerInputRefused() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "server-input-refused")
+        let keeper = await pair.keeper.submitServerInput(CoreDiffUndeclaredServerInput(n: 1))
+        guard let core = await coreServerInput(pair, CoreDiffUndeclaredServerInput(n: 1)) else { return }
+        #expect(keeper == core && core == .refused(.unknownType), "keeper \(keeper), core \(core)")
+        let read = await pair.harness.differentialRead()
+        #expect(read.model.debugInFlightWork == 0 && read.coreWaitsLeft == 0 && !read.model.inputDrainScheduled)
+        await pair.expectSame("after the refusal")
+    }
+
+    @Test("A tickless server input while frozen is held and kicks nothing; the resume kicks it once, and its turn ends that work, on both paths (§3.2: the work begins once per input)")
+    func ticklessServerInputWhileFrozen() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "server-input-frozen")
+        #expect(await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
+        guard case .success(.frozen(true))? = await resultWithinHangBound(Task { try await pair.harness.call(.freeze(generation: 1, timeout: .seconds(5))) }) else {
+            Issue.record("the core didn't freeze"); return
+        }
+        let keeper = await pair.keeper.submitServerInput(CoreDiffServerInput(n: 9))
+        guard let core = await coreServerInput(pair, CoreDiffServerInput(n: 9)) else { return }
+        #expect(keeper == core, "keeper \(keeper), core \(core)")
+        let held = await pair.harness.differentialRead()
+        #expect(held.model.serverInputsHeldWhileFrozen.count == 1 && held.model.debugInFlightWork == 0 && held.coreWaitsLeft == 0,
+                "held \(held.model.serverInputsHeldWhileFrozen.count), work \(held.model.debugInFlightWork), waits \(held.coreWaitsLeft)")
+        await pair.keeper.debugResume(generation: 1)
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.resume(generation: 1)) }) else {
+            Issue.record("the core's resume wasn't answered"); return
+        }
+        // The turn's record taken answers the kick's wait (`.recordTaken`).
+        guard await pair.harness.waitForInputs(named: "recordTaken", count: 1) else { return }
+        let read = await pair.harness.differentialRead()
+        #expect(read.model.state.log.contains("input:9"), "\(read.model.state.log)")
+        #expect(read.model.debugInFlightWork == 0 && read.coreWaitsLeft == 0, "work \(read.model.debugInFlightWork), waits \(read.coreWaitsLeft)")
+        await pair.expectSame("after the resumed input's turn")
     }
 }
