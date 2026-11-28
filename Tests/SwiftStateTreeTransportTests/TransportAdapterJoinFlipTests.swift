@@ -151,6 +151,10 @@ private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
         landID: "join-flip"
     )
     await sent.setDelegate(adapter)
+    // The freeze tests assert, while frozen, that a ready join hasn't flipped: no deadline may
+    // fire inside that window, or the auto-resume flips it first. No test here tests a deadline.
+    await adapter.setDebugFreezeSettleDeadline(freezeWithoutDeadline)
+    await adapter.setDebugFreezeAutoResumeTimeout(freezeWithoutDeadline)
     await keeper.setTransport(adapter)
     if tick { await firstTickSleep.waitUntilReached() }
     return Fixture(keeper: keeper, adapter: adapter, sent: sent)
@@ -550,11 +554,19 @@ struct TransportAdapterJoinFlipTests {
     @Test("Tickless land: a join that becomes ready during a debug freeze flips after the resume")
     func joinReadyDuringFreezeFlipsAfterResume() async throws {
         let fixture = await makeFixture(tick: false)
-        await fixture.adapter.setJoinFlipLimitsForTesting(timeout: .seconds(3), budget: nil)
+        // No flip timeout: the join waits out the freeze, which may outlast any wall-clock
+        // bound on a stalled runner. A join that never ends fails at the hang bound on its
+        // `ended` event below. A time limit wouldn't bound it: it cancels the test's task, not
+        // this unstructured one, and `join.value` keeps waiting.
+        await fixture.adapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
         let gate = TestGate()
         await fixture.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
         let s1 = SessionID("s1")
-        let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
+        let ended = EventLog()
+        let join = Task {
+            defer { ended.append("ended") }
+            return try await joinInTurn(fixture, session: s1, player: PlayerID("p1"))
+        }
         await eventually("the join at keeperJoinReturned") { gate.arrivalCount == 1 }
 
         let freeze = try await fixture.adapter.debugFreeze()
@@ -566,6 +578,7 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.adapter.isJoiningInTurn(s1))
 
         _ = await fixture.adapter.debugResume(freezeToken: freeze.freezeToken)
+        try #require(await ended.waitFor { $0.contains("ended") }, "the join never ended after the resume")
         let result = try await join.value
         #expect(result.completedInTurn)
         #expect(await fixture.adapter.waitForOutboundDrain())

@@ -101,6 +101,7 @@ run_mvp_for_encoding() {
 
 run_mvp_for_encoding "json" "jsonObject"
 run_mvp_for_encoding "jsonOpcode" "opcodeJsonArray"
+run_mvp_for_encoding "opcode" "opcodeJsonArray"
 run_mvp_for_encoding "messagepack" "messagepack"
 
 echo ""

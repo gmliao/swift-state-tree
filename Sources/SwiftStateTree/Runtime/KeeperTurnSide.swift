@@ -121,6 +121,10 @@ package struct KeeperTurnSide {
     /// Tests only: called at the probe labels ("turn-begin", "turn-end", ...) on the keeper's
     /// executor.
     var probe: (@Sendable (String) -> Void)?
+    /// Tests: called with the input's route name once a core step for it has ended (`handle`'s
+    /// end), so a case waits for the step itself, not for the effect's result that comes before
+    /// it (Review r2 on #969). Nil outside the differential harness.
+    var onInputSteppedForTesting: (@Sendable (String) -> Void)?
     /// Tests only (#700 K2-1's ordered trace): called for each effect a flush runs, in order,
     /// before it runs: "submission <label>" or "staged action".
     var flushTraceForTesting: (@Sendable (String) -> Void)?

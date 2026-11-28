@@ -38,7 +38,7 @@ struct SegmentResolverFailure: Error {}
 
 /// One gate per test, keyed by the number in the land ID ("seg-<phase>:<key>"). Only the step
 /// named by `<phase>` waits on it: "init", "initfail" and "reinit" (OnInitialize's resolver;
-/// "initfail" throws after the release, and with "reinit" OnInitialize re-enters its keeper), "dwe" (OnDestroyWhenEmpty's resolver), "fin" (OnFinalize's
+/// "initfail" throws after the release, and with "reinit" OnInitialize re-enters its keeper), "dwe" and "dwefail" (OnDestroyWhenEmpty's resolver; "dwefail" throws after the release), "fin" (OnFinalize's
 /// resolver), "after" (AfterFinalize). Any other phase passes every step.
 private let segmentGates = KeyedGates<Int, WatermarkGate>(firstKey: 12_000) { WatermarkGate() }
 
@@ -112,6 +112,10 @@ private final class SegmentDestroyExecutor: AnyResolverExecutor, @unchecked Send
 
     func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput) {
         if let gate = segmentGate(ctx.landID, phase: "dwe") { await gate.enterAndWait() }
+        if let gate = segmentGate(ctx.landID, phase: "dwefail") {
+            await gate.enterAndWait()
+            throw SegmentResolverFailure()
+        }
         return ("segmentDestroy", SegmentOutput(value: 0))
     }
 }
@@ -141,6 +145,9 @@ private func makeSegmentDefinition(tick: Bool) -> LandDefinition<SegmentState> {
                 }
                 AfterFinalize { _, ctx in
                     if let gate = segmentGate(ctx.landID, phase: "after") { await gate.enterAndWait() }
+                    // An output after the await: dropped and counted, as every destroy
+                    // handler's (#893); the core cases read the counter (Review r1 on #969, m12).
+                    ctx.requestSyncNow()
                 }
             }
         }
@@ -166,6 +173,9 @@ private func makeSegmentDefinition(tick: Bool) -> LandDefinition<SegmentState> {
                 }
                 AfterFinalize { _, ctx in
                     if let gate = segmentGate(ctx.landID, phase: "after") { await gate.enterAndWait() }
+                    // An output after the await: dropped and counted, as every destroy
+                    // handler's (#893); the core cases read the counter (Review r1 on #969, m12).
+                    ctx.requestSyncNow()
                 }
             }
         }
@@ -805,5 +815,80 @@ struct InitAndDrainSegmentTests {
         #expect(done.destructionFinished)
         #expect(done.hasBoundRequester == false)
         #expect(port.destroyedCount == 1)
+    }
+
+    /// T5–T8 on the core (#700 K2-2 commit 1b): the twin shares the land ID, so the same gates hold
+    /// its drain's effects. A tick land: the core refuses a tickless land with a transport until
+    /// the binding token (K2-2). T8's late attach is the facade's (commit 4); here the hold
+    /// pins that the notification is in flight and the destruction not yet finished.
+    @Test("T5–T8 on the core: the drain held at each of its awaits (OnDestroyWhenEmpty's and OnFinalize's resolvers, AfterFinalize, onLandDestroyed) shows the same state as the keeper's, then finishes", arguments: ["dwe", "fin", "after", "destroyed"])
+    func drainHeldAtEachAwaitOnTheCore(phase: String) async throws {
+        let (landID, gate) = segmentLandID(phase)
+        defer { gate.release() }
+        let transport = SegmentTransport(gate: phase == "destroyed" ? gate : nil)
+        let source = makeSegmentKeeper(tick: true, landID: landID)
+        await source.awaitInitialization()
+        let harness = KeeperCoreHarness(await source.coreTwinForTesting(transport: transport))
+        await harness.start()
+        let stop = Task { try await harness.call(.shutdown) }
+        guard await gate.waitUntilEntered("the core's drain at \(phase)") else { return }
+
+        let held = await harness.differentialRead().model
+        #expect(held.destroyHandlersStarted && held.pendingItems.isEmpty && !held.destructionFinished, "\(phase)")
+        switch phase {
+        case "dwe":
+            guard case .destroyResolving = held.drainPhase else { Issue.record("\(held.drainPhase)"); return }
+            #expect(held.state.log == ["init:1"] && held.state.value == 0, "the state before the handler: \(held.state.log)")
+        case "fin":
+            guard case .destroyResolving = held.drainPhase else { Issue.record("\(held.drainPhase)"); return }
+            #expect(held.state.log == ["init:1", "destroyWhenEmpty"] && held.state.value == 7, "\(held.state.log)")
+        case "after":
+            #expect(held.drainPhase == .afterFinalize)
+            #expect(held.state.log == ["init:1", "destroyWhenEmpty", "finalize:7"])
+            #expect(transport.destroyedCount == 0, "the port hears of the destruction after AfterFinalize")
+        default:
+            #expect(held.drainPhase == .notifyingTransport)
+            #expect(transport.destroyedCount == 1)
+        }
+
+        gate.release()
+        guard case .done?? = await valueWithinHangBound(Task { try? await stop.value }) else { Issue.record("the core's stop wasn't answered .done"); return }
+        let done = await harness.differentialRead().model
+        #expect(done.drainPhase == .finished && done.destructionFinished)
+        #expect(done.state.log == ["init:1", "destroyWhenEmpty", "finalize:7"], "OnFinalize's resolver read OnDestroyWhenEmpty's write: \(done.state.log)")
+        #expect(transport.destroyedCount == 1)
+        // AfterFinalize's output after its await is dropped into the twin's counter (#893).
+        #expect(await harness.destroyHandlerOutputsDropped() == 1, "the AfterFinalize's sync request is dropped and counted")
+    }
+
+    @Test("A destroy resolver that throws on the core: its handler is skipped and the drain goes on, OnFinalize then AfterFinalize, and the stop is answered, as on the keeper (Review r1 on #969)")
+    func throwingDestroyResolverOnTheCore() async throws {
+        // The keeper's run, released before its stop: the order to compare with.
+        let (keeperLandID, keeperGate) = segmentLandID("dwefail")
+        keeperGate.release()
+        let keeper = makeSegmentKeeper(tick: true, landID: keeperLandID)
+        await keeper.awaitInitialization()
+        await keeper.forceShutdown()
+        let keeperLog = await keeper.differentialReadForTesting().model.state.log
+
+        let (landID, gate) = segmentLandID("dwefail")
+        defer { gate.release() }
+        let transport = SegmentTransport(gate: nil)
+        let source = makeSegmentKeeper(tick: true, landID: landID)
+        await source.awaitInitialization()
+        let harness = KeeperCoreHarness(await source.coreTwinForTesting(transport: transport))
+        await harness.start()
+        let stop = Task { try await harness.call(.shutdown) }
+        guard await gate.waitUntilEntered("the core's OnDestroyWhenEmpty resolver") else { return }
+        gate.release()
+        guard case .done?? = await valueWithinHangBound(Task { try? await stop.value }) else { Issue.record("the core's stop wasn't answered .done"); return }
+        let done = await harness.differentialRead().model
+        #expect(done.drainPhase == .finished && done.destructionFinished)
+        // OnDestroyWhenEmpty's handler is skipped (no write of 7); OnFinalize runs on the state as it was.
+        #expect(done.state.log == ["init:1", "finalize:0"], "\(done.state.log)")
+        #expect(done.state.log == keeperLog, "keeper \(keeperLog), core \(done.state.log)")
+        #expect(await harness.inputsSeen.filter { $0 == "destroyHandlerResolved" }.count == 2, "both resolver effects came back")
+        #expect(await harness.inputsSeen.contains("afterFinalizeReturned"), "AfterFinalize ran after the skipped handler")
+        #expect(transport.destroyedCount == 1)
     }
 }
