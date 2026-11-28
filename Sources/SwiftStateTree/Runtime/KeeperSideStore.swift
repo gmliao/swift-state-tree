@@ -107,6 +107,7 @@ struct KeeperDifferentialRead<State: StateNodeProtocol>: Sendable {
             + replies.jobStarts.count + replies.jobReleases.count + replies.heldWhileFrozen.count
             + model.coreBarrierWaits.freeze.values.reduce(0) { $0 + $1.count } + model.coreBarrierWaits.initialized.count
             + model.coreBarrierWaits.drained.count + model.coreBarrierWaits.stopsAwaitingInitialization.count
+            + replies.syncFollowUps.count + replies.stagedSyncFollowUps.count
         holdsDestroyTicket = side.destroyTicket != nil
         lastDestroyTicket = side.lastDestroyTicketForTesting
         failure = side.failure

@@ -146,7 +146,8 @@ public protocol LandKeeperTransport: Sendable {
     /// deferred by back-pressure (`.deferredBackPressure`), and retries as soon as it returns.
     /// No default (#546 L2d-3): one that returned at once would make a transport that defers
     /// retry its sync-only turn again and again until its writer drains. A transport that never
-    /// defers may return at once.
+    /// defers may return at once. It returns on a cancel too: a turn core cancels the wait of a
+    /// retry it abandoned (an attach, a detach, the land's end).
     func waitForWriterDrainForInTurnSync() async
 
     /// Whether the transport records in-turn sync folds (`noteInTurnSyncFold`): true only while

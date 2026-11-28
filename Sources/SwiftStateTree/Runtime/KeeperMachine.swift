@@ -159,6 +159,9 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// input, as the keeper's method neither waits for the initialization nor is held by a
     /// freeze; on a draining or failed land its step does nothing, as the method's guard.
     case requestJoinSyncTurn
+    /// A sync follow-up's request came back (K2-2 commit 3c): `id` names the follow-up its
+    /// effect carried, since a request's result can't name its `RequestID` (rev 3's MF5).
+    case syncFollowUpDue(id: UInt64)
     /// The owner starts `.land` at initialization, which a step's outputs for it need (K2-1: the
     /// test harness's start; K2-2: the core's initialization).
     case startLand
@@ -178,7 +181,7 @@ enum KeeperInputRoutes {
         .syncStreamDraft,
         .initialize, .initializeResolved, .initializeRecorded, .initializeDone,
         .shutdown, .drainStart, .destroyHandlerResolved, .afterFinalizeReturned, .drainFinished,
-        .tickRecordTaken, .shutdownRecorded, .setTransport, .requestJoinSyncTurn,
+        .tickRecordTaken, .shutdownRecorded, .setTransport, .requestJoinSyncTurn, .syncFollowUpDue,
     ]
     /// Empty since K2-2 commit 1b: every input is routed.
     static let deferred: [KeeperInputRoute: String] = [:]
@@ -212,7 +215,7 @@ extension KeeperQuery {
 /// Each `KeeperInput` case by name: `route` is exhaustive, so a new case needs a route here, and
 /// the census checks that every route is routed or deferred.
 enum KeeperInputRoute: String, CaseIterable, Sendable {
-    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut, drainStart, afterFinalizeReturned, tickRecordTaken, shutdownRecorded, setTransport, requestJoinSyncTurn
+    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut, drainStart, afterFinalizeReturned, tickRecordTaken, shutdownRecorded, setTransport, requestJoinSyncTurn, syncFollowUpDue
 }
 
 extension KeeperInput {
@@ -251,6 +254,7 @@ extension KeeperInput {
         case .shutdownRecorded: .shutdownRecorded
         case .setTransport: .setTransport
         case .requestJoinSyncTurn: .requestJoinSyncTurn
+        case .syncFollowUpDue: .syncFollowUpDue
         }
     }
 
@@ -346,6 +350,15 @@ struct KeeperCoreInputReplies: Sendable {
     /// order: the intake's own step is the barrier, so no freeze can settle between the wait
     /// and the intake (Review on #948). Each steps again when the land thaws or drains.
     var heldWhileFrozen: [KeeperHeldIntake] = []
+    /// Sync follow-ups in flight by ID (K2-2 commit 3c), the IDs a step armed whose requests
+    /// `endOfStep` makes next, and the next ID. A step body can't make a request (no turn), so
+    /// the arm sites stage here, in `handle` and in `answer` alike.
+    var syncFollowUps: [UInt64: KeeperCoreSyncFollowUp] = [:]
+    var stagedSyncFollowUps: [UInt64] = []
+    var nextSyncFollowUpID: UInt64 = 0
+    /// Set by an attach or a detach: the open writer-drain requests wait on a port that is no
+    /// longer the binding's, and `endOfStep` cancels them (their workers with them, #988).
+    var cancelsWriterDrains = false
 }
 
 /// A core's refusal of an input K2-1 doesn't route on the core (`KeeperCoreInputReplies.refusals`).
@@ -364,22 +377,17 @@ struct KeeperCoreRefusal: Error, Sendable {
 /// Why a core refuses an input, one case per refused shape (K2-2 plan §3.2): the commit that
 /// lifts a refusal deletes its case, and commit 4's totality check requires the enum to be
 /// empty, so the cut-over can't wire while a refused shape is in place.
-enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
-    /// Any input of a tickless land with a transport attached (except `.startLand`): the input
-    /// turn's output phase reads the binding inside the drain.
-    case ticklessLandWithTransport
+enum KeeperCoreRefusalReason: CaseIterable, Sendable {
 
     /// The message the refusal carries and `refusals` records.
     var message: String {
         switch self {
-        case .ticklessLandWithTransport: "a tickless land with a transport needs the binding token (K2-2)"
         }
     }
 
     /// The K2-2 commit that lifts the refusal and deletes the case.
     var liftedIn: String {
         switch self {
-        case .ticklessLandWithTransport: "K2-2 commit 3c: the binding token's follow-ups"
         }
     }
 }
@@ -453,6 +461,31 @@ enum KeeperEffect<State: StateNodeProtocol>: Sendable {
     /// their results come back in `.recordTaken` (K2-2 plan, item 15). The results are plain: a
     /// failure is its ID, owned meanwhile by the model's `inFlightRecordResults`.
     case awaitRecordTaken(submission: RecorderSubmission?, applied: [LandKeeper<State>.PendingItem], results: [Int64: InputResult], endsTickWork: Bool)
+    /// A sync follow-up's wake (K2-2 commit 3c), a tracked request under `.land`: `perform`
+    /// returns `.syncFollowUpDue(id)` at once (`.afterTurn`, a later job as the keeper's Task
+    /// hop), after `delay` (`.joinSync`), or once `port`'s writer drained (`.writerDrain`). An
+    /// abandoned one's worker is cancelled, so the wait honours cancellation.
+    case syncFollowUp(id: UInt64, KeeperSyncFollowUpKind, port: any LandKeeperTransport)
+}
+
+/// Which sync follow-up a core request wakes (K2-2 commit 3c). The keeper's three staged Tasks.
+enum KeeperSyncFollowUpKind: Sendable, Equatable {
+    /// `requestSyncTurnAfterThisTurn`: the slot (`pendingSyncTurnAfterTurn`) owns the work; a
+    /// request only wakes it, and finds nothing when `.syncTurnNow` consumed it.
+    case afterTurn
+    /// `retrySyncOnlyTurnAfterWriterDrain`: one per binding, owning one unit of work.
+    case writerDrain
+    /// `scheduleJoinSyncTurn`: one per binding, owning one unit of work.
+    case joinSync(delay: Duration)
+}
+
+/// A core's sync follow-up in flight (K2-2 commit 3c): its kind and the port and binding it was
+/// armed with. On the side: it holds the port.
+struct KeeperCoreSyncFollowUp: Sendable {
+    let kind: KeeperSyncFollowUpKind
+    let followUp: SyncTurnFollowUp
+    /// The request that wakes it, once `endOfStep` made it.
+    var request: RequestID?
 }
 
 /// What a step leaves for the adopter's flush (plan §4.4, §4.5): record drafts, and the writes
@@ -510,7 +543,7 @@ extension KeeperModel: TurnMachine {
     /// depends on the input alone, as `TurnMachine.inputPolicy` requires.
     func inputPolicy(for input: KeeperInput<State>) -> InputPolicy<KeeperKey> {
         switch input {
-        case .resume, .shutdown, .drainStart, .drainFinished, .initialize, .initializeDone, .setTransport, .requestJoinSyncTurn: .control
+        case .resume, .shutdown, .drainStart, .drainFinished, .initialize, .initializeDone, .setTransport, .requestJoinSyncTurn, .syncFollowUpDue: .control
         default: .normal(waitsFor: nil, belongsTo: nil)
         }
     }
@@ -552,6 +585,8 @@ extension KeeperModel: TurnMachine {
             _ = turn.start(.land)
         case let .setTransport(port, owner):
             step(behavior, store) { m, side, outputs in m.setTransportBody(behavior, &side, &outputs, port, owner: owner) }
+        case let .syncFollowUpDue(id):
+            step(behavior, store) { m, side, outputs in m.syncFollowUpDueBody(behavior, &side, &outputs, id: id) }
         case .requestJoinSyncTurn:
             step(behavior, store) { m, side, outputs in m.requestJoinSyncTurnBody(behavior, &side, &outputs) }
             if let caller = turn.input { turn.reply(to: caller, .success(.done)) }
@@ -785,6 +820,21 @@ extension KeeperModel: TurnMachine {
     /// - The tickless stop, once its shutdown turn applied or a drain dropped it.
     /// - The barrier's leave waits whose leave ended (#953).
     /// - The core's waits on inputs this step dropped, the job starts, and the freeze replies.
+    /// A sync follow-up's request abandoned (K2-2 commit 3c): `.keyEnded` at the core's end, or
+    /// `.cancelled` when an attach or detach left a writer-drain retry on the old port. Its
+    /// worker is cancelled (#988); its slot or binding and its work end here.
+    mutating func handleAbandoned(_ request: RequestID, _ why: Abandonment, _ turn: inout Turn<KeeperModel<State>>) {
+        let behavior = turn.behavior
+        guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
+        step(behavior, store) { m, side, _ in
+            guard let id = side.coreInputReplies.syncFollowUps.first(where: { $0.value.request == request })?.key else { return }
+            m.endSyncFollowUp(&side, id: id)
+        }
+    }
+
+    /// A follow-up's wake after its request was abandoned: already ended there.
+    mutating func handleLateResult(_ input: KeeperInput<State>, _ turn: inout Turn<KeeperModel<State>>) {}
+
     mutating func endOfStep(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
         releaseCoreHeldIntakes(behavior, store, &turn)
         // To a fixpoint (Review on #983): a released join's J2c runs here, after the teardown
@@ -796,6 +846,7 @@ extension KeeperModel: TurnMachine {
             resumeStopAfterShutdownTurn(behavior, store, &turn)
         } while releaseEndedLeaveWaits(behavior, store, &turn)
         answerDroppedCoreInputWaits(behavior, store, &turn)
+        makeStagedSyncFollowUps(behavior, store, &turn)
         runCoreJobEffects(store, &turn)
         answerCoreFreezeWaits(&turn)
     }
@@ -1011,15 +1062,20 @@ extension KeeperModel: TurnMachine {
             // The keeper's `syncTurnNow(via:reason:ticket:)`, in `acceptsSyncTurn`'s order: the
             // state's checks, then the witness outside a body, then the binding, the ticket and
             // one sync-only turn in the step. The body's own reads (`syncsInTurn`) read the
-            // stored binding (K2-2 commit 3a), which the attach's witness set. On a
-            // core no follow-up is pending to consume: the guard drops each one after its phase
-            // (#938 r3), so `pendingSyncTurnAfterTurn` stays nil.
+            // stored binding (K2-2 commit 3a), which the attach's witness set.
             let accepted = acceptsSyncTurnState(behavior, store) && port.runsSyncPhaseInTurn(of: owner)
             return .syncTurn(step(behavior, store) { m, side, outputs in
                 m.requestedSyncTurnsForTesting[reason, default: 0] += 1
                 guard accepted, m.bindSyncRequester(side, port) else { return .skipped }
                 if let ticket, !m.syncBinding.isCurrent(ticket) { return .skipped }
-                assert(side.pendingSyncTurnAfterTurn == nil, "a core holds no pending follow-up")
+                // The keeper's consume (K2-2 commit 3c): an `.afterTurn` slot armed through this
+                // port is taken before the phase, which may arm the next; the slot owns its work,
+                // so it ends here and the slot's wake later finds nothing.
+                if let pending = side.pendingSyncTurnAfterTurn,
+                   ObjectIdentifier(pending.port as AnyObject) == ObjectIdentifier(port as AnyObject) {
+                    side.pendingSyncTurnAfterTurn = nil
+                    m.endRequestedSyncWorkOnCore()
+                }
                 return KeeperModel<State>.syncOnlyTurnBody(&m, behavior, &side, &outputs, transport: port, joinSyncOnly: false)
             })
         case let .settle(port, owner, generation, deadline):
@@ -1172,6 +1228,96 @@ extension KeeperModel {
         }
     }
 
+    /// Makes the requests of the follow-ups this step armed (K2-2 commit 3c), each a tracked
+    /// request under `.land`, and cancels the open writer-drain requests an attach or detach left
+    /// waiting on the old port. A request the core can't make (`.land` not live) is undone: its
+    /// slot or binding cleared and its work ended, as an abandonment would.
+    mutating func makeStagedSyncFollowUps(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
+        let (staged, cancels): ([(UInt64, KeeperCoreSyncFollowUp)], [RequestID]) = store.withSide { side in
+            var cancels: [RequestID] = []
+            if side.coreInputReplies.cancelsWriterDrains {
+                side.coreInputReplies.cancelsWriterDrains = false
+                cancels = side.coreInputReplies.syncFollowUps.values.compactMap { $0.kind == .writerDrain ? $0.request : nil }
+            }
+            let ids = side.coreInputReplies.stagedSyncFollowUps
+            side.coreInputReplies.stagedSyncFollowUps.removeAll()
+            return (ids.compactMap { id in side.coreInputReplies.syncFollowUps[id].map { (id, $0) } }, cancels)
+        }
+        for request in cancels { turn.cancel(request) }
+        for (id, record) in staged {
+            if let request = turn.request(.syncFollowUp(id: id, record.kind, port: record.followUp.port), for: .land) {
+                store.withSide { side in side.coreInputReplies.syncFollowUps[id]?.request = request }
+            } else {
+                store.withSide { side in endSyncFollowUp(&side, id: id) }
+            }
+        }
+    }
+
+    /// Ends a follow-up whose request was abandoned or never made: its record leaves, and the
+    /// work it owns ends. An `.afterTurn` request only wakes the slot, which owns the work: the
+    /// slot is cleared and its work ended if it is still armed (a second request then finds it
+    /// gone). A binding follow-up owns its work: the binding clears if it is still the one.
+    mutating func endSyncFollowUp(_ side: inout KeeperTurnSide, id: UInt64) {
+        guard let record = side.coreInputReplies.syncFollowUps.removeValue(forKey: id) else { return }
+        switch record.kind {
+        case .afterTurn:
+            guard side.pendingSyncTurnAfterTurn != nil else { return }
+            side.pendingSyncTurnAfterTurn = nil
+        case .writerDrain:
+            if inTurnDrainRetryBinding == record.followUp.binding { inTurnDrainRetryBinding = nil }
+        case .joinSync:
+            if joinSyncTurnBinding == record.followUp.binding { joinSyncTurnBinding = nil }
+        }
+        endRequestedSyncWorkOnCore()
+    }
+
+    /// The core's `endRequestedSyncWork` (the keeper's also resumes its test waiters).
+    mutating func endRequestedSyncWorkOnCore() {
+        requestedSyncWork -= 1
+        assert(requestedSyncWork >= 0, "requested sync work ended twice")
+    }
+
+    /// A follow-up's wake, in a step frame: the keeper's runner for its kind
+    /// (`runPendingSyncTurnAfterTurn`, `runRetriedSyncOnlyTurn`, `runJoinSyncTurn`).
+    mutating func syncFollowUpDueBody(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, _ outputs: inout TurnOutputs, id: UInt64) {
+        guard let record = side.coreInputReplies.syncFollowUps.removeValue(forKey: id) else { return }
+        switch record.kind {
+        case .afterTurn:
+            // Consumed by an outside request meanwhile: retired without a turn.
+            guard let followUp = side.pendingSyncTurnAfterTurn else { return }
+            side.pendingSyncTurnAfterTurn = nil
+            endRequestedSyncWorkOnCore()
+            guard acceptsCoreFollowUp(behavior, side, followUp) else { return }
+            _ = Self.syncOnlyTurnBody(&self, behavior, &side, &outputs, transport: followUp.port, joinSyncOnly: false)
+        case .writerDrain:
+            if inTurnDrainRetryBinding == record.followUp.binding { inTurnDrainRetryBinding = nil }
+            endRequestedSyncWorkOnCore()
+            guard acceptsCoreFollowUp(behavior, side, record.followUp) else { return }
+            _ = Self.syncOnlyTurnBody(&self, behavior, &side, &outputs, transport: record.followUp.port, joinSyncOnly: false)
+        case .joinSync:
+            if joinSyncTurnBinding == record.followUp.binding { joinSyncTurnBinding = nil }
+            endRequestedSyncWorkOnCore()
+            guard !side.isDraining, let attached = side.attachedTransport,
+                  joinsAwaitingSync(behavior, &side, &outputs, transport: attached) == true,
+                  acceptsCoreFollowUp(behavior, side, record.followUp) else { return }
+            joinSyncTurnsForTesting += 1
+            _ = Self.syncOnlyTurnBody(&self, behavior, &side, &outputs, transport: record.followUp.port, joinSyncOnly: false)
+        }
+    }
+
+    /// The keeper's `acceptsSyncTurn(through:)` for a follow-up on a core: a live land, not failed
+    /// or draining, the port this keeper syncs through (`bindSyncRequester`) and the binding
+    /// current. The witness: for the attached port, the stored binding; a bound requester (never
+    /// attached) passed its witness when `.syncTurnNow` bound it, and the answer is fixed.
+    mutating func acceptsCoreFollowUp(_ behavior: KeeperBehavior<State>, _ side: KeeperTurnSide, _ followUp: SyncTurnFollowUp) -> Bool {
+        guard behavior.config.mode == .live, side.failure == nil, !side.isDraining else { return false }
+        if let attached = side.attachedTransport, ObjectIdentifier(attached as AnyObject) == ObjectIdentifier(followUp.port as AnyObject) {
+            guard side.storedSyncsInTurn else { return false }
+        }
+        guard bindSyncRequester(side, followUp.port) else { return false }
+        return syncBinding.isCurrent(followUp.binding)
+    }
+
     /// `LandKeeper.requestJoinSyncTurn` in a step frame, in the method's order: the drain guard,
     /// then whether joins wait (the binding, then the port's `hasJoinsAwaitingSync`), then, with
     /// periodic sync, `periodicJoinSyncAllowed` (which reads the joins again, for the keeper's
@@ -1218,6 +1364,7 @@ extension KeeperModel {
         side.attachedTransport = port
         side.attachedSyncsInTurn = answer
         transportRecordsFolds = folds
+        if side.coreInputReplies.onCore { side.coreInputReplies.cancelsWriterDrains = true }
         guard port != nil else { return }
         hasHeldTransport = true
         side.sharedBoundRequester.object = nil
@@ -1234,19 +1381,10 @@ extension KeeperModel {
 // MARK: - The refusals
 
 extension KeeperModel {
-    /// Why a core refuses `input`, or nil. One shape is left: any input of a tickless land with
-    /// a transport attached, whose input turn's output phase arms the sync follow-ups K2-2
-    /// commit 3c adds (rev 3's MF6). A join syncing in the turn reads the stored binding at its
-    /// admission since commit 3b.
+    /// Why a core refuses `input`, or nil: none since K2-2 commit 3c, whose follow-ups lifted the
+    /// last shape (a tickless land with a transport, rev 3's MF6). Commit 4 deletes the check.
     func coreRefusal(_ behavior: KeeperBehavior<State>, hasTransport: Bool, _ input: KeeperInput<State>) -> KeeperCoreRefusalReason? {
-        // `.startLand` starts the core's key and reads no binding; `.setTransport` writes it and
-        // runs no output phase (the tickless refusal lifts in K2-2 commit 3c).
-        if case .startLand = input { return nil }
-        if case .setTransport = input { return nil }
-        if behavior.isTickless, hasTransport {
-            return .ticklessLandWithTransport
-        }
-        return nil
+        nil
     }
 }
 
