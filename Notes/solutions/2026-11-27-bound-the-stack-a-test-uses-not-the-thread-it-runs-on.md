@@ -17,6 +17,7 @@ tags:
   - pool-thread
   - stack-depth
 related:
+  - "#936"
   - "#874"
   - "#872"
   - "#804"
@@ -41,7 +42,7 @@ Measure instead of pinning:
 - The executor stays as a preference.
 
 The bound is derived, not guessed:
-- `pthread_get_stacksize_np` on a Darwin cooperative-pool thread reports 536,576 bytes (524 KiB), 20 KiB less than the 544 KiB quoted across the repository;
+- `pthread_get_stacksize_np` on a Darwin cooperative-pool thread reports 536,576 bytes (524 KiB), 20 KiB less than the 544 KiB the repository quoted until #936, which is the stack's VM region and also holds 20 KiB above the stack's top;
 - a pool worker's job starts shallower than the executor's run loop (624 bytes from the top against 1,632), so nothing is taken off for that;
 - the reserve is a quarter of the thread.
 
