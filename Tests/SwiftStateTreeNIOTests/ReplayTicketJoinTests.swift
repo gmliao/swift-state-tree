@@ -325,6 +325,8 @@ struct TicketRecordPathTests {
         // On macOS the temporary directory is under `/var`, a symlink to `/private/var`: the
         // `/private` spelling is the one `standardizedFileURL` drops once the path exists, as
         // for a checkout under `/private/tmp`. Elsewhere the plain spelling.
+        // So the case can go red only on macOS: elsewhere a path is spelled the same whether it
+        // exists or not, and it passes with or without the helper's `createDirectory`.
         let root = FileManager.default.fileExists(atPath: "/private" + tmp) ? "/private" + tmp : tmp
         let base = "\(root)/sst-ticket-path-\(UUID().uuidString.lowercased())"
         defer { try? FileManager.default.removeItem(atPath: base) }
