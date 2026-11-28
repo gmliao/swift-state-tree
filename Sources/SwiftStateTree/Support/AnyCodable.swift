@@ -98,8 +98,10 @@ extension AnyCodable {
     /// `type(of:)` guard behind an `as?` cast that unwraps).
     ///
     /// Known limits, outside this check:
-    /// - On Darwin, a dictionary keyed by `AnyHashable` that wraps such an `NSDictionary` traps
-    ///   inside the cast itself, before this check runs (#927).
+    /// - On Darwin, `AnyHashable(ns)` of such an `NSDictionary` traps in the caller's code:
+    ///   `NSDictionary`'s `AnyHashable` form is `self as! [AnyHashable: AnyHashable]`, whose bridge
+    ///   traps on the duplicate key. `AnyCodable` never receives that value, so no check here can
+    ///   refuse it (#927).
     /// - swift-corelibs-foundation's `NSDictionary` doesn't reliably hold two such spellings: it
     ///   may merge them on insert, keep both or trap. Its bridge of an outer `NSDictionary` or
     ///   `NSArray` also converts the children eagerly, so a nested dictionary reaches this check
