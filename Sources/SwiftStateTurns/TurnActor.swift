@@ -16,6 +16,16 @@ public protocol TurnActor: Actor {
     var core: TurnCore<M> { get }
     /// The asynchronous work of an effect, off the actor. It doesn't throw: nil means nothing to
     /// mail, and an error is a case of the input. Its result comes back as an input.
+    ///
+    /// A tracked request's work (`Turn.request`) is cancelled when its request is abandoned (a
+    /// `cancel`, its deadline, its key's `end`, `endAll`): structured cancellation, so work a key
+    /// owns ends with it. A cancellation asks the work to stop: `perform` checks `Task.isCancelled`
+    /// only at safe points, and work that changes something outside settles that change before it
+    /// returns (an `.untilWorkerReturns` hold ends when the worker's completion runs). Its late
+    /// result goes to `handleLateResult`. Work that ignores the cancellation runs to its end and
+    /// keeps the actor until then. Work that must finish goes through `run`, which is never
+    /// cancelled. With a mailbox, a cancelled `perform` returns nil: a replay gets its
+    /// completions from `perform` again, and nil is the same whenever the cancel landed.
     @concurrent nonisolated func perform(_ effect: M.Effect) async -> M.Input?
     /// The synchronous sink of a step's outputs, called between steps.
     func flush(_ outputs: consuming [M.Output])
@@ -404,6 +414,8 @@ extension TurnActor {
             core.onDiagnostic?(.foreignCompletion)
             return
         }
+        // The worker has returned: its handle leaves, on every path below (a stale result too).
+        if let id { core.workers.removeValue(forKey: id) }
         if TurnCore<M>.usesMailbox {
             // A nil result that changes nothing (a `run` with nothing to mail, a closed request's
             // late nil with no hold to retire) is no entry and takes no ordinal, as a stale
@@ -852,6 +864,9 @@ extension TurnActor {
                core.mailReplay != nil ? takeStaged() : (!mailbox.isEmpty && takeMail(mailbox)) { continue }
             if !core.rt.abandoned.isEmpty {
                 let (id, why) = core.rt.abandoned.removeFirst()
+                // Cancel its worker first, once: a cancel, a deadline, `end`, `endAll` or a supersede.
+                // A worker not launched yet has no handle; `launch` cancels it then.
+                core.workers.removeValue(forKey: id)?.cancel()
                 core.stepAbandoned(id, why)
                 continue
             }
@@ -1069,9 +1084,14 @@ extension TurnActor {
         let id = pending.request
         // Held strongly: an effect, once launched, runs and its result is handled (a weak
         // capture would drop an effect whose task hadn't started when the actor was released).
-        Task {
+        let worker = Task {
             let input = await self.perform(effect)
             self.complete(id, input, incarnation: incarnation)
+        }
+        // A tracked request's worker is cancelled when the request is abandoned. One already
+        // closed (abandoned in the step that made it, before this launch) is cancelled now.
+        if let id {
+            if core.rt.open[id] != nil { core.workers[id] = worker } else { worker.cancel() }
         }
         if let id, let instant = pending.deadline, core.rt.open[id] != nil {
             armDeadline(instant, ticket: id.raw, kind: .request)

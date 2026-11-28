@@ -252,7 +252,7 @@ API：`start`（取代時回傳 true）、`generation(of:)`、`Generation`。
 
 ### Request
 
-*request* 是由某個 key 目前的 generation 擁有的 effect。它有一個 ID，並以兩種方式之一結束。結果在它仍開著時回來：結果在 `handle` 裡執行。或者它先關閉，也就是被*放棄*（abandoned）：`handleAbandoned` 帶著原因執行（deadline 已過、key 結束、或被取消）。在那之後才到的結果交給 `handleLateResult`，所以一個卡住的資料庫載入最後才回來，也不會改變任何東西。
+*request* 是由某個 key 目前的 generation 擁有的 effect。它有一個 ID，並以兩種方式之一結束。結果在它仍開著時回來：結果在 `handle` 裡執行。或者它先關閉，也就是被*放棄*（abandoned）：`handleAbandoned` 帶著原因執行（deadline 已過、key 結束、或被取消）。在那之後才到的結果交給 `handleLateResult`，所以一個卡住的資料庫載入最後才回來，也不會改變任何東西。被放棄的同時，request 的工作也會被取消，就像 task group 取消它的子 task。取消只是請工作停下，並不會直接停掉它。`perform` 只在可以安全停下的地方檢查 `Task.isCancelled`（或使用可取消的 await）；會改動外部狀態的工作，要在返回前把那個改動處理完：`untilWorkerReturns` 的 hold 在工作返回時就結束。必須做完的工作用 `run`，它不受追蹤，永遠不會被取消。不理會取消的工作，會讓 actor 一直存活到它結束。有 mailbox 時，replay 的 completion 來自同一個 `perform`，所以被取消的 `perform` 回傳 nil：不論取消在什麼時候送到，completion 都一樣。
 
 ```swift
 let hold = Hold.untilRequestCloses(Key.store, deadline: loadDeadline)
