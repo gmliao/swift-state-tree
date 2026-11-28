@@ -10,6 +10,8 @@
 # checked on CI run 46111237290), so a zero-test block in a green run is never expected. Every
 # step this checks runs Swift Testing tests; XCTest's per-bundle `Executed 0 tests` lines are
 # ignored (only one XCTest test exists, and every bundle prints its line).
+# Assumption: a step that runs only XCTest tests prints no Swift Testing closing line, so this
+# check would fail it falsely. No step it is wired into is one; don't wire it into one.
 # Carriage returns and NUL bytes are removed before matching, so a log with Windows line ends
 # or written as UTF-16 is read whole; the patterns are ASCII, matched in the C locale as text,
 # so a non-ASCII byte left over from UTF-16 can't turn a line into a binary match.
