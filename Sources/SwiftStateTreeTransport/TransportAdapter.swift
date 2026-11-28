@@ -6208,7 +6208,10 @@ extension TransportAdapter {
     ///   freeze is released), `DebugFreezeError.released` when the freeze was released (e.g. by
     ///   auto-resume) before its settle finished. A land that failed throws its `LandFailure`
     ///   (also when the settle's own plan fails, which ends the land in the settle's turn), and
-    ///   one that is closing throws `LandInputRejection.landClosed`.
+    ///   one that is closing throws `LandInputRejection.landClosed`. Those are the new freeze's
+    ///   answers (and a reference's taken while its settle runs): a reference added after the
+    ///   settle finished returns its token without asking the keeper again, even if the land
+    ///   has closed since.
     public func debugFreeze() async throws -> DebugFreezeResponse {
         if debugFreezeState.count == 0 {
             debugFreezeState.generation &+= 1

@@ -154,8 +154,9 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// The owner starts `.land` at initialization, which a step's outputs for it need (K2-1: the
     /// test harness's start; K2-2: the core's initialization).
     case startLand
-    /// One freeze caller's timeout (the core timer on `.freezeWait(caller)`): that caller gets
-    /// false.
+    /// One freeze caller's timeout (the core timer on `.freezeWait(caller)`): that caller is
+    /// answered `.timedOut`, or `.released` when a newer freeze replaced its generation, closed
+    /// first.
     case freezeTimedOut(generation: UInt64, caller: InputID)
 }
 
@@ -605,8 +606,8 @@ extension KeeperModel: TurnMachine {
             freezeStep(&turn, generation: generation, timeout: timeout, assertsOnUnstartedLandKey: store.assertsOnUnstartedLandKey, landEnd: store.debugDrainLandEnd)
         case let .freezeTimedOut(generation, caller):
             // Only this caller's wait ends; the generation's other callers keep their own deadline.
-            // A newer freeze replaced the generation: released, as the keeper's woken waiter
-            // leaves its loop on the generation check before its deadline check (Review on #987, MF1).
+            // A newer freeze replaced the generation: released, as the keeper's deadline resolver
+            // (`debugWakeDrainWaiter`) decides it (Review on #987, MF1).
             if var waits = coreBarrierWaits.freeze[generation], let index = waits.firstIndex(of: caller) {
                 waits.remove(at: index)
                 coreBarrierWaits.freeze[generation] = waits.isEmpty ? nil : waits
@@ -879,7 +880,7 @@ extension KeeperModel: TurnMachine {
             }
         }
         // The held intakes go on at the handler's end (`releaseCoreHeldIntakes`).
-        // `debugResume` wakes every drain waiter; each re-checks and answers released.
+        // As `debugResume`: every drain waiter is answered released (closed first), decided here.
         answerAllCoreFreezeWaits(&turn, landEnd, .released)
         return kick
     }
@@ -918,7 +919,7 @@ extension KeeperModel: TurnMachine {
 
     /// The freeze callers whose wait a step ended: the in-flight work is 0 with their generation
     /// still in effect (the keeper's `debugEndWork` resumes its drain waiters at the same point).
-    /// When the work reaches 0, `debugEndWork` wakes every drain waiter, and each re-checks:
+    /// When the work reaches 0, `debugEndWork` answers every drain waiter, decided there:
     /// the generation in effect answers `.drained`, a stale one `.released` (Review on #948: a
     /// stale generation's caller is answered here, not at its timeout), both through the
     /// closed-first rule.
