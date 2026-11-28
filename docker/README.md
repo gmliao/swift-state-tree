@@ -59,7 +59,7 @@ Both run images support:
 |----------|---------|--------------|
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `8080` | Listen port |
-| `TRANSPORT_ENCODING` | (varies) | `json`, `jsonOpcode`, or `messagepack` |
+| `TRANSPORT_ENCODING` | (varies) | `json`, `jsonOpcode`, `opcode`, or `messagepack` |
 
 Example:
 
@@ -71,7 +71,7 @@ docker run -p 3000:3000 -e PORT=3000 -e TRANSPORT_ENCODING=messagepack game:late
 
 ```bash
 # Build, run container, and run E2E tests against it
-./docker/test-e2e-docker.sh          # All encodings (json, jsonOpcode, messagepack)
+./docker/test-e2e-docker.sh          # All encodings (json, jsonOpcode, opcode, messagepack)
 ./docker/test-e2e-docker.sh json     # Single encoding
 ```
 

@@ -29,7 +29,7 @@ cd Tools/CLI && ./test-e2e-ci.sh
 
 **What it does:**
 - Automatically handles server startup/shutdown
-- Tests all three encoding modes sequentially (`jsonObject`, `opcodeJsonArray`, `messagepack`)
+- Tests all four encoding modes sequentially (`json`, `jsonOpcode`, `opcode`, `messagepack`)
 - Shows server logs on failure
 - Cleans up after completion
 
@@ -80,7 +80,7 @@ cd Tools/CLI && npm run test:e2e:with-game
 
 ## Encoding Modes
 
-Tests run in all three encoding modes:
+Tests run in all four encoding modes:
 
 1. **JSON Object** (`jsonObject`)
    - `TRANSPORT_ENCODING=json`
@@ -90,7 +90,11 @@ Tests run in all three encoding modes:
    - `TRANSPORT_ENCODING=jsonOpcode`
    - JSON messages + opcode JSON array state updates
 
-3. **MessagePack** (`messagepack`)
+3. **Opcode** (`opcode`)
+   - `TRANSPORT_ENCODING=opcode`
+   - opcode JSON array messages with positional payloads (payload compression) + opcode JSON array state updates
+
+4. **MessagePack** (`messagepack`)
    - `TRANSPORT_ENCODING=messagepack`
    - MessagePack binary encoding for both messages and state updates
 

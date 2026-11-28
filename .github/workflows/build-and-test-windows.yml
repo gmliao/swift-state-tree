@@ -201,9 +201,9 @@ jobs:
         exe="$(cygpath -u "$bin")/DemoServer.exe"
         echo "DemoServer: $exe"
         failed=0
-        # Seconds each encoding may use in all; a hang in one cannot starve the next (3 x 8 min fits
-        # the step's 30 min). One command gets at most 240 s.
-        budget=480
+        # Seconds each encoding may use in all; a hang in one cannot starve the next (4 x 7 min fits
+        # the step's 30 min; a green encoding takes under a minute). One command gets at most 240 s.
+        budget=420
 
         listening() { netstat -ano | grep LISTENING | grep -q ":$PORT "; }
 
@@ -241,10 +241,12 @@ jobs:
           fi
         }
 
-        for enc in json jsonOpcode messagepack; do
+        for enc in json jsonOpcode opcode messagepack; do
           case "$enc" in
             json) se=jsonObject ;;
             jsonOpcode) se=opcodeJsonArray ;;
+            # Opcode JSON messages with payload compression on (#543).
+            opcode) se=opcodeJsonArray ;;
             messagepack) se=messagepack ;;
           esac
           echo "::group::DemoServer $enc"
