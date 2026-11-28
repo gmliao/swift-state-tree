@@ -110,7 +110,8 @@ private func recordSyncLagCase(_ lagCase: SyncLagReplayCase, path: String) async
         )
         await keeper.stepTickOnce()
         await keeper.waitForRecorderSubmissionsForTesting()
-        #expect(await adapter.waitForOutboundDrain())
+        let outbound = adapter
+        #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
         await ack(1)
     }
 
