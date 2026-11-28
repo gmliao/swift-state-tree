@@ -1760,7 +1760,7 @@ struct KeeperCoreDifferentialTests {
         let first = await pair.digests().core.nextSequence
 
         await direct.stepTickOnce()
-        await harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+        await harness.drive(.tickDue(fold: nil, foldStart: nil))
 
         await pair.expectSame("after the tick")
         let after = await pair.digests().core
@@ -1797,10 +1797,10 @@ struct KeeperCoreDifferentialTests {
         let harness = KeeperCoreHarness(await source.coreTwinForTesting(transport: coreTransport))
         await harness.start()
         let coreDeadline = ContinuousClock.now
-        await harness.drive(.syncDue(now: coreDeadline - .milliseconds(1), tickDeadline: coreDeadline, foldPending: false, syncsInTurn: true))
+        await harness.drive(.syncDue(now: coreDeadline - .milliseconds(1), tickDeadline: coreDeadline, foldPending: false))
         let folds = await harness.flushedFolds
         try #require(folds.count == 1, "the fold left the sync's step for .land")
-        await harness.drive(.tickDue(fold: folds[0], foldStart: coreDeadline + .milliseconds(20), syncsInTurn: true))
+        await harness.drive(.tickDue(fold: folds[0], foldStart: coreDeadline + .milliseconds(20)))
         let model = await harness.differentialRead().model
 
         #expect(keeperTransport.folds.count == 1 && keeperTransport.folds == coreTransport.folds, "keeper \(keeperTransport.folds), core \(coreTransport.folds)")
@@ -1821,7 +1821,7 @@ struct KeeperCoreDifferentialTests {
         let harness = KeeperCoreHarness(twin)
         await harness.start(startsLand: false)
         let deadline = ContinuousClock.now
-        await harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false, syncsInTurn: true))
+        await harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false))
         #expect(await harness.flushedFolds.isEmpty)
         #expect(await harness.droppedOutputs == 1)
     }
@@ -2194,7 +2194,7 @@ struct KeeperCoreDifferentialTests {
         func tick() async {
             await keeper.stepTickOnce()
             await keeper.waitForRecorderSubmissionsForTesting()
-            await harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+            await harness.drive(.tickDue(fold: nil, foldStart: nil))
             await harness.waitForSubmissions()
         }
 
@@ -2371,7 +2371,7 @@ struct KeeperCoreDifferentialTests {
         pair.coreTransport.followUp = followUp
         if syncOnly {
             // A sync that doesn't fold (no tick due): `syncOnlyTurnBody`'s own path to the helpers.
-            await pair.harness.drive(.syncDue(now: ContinuousClock.now, tickDeadline: nil, foldPending: false, syncsInTurn: true))
+            await pair.harness.drive(.syncDue(now: ContinuousClock.now, tickDeadline: nil, foldPending: false))
             await pair.harness.waitForSubmissions()
         } else {
             await harnessTick(pair)
@@ -2397,9 +2397,9 @@ struct KeeperCoreDifferentialTests {
     /// tick's phase includes the sync and reaches `applyInTurnSyncResult`'s branches.
     private func harnessTick(_ pair: TracePair) async {
         let deadline = ContinuousClock.now
-        await pair.harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false, syncsInTurn: true))
+        await pair.harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false))
         let fold = await pair.harness.flushedFolds.last
-        await pair.harness.drive(.tickDue(fold: fold, foldStart: fold.map { _ in deadline + .milliseconds(20) }, syncsInTurn: true))
+        await pair.harness.drive(.tickDue(fold: fold, foldStart: fold.map { _ in deadline + .milliseconds(20) }))
         await pair.harness.waitForSubmissions()
     }
 
@@ -2417,7 +2417,7 @@ struct KeeperCoreDifferentialTests {
         CoreDiffHandlerReentry.register(pair.landID) { [source] in
             source.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the handler's re-entry the sentinel refuses
         }
-        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: false))
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil))
         defer { CoreDiffHandlerReentry.clear(pair.landID) }
         let keeperLate = await pair.keeper.lateReentriesAppliedForTesting - keeperLateBefore
         let coreLate = await source.lateReentriesAppliedForTesting - coreLateBefore
@@ -2437,10 +2437,10 @@ struct KeeperCoreDifferentialTests {
         let before = await harness.differentialRead().model
         // The only K2-1 output is a fold, so the armed flush is `.syncDue`'s: it sends a tick and
         // asks for a tick land's action intake.
-        await harness.armFlush(send: .tickDue(fold: nil, foldStart: nil, syncsInTurn: true),
+        await harness.armFlush(send: .tickDue(fold: nil, foldStart: nil),
                                thenAsk: .admitAction(envelope(CoreDiffAction(n: 3, fails: false)), caller("p1", "c1"), enforcingLimits: true))
         let deadline = ContinuousClock.now
-        await harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false, syncsInTurn: true))
+        await harness.drive(.syncDue(now: deadline - .milliseconds(1), tickDeadline: deadline, foldPending: false))
         let answers = await harness.flushQueryAnswers
         try #require(answers.count == 1, "the fold's flush ran the armed calls")
         guard case let .actionSubmission(submission) = answers[0].answer, (try? submission.get()) != nil else {
@@ -2755,7 +2755,7 @@ extension KeeperCoreDifferentialTests {
         let coreHold = WatermarkGate()
         defer { coreHold.release() }
         pair.harness.armedRecordGate.arm(coreHold)
-        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil))
         guard await coreHold.waitUntilEntered("the core's tick record") else { return }
         let freeze = Task { try await pair.harness.call(.freeze(generation: 1, timeout: .seconds(3600))) }
         guard await pair.harness.waitForInputs(named: "freeze", count: 1) else { return }
@@ -2776,7 +2776,7 @@ extension KeeperCoreDifferentialTests {
         let coreHold = WatermarkGate()
         defer { coreHold.release() }
         pair.harness.armedRecordGate.arm(coreHold)
-        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil))
         guard await coreHold.waitUntilEntered("the core's tick record") else { return }
         let epochBefore = await pair.harness.differentialRead().model.loopEpoch
         // A drain that starts with a tick in flight: the flag first, then the owner's
@@ -2793,8 +2793,8 @@ extension KeeperCoreDifferentialTests {
         // A sync and a tick that the replaced loops sent before the bump. A sync step doesn't
         // read the drain flag, so only the epoch keeps this one from reaching the port; the
         // tick's step would also stop at `tickStart`'s drain check.
-        await pair.harness.drive(.syncDue(now: ContinuousClock.now, tickDeadline: nil, foldPending: false, syncsInTurn: true, epoch: epochBefore))
-        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true, epoch: epochBefore))
+        await pair.harness.drive(.syncDue(now: ContinuousClock.now, tickDeadline: nil, foldPending: false, epoch: epochBefore))
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, epoch: epochBefore))
         #expect(pair.coreTrace.all.isEmpty, "a stale loop input reached the port: \(pair.coreTrace.all)")
         let after = CoreDiffDigest(await pair.harness.differentialRead())
         #expect(after == before, "differ in \(after.differingFields(from: before))")
@@ -3061,9 +3061,9 @@ extension KeeperCoreDifferentialTests {
         let current = await pair.harness.differentialRead().model.loopEpoch
         #expect(current > 0, "the initialization's finish bumped the epoch")
         let before = await pair.harness.differentialRead().model.state.log
-        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true, epoch: current &- 1))
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, epoch: current &- 1))
         #expect(await pair.harness.differentialRead().model.state.log == before, "a stale tick ran")
-        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true, epoch: current))
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, epoch: current))
         #expect(await pair.harness.differentialRead().model.state.log == before + ["tick"])
     }
 
@@ -3191,7 +3191,7 @@ extension KeeperCoreDifferentialTests {
 
         // The core: the same, the leave stepped while its stop waits for the held tick.
         pair.harness.armedRecordGate.arm(coreHold)
-        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil))
         guard await coreHold.waitUntilEntered("the core's tick record") else { return }
         let coreStop = Task { try await pair.harness.call(.shutdown) }
         guard await pair.harness.waitForInputs(named: "shutdown", count: 1) else { return }
@@ -3349,7 +3349,7 @@ extension KeeperCoreDifferentialTests {
         pair.harness.armedRecordGate.arm(coreHold)
         let keeperTick = Task { await pair.keeper.stepTickOnce() }
         guard await keeperHold.waitUntilEntered() else { Issue.record("the keeper's tick never reached its record"); return }
-        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil, syncsInTurn: true))
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil))
         guard await coreHold.waitUntilEntered() else { Issue.record("the core's tick never reached its record"); return }
         // Both ticks are in flight, held at the record: each path counts the work.
         #expect(await pair.keeper.differentialReadForTesting().model.ticksInFlight == 1)
@@ -4128,5 +4128,107 @@ extension KeeperCoreDifferentialTests {
         guard case .done = try await pair.harness.call(.awaitInitialized) else { Issue.record("not a done reply"); return }
         #expect(await pair.harness.differentialRead().model.coreBarrierWaits.isEmpty)
         await pair.expectSame("after the initialization's barrier")
+    }
+}
+
+/// K2-2 commit 3a: `setTransport` as a step on the core, and the stored binding it writes
+/// (rev 3's MF1). Each case drives the keeper's `setTransport` and the core's `.setTransport`
+/// on the same shapes.
+@Suite("The core's setTransport step and its stored binding (#700 K2-2 commit 3a)", .timeLimit(.minutes(1)))
+struct KeeperCoreSetTransportTests {
+    private func attach(_ pair: CoreDiffPair, keeperPort: CoreDiffTraceTransport?, corePort: CoreDiffTraceTransport?) async {
+        await pair.keeper.setTransport(keeperPort)
+        await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
+    }
+
+    @Test("An attach asks the witness once, in the step, stores its answer and rebinds; the ticks after it read the stored answer, never the witness, and run the port's phase as the keeper's do (MF1)")
+    func attachStoresTheWitness() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "attach")
+        let keeperTrace = CoreDiffTrace(), coreTrace = CoreDiffTrace()
+        let keeperPort = CoreDiffTraceTransport(keeperTrace), corePort = CoreDiffTraceTransport(coreTrace)
+        let keeperBefore = await pair.keeper.differentialReadForTesting().model.syncBinding.current
+        let coreBefore = await pair.harness.differentialRead().model.syncBinding.current
+        await attach(pair, keeperPort: keeperPort, corePort: corePort)
+        let attached = await pair.harness.differentialRead()
+        #expect(corePort.witnessCount == 1, "the step asks the witness once: \(corePort.witnessCount)")
+        #expect(attached.attachedTransport == "CoreDiffTraceTransport" && attached.attachedSyncsInTurn)
+        #expect(attached.model.syncBinding.current != coreBefore, "the attach rebinds on the core")
+        #expect(await pair.keeper.differentialReadForTesting().model.syncBinding.current != keeperBefore, "and on the keeper")
+        #expect(attached.model.hasHeldTransport)
+        await pair.keeper.stepTickOnce()
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil))
+        await pair.harness.waitForSubmissions()
+        #expect(corePort.witnessCount == 1, "a tick reads the stored binding: \(corePort.witnessCount)")
+        let keeperPhases = keeperTrace.all.filter { $0.hasPrefix("runSyncPhaseInTurn") }
+        let corePhases = coreTrace.all.filter { $0.hasPrefix("runSyncPhaseInTurn") }
+        #expect(corePhases.count == 1 && corePhases == keeperPhases, "keeper \(keeperPhases), core \(corePhases)")
+    }
+
+    @Test("A detach (nil) stores no port and a false binding, keeps the sync binding, and the next tick runs no phase, as on the keeper (MF1; Review should 1)")
+    func detachKeepsTheBinding() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "detach")
+        let keeperTrace = CoreDiffTrace(), coreTrace = CoreDiffTrace()
+        await attach(pair, keeperPort: CoreDiffTraceTransport(keeperTrace), corePort: CoreDiffTraceTransport(coreTrace))
+        let keeperBound = await pair.keeper.differentialReadForTesting().model.syncBinding.current
+        let coreBound = await pair.harness.differentialRead().model.syncBinding.current
+        await attach(pair, keeperPort: nil, corePort: nil)
+        let detached = await pair.harness.differentialRead()
+        #expect(detached.attachedTransport == "-" && !detached.attachedSyncsInTurn)
+        #expect(detached.model.syncBinding.current == coreBound, "a detach doesn't rebind on the core")
+        #expect(await pair.keeper.differentialReadForTesting().model.syncBinding.current == keeperBound, "nor on the keeper")
+        keeperTrace.clear()
+        coreTrace.clear()
+        await pair.keeper.stepTickOnce()
+        await pair.harness.drive(.tickDue(fold: nil, foldStart: nil))
+        await pair.harness.waitForSubmissions()
+        #expect(!keeperTrace.all.contains { $0.hasPrefix("runSyncPhaseInTurn") } && !coreTrace.all.contains { $0.hasPrefix("runSyncPhaseInTurn") },
+                "keeper \(keeperTrace.all), core \(coreTrace.all)")
+    }
+
+    @Test("Once the destruction finished, an attach keeps the released stand-in and asks no witness, a rejecting one included; the step runs on the closed intake (a .control input), on both paths (MF1; Review should 1)", arguments: [true, false])
+    func attachAfterTheDestruction(tick: Bool) async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "attach-after-destroy-\(tick)")
+        guard await valueWithinHangBound(Task { await pair.keeper.forceShutdown() }) != nil else { Issue.record("the keeper's stop never returned"); return }
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
+            Issue.record("the core's stop wasn't answered .done"); return
+        }
+        let standIn = await pair.harness.differentialRead()
+        #expect(standIn.attachedTransport == "ReleasedLandTransport" && !standIn.attachedSyncsInTurn, "\(standIn.attachedTransport)")
+        // A rejecting witness would stop the process on a live attach: neither path asks it.
+        let keeperPort = CoreDiffTraceTransport(CoreDiffTrace()), corePort = CoreDiffTraceTransport(CoreDiffTrace())
+        keeperPort.witnessAnswer = false
+        corePort.witnessAnswer = false
+        await attach(pair, keeperPort: keeperPort, corePort: corePort)
+        guard await pair.harness.waitForInputs(named: "setTransport", count: 1) else { Issue.record("the attach never stepped"); return }
+        let after = await pair.harness.differentialRead()
+        #expect(corePort.witnessCount == 0 && keeperPort.witnessCount == 0, "witness: keeper \(keeperPort.witnessCount), core \(corePort.witnessCount)")
+        #expect(after.attachedTransport == "ReleasedLandTransport" && !after.attachedSyncsInTurn, "\(after.attachedTransport)")
+        #expect(await pair.keeper.differentialReadForTesting().attachedTransport == "ReleasedLandTransport")
+        #expect(after.model.syncBinding.current == standIn.model.syncBinding.current, "no rebind after the destruction")
+    }
+
+    @Test("A witness that re-enters the keeper ends the land in the attach's step on the core (callOut), and the port isn't attached. Core-only: the keeper's attach runs at depth zero and allows it (a stated contract change, commit 4)")
+    func witnessReentryEndsTheLand() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "attach-reentry")
+        let source = try #require(pair.source)
+        let corePort = CoreDiffTraceTransport(CoreDiffTrace())
+        corePort.armWitnessReentry(source)
+        await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
+        let after = await pair.harness.differentialRead()
+        #expect(after.failure?.kind == .keeperReentry, "\(String(describing: after.failure))")
+        #expect(after.attachedTransport == "-" && !after.attachedSyncsInTurn, "\(after.attachedTransport)")
+        #expect(corePort.witnessCount == 1)
+    }
+
+    @Test("A live core's attach of a port whose witness rejects the owner stops the process with the keeper's message (MF1)")
+    func rejectingWitnessStopsTheProcess() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "attach-rejecting")
+            let port = CoreDiffTraceTransport(CoreDiffTrace())
+            port.witnessAnswer = false
+            await pair.harness.drive(.setTransport(port, owner: pair.harness.owner))
+        }
+        let stderr = result.map { String(decoding: $0.standardErrorContent, as: UTF8.self) } ?? ""
+        #expect(stderr.contains("a live keeper's transport must run its sync phase in turn"), "\(stderr)")
     }
 }

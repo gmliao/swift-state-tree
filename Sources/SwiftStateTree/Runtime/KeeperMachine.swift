@@ -82,16 +82,15 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     case leave(KeeperCaller)
     /// The tick driver's input. The fold and its start instant are the two arguments
     /// `runTickTurn` takes from the actor today; the start is read only for a fold.
-    /// A tick is due. `syncsInTurn`: the driver's read of whether the attached transport runs
-    /// the sync phase in turn (the keeper's `syncsInTurn`), made outside the step as `runTick`
-    /// makes it outside its body; K2-2's binding token carries it.
+    /// A tick is due. Its step reads the stored binding (`KeeperTurnSide.syncsInTurn`, K2-2
+    /// commit 3a) at its own point, as `runTick` reads the keeper's transport at its turn.
     /// `epoch`: the `loopEpoch` the owner's loop Task captured (plan §13.1); one that isn't
     /// current is a no-op. Nil: a driver without loops (the tests' `drive`), never stale.
-    case tickDue(fold: PendingFold?, foldStart: ContinuousClock.Instant?, syncsInTurn: Bool, epoch: UInt64? = nil)
+    case tickDue(fold: PendingFold?, foldStart: ContinuousClock.Instant?, epoch: UInt64? = nil)
     /// The sync loop is due, with the driver's reads made outside the step, as `runSync` makes
     /// them: `now`, the tick loop's next deadline (nil without a tick loop), whether a fold is
-    /// already pending (the driver holds `pendingFold`), and `syncsInTurn` (see `.tickDue`).
-    case syncDue(now: ContinuousClock.Instant, tickDeadline: ContinuousClock.Instant?, foldPending: Bool, syncsInTurn: Bool, epoch: UInt64? = nil)
+    /// already pending (the driver holds `pendingFold`). The binding is the stored one (see `.tickDue`).
+    case syncDue(now: ContinuousClock.Instant, tickDeadline: ContinuousClock.Instant?, foldPending: Bool, epoch: UInt64? = nil)
     case freeze(generation: UInt64, timeout: Duration)
     case resume(generation: UInt64)
     case shutdown
@@ -151,6 +150,12 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     case inputDrainDue
     /// `onLandDestroyed` returned (`.notifyTransport`'s run).
     case drainFinished
+    /// The owner attaches a transport, or detaches it with nil: the keeper's `setTransport`, as a
+    /// step (K2-2 commit 3a). `owner` stands in for the keeper reference the witness is asked
+    /// about. A `.control` input, so a closed intake never drops it. Commit 4's facade is its
+    /// sender, and refuses a call made during a step, as the keeper's `noteReentry` does (a send
+    /// from a step is queued); the harness sends it outside a step.
+    case setTransport((any LandKeeperTransport)?, owner: any AnyObject & Sendable)
     /// The owner starts `.land` at initialization, which a step's outputs for it need (K2-1: the
     /// test harness's start; K2-2: the core's initialization).
     case startLand
@@ -170,7 +175,7 @@ enum KeeperInputRoutes {
         .syncStreamDraft,
         .initialize, .initializeResolved, .initializeRecorded, .initializeDone,
         .shutdown, .drainStart, .destroyHandlerResolved, .afterFinalizeReturned, .drainFinished,
-        .tickRecordTaken, .shutdownRecorded,
+        .tickRecordTaken, .shutdownRecorded, .setTransport,
     ]
     /// Empty since K2-2 commit 1b: every input is routed.
     static let deferred: [KeeperInputRoute: String] = [:]
@@ -204,7 +209,7 @@ extension KeeperQuery {
 /// Each `KeeperInput` case by name: `route` is exhaustive, so a new case needs a route here, and
 /// the census checks that every route is routed or deferred.
 enum KeeperInputRoute: String, CaseIterable, Sendable {
-    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut, drainStart, afterFinalizeReturned, tickRecordTaken, shutdownRecorded
+    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut, drainStart, afterFinalizeReturned, tickRecordTaken, shutdownRecorded, setTransport
 }
 
 extension KeeperInput {
@@ -241,6 +246,7 @@ extension KeeperInput {
         case .afterFinalizeReturned: .afterFinalizeReturned
         case .tickRecordTaken: .tickRecordTaken
         case .shutdownRecorded: .shutdownRecorded
+        case .setTransport: .setTransport
         }
     }
 
@@ -322,10 +328,6 @@ struct KeeperCoreInputReplies: Sendable {
     var onCore = false
     var waits: [Int64: KeeperCoreInputWait] = [:]
     var dropped: [KeeperCoreInputWait] = []
-    /// The tick or sync step's read of `syncsInTurn`, carried from its input for that one step
-    /// (a core's side has no keeper to ask the port with). Nil outside those steps, and always on
-    /// the keeper's side, where `KeeperTurnSide.syncsInTurn` asks the port.
-    var carriedSyncsInTurn: Bool?
     /// A core's job starts and releases a step made, which the step's end runs as effects
     /// (`runCoreJobEffects`), and its slot waits (K2-2 plan, commit 0). Empty on the keeper's
     /// side, where the start and the release are staged through the keeper reference.
@@ -460,7 +462,6 @@ enum KeeperOutput: Sendable {
     /// `.initializeDone` with the two flags (K2-2 commit 1a). `epoch`: the `loopEpoch` its loop
     /// Tasks capture (K2-2 commit 1b, M5).
     case startLoops(epoch: UInt64)
-    case bindTransport
     case services(PlayerID, Epoch, LandServices?)
     /// A sync folded into the tick due next (`.syncDue`): the driver keeps it, as the keeper's
     /// `pendingFold`, and passes it back on that tick's `.tickDue`.
@@ -508,7 +509,7 @@ extension KeeperModel: TurnMachine {
     /// depends on the input alone, as `TurnMachine.inputPolicy` requires.
     func inputPolicy(for input: KeeperInput<State>) -> InputPolicy<KeeperKey> {
         switch input {
-        case .resume, .shutdown, .drainStart, .drainFinished, .initialize, .initializeDone: .control
+        case .resume, .shutdown, .drainStart, .drainFinished, .initialize, .initializeDone, .setTransport: .control
         default: .normal(waitsFor: nil, belongsTo: nil)
         }
     }
@@ -516,20 +517,20 @@ extension KeeperModel: TurnMachine {
     mutating func handle(_ input: KeeperInput<State>, _ turn: inout Turn<KeeperModel<State>>) {
         let behavior = turn.behavior
         guard let store = behavior.sideStore else { preconditionFailure("K2-1: a core-driven keeper needs its side store") }
-        if let kind = coreRefusal(behavior, hasTransport: store.withSide({ side in side.attachedTransport != nil }), input) {
+        if let kind = coreRefusal(behavior, hasTransport: store.withSide({ side in side.holdsLivePort }), input) {
             store.withSide { side in side.coreInputReplies.refusals.append("\(input.routeName): \(kind.message)") }
             if let caller = turn.input { turn.reply(to: caller, .failure(KeeperCoreRefusal(kind: kind))) }
             store.withSide { side in side.onInputSteppedForTesting?(input.routeName) }
             return
         }
         switch input {
-        case let .tickDue(fold, foldStart, syncsInTurn, epoch):
+        case let .tickDue(fold, foldStart, epoch):
             // A tick from a loop the drain or a restart replaced: no step, no work (M5).
             if let epoch, epoch != loopEpoch { break }
             if behavior.isTickless {
                 ticklessTickStep(behavior, store, &turn)
             } else {
-                tickDueStep(behavior, store, &turn, fold: fold, foldStart: foldStart, syncsInTurn: syncsInTurn)
+                tickDueStep(behavior, store, &turn, fold: fold, foldStart: foldStart)
             }
         case let .recordTaken(applied, results, endsTickWork):
             // The keeper's drain after `submitTurnRecord`'s await: the callers resume (the
@@ -548,6 +549,8 @@ extension KeeperModel: TurnMachine {
             inputDrainStep(behavior, store, &turn, endsTickWork: false)
         case .startLand:
             _ = turn.start(.land)
+        case let .setTransport(port, owner):
+            step(behavior, store) { m, side, outputs in m.setTransportBody(behavior, &side, &outputs, port, owner: owner) }
         case let .action(envelope, who, cancelled, cancellation):
             let caller = turn.input
             actionStep(behavior, store, &turn, envelope, who, caller: caller, cancelled: cancelled, cancellation: cancellation)
@@ -579,9 +582,9 @@ extension KeeperModel: TurnMachine {
                 }
                 leaveDrive(behavior, store, &turn, request, continuation)
             }
-        case let .syncDue(now, tickDeadline, foldPending, syncsInTurn, epoch):
+        case let .syncDue(now, tickDeadline, foldPending, epoch):
             if let epoch, epoch != loopEpoch { break }
-            if let fold = syncDueStep(behavior, store, now: now, tickDeadline: tickDeadline, foldPending: foldPending, syncsInTurn: syncsInTurn) {
+            if let fold = syncDueStep(behavior, store, now: now, tickDeadline: tickDeadline, foldPending: foldPending) {
                 // `.land` is started by the owner at initialization (K2-1: the test harness's
                 // init; K2-2: the core's init), never by a step. An emit before that is a bug:
                 // loud in debug, and the core drops and counts it (`droppedOutputs`).
@@ -726,8 +729,16 @@ extension KeeperModel: TurnMachine {
             case .notifyingTransport:
                 step(behavior, store) { m, side, outputs in m.drainFinished(behavior, &side, &outputs) }
                 drainPhase = .finished
-                // The owner's two calls follow this step, in order (M10): the released stand-in,
-                // then `setTransport(nil)`.
+                // The keeper's two calls after `onLandDestroyed` (M10), in this step: the released
+                // stand-in replaces the transport, so the adapter is let go (#346), and a later
+                // `.setTransport` attaches the stand-in too (`setTransportBody`).
+                store.withSide { side in
+                    let standIn = ReleasedLandTransport(landID: behavior.config.actualLandID ?? behavior.definition.id, logger: behavior.logger)
+                    side.releasedStandIn = standIn
+                    side.attachedTransport = standIn
+                    side.attachedSyncsInTurn = false
+                }
+                transportRecordsFolds = false
                 turn.emit(.detachTransport, for: .land)
                 answerStopCallers(&turn)
             case .notStarted, .waitingForTick, .destroyResolving, .afterFinalize, .finished:
@@ -995,15 +1006,11 @@ extension KeeperModel: TurnMachine {
         case let .syncTurnNow(port, owner, reason, ticket):
             // The keeper's `syncTurnNow(via:reason:ticket:)`, in `acceptsSyncTurn`'s order: the
             // state's checks, then the witness outside a body, then the binding, the ticket and
-            // one sync-only turn in the step. The witness's answer is carried into the step for
-            // the body's own reads (`syncsInTurn`): the body's second witness call, which the
-            // keeper makes inside `callOut`, is short-circuited on a core, a stated asymmetry
-            // (the census's `carriedSyncsInTurn` row) that K2-2's binding token removes. On a
+            // one sync-only turn in the step. The body's own reads (`syncsInTurn`) read the
+            // stored binding (K2-2 commit 3a), which the attach's witness set. On a
             // core no follow-up is pending to consume: the guard drops each one after its phase
             // (#938 r3), so `pendingSyncTurnAfterTurn` stays nil.
             let accepted = acceptsSyncTurnState(behavior, store) && port.runsSyncPhaseInTurn(of: owner)
-            store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = accepted }
-            defer { store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = nil } }
             return .syncTurn(step(behavior, store) { m, side, outputs in
                 m.requestedSyncTurnsForTesting[reason, default: 0] += 1
                 guard accepted, m.bindSyncRequester(side, port) else { return .skipped }
@@ -1142,6 +1149,44 @@ extension KeeperModel {
         stopBegin(behavior, store, &turn)
     }
 
+    /// `setTransport` as a step (K2-2 commit 3a), in the keeper's order. Once the destruction
+    /// finished it attaches the released stand-in without asking the witness. Otherwise a live
+    /// land asks `port`'s witness for `owner` through `callOut` (a re-entry from it ends the
+    /// land in this step) and stops the process on a refusal, as the keeper's attach does. Then
+    /// it stores the port and its answer, the fold flag and, for a port, `noteTransportBound`'s
+    /// writes: a bound requester is let go and the binding rebinds. A detach doesn't rebind.
+    /// The port's two reads go through `callOut`.
+    mutating func setTransportBody(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, _ outputs: inout TurnOutputs, _ port: (any LandKeeperTransport)?, owner: any AnyObject & Sendable) {
+        if destructionFinished {
+            side.attachedTransport = side.releasedStandIn
+            side.attachedSyncsInTurn = false
+            transportRecordsFolds = false
+            return
+        }
+        var answer = false, folds = false
+        if let port, !(port is ReleasedLandTransport) {
+            switch callOut(behavior, &side, &outputs, { _, _ in (port.runsSyncPhaseInTurn(of: owner), port.recordsInTurnSyncFolds) }) {
+            case .refused:
+                return
+            case let .answered(read):
+                (answer, folds) = read
+            }
+            if behavior.config.mode == .live, !answer {
+                fatalError(
+                    "LandKeeper(\(behavior.config.actualLandID ?? behavior.definition.id)): a live keeper's transport must run its sync phase in turn for this keeper; "
+                        + "\(type(of: port)).runsSyncPhaseInTurn(of:) returned false. Attach the TransportAdapter built for this keeper, or no transport (#546 L2d)"
+                )
+            }
+        }
+        side.attachedTransport = port
+        side.attachedSyncsInTurn = answer
+        transportRecordsFolds = folds
+        guard port != nil else { return }
+        hasHeldTransport = true
+        side.sharedBoundRequester.object = nil
+        syncBinding.rebind()
+    }
+
     /// `acceptsSyncTurn`'s first guard, read before a sync query's frame: a live land, not
     /// failed or draining.
     func acceptsSyncTurnState(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore) -> Bool {
@@ -1164,8 +1209,10 @@ extension KeeperModel {
         if case .join(_, syncsInTurn: true) = input {
             return .joinSyncingInTurn
         }
-        // `.startLand` starts the core's key and reads no binding.
+        // `.startLand` starts the core's key and reads no binding; `.setTransport` writes it and
+        // runs no output phase (the tickless refusal lifts in K2-2 commit 3c).
         if case .startLand = input { return nil }
+        if case .setTransport = input { return nil }
         if behavior.isTickless, hasTransport {
             return .ticklessLandWithTransport
         }
@@ -1227,13 +1274,11 @@ extension KeeperModel {
     /// A tick land's `.tickDue`: the driver's live tick (`runTick`) with the same segments, and
     /// the record's submission flushed in the step, where the keeper awaits it (plan §4.4: the
     /// recorder's serial sink keeps the order).
-    mutating func tickDueStep(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, fold: PendingFold?, foldStart: ContinuousClock.Instant?, syncsInTurn: Bool) {
+    mutating func tickDueStep(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>, fold: PendingFold?, foldStart: ContinuousClock.Instant?) {
         guard let handler = behavior.definition.lifetimeHandlers.tickHandler else {
             preconditionFailure("K2-1: a tickless land's tick is routed with the input drain")
         }
         guard tickAdmit() == .admitted else { return }
-        store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = syncsInTurn }
-        defer { store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = nil } }
         guard let tickId = store.withSide({ side in tickStart(side) }) else {
             store.withSide { side in debugEndWork(&side) }
             return
@@ -1242,7 +1287,7 @@ extension KeeperModel {
         store.withSide { side in side.probe?("turn-begin") }
         let output = step(behavior, store) { m, side, outputs in
             m.tickTurnBody(behavior, &side, &outputs, handler: handler, tickId: tickId,
-                           transport: syncsInTurn ? side.attachedTransport : nil, fold: fold, foldStart: foldStart)
+                           transport: side.storedSyncsInTurn ? side.attachedTransport : nil, fold: fold, foldStart: foldStart)
         }
         let (_, submission) = stepSubmitting(behavior, store) { m, _, outputs in
             m.stageRecorderSubmission(behavior, output.record, endsTurn: behavior.isTickless, outputs: &outputs)
@@ -1445,17 +1490,14 @@ extension KeeperModel {
         _ store: KeeperSideStore,
         now: ContinuousClock.Instant,
         tickDeadline: ContinuousClock.Instant?,
-        foldPending: Bool,
-        syncsInTurn: Bool
+        foldPending: Bool
     ) -> PendingFold? {
         // The only sync while frozen is the settle cycle run by the transport.
         guard !debugFrozen else { return nil }
-        store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = syncsInTurn }
-        defer { store.withSide { side in side.coreInputReplies.carriedSyncsInTurn = nil } }
         if let handler = behavior.definition.lifetimeHandlers.syncHandler {
             store.withSide { side in runSyncHandler(behavior, side, handler) }
         }
-        guard syncsInTurn, let transport = store.withSide({ side in side.attachedTransport }) else { return nil }
+        guard let transport = store.withSide({ side in side.storedSyncsInTurn ? side.attachedTransport : nil }) else { return nil }
         // The coincident-sync rule, as in `runSync`: a tick due within the window takes the sync.
         if let deadline = tickDeadline, deadline - now <= behavior.coincidentSyncWindow {
             return foldSyncIntoTick(now: now, deadline: deadline, foldPending: foldPending)

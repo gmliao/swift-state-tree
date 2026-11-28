@@ -87,9 +87,15 @@ struct KeeperDifferentialRead<State: StateNodeProtocol>: Sendable {
     let isDraining: Bool
     let mailboxFailure: LandFailure?
     let pendingSyncTurnAfterTurn: String
+    /// The attached transport's type name ("-" with none), and a core's stored binding (K2-2
+    /// commit 3a; always false on the keeper's side, which asks the port).
+    let attachedTransport: String
+    let attachedSyncsInTurn: Bool
 
     init(model: KeeperModel<State>, side: KeeperTurnSide) {
         self.model = model
+        attachedTransport = side.attachedTransport.map { String(describing: type(of: $0)) } ?? "-"
+        attachedSyncsInTurn = side.attachedSyncsInTurn
         violations = model.actionTableViolations(side)
         serviceGenerations = side.playerServices.mapValues(\.generation.rawValue)
         // Every core table a step can leave a caller or an effect in: the input-turn waits, the

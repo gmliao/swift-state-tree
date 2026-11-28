@@ -2263,6 +2263,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             transportFailure: pendingTransportFailure,
             transport: twinTransport
         )
+        // The twin's stored binding, as `.setTransport`'s step would store it: the witness for
+        // this keeper, the core's owner (K2-2 commit 3a).
+        side.attachedSyncsInTurn = twinTransport?.runsSyncPhaseInTurn(of: self) ?? false
         // The players' services live on the side, beside the entries the model copy carries.
         side.playerServices = turnSide.playerServices
         // The source's test holds, so a staged start on the core reaches the same hold points.
@@ -5463,9 +5466,6 @@ extension KeeperModel {
         if coreReplies.onCore,
            requestedSyncWork > 0 || side.pendingSyncTurnAfterTurn != nil || joinSyncTurnBinding != nil || inTurnDrainRetryBinding != nil {
             violations.append("core side: requested sync work \(requestedSyncWork), pending follow-up \(side.pendingSyncTurnAfterTurn != nil), join-sync binding \(joinSyncTurnBinding != nil), drain-retry binding \(inTurnDrainRetryBinding != nil)")
-        }
-        if !coreReplies.onCore, coreReplies.carriedSyncsInTurn != nil {
-            violations.append("a carried syncsInTurn on the keeper's side")
         }
         return violations
     }
