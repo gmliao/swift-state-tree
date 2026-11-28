@@ -95,6 +95,12 @@ jobs:
         scripts/lint-turns.sh --self-test
         scripts/lint-turns.sh
 
+    # Every test step's log goes through scripts/check-test-run.sh: `swift test` exits 0 when a
+    # bundle discovers no tests or a filter matches none (#975). Its self-test proves it still
+    # fails a zero-test, a no-match and an empty log, in CRLF and UTF-16 too.
+    - name: Test-run check self-test
+      run: scripts/check-test-run.sh --self-test
+
     # Every close of a land's output gate outside a keeper turn notes the failure on the keeper
     # (#704; Notes/plans/2026-11-21-closed-gate-replies-and-pending-failure.md §2.2).
     - name: Gate-close census
@@ -130,6 +136,7 @@ jobs:
         set -o pipefail
         swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \
           || { echo "::error title=Tests::the tests failed"; exit 1; }
+        scripts/check-test-run.sh "$RUNNER_TEMP/tests.log" "Tests"
       timeout-minutes: 30
 
     # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
@@ -164,6 +171,7 @@ jobs:
             exit 1
           fi
         done
+        scripts/check-test-run.sh "$log" "Tests, sync tables off"
       timeout-minutes: 40
 
     # Per-player fields on typed per-player tables (#514) are on by default wherever the broadcast
@@ -187,6 +195,7 @@ jobs:
           echo "::error title=Tests, per-player sync tables off::the test \"$pin\" did not run"
           exit 1
         fi
+        scripts/check-test-run.sh "$log" "Tests, per-player sync tables off"
       timeout-minutes: 40
 
     # The wall-clock cadence smoke, in a process of its own: beside the parallel suite, CPU-heavy
@@ -205,6 +214,7 @@ jobs:
           echo "::error::the wall-clock cadence smoke did not run"
           exit 1
         fi
+        scripts/check-test-run.sh "$log" "Run wall-clock tests"
       timeout-minutes: 5
 
     # One check stands for every variant, so the run's summary names each one's outcome and its
@@ -259,14 +269,24 @@ jobs:
       run: swift --version
 
     - name: Run the turn core's tests in release
-      run: swift test -c release --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests"
+      shell: bash
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/turns-release.log"
+        swift test -c release --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests" 2>&1 | tee "$log"
+        scripts/check-test-run.sh "$log" "Run the turn core's tests in release"
       timeout-minutes: 40
 
     # Catches tests that read DEBUG-only probes (#748), and shows that release registration
     # runs the value walks (RegistrationValueWalkTests, SyncRegistrationTests), and that the
     # keeper's debug-only fields are absent in release (KeeperCensusTests).
     - name: Run the keeper, transport and registration tests in release
-      run: swift test -c release --filter "LandKeeper|KeeperCensus|Transport|RegistrationValueWalk|SyncRegistration"
+      shell: bash
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/keeper-release.log"
+        swift test -c release --filter "LandKeeper|KeeperCensus|Transport|RegistrationValueWalk|SyncRegistration" 2>&1 | tee "$log"
+        scripts/check-test-run.sh "$log" "Run the keeper, transport and registration tests in release"
       timeout-minutes: 40
 
     # Nightly only: the same tests in release with the turn core's runtime exclusivity checks
@@ -274,7 +294,12 @@ jobs:
     # #624), so an overlapping access the unchecked build would let through traps here.
     - name: Run the turn core's tests in release with exclusivity checked
       if: ${{ inputs.full_matrix }}
-      run: swift test -c release -Xswiftc -DTURNS_EXCLUSIVITY_CHECKED --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests"
+      shell: bash
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/turns-release-exclusivity.log"
+        swift test -c release -Xswiftc -DTURNS_EXCLUSIVITY_CHECKED --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests" 2>&1 | tee "$log"
+        scripts/check-test-run.sh "$log" "Run the turn core's tests in release with exclusivity checked"
       timeout-minutes: 40
 
     - name: Check the step path's specialization
@@ -309,7 +334,12 @@ jobs:
 
     - name: GameDemo tests
       working-directory: Examples/GameDemo
-      run: swift test
+      shell: bash
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/gamedemo-tests.log"
+        swift test 2>&1 | tee "$log"
+        "$GITHUB_WORKSPACE/scripts/check-test-run.sh" "$log" "GameDemo tests"
       timeout-minutes: 30
 
     # The GameDemo pacing tests that bound wall-clock time, in a process of their own (#466):
@@ -327,6 +357,7 @@ jobs:
           echo "::error::the GameDemo wall-clock tests did not run"
           exit 1
         fi
+        "$GITHUB_WORKSPACE/scripts/check-test-run.sh" "$log" "GameDemo wall-clock tests"
       timeout-minutes: 5
 
     - name: Demo build
@@ -336,7 +367,12 @@ jobs:
 
     - name: Demo tests
       working-directory: Examples/Demo
-      run: swift test
+      shell: bash
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/demo-tests.log"
+        swift test 2>&1 | tee "$log"
+        "$GITHUB_WORKSPACE/scripts/check-test-run.sh" "$log" "Demo tests"
       timeout-minutes: 20
 
     - name: Tracked files unchanged by the tests
@@ -725,6 +761,7 @@ jobs:
         set -o pipefail
         swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \
           || { echo "::error title=Tests::the tests failed"; exit 1; }
+        scripts/check-test-run.sh "$RUNNER_TEMP/tests.log" "Tests"
       timeout-minutes: 60
 
     - name: Keep the test log
