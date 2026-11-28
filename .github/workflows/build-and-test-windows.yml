@@ -141,6 +141,7 @@ jobs:
         set -o pipefail
         swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \
           || { echo "::error title=Tests::the tests failed"; exit 1; }
+        scripts/check-test-run.sh "$RUNNER_TEMP/tests.log" "Tests"
       timeout-minutes: 30
 
     - name: Keep the test log
