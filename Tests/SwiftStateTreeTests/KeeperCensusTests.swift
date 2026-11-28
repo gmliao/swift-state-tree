@@ -192,6 +192,12 @@ enum KeeperCensus {
             "model.destroyHandlersStarted": .model,
             "model.destructionFinished": .model,
             "model.initializationPhase": .model,
+            // K2-2 commit 1b: the drain's and the stop's phases, the drain's start, the loops' epoch.
+            "model.drainPhase": .model,
+            "model.stopPhase": .model,
+            "model.stopAwaitsInitialization": .model,
+            "model.drainRequested": .model,
+            "model.loopEpoch": .model,
             "model.entryGenerations": .model,
             "model.failureIDs": .model,
             "model.sequence": .model,
@@ -452,12 +458,12 @@ struct KeeperCensusTests {
         #expect(uses.contains { $0.contains("if LandKeeperTesting.defersInitialization { return }") }, "\(uses)")
     }
 
-    @Test("The machine's inputs and queries split into the routed set (K2-1, K2-2a) and the deferred ones, each named, and together every case (#700)")
+    @Test("The machine's inputs and queries split into the routed set (K2-1, K2-2a, K2-2 commit 1) and the deferred ones, each named, and together every case; since commit 1b none is deferred (#700)")
     func inputRoutesSplitTheCases() {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
         #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")
         #expect(routed.union(deferred) == Set(KeeperInputRoute.allCases), "neither: \(Set(KeeperInputRoute.allCases).subtracting(routed.union(deferred)).map(\.rawValue).sorted())")
-        #expect(routed.count == 23 && deferred.count == 3, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
+        #expect(routed.count == 30 && deferred.isEmpty, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
         #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
         let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
         #expect(queries.isDisjoint(with: deferredQueries))

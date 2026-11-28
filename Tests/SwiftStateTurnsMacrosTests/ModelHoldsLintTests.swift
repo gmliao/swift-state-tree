@@ -137,6 +137,16 @@ enum ModelHoldsLint {
         "initializeDrive": "the initialization's driver loop: each request as an effect, a step, an owner output, or the waiters' answer",
         "answerInitializationWaits": "the initialization's end: its waiters answered, outside any body, after the step that ended it",
         "initializationAnswer": "a waiter's answer once the initialization ended: reads the side's failure by the model's ID, outside any body",
+        "drainDrive": "the drain's driver: each request as an effect or a phase, the AfterFinalize scope opened on the side, the port read for the notify",
+        "beginStopAfterInitialization": "a stop that waited for the initialization: begins after its end, as a step, outside any body",
+        "endTick": "a tick land's tick end: the in-flight count and the work's end as steps, then the drain's and the freeze's waits",
+        "resumeStopAfterShutdownTurn": "a tickless stop after the step that applied its shutdown turn: the next stop segment as a step",
+        "startDrainIfIdle": "shutdownIfIdle on the core: the idle check and the drain's start as a step, the owner asked after it",
+        "startFailureTeardownIfNeeded": "a land failure's teardown at the end of the failing step: reads the side's failure and port, asks the owner",
+        "stopAfterTicks": "a tick land's stop once no tick is in flight: the shutdown turn as a step, or the started drain joined",
+        "stopBegin": "the stop's first segment: the drain check and the freeze's end as steps, its waits on the model",
+        "stopStartsDrain": "the forced stop on an empty land: the drain flag, the releases and the owner's drain start as a step",
+        "tearDownAfterFailedInitialization": "the failed initialization's teardown in the step that failed it: the clears and the drain start as a step",
     ]
     static let sideStoreFramePath = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
 
@@ -1742,7 +1752,7 @@ struct ModelHoldsLintTests {
         // renamed one can't leave a stale exception.
         let frame = Set(report.holders.filter { $0.path == ModelHoldsLint.sideStoreFramePath && !$0.name.contains(" body in ") }.map(\.name))
         #expect(Set(ModelHoldsLint.sideStoreFrame.keys).isSubset(of: frame), "frame members missing: \(Set(ModelHoldsLint.sideStoreFrame.keys).subtracting(frame).sorted())")
-        #expect(ModelHoldsLint.sideStoreFrame.count == 27, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
+        #expect(ModelHoldsLint.sideStoreFrame.count == 37, "the side-store frame: \(ModelHoldsLint.sideStoreFrame.keys.sorted())")
         #expect(report.holders.contains { $0.path == drivers && $0.name == "tickStart" },
                 "holders in \(drivers): \(report.holders.filter { $0.path == drivers }.map(\.name))")
         // Each family of closure holders is found: every member that gives a closure the model

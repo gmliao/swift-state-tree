@@ -332,6 +332,9 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
     /// The owner's `.drainStart` hold (the keeper's `holds.at(.drainStart)`, M7): when armed, the
     /// next drain start waits at it before `.drainStart` is sent (P1b-1).
     nonisolated let armedDrainStartGate = CoreDiffArmedGate()
+    /// The owner's `.landFailedTeardown` hold (the keeper's `runFailureTeardown`): when armed,
+    /// the next failure teardown waits at it before the port hears of the failure.
+    nonisolated let armedFailureTeardownGate = CoreDiffArmedGate()
     /// The last `.initializeResolvers` effect's request, kept as it starts (a stale resolution's
     /// case builds its input from it).
     nonisolated let initializeResolvingSeen = CoreDiffLatest<LandKeeper<State>.InitializeResolving>()
@@ -563,7 +566,9 @@ actor KeeperCoreHarness<State: StateNodeProtocol>: TurnActor {
         // is commit 4's.
         for case let .failureTeardown(failure, port) in outputs {
             // The keeper's `runFailureTeardown`: the port hears of the failure, then the drain.
+            let gate = armedFailureTeardownGate.take()
             Task {
+                await gate?.enterAndWait()
                 await port?.landDidFail(failure)
                 await self.drive(.drainStart)
             }
@@ -672,9 +677,16 @@ enum CoreDiffHandlerReentry {
 final class CoreDiffTrace: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String] = []
-    func append(_ entry: String) { lock.withLock { entries.append(entry) } }
+    /// The same entries as events, so a case can wait for one (bounded, never by timing).
+    private let events = EventLog()
+    func append(_ entry: String) {
+        lock.withLock { entries.append(entry) }
+        events.append(entry)
+    }
     func clear() { lock.withLock { entries.removeAll() } }
     var all: [String] { lock.withLock { entries } }
+    /// Waits until `entry` was appended; false after `testHangBound`.
+    func waitFor(_ entry: String) async -> Bool { await events.waitFor(entry) }
 }
 
 /// The port that writes the trace. When armed, its `runSyncPhaseInTurn` re-enters `keeper` once
@@ -1361,9 +1373,10 @@ struct KeeperCoreDifferentialTests {
 
         // The twin's source queues the failure item with its kick held, and no drain of its own
         // runs, so the copy carries the pending item and the core's drain applies it.
-        let kickHold = WatermarkGate(), sourceDrainHold = WatermarkGate(), teardownHold = WatermarkGate()
+        let kickHold = WatermarkGate(), sourceDrainHold = WatermarkGate(), teardownHold = WatermarkGate(), coreTeardownHold = WatermarkGate()
         // Released on every exit, a failed expectation's early return included.
         defer {
+            coreTeardownHold.release()
             teardownHold.release()
             sourceDrainHold.release()
             kickHold.release()
@@ -1375,7 +1388,11 @@ struct KeeperCoreDifferentialTests {
         guard await kickHold.waitUntilEntered() else { return }
         let harness = KeeperCoreHarness(await twinSource.coreTwinForTesting())
         await harness.start()
+        // The core's teardown is held where the keeper's is (`.landFailedTeardown`), before the
+        // port hears of the failure and the drain starts (K2-2 commit 1b runs it on the core).
+        harness.armedFailureTeardownGate.arm(coreTeardownHold)
         await harness.drive(.inputDrainDue)
+        guard await coreTeardownHold.waitUntilEntered("the core's failure teardown") else { return }
 
         // The keeper's path, held at its teardown's first step: what the step did, before the drain.
         await direct.installHolds(HoldRegistry<LandKeeperHoldPoint>().on(.landFailedTeardown, arrival: 1) { await teardownHold.enterAndWait() }.hook)
@@ -1389,12 +1406,11 @@ struct KeeperCoreDifferentialTests {
         // The twin's source began the kick's work count before its hold; that kick is the
         // source's task, not the core's, so its end never reaches the copy.
         keeperDigest.inFlightWork += 1
-        #expect(keeperDigest == coreDigest, "\n keeper \(keeperDigest)\n core   \(coreDigest)")
+        #expect(keeperDigest == coreDigest, "differ in \(keeperDigest.differingFields(from: coreDigest))\n keeper \(keeperDigest)\n core   \(coreDigest)")
         #expect(coreDigest.failure?.kind == failure.kind && coreDigest.players.isEmpty && coreDigest.pendingSequences.isEmpty, "\(coreDigest)")
         #expect(coreDigest.violations.isEmpty, "\(coreDigest.violations)")
         #expect(await harness.differentialRead().coreWaitsLeft == 0)
-        // The core's flush ran the drain's staged start: with no keeper behind the twin's
-        // reference, it starts no teardown (K2-1b's), and only the waiters are resumed.
+        // The core's teardown is held before its `.drainStart`, as the keeper's before its drain.
         #expect(await harness.inputsSeen == ["startLand", "inputDrainDue"])
     }
 
@@ -1865,21 +1881,26 @@ struct KeeperCoreDifferentialTests {
         }
 
         /// The two traces, entry by entry, and the two records.
-        /// `failed`: the land failed in the step. The keeper's teardown then runs from the staged
-        /// start (`landDidFail`, then the destroy's `onLandDestroyed`); the core's finds no keeper
-        /// (K2-1b routes the teardown, plan §16 item 13), so those two are compared apart.
+        /// `failed`: the land failed in the step. Each path's teardown then runs: the keeper's
+        /// from the staged start, the core's from its `.failureTeardown` output (K2-2 commit 1b):
+        /// `landDidFail`, then the drain's `onLandDestroyed`, last, on both paths.
         func expectSameTrace(_ step: String, failed: Bool = false, sourceLocation: SourceLocation = #_sourceLocation) async throws {
             var k = keeperTrace.all
-            let c = coreTrace.all
+            var c = coreTrace.all
             if failed {
                 await keeper.waitUntilDrainStartedForTesting()
                 await keeper.waitUntilDrained()
+                guard await coreTrace.waitFor("onLandDestroyed") else {
+                    Issue.record("\(step): the core's teardown never told the port the land was destroyed: \(coreTrace.all)", sourceLocation: sourceLocation)
+                    return
+                }
                 k = keeperTrace.all
-                let teardown = k.filter { $0.hasPrefix("landDidFail") || $0 == "onLandDestroyed" }
-                #expect(teardown.count == 2 && teardown.last == "onLandDestroyed", "\(step): the keeper's teardown \(teardown)", sourceLocation: sourceLocation)
-                #expect(Array(k.suffix(2)) == teardown, "\(step): the teardown comes last \(k)", sourceLocation: sourceLocation)
-                k.removeLast(2)
-                #expect(!c.contains { $0.hasPrefix("landDidFail") || $0 == "onLandDestroyed" }, "\(step): \(c)", sourceLocation: sourceLocation)
+                c = coreTrace.all
+                for (path, entries) in [("keeper", k), ("core", c)] {
+                    let teardown = entries.filter { $0.hasPrefix("landDidFail") || $0 == "onLandDestroyed" }
+                    #expect(teardown.count == 2 && teardown.last == "onLandDestroyed", "\(step): the \(path)'s teardown \(teardown)", sourceLocation: sourceLocation)
+                    #expect(Array(entries.suffix(2)) == teardown, "\(step): the \(path)'s teardown comes last \(entries)", sourceLocation: sourceLocation)
+                }
             }
             #expect(k.count == c.count, "\(step): \(k.count) vs \(c.count) entries\n keeper \(k)\n core   \(c)", sourceLocation: sourceLocation)
             for (index, pair) in zip(k, c).enumerated() where pair.0 != pair.1 {
@@ -2850,9 +2871,9 @@ extension KeeperCoreDifferentialTests {
         let expectedWitness = settleCase == .released || settleCase == .timedOut ? 0 : 1
         #expect(keeperPort.witnessCount == expectedWitness && corePort.witnessCount == expectedWitness,
                 "witness: keeper \(keeperPort.witnessCount), core \(corePort.witnessCount)")
-        // The failed land's teardown (`landDidFail`, `onLandDestroyed`, the destroy handlers) is
-        // the keeper's task until commit 1 moves the drain onto the core, so it is compared apart
-        // from the settle's own calls, as #938's refusal cases do.
+        // The failed land's teardown (`landDidFail`, `onLandDestroyed`) runs after the settle's
+        // step on both paths, each in its own task, so the settle's own calls are compared apart
+        // from it.
         let teardown: (String) -> Bool = { $0.hasPrefix("landDidFail") || $0 == "onLandDestroyed" }
         #expect(keeperTrace.all.filter { !teardown($0) } == coreTrace.all.filter { !teardown($0) }, "keeper \(keeperTrace.all), core \(coreTrace.all)")
         guard settleCase == .settleCheck else {
@@ -3128,17 +3149,25 @@ extension KeeperCoreDifferentialTests {
                 handler: resolving.handler,
                 ctx: resolving.ctx,
                 sequence: resolving.sequence + 1,
-                sequenceAfterTake: resolving.sequenceAfterTake + 1,
+                sequenceAfterTake: resolving.sequenceAfterTake,
                 executors: resolving.executors,
                 resolverContext: resolving.resolverContext
             )
             await pair.harness.drive(.initializeResolved(stale, .success(resolving.ctx), initializationTaskCancelled: false))
             // A waiter queued behind it: answered only if the stale resolution was applied, so
-            // the body doesn't end (and the process exit 0) before the stale input steps.
-            _ = try? await pair.harness.call(.awaitInitialized)
+            // the body doesn't end (and the process exit 0) before the stale input steps. The
+            // harness calls with `.ignoresCancel`: bounded, a lost reply ends the body (exit 0,
+            // the case fails) instead of hanging the child.
+            _ = await replyWithinHangBound(pair, .awaitInitialized)
         }
+        #if DEBUG
+        // An optimized build's `preconditionFailure` traps without its message: the message is
+        // checked only where it is printed.
         let standardError = result.map { String(decoding: $0.standardErrorContent, as: UTF8.self) } ?? ""
         #expect(standardError.contains("OnInitialize's resolvers ended in phase"), "\(standardError)")
+        #else
+        _ = result
+        #endif
     }
 
     @Test("The initialization's barrier is open after OnInitialize, on both paths (Review on #948, MF6: the open case until commit 1)")
