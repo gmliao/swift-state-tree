@@ -49,7 +49,12 @@ final class Fixture: @unchecked Sendable {
                     self.cancellable[id] = Waiter(name: name, continuation: continuation)
                     return nil
                 }
-                if let immediate { continuation.resume(returning: immediate) }
+                if let immediate {
+                    continuation.resume(returning: immediate)
+                } else {
+                    // The wait is registered: a cancel from now on wakes it ("woken `name`").
+                    self.open("registered \(name)")
+                }
             }
         } onCancel: {
             let waiter = self.lock.withLock { () -> Waiter? in
@@ -57,6 +62,7 @@ final class Fixture: @unchecked Sendable {
                 self.cancelledEarly.insert(id)
                 return nil
             }
+            if waiter != nil { self.open("woken \(name)") }
             waiter?.continuation.resume(returning: false)
         }
     }

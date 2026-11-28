@@ -19,9 +19,13 @@ public protocol TurnActor: Actor {
     ///
     /// A tracked request's work (`Turn.request`) is cancelled when its request is abandoned (a
     /// `cancel`, its deadline, its key's `end`, `endAll`): structured cancellation, so work a key
-    /// owns ends with it. `perform` should honour `Task.isCancelled` and return soon; its late
-    /// result then goes to `handleLateResult`. Work that ignores the cancellation still runs to
-    /// its end and keeps the actor until then. `run`'s untracked work is never cancelled.
+    /// owns ends with it. A cancellation asks the work to stop: `perform` checks `Task.isCancelled`
+    /// only at safe points, and work that changes something outside settles that change before it
+    /// returns (an `.untilWorkerReturns` hold ends when the worker's completion runs). Its late
+    /// result goes to `handleLateResult`. Work that ignores the cancellation runs to its end and
+    /// keeps the actor until then. Work that must finish goes through `run`, which is never
+    /// cancelled. With a mailbox, a cancelled `perform` returns nil: a replay gets its
+    /// completions from `perform` again, and nil is the same whenever the cancel landed.
     @concurrent nonisolated func perform(_ effect: M.Effect) async -> M.Input?
     /// The synchronous sink of a step's outputs, called between steps.
     func flush(_ outputs: consuming [M.Output])
@@ -860,7 +864,7 @@ extension TurnActor {
                core.mailReplay != nil ? takeStaged() : (!mailbox.isEmpty && takeMail(mailbox)) { continue }
             if !core.rt.abandoned.isEmpty {
                 let (id, why) = core.rt.abandoned.removeFirst()
-                // Its worker is cancelled first, once: a cancel, a deadline, `end` or `endAll`.
+                // Cancel its worker first, once: a cancel, a deadline, `end`, `endAll` or a supersede.
                 // A worker not launched yet has no handle; `launch` cancels it then.
                 core.workers.removeValue(forKey: id)?.cancel()
                 core.stepAbandoned(id, why)
