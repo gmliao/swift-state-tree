@@ -426,11 +426,20 @@ struct TransportAdapterDebugFreezeTests {
         }
         #expect(await eventually { await gate.waitingCount == 1 })
 
-        let start = ContinuousClock.now
-        await #expect(throws: DebugFreezeError.settleTimedOut) {
-            try await f.adapter.debugFreeze()
+        // The resolver stays held until after the freeze, so only the 150 ms deadline can end it.
+        // Bounded on the freeze's end event, not on elapsed time (#978): a stalled runner can take
+        // seconds, and a freeze that ignored its deadline never ends, which the hang bound reports.
+        let ended = EventLog()
+        let freeze = Task {
+            defer { ended.append("ended") }
+            return try await f.adapter.debugFreeze()
         }
-        #expect(ContinuousClock.now - start < .seconds(3), "freeze ignored its deadline")
+        let freezeEnded = await ended.waitFor("ended")
+        if !freezeEnded { await gate.open() }
+        try #require(freezeEnded, "freeze ignored its deadline: it waited on the held resolver")
+        await #expect(throws: DebugFreezeError.settleTimedOut) {
+            _ = try await freeze.value
+        }
         #expect(await f.adapter.isDebugFrozen() == false)
         #expect(await f.keeper.isDebugFrozen() == false, "the keeper stayed frozen after the failed freeze")
 
