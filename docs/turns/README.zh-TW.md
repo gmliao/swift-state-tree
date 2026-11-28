@@ -330,6 +330,8 @@ turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: 
 
 時鐘的 sleep 不可在它的時刻之前返回，除非它的 task 被取消。core 觸發的是它睡到的那個時刻已到期的項目，不再讀一次時鐘，所以提早醒來的時鐘會讓它們提早觸發。`SystemTurnClock` 是符合這個要求的正式環境時鐘：它的時刻從行程的起點起算，而且每次醒來後都會重新讀取時鐘。
 
+`TurnInstant` 是從行程起點起算的有號奈秒。它的加減運算到範圍兩端就停住，不會繞回：`turn.now + .seconds(.max)` 是最晚的時刻，也就是永遠不會觸發的 timer，而不是一個已經過去的時刻；兩個時刻相減的結果，正負號也不會跟先後順序相反（#791）。
+
 API：`timer(at:for:_:)`、`now`、`TurnClock`、`SystemTurnClock`、`TurnInstant`。
 
 ### Follow-up
