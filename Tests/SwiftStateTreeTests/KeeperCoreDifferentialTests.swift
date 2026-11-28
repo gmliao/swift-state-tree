@@ -2580,7 +2580,7 @@ extension KeeperCoreDifferentialTests {
     @Test("A stop on an idle land, tick and tickless: the same model, the drain finished, and the caller answered after it, on both paths (K2-2 commit 1b)", arguments: [true, false])
     func stopOnIdleLand(tick: Bool) async throws {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: tick, joinResolvers: false, leaveResolver: false), "stop-idle-\(tick)")
-        guard await valueWithinHangBound(Task { await pair.keeper.forceShutdown() }) != nil else { Issue.record("the keeper\'s stop never returned"); return }
+        guard await valueWithinHangBound(Task { await pair.keeper.forceShutdown() }) != nil else { Issue.record("the keeper's stop never returned"); return }
         guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
             Issue.record("the core's stop wasn't answered .done"); return
         }
@@ -2683,7 +2683,7 @@ extension KeeperCoreDifferentialTests {
         #expect(coreTrace.all.filter(teardown).count == 2, "\(coreTrace.all)")
 
         // MF1 (b): the failure's drain has finished; a first stop joins it and returns at once.
-        guard await valueWithinHangBound(Task { await pair.keeper.forceShutdown() }) != nil else { Issue.record("the keeper\'s stop never returned"); return }
+        guard await valueWithinHangBound(Task { await pair.keeper.forceShutdown() }) != nil else { Issue.record("the keeper's stop never returned"); return }
         guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.shutdown) }) else {
             Issue.record("the stop after the failure's drain wasn't answered"); return
         }
@@ -2920,6 +2920,11 @@ extension KeeperCoreDifferentialTests {
         defer { hold.release() }
         pair.harness.armedDrainStartGate.arm(hold)
         let first = Task { try await pair.harness.call(.shutdown) }
+        // An idle tickless land applies the shutdown turn in the stop's own step, whose end
+        // resumes the stop into its drain: read right after it, so a stop left waiting for its
+        // turn fails here, not at the hang bound (Review r3 on #969, m8's narrowed reading).
+        guard await pair.harness.waitForInputs(named: "shutdown", count: 1) else { return }
+        #expect(await pair.harness.differentialRead().model.stopPhase == .draining, "the stop didn't move on after its shutdown turn")
         guard await hold.waitUntilEntered("the drain's start") else { return }
         let second = Task { try await pair.harness.call(.shutdown) }
         guard await pair.harness.waitForInputs(named: "shutdown", count: 2) else { return }
@@ -3148,7 +3153,7 @@ extension KeeperCoreDifferentialTests {
         guard await firstWithinHangBound(coreHeld) else { Issue.record("the core's action was never held"); return }
         await harness.setProbe(nil)
 
-        await direct.forceShutdown()
+        guard await valueWithinHangBound(Task { await direct.forceShutdown() }) != nil else { Issue.record("the keeper's stop never returned"); return }
         guard case .success(.done)? = await resultWithinHangBound(Task { try await harness.call(.shutdown) }) else {
             Issue.record("the core's stop wasn't answered .done"); return
         }
@@ -3181,6 +3186,8 @@ extension KeeperCoreDifferentialTests {
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "freeze-record",
                                            keeperRecordGate: keeperGate, records: true)
         let keeperHold = WatermarkGate(), coreHold = WatermarkGate()
+        // An early return releases both holds, so no tick stays parked past the case.
+        defer { keeperHold.release(); coreHold.release() }
         keeperGate.arm(keeperHold)
         pair.harness.armedRecordGate.arm(coreHold)
         let keeperTick = Task { await pair.keeper.stepTickOnce() }
@@ -3269,7 +3276,12 @@ extension KeeperCoreDifferentialTests {
         var keeperHolds = keeperHeld.makeAsyncIterator()
         _ = await keeperHolds.next()
         let coreAct = Task { await coreTicklessAction(pair, CoreDiffAction(n: 2, fails: false), "p1", "c1") }
-        guard await pair.harness.waitForInputs(named: "action", count: 1) else { return }
+        guard await pair.harness.waitForInputs(named: "action", count: 1) else {
+            // Resume both, so the held actions end with the case.
+            await pair.keeper.debugResume(generation: 1)
+            await pair.harness.drive(.resume(generation: 1))
+            return
+        }
 
         // A freeze between the barrier and the intake finds no work and nothing applied.
         let keeperAgain = await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(5))

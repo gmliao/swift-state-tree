@@ -1420,7 +1420,8 @@ extension KeeperModel {
     /// A land failure's teardown on the core (the keeper's `runFailureTeardown`, which
     /// `failLand` stages through `keeperReference`, empty on the core): at the end of the step
     /// that failed the land, the owner tells the port (`landDidFail`), then starts the drain
-    /// (M7). A failed initialization stores no land failure, so its own teardown
+    /// (M7). An initialization that only failed (a `validate` throw or a resolver's
+    /// `.failLand`) stores no land failure, so its own teardown
     /// (`tearDownAfterFailedInitialization`) claims an ordinary drain. One that also failed the
     /// land (OnInitialize's `validate` re-enters, then throws) takes the failure's teardown, as
     /// the keeper's `failLand` stages it as the drain in that segment; the drain still skips the
