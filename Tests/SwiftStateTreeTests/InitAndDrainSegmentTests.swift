@@ -888,6 +888,7 @@ struct InitAndDrainSegmentTests {
         #expect(done.state.log == ["init:1", "finalize:0"], "\(done.state.log)")
         #expect(done.state.log == keeperLog, "keeper \(keeperLog), core \(done.state.log)")
         #expect(await harness.inputsSeen.filter { $0 == "destroyHandlerResolved" }.count == 2, "both resolver effects came back")
+        #expect(await harness.inputsSeen.contains("afterFinalizeReturned"), "AfterFinalize ran after the skipped handler")
         #expect(transport.destroyedCount == 1)
     }
 }

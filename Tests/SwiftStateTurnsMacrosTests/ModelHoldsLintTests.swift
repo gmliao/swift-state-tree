@@ -147,7 +147,7 @@ enum ModelHoldsLint {
         "stopBegin": "the stop's first segment: the drain check and the freeze's end as steps, its waits on the model",
         "stopStartsDrain": "the forced stop on an empty land: the drain flag, the releases and the owner's drain start as a step",
         "tearDownAfterFailedInitialization": "the failed initialization's teardown in the step that failed it: the clears and the drain start as a step",
-        "admitStop": "a stop after the initialization: answered at once once the flight returned or the drain finished, else joined, and the first begins it as a step (MF1, MF4)",
+        "admitStop": "a stop after the initialization: answered at once once its flight returned, else joined, and the first begins it as a step (MF1, MF4)",
         "endOfStep": "every step's end, an input's and a query's: the held intakes, the failure teardown, the stop's resume, the dropped waits, the job starts and the freeze replies (Review r1 on #969, MF2)",
     ]
     static let sideStoreFramePath = "Sources/SwiftStateTree/Runtime/KeeperMachine.swift"
