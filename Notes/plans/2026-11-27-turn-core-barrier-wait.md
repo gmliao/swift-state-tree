@@ -241,10 +241,10 @@ On the keeper's path, #958 parks a continuation in `KeyedBarrierWaits<PlayerID>`
 |---|---|
 | `makeID()` before the cancel handler | the call's `InputID`; a `.cancelsCall` join's flag is set in `onCancel` |
 | `Task.isCancelled` checked before `park` | `wait` returns `.refused(payload, .cancelled)` or `.refused(payload, .noWaiter)`; the waiting step undoes the reservation |
-| `park(player, id:, continuation)` | `turn.wait(caller, on: .leaveEnd(player), holding: .joinAfterLeave(…))` |
-| `count(player)` | `turn.waiterCount(on: .leaveEnd(player))`; tests count `TurnStats.barrierWaits` |
-| `release(player)`, which resumes each continuation | `for r in turn.release(where: { $0 == .leaveEnd(player) })`: J2c for each `r`, or `.failure(CancellationError())` plus the reservation's end if `r.cancelled` |
-| `releaseAll()` at the drain | `release { if case .leaveEnd = $0 { true } else { false } }`, which leaves `.tick` and `.shutdown` |
+| `park(player, id:, continuation)` | `turn.wait(caller, on: .leaveEnd(player, generation: g), holding: .joinAfterLeave(…))`, where `g` is the leave's generation (§4.1) |
+| `count(player)` | `turn.waiterCount(on: .leaveEnd(player, generation: g))`; tests count `TurnStats.barrierWaits` |
+| `release(player)`, which resumes each continuation | no call at the leave's end: `endOfStep`'s `releaseEndedLeaveWaits` releases each `.leaveEnd(player, generation: g)` whose marker is no longer `g` (level-triggered, §4.1); J2c for each `r`, or `.failure(CancellationError())` plus the reservation's end if `r.cancelled` |
+| `releaseAll()` at the drain | the same rule: the drain's start ends every marker (`endAllLeavesInFlight`), so that step's `endOfStep` releases every `.leaveEnd` wait and leaves `.tick` and `.shutdown` (§4.1) |
 | `cancel(player, id:)` returning false after a release | the hop finds the entry gone (stale); when it finds it, `handleWaitEnded(.withdrawn)` |
 | the keeper's `defer`, which ends the reservation and the arrival token on every exit | `handleWaitEnded` for `.withdrawn`, `.timedOut`, `.answered` and `.ended`, and the waiting step for a refusal: each ends the reservation with `&turn` |
 
