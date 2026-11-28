@@ -2183,6 +2183,12 @@ struct KeeperCoreDifferentialTests {
 
 // MARK: - K2-2a round 2: the freeze, the barrier, the sync draft, the caller's cancellation
 
+/// The core's `.freeze` reply as the drain's outcome (#730).
+private func coreDrain(_ pair: CoreDiffPair, _ generation: UInt64, _ timeout: Duration) async -> DebugDrainOutcome? {
+    guard case let .frozen(outcome)? = try? await pair.harness.call(.freeze(generation: generation, timeout: timeout)) else { return nil }
+    return outcome
+}
+
 private func coreFreeze(_ pair: CoreDiffPair, _ generation: UInt64, _ timeout: Duration) async -> Bool? {
     guard case let .frozen(outcome)? = try? await pair.harness.call(.freeze(generation: generation, timeout: timeout)) else { return nil }
     return outcome == .drained
@@ -2313,7 +2319,7 @@ extension KeeperCoreDifferentialTests {
         await pair.keeper.debugResume(generation: 1)
     }
 
-    @Test("Each freeze caller has its own deadline: with work in flight, the first caller's short budget ends false while the second's long one answers true at the work's end, on both paths (Review on #948, MF1)")
+    @Test("Each freeze caller has its own deadline: with work in flight, the first caller's short budget ends timed out while the second's long one answers drained at the work's end, on both paths (Review on #948, MF1; #730: the outcome, not a Bool)")
     func freezeDeadlinePerCaller() async throws {
         let keeperGate = CoreDiffArmedGate(), clock = CoreDiffClock()
         let pair = await CoreDiffPair.make(CoreDiffShape(tick: false, joinResolvers: false, leaveResolver: false), "freeze-per-caller",
@@ -2329,9 +2335,9 @@ extension KeeperCoreDifferentialTests {
         // The long caller registers first, and the short one's registration is the event the
         // case waits for: its timer can't fire before the segment that registers it ends, so
         // both wait when the short one times out (Review r2 on #948, MF3).
-        let keeperLong = Task { await pair.keeper.debugFreeze(generation: 1, timeout: .seconds(3600)) }
+        let keeperLong = Task { await pair.keeper.debugDrain(generation: 1, timeout: .seconds(3600)) }
         #expect(await pair.keeper.waitUntilFreezeRegistrationsForTesting(1), "a freeze caller registered")
-        let keeperShort = Task { await pair.keeper.debugFreeze(generation: 1, timeout: .milliseconds(50)) }
+        let keeperShort = Task { await pair.keeper.debugDrain(generation: 1, timeout: .milliseconds(50)) }
         #expect(await pair.keeper.waitUntilFreezeRegistrationsForTesting(2), "a freeze caller registered")
         let keeperShortFroze = await keeperShort.value
         kg.release()
@@ -2344,9 +2350,9 @@ extension KeeperCoreDifferentialTests {
         pair.harness.armedRecordGate.arm(cg)
         let coreAct = Task { await coreTicklessAction(pair, CoreDiffAction(n: 1, fails: false), "p1", "c1") }
         guard await cg.waitUntilEntered("the core's record") else { return }
-        let coreShort = Task { await coreFreeze(pair, 1, .seconds(1)) }
+        let coreShort = Task { await coreDrain(pair, 1, .seconds(1)) }
         guard await pair.harness.waitForInputs(named: "freeze", count: 1) else { return }
-        let coreLong = Task { await coreFreeze(pair, 1, .seconds(3600)) }
+        let coreLong = Task { await coreDrain(pair, 1, .seconds(3600)) }
         guard await pair.harness.waitForInputs(named: "freeze", count: 2) else { return }
         clock.advance(by: .seconds(2))
         let coreShortFroze = await coreShort.value
@@ -2356,8 +2362,9 @@ extension KeeperCoreDifferentialTests {
         await pair.harness.drive(.resume(generation: 1))
         _ = await coreAct.value
 
-        #expect(keeperShortFroze == false && keeperLongFroze == true, "keeper \(keeperShortFroze), \(keeperLongFroze)")
-        #expect(coreShortFroze == false && coreLongFroze == true, "core \(String(describing: coreShortFroze)), \(String(describing: coreLongFroze))")
+        // The short caller's own deadline answers timed out, not released or drained (#730).
+        #expect(keeperShortFroze == .timedOut && keeperLongFroze == .drained, "keeper \(keeperShortFroze), \(keeperLongFroze)")
+        #expect(coreShortFroze == .timedOut && coreLongFroze == .drained, "core \(String(describing: coreShortFroze)), \(String(describing: coreLongFroze))")
         await pair.expectSame("after both freezes")
     }
 
