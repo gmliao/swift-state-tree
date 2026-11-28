@@ -11,6 +11,8 @@ Docker images for SwiftStateTree servers, with clear separation between **build 
 
 Run images use `ubuntu:24.04` + minimal deps (libicu74, libcurl4, etc.) + Swift runtime libs from builder—**not** swift:slim (~450MB).
 
+The builder stage is pinned by digest, to the same `swift:<tag>@sha256:…` as CI. The runtime stage's `ubuntu:24.04` is pinned by tag only. Its packages come from `apt-get` at build time and would float whatever the base pinned, and the tag picks up the base's security fixes. What must hold is that the runtime is the builder's distro (noble is 24.04), because the Swift runtime libraries copied from the builder need its libicu and glibc. `scripts/check-ci-image-pin.sh` checks both: the Swift digest and the runtime's distro.
+
 ### Why not as small as Node Alpine?
 
 | Factor | Node | Swift (this project) |
