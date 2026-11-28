@@ -30,7 +30,7 @@ enum KeeperBarrierKey: Hashable, Sendable {
 /// What a waiting caller holds; it comes back once, released or ended.
 enum KeeperBarrierPayload: Sendable {
     /// A join waiting for a leave in flight: J2c runs with it when the leave ends.
-    case joinAfterLeave(KeeperJoinDecided, leavingGeneration: Epoch, syncsInTurn: Bool)
+    case joinAfterLeave(KeeperJoinDecided, leavingGeneration: Epoch)
 }
 
 /// The core's barrier waits (K2-2 plan, commit 2), as plain values: each caller's input ID.
@@ -75,10 +75,8 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// `box.callerCancelled`).
     case action(ActionEnvelope, KeeperCaller, cancelled: Bool = false, cancellation: ActionJobCallerCancellation? = nil)
     case clientEvent(AnyClientEvent, KeeperCaller)
-    /// A join. `syncsInTurn`: the driver's read of whether the attached transport runs the
-    /// sync phase in turn, which the transport's admission needs (see `.tickDue`); the join's
-    /// stages and continuations carry it on. K2-2's binding token replaces it.
-    case join(LandKeeper<State>.JoinCall, syncsInTurn: Bool)
+    /// A join. Its admission reads the stored binding at the `.admit` stage (K2-2 commit 3b).
+    case join(LandKeeper<State>.JoinCall)
     case leave(KeeperCaller)
     /// The tick driver's input. The fold and its start instant are the two arguments
     /// `runTickTurn` takes from the actor today; the start is read only for a fold.
@@ -156,6 +154,11 @@ enum KeeperInput<State: StateNodeProtocol>: Sendable {
     /// sender, and refuses a call made during a step, as the keeper's `noteReentry` does (a send
     /// from a step is queued); the harness sends it outside a step.
     case setTransport((any LandKeeperTransport)?, owner: any AnyObject & Sendable)
+    /// The transport's `requestJoinSyncTurn` (K2-2 commit 3b, rev 3's MF4): a sync-only turn for
+    /// joins that became ready outside a turn, answered `.done` once its step ran. A `.control`
+    /// input, as the keeper's method neither waits for the initialization nor is held by a
+    /// freeze; on a draining or failed land its step does nothing, as the method's guard.
+    case requestJoinSyncTurn
     /// The owner starts `.land` at initialization, which a step's outputs for it need (K2-1: the
     /// test harness's start; K2-2: the core's initialization).
     case startLand
@@ -175,7 +178,7 @@ enum KeeperInputRoutes {
         .syncStreamDraft,
         .initialize, .initializeResolved, .initializeRecorded, .initializeDone,
         .shutdown, .drainStart, .destroyHandlerResolved, .afterFinalizeReturned, .drainFinished,
-        .tickRecordTaken, .shutdownRecorded, .setTransport,
+        .tickRecordTaken, .shutdownRecorded, .setTransport, .requestJoinSyncTurn,
     ]
     /// Empty since K2-2 commit 1b: every input is routed.
     static let deferred: [KeeperInputRoute: String] = [:]
@@ -209,7 +212,7 @@ extension KeeperQuery {
 /// Each `KeeperInput` case by name: `route` is exhaustive, so a new case needs a route here, and
 /// the census checks that every route is routed or deferred.
 enum KeeperInputRoute: String, CaseIterable, Sendable {
-    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut, drainStart, afterFinalizeReturned, tickRecordTaken, shutdownRecorded, setTransport
+    case action, clientEvent, join, leave, tickDue, syncDue, freeze, resume, shutdown, awaitInitialized, syncStreamDraft, joinStepped, leaveStepped, actionResolved, actionJobReleased, awaitActionResult, initialize, initializeResolved, initializeRecorded, initializeDone, destroyHandlerResolved, recordTaken, inputDrainDue, drainFinished, startLand, freezeTimedOut, drainStart, afterFinalizeReturned, tickRecordTaken, shutdownRecorded, setTransport, requestJoinSyncTurn
 }
 
 extension KeeperInput {
@@ -247,6 +250,7 @@ extension KeeperInput {
         case .tickRecordTaken: .tickRecordTaken
         case .shutdownRecorded: .shutdownRecorded
         case .setTransport: .setTransport
+        case .requestJoinSyncTurn: .requestJoinSyncTurn
         }
     }
 
@@ -259,9 +263,9 @@ extension KeeperInput {
 /// or its input-turn wait) under `.joinAfterKick`.
 enum KeeperJoinStage<State: StateNodeProtocol>: Sendable {
     /// J2 resumes: CanJoin with the resolvers' outputs.
-    case canJoinResolvers(KeeperJoinCall, syncsInTurn: Bool)
+    case canJoinResolvers(KeeperJoinCall)
     /// J4 resumes: the OnJoin append.
-    case onJoinResolvers(KeeperJoinDecided, LandKeeper<State>.OnJoinCapture, syncsInTurn: Bool)
+    case onJoinResolvers(KeeperJoinDecided, LandKeeper<State>.OnJoinCapture)
 }
 
 /// Where a flow's answer goes when its last step ends (#700 K2-1, the reply plumbing): the
@@ -276,7 +280,7 @@ enum KeeperContinuation: Sendable {
     /// A join's kick of the player's old session, the entry with `kickedGeneration`: when the
     /// leave ends, J2c runs for `decided` (a leave that fails fails the join, with the leave's
     /// own error), then the join goes on.
-    case joinAfterKick(KeeperJoinDecided, kickedGeneration: Epoch, caller: InputID?, syncsInTurn: Bool)
+    case joinAfterKick(KeeperJoinDecided, kickedGeneration: Epoch, caller: InputID?)
 }
 
 /// What a core step does when an input turn its flow waits for is recorded (#700 K2-1, the
@@ -361,8 +365,6 @@ struct KeeperCoreRefusal: Error, Sendable {
 /// lifts a refusal deletes its case, and commit 4's totality check requires the enum to be
 /// empty, so the cut-over can't wire while a refused shape is in place.
 enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
-    /// A join syncing in the turn: its admission reads the binding after up to three awaits.
-    case joinSyncingInTurn
     /// Any input of a tickless land with a transport attached (except `.startLand`): the input
     /// turn's output phase reads the binding inside the drain.
     case ticklessLandWithTransport
@@ -370,7 +372,6 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
     /// The message the refusal carries and `refusals` records.
     var message: String {
         switch self {
-        case .joinSyncingInTurn: "a join syncing in the turn needs the binding token (K2-2)"
         case .ticklessLandWithTransport: "a tickless land with a transport needs the binding token (K2-2)"
         }
     }
@@ -378,7 +379,7 @@ enum KeeperCoreRefusalReason: String, CaseIterable, Sendable {
     /// The K2-2 commit that lifts the refusal and deletes the case.
     var liftedIn: String {
         switch self {
-        case .joinSyncingInTurn, .ticklessLandWithTransport: "K2-2 commit 3: the binding token"
+        case .ticklessLandWithTransport: "K2-2 commit 3c: the binding token's follow-ups"
         }
     }
 }
@@ -509,7 +510,7 @@ extension KeeperModel: TurnMachine {
     /// depends on the input alone, as `TurnMachine.inputPolicy` requires.
     func inputPolicy(for input: KeeperInput<State>) -> InputPolicy<KeeperKey> {
         switch input {
-        case .resume, .shutdown, .drainStart, .drainFinished, .initialize, .initializeDone, .setTransport: .control
+        case .resume, .shutdown, .drainStart, .drainFinished, .initialize, .initializeDone, .setTransport, .requestJoinSyncTurn: .control
         default: .normal(waitsFor: nil, belongsTo: nil)
         }
     }
@@ -551,15 +552,18 @@ extension KeeperModel: TurnMachine {
             _ = turn.start(.land)
         case let .setTransport(port, owner):
             step(behavior, store) { m, side, outputs in m.setTransportBody(behavior, &side, &outputs, port, owner: owner) }
+        case .requestJoinSyncTurn:
+            step(behavior, store) { m, side, outputs in m.requestJoinSyncTurnBody(behavior, &side, &outputs) }
+            if let caller = turn.input { turn.reply(to: caller, .success(.done)) }
         case let .action(envelope, who, cancelled, cancellation):
             let caller = turn.input
             actionStep(behavior, store, &turn, envelope, who, caller: caller, cancelled: cancelled, cancellation: cancellation)
         case let .clientEvent(event, who):
             let caller = turn.input
             clientEventStep(behavior, store, &turn, event, who, caller: caller)
-        case let .join(call, syncsInTurn):
+        case let .join(call):
             let caller = turn.input
-            joinDrive(behavior, store, &turn, call: call, caller: caller, syncsInTurn: syncsInTurn, decided: nil) { m, side, outputs in
+            joinDrive(behavior, store, &turn, call: call, caller: caller, decided: nil) { m, side, outputs in
                 try m.joinBegin(behavior, &side, &outputs, call)
             }
         case let .joinStepped(stage, caller, result):
@@ -1155,6 +1159,26 @@ extension KeeperModel {
     /// land in this step) and stops the process on a refusal, as the keeper's attach does. Then
     /// it stores the port and its answer, the fold flag and, for a port, `noteTransportBound`'s
     /// writes: a bound requester is let go and the binding rebinds. A detach doesn't rebind.
+    /// `LandKeeper.requestJoinSyncTurn` in a step frame, in the method's order: the drain guard,
+    /// then whether joins wait (the binding, then the port's `hasJoinsAwaitingSync`), then, with
+    /// periodic sync, `periodicJoinSyncAllowed` (which reads the joins again, for the keeper's
+    /// trace) and the coincident-sync guard, then one sync-only turn. The port's reads go through
+    /// `callOut`, so a re-entry from one ends the land here, where the keeper's method reads them
+    /// at depth zero.
+    mutating func requestJoinSyncTurnBody(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, _ outputs: inout TurnOutputs) {
+        guard !side.isDraining, side.failure == nil, let transport = side.attachedTransport else { return }
+        guard joinsAwaitingSync(behavior, &side, &outputs, transport: transport) == true else { return }
+        if behavior.hasPeriodicSync {
+            let syncPort = side.storedSyncsInTurn ? transport : nil
+            guard periodicJoinSyncAllowed(behavior, &side, &outputs, transport: syncPort) == true, !inTurnSyncDue else { return }
+            joinSyncRequestTurnsForTesting += 1
+            _ = Self.syncOnlyTurnBody(&self, behavior, &side, &outputs, transport: transport, joinSyncOnly: true)
+        } else {
+            joinSyncRequestTurnsForTesting += 1
+            _ = Self.syncOnlyTurnBody(&self, behavior, &side, &outputs, transport: transport, joinSyncOnly: false)
+        }
+    }
+
     /// The port's two reads go through `callOut`.
     mutating func setTransportBody(_ behavior: KeeperBehavior<State>, _ side: inout KeeperTurnSide, _ outputs: inout TurnOutputs, _ port: (any LandKeeperTransport)?, owner: any AnyObject & Sendable) {
         if destructionFinished {
@@ -1197,18 +1221,11 @@ extension KeeperModel {
 // MARK: - The refusals
 
 extension KeeperModel {
-    /// Why a core refuses `input` in K2-1, or nil. Each refused shape needs the binding token,
-    /// which K2-2 adds: a body that reads `syncsInTurn` outside a tick or sync step would get
-    /// false on a core's side (no keeper to ask the port with), while the keeper's path asks the
-    /// port, so the two would diverge without a difference the differential could see.
-    /// - A join syncing in the turn: its admission, the stale-join refusal and the consumed-join
-    ///   notifications read the binding at the admission, after up to three awaits.
-    /// - Any input of a tickless land with a transport attached: the input turn's output phase
-    ///   reads it inside the drain.
+    /// Why a core refuses `input`, or nil. One shape is left: any input of a tickless land with
+    /// a transport attached, whose input turn's output phase arms the sync follow-ups K2-2
+    /// commit 3c adds (rev 3's MF6). A join syncing in the turn reads the stored binding at its
+    /// admission since commit 3b.
     func coreRefusal(_ behavior: KeeperBehavior<State>, hasTransport: Bool, _ input: KeeperInput<State>) -> KeeperCoreRefusalReason? {
-        if case .join(_, syncsInTurn: true) = input {
-            return .joinSyncingInTurn
-        }
         // `.startLand` starts the core's key and reads no binding; `.setTransport` writes it and
         // runs no output phase (the tickless refusal lifts in K2-2 commit 3c).
         if case .startLand = input { return nil }
@@ -1585,7 +1602,6 @@ extension KeeperModel {
         _ turn: inout Turn<KeeperModel<State>>,
         call: KeeperJoinCall,
         caller: InputID?,
-        syncsInTurn: Bool,
         decided: KeeperJoinDecided?,
         _ segment: KeeperSegment<LandKeeper<State>.JoinRequest>
     ) {
@@ -1602,7 +1618,7 @@ extension KeeperModel {
             }
             switch request {
             case .runCanJoinResolvers:
-                turn.run(.join(request, .canJoinResolvers(call, syncsInTurn: syncsInTurn), caller: caller))
+                turn.run(.join(request, .canJoinResolvers(call), caller: caller))
                 return
             case let .holdThenKickCheck(made):
                 // J2 took the reservation and the arrival in the segment that just ended.
@@ -1617,7 +1633,7 @@ extension KeeperModel {
                     // Every core join is a call (`.join`'s step has its input's caller).
                     preconditionFailure("K2-2: a join that waits for a leave has a caller")
                 }
-                let payload = KeeperBarrierPayload.joinAfterLeave(made, leavingGeneration: leavingGeneration, syncsInTurn: syncsInTurn)
+                let payload = KeeperBarrierPayload.joinAfterLeave(made, leavingGeneration: leavingGeneration)
                 switch turn.wait(caller, on: .leaveEnd(made.playerID, generation: leavingGeneration), holding: payload) {
                 case .waiting:
                     store.withSide { side in side.probe?("join-awaits-leave") }
@@ -1643,25 +1659,42 @@ extension KeeperModel {
                 let leave = step(behavior, store) { m, side, outputs in
                     m.leaveBegin(behavior, &side, &outputs, playerID: made.playerID, clientID: oldClientID, sessionID: oldSessionID, entryGeneration: kickedGeneration)
                 }
-                leaveDrive(behavior, store, &turn, leave, .joinAfterKick(made, kickedGeneration: kickedGeneration, caller: caller, syncsInTurn: syncsInTurn))
+                leaveDrive(behavior, store, &turn, leave, .joinAfterKick(made, kickedGeneration: kickedGeneration, caller: caller))
                 return
             case let .admit(made, joinSequence):
-                // Between two segments, as on the keeper: the transport's admission is no body's.
-                // A join syncing in the turn is refused on the core (`coreRefusal`), so no
-                // transport admits here and `joinAfterAdmission` never schedules the keeper's drain.
-                precondition(!syncsInTurn, "K2-1: a join syncing in the turn is refused on the core")
-                let transport = syncsInTurn ? store.withSide({ side in side.attachedTransport }) : nil
-                let admission = transport?.admitJoiningSession(playerID: made.playerID, clientID: made.call.clientID, sessionID: made.call.sessionID, joinSequence: joinSequence) ?? .notAdmitted
+                // The transport's admission (K2-2 commit 3b), in its own step frame: the stored
+                // binding says whether the port syncs in the turn, and the port is called through
+                // `callOut`. The keeper admits at depth zero and allows a callback; on the core a
+                // re-entry from the admission ends the land in this step (a stated contract
+                // change, plan §3.6), and the join ends `landShuttingDown`, its reservation and
+                // arrival token with it (`finishJoin`).
+                let admitted: JoinAdmission? = step(behavior, store) { m, side, outputs in
+                    guard side.storedSyncsInTurn, let port = side.attachedTransport else { return .notAdmitted }
+                    switch m.callOut(behavior, &side, &outputs, { _, _ in
+                        port.admitJoiningSession(playerID: made.playerID, clientID: made.call.clientID, sessionID: made.call.sessionID, joinSequence: joinSequence)
+                    }) {
+                    case let .answered(admission): return admission
+                    case .refused: return nil
+                    }
+                }
+                guard let admission = admitted else {
+                    finishJoin(behavior, store, &turn, .failure(JoinError.landShuttingDown), decided: made, caller: caller)
+                    return
+                }
                 guard let joinSequence else {
                     // J3b: no OnJoin input.
                     finishJoin(behavior, store, &turn, .success(KeeperJoinOutcome(decision: made.decision, admitted: admission.isAdmitted)), decided: decided, caller: caller)
                     return
                 }
+                // An admission that completes in the turn schedules the input drain in the step
+                // (`joinAfterAdmission`); on a core the flag's setter queues `.inputDrainDue`.
+                let drainWasScheduled = inputDrainScheduled
                 next = .success(step(behavior, store) { m, side, outputs in
                     m.joinAfterAdmission(behavior, &side, &outputs, made, sequence: joinSequence, admission: admission)
                 })
+                if !drainWasScheduled, inputDrainScheduled { turn.queue(.inputDrainDue, behind: .land) }
             case let .runOnJoinResolvers(made, capture, _, _):
-                turn.run(.join(request, .onJoinResolvers(made, capture, syncsInTurn: syncsInTurn), caller: caller))
+                turn.run(.join(request, .onJoinResolvers(made, capture), caller: caller))
                 return
             case let .awaitInputTurn(outcome, sequence):
                 awaitCoreInputTurn(behavior, store, &turn, sequence, .join(outcome, decided, caller: caller))
@@ -1818,13 +1851,13 @@ extension KeeperModel {
         _ result: Result<[String: HeldResolverOutput], any Error>
     ) {
         switch stage {
-        case let .canJoinResolvers(call, syncsInTurn):
+        case let .canJoinResolvers(call):
             switch result {
             case let .failure(error):
                 // Before J2: no reservation yet.
                 finishJoin(behavior, store, &turn, .failure(error), decided: nil, caller: caller)
             case let .success(resolverOutputs):
-                joinDrive(behavior, store, &turn, call: call, caller: caller, syncsInTurn: syncsInTurn, decided: nil) { m, side, outputs in
+                joinDrive(behavior, store, &turn, call: call, caller: caller, decided: nil) { m, side, outputs in
                     // Rebuilt after the resolvers (only their outputs come back, plan §4.3); the
                     // keeper reuses J1's. The two read the model in two places only:
                     // `players["_pending"]` (CanJoin's placeholder ID: it differs only if a
@@ -1836,14 +1869,14 @@ extension KeeperModel {
                     return try m.joinDecide(behavior, &side, &outputs, call, canJoinContext: ctx)
                 }
             }
-        case let .onJoinResolvers(decided, capture, syncsInTurn):
+        case let .onJoinResolvers(decided, capture):
             switch result {
             case let .failure(error):
                 // `runOnJoinResolvers`' catch: the entry's rollback, in its own segment.
                 step(behavior, store) { m, side, outputs in m.onJoinResolversFailed(behavior, &side, &outputs, capture) }
                 finishJoin(behavior, store, &turn, .failure(error), decided: decided, caller: caller)
             case let .success(resolverOutputs):
-                joinDrive(behavior, store, &turn, call: decided.call, caller: caller, syncsInTurn: syncsInTurn, decided: decided) { m, side, outputs in
+                joinDrive(behavior, store, &turn, call: decided.call, caller: caller, decided: decided) { m, side, outputs in
                     try m.joinAppend(behavior, &side, &outputs, decided, capture, resolverOutputs: resolverOutputs, resolvedAtTick: m.lastCommittedTickId)
                 }
             }
@@ -1866,13 +1899,13 @@ extension KeeperModel {
         guard !released.isEmpty else { return false }
         for wait in released {
             switch wait.payload {
-            case let .joinAfterLeave(decided, leavingGeneration, syncsInTurn):
+            case let .joinAfterLeave(decided, leavingGeneration):
                 // Barrier plan §4.1's invariant: no step ends a player's leave and starts a newer
                 // one, since the newer leave needs an entry only this released join can insert.
                 // So a released wait's player has no marker left (b3 is equivalent by it).
                 assert(inFlight[decided.playerID] == nil, "a newer leave of \(decided.playerID.rawValue) began in the step that ended generation \(leavingGeneration)")
                 let cancelledWhileWaiting = wait.cancelled
-                joinDrive(behavior, store, &turn, call: decided.call, caller: wait.caller, syncsInTurn: syncsInTurn, decided: decided) { m, side, outputs in
+                joinDrive(behavior, store, &turn, call: decided.call, caller: wait.caller, decided: decided) { m, side, outputs in
                     // The keeper's order after the wait: the drain first, then the cancel, then J2c.
                     guard !side.isDraining else { throw JoinError.landShuttingDown }
                     if cancelledWhileWaiting { throw CancellationError() }
@@ -1956,12 +1989,12 @@ extension KeeperModel {
         switch continuation {
         case let .reply(caller):
             if let caller { turn.reply(to: caller, result.map { _ in KeeperReply<State>.done }) }
-        case let .joinAfterKick(decided, kickedGeneration, caller, syncsInTurn):
+        case let .joinAfterKick(decided, kickedGeneration, caller):
             switch result {
             case let .failure(error):
                 finishJoin(behavior, store, &turn, .failure(error), decided: decided, caller: caller)
             case .success:
-                joinDrive(behavior, store, &turn, call: decided.call, caller: caller, syncsInTurn: syncsInTurn, decided: decided) { m, side, outputs in
+                joinDrive(behavior, store, &turn, call: decided.call, caller: caller, decided: decided) { m, side, outputs in
                     try m.joinAfterKick(behavior, &side, &outputs, decided, kickedGeneration: kickedGeneration)
                 }
             }

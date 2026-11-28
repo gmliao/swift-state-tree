@@ -469,7 +469,7 @@ struct KeeperCensusTests {
         let routed = KeeperInputRoutes.routed, deferred = Set(KeeperInputRoutes.deferred.keys)
         #expect(routed.isDisjoint(with: deferred), "both: \(routed.intersection(deferred).map(\.rawValue).sorted())")
         #expect(routed.union(deferred) == Set(KeeperInputRoute.allCases), "neither: \(Set(KeeperInputRoute.allCases).subtracting(routed.union(deferred)).map(\.rawValue).sorted())")
-        #expect(routed.count == 31 && deferred.isEmpty, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
+        #expect(routed.count == 32 && deferred.isEmpty, "routed \(routed.map(\.rawValue).sorted()), deferred \(deferred.map(\.rawValue).sorted())")
         #expect(KeeperInputRoutes.deferred.values.allSatisfy { !$0.isEmpty })
         let queries = KeeperQueryRoutes.routed, deferredQueries = Set(KeeperQueryRoutes.deferred.keys)
         #expect(queries.isDisjoint(with: deferredQueries))

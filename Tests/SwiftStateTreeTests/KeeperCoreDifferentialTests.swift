@@ -841,9 +841,18 @@ final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
         trace.append("runSettlePhaseInTurn \(settle.generation)")
         return InTurnSyncOutput(.notRequested, syncStream: [], settle: .empty(membershipEpoch: 0))
     }
+    /// What the admission answers (K2-2 commit 3b's cases admit).
+    var admission: JoinAdmission = .notAdmitted
+    private weak var admissionReentryKeeper: LandKeeper<CoreDiffState>?
+    /// The next admission re-enters `keeper` (K2-2 commit 3b).
+    func armAdmissionReentry(_ keeper: LandKeeper<CoreDiffState>) { lock.withLock { admissionReentryKeeper = keeper } }
     func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
         trace.append("admitJoiningSession \(playerID) \(clientID) \(sessionID) \(joinSequence.map(String.init) ?? "-")")
-        return .notAdmitted
+        if let keeper = lock.withLock({ () -> LandKeeper<CoreDiffState>? in defer { admissionReentryKeeper = nil }; return admissionReentryKeeper }) {
+            trace.append("re-enter submitSyncStream from the admission")
+            keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the admission's re-entry the sentinel refuses
+        }
+        return lock.withLock { admission }
     }
     func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool { trace.append("refusesResolvedJoin \(playerID) \(sessionID)"); return false }
     private weak var reportReentryKeeper: LandKeeper<CoreDiffState>?
@@ -857,7 +866,9 @@ final class CoreDiffTraceTransport: LandKeeperSettlePort, @unchecked Sendable {
             keeper.assumeIsolated { $0.submitSyncStream([]) } // lint-allow: turns-isolated: the report's re-entry the sentinel refuses
         }
     }
-    var hasJoinsAwaitingSync: Bool { trace.append("hasJoinsAwaitingSync"); return followUp == .joinsAwaiting }
+    /// Joins wait for a sync while set (K2-2 commit 3b's `requestJoinSyncTurn` cases).
+    var joinsAwaiting = false
+    var hasJoinsAwaitingSync: Bool { trace.append("hasJoinsAwaitingSync"); return followUp == .joinsAwaiting || joinsAwaiting }
     func waitForWriterDrainForInTurnSync() async { trace.append("waitForWriterDrain") }
     var recordsInTurnSyncFolds: Bool { false }
     func noteInTurnSyncFold(_ fold: InTurnSyncFold) { trace.append("noteInTurnSyncFold \(fold)") }
@@ -1178,10 +1189,10 @@ private enum CoreDiffJoinResult: Equatable {
     case failed(String)
 }
 
-private func keeperJoin(_ pair: CoreDiffPair, _ player: String, _ client: String) async -> CoreDiffJoinResult {
+private func keeperJoin(_ pair: CoreDiffPair, _ player: String, _ client: String, admitThroughTransport: Bool = false) async -> CoreDiffJoinResult {
     do {
         let outcome = try await pair.keeper.joinReportingAdmission(
-            session: session(player), clientID: ClientID(client), sessionID: SessionID(client), services: LandServices(), admitThroughTransport: false
+            session: session(player), clientID: ClientID(client), sessionID: SessionID(client), services: LandServices(), admitThroughTransport: admitThroughTransport
         )
         if case .allow = outcome.decision { return .joined(allowed: true, admitted: outcome.admitted) }
         return .joined(allowed: false, admitted: outcome.admitted)
@@ -1190,10 +1201,10 @@ private func keeperJoin(_ pair: CoreDiffPair, _ player: String, _ client: String
     }
 }
 
-private func coreJoin(_ pair: CoreDiffPair, _ player: String, _ client: String) async -> CoreDiffJoinResult {
-    let call = KeeperJoinCall(session: session(player), clientID: ClientID(client), sessionID: SessionID(client), services: LandServices(), admitThroughTransport: false)
+private func coreJoin(_ pair: CoreDiffPair, _ player: String, _ client: String, admitThroughTransport: Bool = false) async -> CoreDiffJoinResult {
+    let call = KeeperJoinCall(session: session(player), clientID: ClientID(client), sessionID: SessionID(client), services: LandServices(), admitThroughTransport: admitThroughTransport)
     do {
-        guard case let .join(result) = try await pair.harness.call(.join(call, syncsInTurn: false)) else { return .failed("not a join reply") }
+        guard case let .join(result) = try await pair.harness.call(.join(call)) else { return .failed("not a join reply") }
         switch result {
         case let .success(outcome):
             if case .allow = outcome.decision { return .joined(allowed: true, admitted: outcome.admitted) }
@@ -1442,7 +1453,7 @@ struct KeeperCoreDifferentialTests {
         let (waits, probe) = probeEvents("join-awaits-leave")
         await pair.harness.setProbe(probe)
         let call = KeeperJoinCall(session: session("p1"), clientID: ClientID("c2"), sessionID: SessionID("c2"), services: LandServices(), admitThroughTransport: false)
-        let joined = Task { try await pair.harness.callCancellable(.join(call, syncsInTurn: false)) }
+        let joined = Task { try await pair.harness.callCancellable(.join(call)) }
         guard await firstWithinHangBound(waits) else { Issue.record("the core's rejoin never waited in the barrier"); return }
         await pair.harness.setProbe(nil)
         #expect(await pair.harness.differentialRead().model.rejoinReservations[PlayerID("p1")]?.isEmpty == false, "the waiting rejoin holds its reservation")
@@ -1518,7 +1529,7 @@ struct KeeperCoreDifferentialTests {
         let (waits, probe) = probeEvents("join-awaits-leave")
         await pair.harness.setProbe(probe)
         let call = KeeperJoinCall(session: session("p1"), clientID: ClientID("c2"), sessionID: SessionID("c2"), services: LandServices(), admitThroughTransport: false)
-        let joined = Task { try await pair.harness.callCancellable(.join(call, syncsInTurn: false)) }
+        let joined = Task { try await pair.harness.callCancellable(.join(call)) }
         guard await firstWithinHangBound(waits) else { Issue.record("the core's rejoin never waited in the barrier"); gate.release(); return nil }
         let cancel = CoreDiffCancelOnProbe()
         cancel.arm(probeName, joined)
@@ -1578,7 +1589,7 @@ struct KeeperCoreDifferentialTests {
         guard await leaveGate.waitUntilEntered("the core's OnLeave resolver") else { return }
         CoreDiffJoinGates.arm(pair.landID, joinGate)
         let call = KeeperJoinCall(session: session("p1"), clientID: ClientID("c2"), sessionID: SessionID("c2"), services: LandServices(), admitThroughTransport: false)
-        let joined = Task { try await pair.harness.callCancellable(.join(call, syncsInTurn: false)) }
+        let joined = Task { try await pair.harness.callCancellable(.join(call)) }
         guard await joinGate.waitUntilEntered("the rejoin's CanJoin resolver") else { return }
         joined.cancel()
         guard let answer = await resultWithinHangBound(joined) else { Issue.record("the cancelled rejoin never ended"); return }
@@ -2092,32 +2103,10 @@ struct KeeperCoreDifferentialTests {
         #expect(after == before, "the other core's side moved:\n before \(before)\n after  \(after)")
     }
 
-    @Test("A join that syncs in the turn is refused on the core with a named refusal, and changes nothing (K2-2 routes it with the binding token)")
-    func joinSyncingInTheTurnIsRefused() async {
-        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "refuse-join")
-        let before = CoreDiffDigest(await pair.harness.differentialRead())
-        let call = KeeperJoinCall(session: session("p1"), clientID: ClientID("c1"), sessionID: SessionID("c1"), services: LandServices(), admitThroughTransport: true)
-        let reply: String
-        do {
-            _ = try await pair.harness.call(.join(call, syncsInTurn: true))
-            reply = "replied"
-        } catch let refusal as KeeperCoreRefusal {
-            reply = refusal.reason
-        } catch {
-            reply = "\(error)"
-        }
-        #expect(reply == "a join syncing in the turn needs the binding token (K2-2)")
-        let read = await pair.harness.differentialRead()
-        #expect(read.violations == ["core side: refused join: a join syncing in the turn needs the binding token (K2-2)"], "\(read.violations)")
-        var after = CoreDiffDigest(read)
-        after.violations = before.violations
-        #expect(after == before, "the refused join changed the core:\n before \(before)\n after  \(after)")
-    }
-
     @Test("The core's refusals are named: one reason per refused shape, each with its own message and the K2-2 commit that lifts it (commit 4 requires none left)")
     func refusalReasonsAreNamed() {
         let reasons = KeeperCoreRefusalReason.allCases
-        #expect(Set(reasons.map(\.rawValue)) == ["joinSyncingInTurn", "ticklessLandWithTransport"], "a refusal was added or lifted: update this list and the K2-2 plan's §3.2 table")
+        #expect(Set(reasons.map(\.rawValue)) == ["ticklessLandWithTransport"], "a refusal was added or lifted: update this list and the K2-2 plan's §3.2 table")
         #expect(Set(reasons.map(\.message)).count == reasons.count, "two refusals share a message")
         for reason in reasons {
             #expect(reason.liftedIn.hasPrefix("K2-2 commit "), "\(reason) names no lifting commit")
@@ -4232,3 +4221,90 @@ struct KeeperCoreSetTransportTests {
         #expect(stderr.contains("a live keeper's transport must run its sync phase in turn"), "\(stderr)")
     }
 }
+
+/// K2-2 commit 3b: the join's admission on the core reads the stored binding, and the
+/// transport's `requestJoinSyncTurn` is a core input (rev 3's MF3, MF4).
+@Suite("The core's in-turn admission and join-sync turn (#700 K2-2 commit 3b)", .timeLimit(.minutes(1)))
+struct KeeperCoreAdmissionTests {
+    private func attachedPair(_ name: String, autoStartLoops: Bool = false) async -> (pair: CoreDiffPair, keeperPort: CoreDiffTraceTransport, corePort: CoreDiffTraceTransport) {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), name, autoStartLoops: autoStartLoops)
+        let keeperPort = CoreDiffTraceTransport(CoreDiffTrace()), corePort = CoreDiffTraceTransport(CoreDiffTrace())
+        await pair.keeper.setTransport(keeperPort)
+        await pair.harness.drive(.setTransport(corePort, owner: pair.harness.owner))
+        return (pair, keeperPort, corePort)
+    }
+
+    @Test("A join admitted through an attached port: the admission runs once on each path, between the same segments, and both report it admitted (MF3)", arguments: [JoinAdmission.notAdmitted, .admitted, .admittedCompletesInTurn])
+    func admissionThroughTheStoredBinding(admission: JoinAdmission) async throws {
+        let (pair, keeperPort, corePort) = await attachedPair("admit-\(admission)")
+        keeperPort.admission = admission
+        corePort.admission = admission
+        let keeper = await keeperJoin(pair, "p1", "c1", admitThroughTransport: true)
+        let core = await coreJoin(pair, "p1", "c1", admitThroughTransport: true)
+        #expect(keeper == core && keeper == .joined(allowed: true, admitted: admission.isAdmitted), "keeper \(keeper), core \(core)")
+        let keeperAdmits = keeperPort.trace.all.filter { $0.hasPrefix("admitJoiningSession") }
+        let coreAdmits = corePort.trace.all.filter { $0.hasPrefix("admitJoiningSession") }
+        #expect(coreAdmits.count == 1 && coreAdmits == keeperAdmits, "keeper \(keeperAdmits), core \(coreAdmits)")
+        await pair.expectSame("after the admitted join")
+    }
+
+    @Test("No port attached: the admission is skipped and the join isn't admitted, on both paths (MF3)")
+    func admissionWithoutAPort() async throws {
+        let pair = await CoreDiffPair.make(CoreDiffShape(tick: true, joinResolvers: false, leaveResolver: false), "admit-none")
+        let keeper = await keeperJoin(pair, "p1", "c1", admitThroughTransport: true)
+        let core = await coreJoin(pair, "p1", "c1", admitThroughTransport: true)
+        #expect(keeper == core && keeper == .joined(allowed: true, admitted: false), "keeper \(keeper), core \(core)")
+    }
+
+    @Test("An admission that re-enters the keeper ends the land in its step on the core (callOut), and the join ends landShuttingDown with its reservation; core-only: the keeper admits at depth zero and allows the callback (MF3, plan §3.6)")
+    func admissionReentryEndsTheLand() async throws {
+        let (pair, _, corePort) = await attachedPair("admit-reentry")
+        let source = try #require(pair.source)
+        corePort.admission = .admitted
+        corePort.armAdmissionReentry(source)
+        let core = await coreJoin(pair, "p1", "c1", admitThroughTransport: true)
+        guard case let .failed(error) = core else { Issue.record("the join wasn't refused: \(core)"); return }
+        #expect(error.contains("landShuttingDown"), "\(error)")
+        let read = await pair.harness.differentialRead()
+        #expect(read.failure?.kind == .keeperReentry, "\(String(describing: read.failure))")
+        #expect(read.model.players.isEmpty, "\(read.model.players.keys)")
+    }
+
+    @Test("requestJoinSyncTurn with joins waiting runs one sync-only turn on each path, with the same port reads; with none waiting it runs none, and on a draining land it does nothing (MF4)", arguments: [false, true])
+    func requestJoinSyncTurn(periodic: Bool) async throws {
+        let (pair, keeperPort, corePort) = await attachedPair("join-sync-\(periodic)", autoStartLoops: periodic)
+        keeperPort.trace.clear()
+        corePort.trace.clear()
+        // None waiting: one read each, no turn.
+        await pair.keeper.requestJoinSyncTurn()
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.requestJoinSyncTurn) }) else {
+            Issue.record("the core's request wasn't answered .done"); return
+        }
+        #expect(await pair.harness.differentialRead().model.joinSyncRequestTurnsForTesting == 0)
+        // With loops on, the keeper's own ticks also read the port: compared without loops only.
+        if !periodic { #expect(keeperPort.trace.all == corePort.trace.all, "keeper \(keeperPort.trace.all), core \(corePort.trace.all)") }
+        keeperPort.trace.clear()
+        corePort.trace.clear()
+        keeperPort.joinsAwaiting = true
+        corePort.joinsAwaiting = true
+        await pair.keeper.requestJoinSyncTurn()
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.requestJoinSyncTurn) }) else {
+            Issue.record("the core's request wasn't answered .done"); return
+        }
+        let keeperTurns = await pair.keeper.joinSyncRequestTurnsForTesting
+        let coreTurns = await pair.harness.differentialRead().model.joinSyncRequestTurnsForTesting
+        #expect(keeperTurns == 1 && coreTurns == 1, "turns: keeper \(keeperTurns), core \(coreTurns)")
+        // With loops on, the keeper's own ticks also read the port: compared without loops only.
+        if !periodic { #expect(keeperPort.trace.all == corePort.trace.all, "keeper \(keeperPort.trace.all), core \(corePort.trace.all)") }
+        #expect(corePort.trace.all.filter { $0 == "hasJoinsAwaitingSync" }.count == (periodic ? 2 : 1), "\(corePort.trace.all)")
+        // Draining: a no-op, answered.
+        await pair.harness.markDraining(cause: .forceShutdown)
+        corePort.trace.clear()
+        guard case .success(.done)? = await resultWithinHangBound(Task { try await pair.harness.call(.requestJoinSyncTurn) }) else {
+            Issue.record("the draining core's request wasn't answered"); return
+        }
+        #expect(corePort.trace.all.isEmpty, "\(corePort.trace.all)")
+        #expect(await pair.harness.differentialRead().model.joinSyncRequestTurnsForTesting == 1)
+    }
+}
+
