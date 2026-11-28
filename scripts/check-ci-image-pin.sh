@@ -14,9 +14,14 @@
 # (`git ls-files`). Not read: `*.dockerfile` and `Containerfile` (none exist today); a file that
 # should be checked has to be named one of the two. Each `FROM` line naming a `swift` image, with
 # or without `--platform=…` and `AS <stage>`, must be `swift:<tag>@sha256:<64 hex>` with the digest
-# of the workflows' pin. A `FROM` of another image (`ubuntu:24.04 AS runtime`) or of an earlier
-# stage isn't read: those stay pinned by tag. A `FROM` image holding a `$` (`FROM ${IMAGE}`, from
-# an `ARG`) can't be resolved here, so it is refused: pin the Swift image inline.
+# of the workflows' pin. A `FROM ubuntu` line (the run images' runtime stage) must name the Swift
+# pin's distro, by its release or its codename (`swift:6.4.3-noble` → `ubuntu:24.04` or
+# `ubuntu:noble`): the runtime stage loads the Swift runtime libraries the builder copied over, and
+# its libicu and glibc must be the ones they were built against (#780). The ubuntu base stays
+# pinned by tag, not by digest: the stage installs its packages with `apt-get` at build time, so
+# they float whatever the base pins, and a tag keeps the base's security fixes. A `FROM` of another
+# image or of an earlier stage isn't read. A `FROM` image holding a `$` (`FROM ${IMAGE}`, from an
+# `ARG`) can't be resolved here, so it is refused: pin the image inline.
 # Errors name the file and line.
 #
 # Usage: scripts/check-ci-image-pin.sh [--self-test] [workflows dir]
@@ -45,6 +50,10 @@ PINNED = re.compile(r"^swift:[\w.-]+@sha256:([0-9a-f]{64})$")
 FROM_LINE = re.compile(r"^\s*FROM\s+((?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?\s*$", re.IGNORECASE)
 # A Swift image in a `FROM` line: `swift`, with a registry prefix, a tag or a digest or none of them.
 SWIFT_FROM = re.compile(r"^(?:[\w.-]+(?::\d+)?/)*swift(?:[:@]\S*)?$")
+# An ubuntu image in a `FROM` line, with its tag (none for a bare `ubuntu`).
+UBUNTU_FROM = re.compile(r"^(?:[\w.-]+(?::\d+)?/)*ubuntu(?::([^@\s]+))?(?:@\S*)?$")
+# The Swift images' distro codenames and their Ubuntu releases.
+UBUNTU_RELEASES = {"focal": "20.04", "jammy": "22.04", "noble": "24.04"}
 CACHE_DIR = "~/.cache/org.swift.swiftpm"
 STEP = re.compile(r"^(\s*)- ")
 
@@ -101,9 +110,9 @@ def block_values(step, names):
     return values
 
 
-def dockerfile_errors(dockerfiles, digest):
-    """Errors for the Swift `FROM` lines of `dockerfiles` ({name: text}) against the workflows'
-    `digest`, and how many Swift lines were read."""
+def dockerfile_errors(dockerfiles, digest, codename):
+    """Errors for the Swift and ubuntu `FROM` lines of `dockerfiles` ({name: text}) against the
+    workflows' `digest` and distro `codename`, and how many Swift lines were read."""
     errors, count = [], 0
     for name, text in sorted(dockerfiles.items()):
         stages = set()
@@ -117,7 +126,17 @@ def dockerfile_errors(dockerfiles, digest):
             if "$" in image:
                 errors.append(f"{name}:{n}: a FROM image from a build argument can't be checked; pin the Swift image inline: {image}")
                 continue
-            if image.lower() in stages or not SWIFT_FROM.match(image):
+            if image.lower() in stages:
+                continue
+            ubuntu = UBUNTU_FROM.match(image)
+            if ubuntu:
+                release = UBUNTU_RELEASES.get(codename)
+                if release is None:
+                    errors.append(f"{name}:{n}: the check doesn't know the distro of the Swift pin's tag ({codename}); add it to UBUNTU_RELEASES: {image}")
+                elif ubuntu.group(1) not in (release, codename):
+                    errors.append(f"{name}:{n}: the ubuntu base must be the Swift pin's distro, ubuntu:{release} ({codename}): {image}")
+                continue
+            if not SWIFT_FROM.match(image):
                 continue
             count += 1
             pinned = PINNED.match(image)
@@ -182,7 +201,8 @@ def check(workflows, dockerfiles=None):
         return errors
     summary = f"{len(cache_steps)} SwiftPM cache steps key on its digest"
     if dockerfiles is not None:
-        errors, count = dockerfile_errors(dockerfiles, digest)
+        codename = next(iter(images)).split("@")[0].rsplit("-", 1)[-1]
+        errors, count = dockerfile_errors(dockerfiles, digest, codename)
         if errors:
             return errors
         if not count:
@@ -276,6 +296,14 @@ def self_test():
          "ARG SWIFT_IMAGE=swift:6.2.4-noble\nFROM ${SWIFT_IMAGE} AS builder\n", "Dockerfile:2: a FROM image from a build argument"),
         ("dockerfile: a FROM image from a bare variable", f"FROM {pin} AS builder\nFROM $BASE\n", "Dockerfile:2: a FROM image from a build argument"),
         ("dockerfile: a $ in a platform option is not the image", f"FROM --platform=$BUILDPLATFORM {pin} AS builder\n", None),
+        ("dockerfile: an ubuntu runtime by the codename's version", f"FROM {pin} AS builder\nFROM ubuntu:24.04 AS runtime\n", None),
+        ("dockerfile: an ubuntu runtime by the codename itself", f"FROM {pin} AS builder\nFROM ubuntu:noble AS runtime\n", None),
+        ("dockerfile: an ubuntu runtime of another release, with its file and line",
+         f"FROM {pin} AS builder\nFROM ubuntu:22.04 AS runtime\n", "Dockerfile:2: the ubuntu base must be the Swift pin's distro"),
+        ("dockerfile: an ubuntu runtime by latest", f"FROM {pin} AS builder\nFROM ubuntu:latest AS runtime\n", "the ubuntu base must be the Swift pin's distro"),
+        ("dockerfile: an ubuntu runtime with no tag", f"FROM {pin} AS builder\nFROM ubuntu AS runtime\n", "the ubuntu base must be the Swift pin's distro"),
+        ("dockerfile: a registry-qualified ubuntu runtime of another release",
+         f"FROM {pin} AS builder\nFROM docker.io/library/ubuntu:22.04 AS runtime\n", "the ubuntu base must be the Swift pin's distro"),
     ]
     for name, text, want in docker_cases:
         with tempfile.TemporaryDirectory() as tmp:
@@ -285,6 +313,14 @@ def self_test():
         ok = (not errors) if want is None else any(want in e for e in errors)
         print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {errors}"))
         failed += not ok
+    # A Swift pin whose distro codename the check doesn't know can't be matched with an ubuntu base.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = pathlib.Path(tmp)
+        (d / "w.yml").write_text(GOOD.replace("6.2.4-noble@", "6.2.4-plucky@"), encoding="utf-8")
+        errors = check(d, {"Dockerfile": f"FROM swift:6.2.4-plucky@sha256:{D} AS builder\nFROM ubuntu:25.04 AS runtime\n"})
+    ok = any("doesn't know the distro of the Swift pin" in e for e in errors)
+    print(f"{'ok  ' if ok else 'FAIL'} self-test: dockerfile: a Swift pin of an unknown distro" + ("" if ok else f": {errors}"))
+    failed += not ok
     return failed
 
 

@@ -45,6 +45,11 @@ run_encoding_tests() {
         jsonOpcode)
             test_command="npm run test:e2e:opcodeJsonArray"
             ;;
+        opcode)
+            # Opcode JSON messages with payload compression on (#543): the only leg that runs
+            # the opcode JSON message encoder's positional path.
+            test_command="npm run test:e2e:opcode"
+            ;;
         messagepack)
             test_command="npm run test:e2e:messagepack"
             ;;
@@ -161,7 +166,7 @@ main() {
     echo ""
     
     # Test each encoding mode
-    local encodings=("json" "jsonOpcode" "messagepack")
+    local encodings=("json" "jsonOpcode" "opcode" "messagepack")
     local failed_encodings=()
     
     for encoding in "${encodings[@]}"; do
@@ -217,7 +222,7 @@ main() {
 # Trap to ensure cleanup on exit
 # shellcheck disable=SC2329  # invoked by the trap below
 cleanup() {
-    cleanup_servers "$SERVER_NAME" "json" "jsonOpcode" "messagepack"
+    cleanup_servers "$SERVER_NAME" "json" "jsonOpcode" "opcode" "messagepack"
 }
 
 trap cleanup EXIT INT TERM

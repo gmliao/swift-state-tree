@@ -367,11 +367,18 @@ struct LandKeeperDebugFreezeTests {
         }
         #expect(await eventually { await gate.waitingCount == 1 })
 
-        let start = ContinuousClock.now
-        #expect(await keeper.debugFreeze(generation: 1, timeout: .milliseconds(100)) == false)
-        // The 100 ms timeout fires; the bound only separates it from a hang (a hang also hits the
-        // suite's time limit), so it is the slow-runner scale, not a measurement.
-        #expect(ContinuousClock.now - start < TestBounds.hang, "drain ignored its deadline")
+        // The resolver stays held until after the drain, so only the 100 ms timeout can end it.
+        // Bounded on the drain's end event, not on elapsed time (#978): a drain that ignored its
+        // deadline never ends, which the hang bound reports.
+        let ended = EventLog()
+        let drain = Task {
+            defer { ended.append("ended") }
+            return await keeper.debugFreeze(generation: 1, timeout: .milliseconds(100))
+        }
+        let drainEnded = await ended.waitFor("ended")
+        if !drainEnded { await gate.open() }
+        try #require(drainEnded, "drain ignored its deadline: it waited on the held resolver")
+        #expect(await drain.value == false)
         #expect(await keeper.isDebugFrozen(), "a missed deadline keeps the freeze until it is released")
 
         await keeper.debugResume(generation: 1)
