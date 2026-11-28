@@ -294,12 +294,11 @@ extension TurnCore {
     /// Tests: the next dispatch ordinal.
     package var nextOrdinalForTesting: UInt64 { nextOrdinal }
 
-    /// `now + budget` for a budget of at least one nanosecond, in whole nanoseconds, clamped at
-    /// `Int64.max` as an instant: the sum is taken in `Int128`, so no budget traps or wraps, and
-    /// one past `Int64`'s range still lands below `Int64.max` from a negative `now`.
+    /// `now + budget` for a budget of at least one nanosecond, in whole nanoseconds: `TurnInstant`'s
+    /// saturating `+` (#791), so no budget traps or wraps, and one past `Int64`'s range still
+    /// lands below `Int64.max` from a negative `now`.
     @inlinable package static func saturatingDeadline(_ now: Int64, _ budget: Duration) -> Int64 {
-        let sum = Int128(now) + budget.attoseconds / 1_000_000_000
-        return sum > Int128(Int64.max) ? .max : Int64(sum)
+        (TurnInstant(nanoseconds: now) + budget).nanoseconds
     }
 
     /// Whether `caller`'s `.cancelsCall` task has been cancelled (barrier cores only).
