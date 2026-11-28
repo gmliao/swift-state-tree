@@ -373,7 +373,8 @@ struct KeeperCoreInputReplies: Sendable {
     /// is no longer the binding's, and `endOfStep` cancels them (their workers with them, #988).
     /// A detach rebinds nothing and sets none.
     var cancelsWriterDrains = false
-    /// Tests only: the step's end closes the core's intake (`Turn.close`), so a case can check
+    /// Tests only: the step's end (`makeStagedSyncFollowUps`) closes the core's intake
+    /// (`Turn.close`), so a case can check
     /// that the `.control` inputs still step on a closed intake. Nothing else closes it before
     /// commit 4's owner.
     var closesIntakeForTesting = false
@@ -876,11 +877,6 @@ extension KeeperModel: TurnMachine {
         makeStagedSyncFollowUps(behavior, store, &turn)
         runCoreJobEffects(store, &turn)
         answerCoreFreezeWaits(&turn)
-        let closes = store.withSide { side in
-            defer { side.coreInputReplies.closesIntakeForTesting = false }
-            return side.coreInputReplies.closesIntakeForTesting
-        }
-        if closes { turn.close() }
     }
 
     /// `debugFreeze`'s decision as a step (K2-2 plan, commit 2): a released generation answers
@@ -1265,7 +1261,10 @@ extension KeeperModel {
     /// waiting on the old port. A request the core can't make (`.land` not live) is undone: its
     /// slot or binding cleared and its work ended, as an abandonment would.
     mutating func makeStagedSyncFollowUps(_ behavior: KeeperBehavior<State>, _ store: KeeperSideStore, _ turn: inout Turn<KeeperModel<State>>) {
-        let (staged, cancels): ([(UInt64, KeeperCoreSyncFollowUp)], [RequestID]) = store.withSide { side in
+        let (staged, cancels, closes): ([(UInt64, KeeperCoreSyncFollowUp)], [RequestID], Bool) = store.withSide { side in
+            // The test-only close, read in this borrow so it costs a step's end nothing more.
+            let closes = side.coreInputReplies.closesIntakeForTesting
+            if closes { side.coreInputReplies.closesIntakeForTesting = false }
             var cancels: [RequestID] = []
             if side.coreInputReplies.cancelsWriterDrains {
                 side.coreInputReplies.cancelsWriterDrains = false
@@ -1273,8 +1272,9 @@ extension KeeperModel {
             }
             let ids = side.coreInputReplies.stagedSyncFollowUps
             side.coreInputReplies.stagedSyncFollowUps.removeAll()
-            return (ids.compactMap { id in side.coreInputReplies.syncFollowUps[id].map { (id, $0) } }, cancels)
+            return (ids.compactMap { id in side.coreInputReplies.syncFollowUps[id].map { (id, $0) } }, cancels, closes)
         }
+        if closes { turn.close() }
         for request in cancels { turn.cancel(request) }
         for (id, record) in staged {
             if let request = turn.request(.syncFollowUp(id: id, record.kind, port: record.followUp.port), for: .land) {

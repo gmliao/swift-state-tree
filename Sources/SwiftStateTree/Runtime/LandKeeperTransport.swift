@@ -87,8 +87,13 @@ public protocol LandKeeperTransport: Sendable {
     /// Whether `keeper` may call `runSyncPhaseInTurn` from inside its own actor turn.
     ///
     /// `true` only when this transport is attached to that keeper (identity) and runs on its
-    /// serial executor. A keeper asks this once per turn; a transport attached to another keeper
-    /// answers `false`, so no keeper ever reaches an `assumeIsolated` that would trap.
+    /// serial executor. A transport attached to another keeper answers `false`, so no keeper ever
+    /// reaches an `assumeIsolated` that would trap.
+    ///
+    /// The answer must not change while the transport stays attached (the adapter's is fixed
+    /// by identity). A keeper asks it in its turns, including at each sync follow-up's wake; a
+    /// turn core asks it once, at the attach, and keeps the answer (K2-2 commit 3), so an answer
+    /// that changed would make the two diverge.
     ///
     /// A live keeper also asks it at the attach (`init(transport:)`, `setTransport(_:)`): `false`
     /// there stops the process, because a live keeper syncs only in its turns (#546 L2d). No
